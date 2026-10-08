@@ -26,6 +26,8 @@ The image (oci-archive) and its SBOM are workflow artifacts: the Debian package 
 
 The `install-boot` job then takes that oci-archive, installs it on a disk image with `bootc install to-disk --composefs-backend --bootloader systemd` (loopback) and boots it with QEMU, KVM and UEFI ([`tools/vm/vm-boot.py`](tools/vm/vm-boot.py)). It passes only if the system reaches `running` (not `degraded`), `bootc status` reports the image that was built and `/usr` is read-only. The console access it needs (`console=ttyS0` on the test disk, root autologin through a systemd credential) exists only in the test, not in the image. The job runs pull-request images privileged, so it stays on ephemeral GitHub-hosted runners, never self-hosted ones.
 
+Release builds (`main`) use no cached content and are signed keylessly in CI (Sigstore, through a Google service account); the image refuses unsigned images from the Nyra registry. Details: [`docs/SIGNING.md`](docs/SIGNING.md).
+
 ## Contributing
 
 Every change goes through a pull request and must keep the test battery green. Security issues: please do not open a public issue; write to the maintainers first (a `SECURITY.md` follows).

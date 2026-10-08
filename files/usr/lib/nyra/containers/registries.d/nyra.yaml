@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra: image signatures on our registry are sigstore attachments (sha256-<digest>.sig tags).
+# The policy that requires them: /usr/lib/nyra/containers/policy.json (docs/SIGNING.md).
+docker:
+  updates.nyraos.com:
+    use-sigstore-attachments: true

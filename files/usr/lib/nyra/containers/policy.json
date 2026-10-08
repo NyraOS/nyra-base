@@ -1,0 +1,19 @@
+{
+  "default": [{ "type": "insecureAcceptAnything" }],
+  "transports": {
+    "docker": {
+      "updates.nyraos.com": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
+            "oidcIssuer": "https://accounts.google.com",
+            "subjectEmail": "signer-not-configured@nyra.invalid"
+          },
+          "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
+          "signedIdentity": { "type": "matchRepository" }
+        }
+      ]
+    }
+  }
+}

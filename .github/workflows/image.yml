@@ -3,7 +3,9 @@
 #   bootc from source (on Debian testing) -> mkosi root filesystem from the pinned
 #   snapshot -> bootc layer (Containerfile) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the package list (SBOM). Nothing is
-# pushed to a registry; signing and publishing come later.
+# pushed to a public registry; publishing comes later (NyraOS#25).
+# Release builds (push or manual run on main) use no cached content, and the sign job signs
+# them keylessly (docs/SIGNING.md).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM).
 name: image
 on:
@@ -23,6 +25,7 @@ env:
   BOOTC_REF: v1.16.13
   BOOTC_COMMIT: fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60
   WORK: /mnt/work
+  RELEASE: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -53,11 +56,13 @@ jobs:
         id: bootc-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
+          # Release builds only look the cache up (to save it if missing), never use it.
+          lookup-only: ${{ env.RELEASE == 'true' }}
           path: ~/cache/bootc.tar
           key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
 
       - name: Build bootc from source
-        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        if: steps.bootc-cache.outputs.cache-hit != 'true' || env.RELEASE == 'true'
         run: |
           mkdir -p ~/cache
           sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
@@ -76,6 +81,7 @@ jobs:
         id: mkosi-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
+          lookup-only: ${{ env.RELEASE == 'true' }}
           path: ~/cache/mkosi-packages
           key: mkosi-${{ env.SNAPSHOT }}-${{ hashFiles('mkosi/mkosi.conf') }}
           restore-keys: mkosi-${{ env.SNAPSHOT }}-
@@ -108,6 +114,14 @@ jobs:
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" \
             -t localhost/nyra-base:ci -f Containerfile . 2>&1 | tee "$WORK/build.log"
+
+      - name: Test the signature policy (docs/SIGNING.md)
+        run: |
+          tools/signing/trust-roots.sh "$RUNNER_TEMP/trust-roots"
+          diff -r "$RUNNER_TEMP/trust-roots" files/usr/lib/nyra/sigstore
+          tools/signing/local-registry.sh "$WORK"
+          tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK"
+          sudo rm -rf "$WORK/policy-test"
 
       - name: Export the image and the SBOM
         run: |
@@ -242,4 +256,116 @@ jobs:
           name: install-boot-serial-log
           path: ${{ runner.temp }}/serial.log
           if-no-files-found: ignore
+          retention-days: 14
+
+  # Keyless signing (docs/SIGNING.md): GitHub OIDC -> Google Workload Identity Federation ->
+  # an ID token of the signer service account -> a short-lived Fulcio certificate for its
+  # e-mail address -> signature recorded in Rekor. No key exists anywhere. Only release builds
+  # on GitHub-hosted runners are signed; the job is skipped until the repository variables
+  # GCP_WIF_PROVIDER and GCP_SIGNER_SA are set. Only this job can request an OIDC token.
+  sign:
+    needs: [build, install-boot]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+      REPO: updates.nyraos.com/nyra-base
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the shipped policy trusts this signer
+        env:
+          SIGNER: ${{ vars.GCP_SIGNER_SA }}
+        run: |
+          policy=files/usr/lib/nyra/containers/policy.json
+          trusted="$(jq -r '.transports.docker["updates.nyraos.com"][0].fulcio.subjectEmail' "$policy")"
+          if [ "$trusted" != "$SIGNER" ]; then
+            echo "::error::$policy trusts $trusted, but CI would sign as $SIGNER. Commit the signer address to the policy first (docs/SIGNING.md)."
+            exit 1
+          fi
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nyra-base-oci-archive
+          path: ${{ env.WORK }}
+
+      - name: Load the image and push it to the local registry (as updates.nyraos.com)
+        run: |
+          tools/signing/local-registry.sh "$WORK"
+          sudo podman load -q -i "$WORK/nyra-base.oci.tar"
+          sudo podman run --rm --network host --tmpfs /var/tmp -v "$WORK:/w" localhost/nyra-base:ci \
+            skopeo copy --dest-tls-verify=false --preserve-digests --digestfile /w/digest \
+              oci-archive:/w/nyra-base.oci.tar "docker://$REPO:ci"
+          digest="$(cat "$WORK/digest")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          rm "$WORK/nyra-base.oci.tar"
+
+      - name: Install cosign
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  $RUNNER_TEMP/cosign" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/cosign" /usr/local/bin/cosign
+          cosign version
+
+      - id: google
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SIGNER_SA }}
+          token_format: id_token
+          id_token_audience: sigstore
+          id_token_include_email: true
+          create_credentials_file: false
+          export_environment_variables: false
+
+      # The old signature format (a sha256-<digest>.sig tag with the Rekor v1 SET) is the only one
+      # containers/image (bootc, podman, skopeo) verifies; cosign 3 defaults to the new bundle.
+      - name: Sign the image
+        env:
+          ID_TOKEN: ${{ steps.google.outputs.id_token }}
+        run: |
+          cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+            --fulcio-url https://fulcio.sigstore.dev --rekor-url https://rekor.sigstore.dev \
+            --identity-token "$ID_TOKEN" --allow-http-registry "$REPO@$IMAGE_DIGEST"
+
+      - name: Verify with the shipped policy
+        run: tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "$IMAGE_DIGEST"
+
+      # For publishing (NyraOS#25): the signature as an OCI layout, tagged as on the registry.
+      # The image itself is the nyra-base-oci-archive artifact (same manifest digest).
+      - name: Export the signature
+        env:
+          SIGNER: ${{ vars.GCP_SIGNER_SA }}
+        run: |
+          sig="${IMAGE_DIGEST/:/-}.sig"
+          mkdir -p dist
+          sudo podman run --rm --network host --tmpfs /var/tmp -v "$PWD/dist:/w" localhost/nyra-base:ci \
+            skopeo copy --insecure-policy --preserve-digests "docker://$REPO:$sig" "oci:/w/signature:$sig"
+          sudo chown -R "$(id -u):$(id -g)" dist
+          echo "$IMAGE_DIGEST" > dist/image-digest
+          {
+            echo "## Signed"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`$REPO@$IMAGE_DIGEST\` |"
+            echo "| Signer | \`$SIGNER\` (keyless, Fulcio + Rekor) |"
+            echo "| Signature | \`$REPO:$sig\` (artifact nyra-base-signature) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the signature
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-signature
+          path: dist
           retention-days: 14

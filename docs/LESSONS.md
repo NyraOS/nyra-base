@@ -45,6 +45,13 @@ Each line is something that broke or surprised us once.
 - bootc has no downgrade protection: any correctly signed older image is accepted.
 - Signature policy: cosign signs the repository name without a tag, so the policy must use
   `signedIdentity: matchRepository`.
+- containers/image (bootc, podman, skopeo) checks a keyless (Fulcio) signature only by OIDC issuer
+  and **e-mail** address. GitHub Actions certificates name the workflow as a URI, which it cannot
+  match (containers/image#2350), so we sign as a Google service account (`docs/SIGNING.md`).
+- It also needs the Rekor v1 SET inside the old cosign signature format; cosign 3 must be told
+  `--new-bundle-format=false --use-signing-config=false`.
+- The bootc image has an empty `/var` (tmpfiles fills it at boot): running the image's own tools
+  in a container (skopeo unpacking an oci-archive) needs `--tmpfs /var/tmp`.
 
 ## Testing in CI
 - The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`

@@ -27,6 +27,14 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
     printf '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n' > /usr/lib/systemd/network/80-nyra-wired.network && \
     systemctl is-enabled systemd-networkd.service && systemctl is-enabled systemd-resolved.service
 
+# Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
+# signature; the policy and the Sigstore trust roots live in /usr. containers/image only reads
+# /etc/containers, so /etc gets symlinks and nothing else: the content still updates with the image.
+COPY files/usr/lib/nyra/ /usr/lib/nyra/
+RUN mkdir -p /etc/containers/registries.d && \
+    ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && \
+    ln -sfn /usr/lib/nyra/containers/registries.d/nyra.yaml /etc/containers/registries.d/nyra.yaml
+
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
