@@ -24,6 +24,8 @@ CI (`.github/workflows/image.yml`) builds the desktop image on every pull reques
 
 The image (oci-archive) and its SBOM are workflow artifacts: the Debian package list (mkosi JSON manifest, exact versions) and bootc's `Cargo.lock` (the Rust crates compiled into bootc; also shipped in the image as `/usr/share/doc/bootc/Cargo.lock`). Nothing is pushed to a registry yet.
 
+The `install-boot` job then takes that oci-archive, installs it on a disk image with `bootc install to-disk --composefs-backend --bootloader systemd` (loopback) and boots it with QEMU, KVM and UEFI ([`tools/vm/vm-boot.py`](tools/vm/vm-boot.py)). It passes only if the system reaches `running` (not `degraded`), `bootc status` reports the image that was built and `/usr` is read-only. The console access it needs (`console=ttyS0` on the test disk, root autologin through a systemd credential) exists only in the test, not in the image. The job runs pull-request images privileged, so it stays on ephemeral GitHub-hosted runners, never self-hosted ones.
+
 ## Contributing
 
 Every change goes through a pull request and must keep the test battery green. Security issues: please do not open a public issue; write to the maintainers first (a `SECURITY.md` follows).

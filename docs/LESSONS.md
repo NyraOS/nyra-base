@@ -45,3 +45,20 @@ Each line is something that broke or surprised us once.
 - bootc has no downgrade protection: any correctly signed older image is accepted.
 - Signature policy: cosign signs the repository name without a tag, so the policy must use
   `signedIdentity: matchRepository`.
+
+## Testing in CI
+- The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`
+  takes ~15 s, and the installed system reaches the login prompt 12–16 s after QEMU starts
+  (`systemd-analyze`: 9–11 s).
+- With root autologin the shell prompt can appear in the same instant as the login prompt: wait for it
+  from the end of the login prompt, not from whatever the console buffer holds when you look.
+- On x86 the serial console needs `console=ttyS0`. The test passes it with `bootc install --karg`, so it
+  lives only in the test disk's boot entry, never in the image.
+- The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
+  in `/etc/shadow`. For console access the test passes a `systemd.unit-dropin.serial-getty@ttyS0.service`
+  credential over SMBIOS (root autologin for that boot only).
+- `bootc status` reports the same manifest digest as `podman image inspect` of the loaded oci-archive,
+  so CI checks that the booted system is exactly the image that was built.
+- The install + boot job runs images built from pull requests, as root in a `--privileged` container
+  and in a VM with KVM. It must stay on ephemeral GitHub-hosted runners: never run `pull_request`
+  jobs on self-hosted runners.

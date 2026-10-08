@@ -13,6 +13,7 @@ start to the login prompt and the command outputs are appended as Markdown to
 KVM is mandatory: accel=kvm, no fallback to emulation.
 """
 import argparse
+import base64
 import re
 import secrets
 import shutil
@@ -24,6 +25,8 @@ import time
 
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
+AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
+             "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
 
 
 class Console:
@@ -67,6 +70,7 @@ def main():
     p.add_argument("--log", required=True, help="serial console log file")
     p.add_argument("--summary", required=True, help="Markdown report is appended here")
     p.add_argument("--title", default="VM boot")
+    p.add_argument("--autologin", action="store_true", help="root login on the console without a password")
     a = p.parse_args()
 
     password = secrets.token_urlsafe(12)
@@ -79,8 +83,12 @@ def main():
            "-drive", f"file={a.disk},format=qcow2,if=virtio,snapshot=on",
            "-nic", "user,model=virtio-net-pci", "-device", "virtio-rng-pci",
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC"]
+    if a.autologin:
+        cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
+                + base64.b64encode(AUTOLOGIN.encode()).decode()]
     print("+ " + " ".join(cmd), flush=True)
-    cmd += ["-smbios", f"type=11,value=io.systemd.credential:passwd.plaintext-password.root={password}"]
+    if not a.autologin:
+        cmd += ["-smbios", f"type=11,value=io.systemd.credential:passwd.plaintext-password.root={password}"]
 
     ok, rows, outputs = True, [], []
     with open(a.log, "wb") as log:
@@ -88,17 +96,21 @@ def main():
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         con = Console(proc, log)
         try:
-            if not con.wait_for(rb"login: ", a.timeout):
+            m = con.wait_for(rb"login: ", a.timeout)
+            if not m:
                 if proc.poll() is not None:
                     raise RuntimeError(f"QEMU exited with code {proc.returncode} after "
                                        f"{time.monotonic() - t0:.1f} s, before the login prompt")
                 raise RuntimeError(f"no login prompt within {a.timeout} s")
             rows.append(("QEMU start to login prompt", f"{time.monotonic() - t0:.1f} s"))
-            start = len(con.buf)
-            con.type("root\r")
-            if con.wait_for(rb"Password: ", 10, start):
-                start = len(con.buf)
-                con.type(password + "\r")
+            # From the end of the prompt, not the end of the buffer: with autologin the
+            # shell prompt can already be there.
+            start = m.end()
+            if not a.autologin:
+                con.type("root\r")
+                if con.wait_for(rb"Password: ", 10, start):
+                    start = len(con.buf)
+                    con.type(password + "\r")
             if not con.wait_for(rb"# ", 60, start):
                 raise RuntimeError("no root shell after logging in on the console")
             for i, c in enumerate(a.command):
@@ -127,6 +139,9 @@ def main():
         print(f"vm-boot: {k}: {v}")
     for c, rc, out in outputs:
         print(f"vm-boot: [{rc}] {c}\n{out}")
+    if not ok:
+        tail = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]|\r", b"", con.buf).decode(errors="replace").splitlines()[-40:]
+        print("vm-boot: last lines of the serial console:\n" + "\n".join(tail))
     print(f"vm-boot: {'passed' if ok else 'FAILED'}")
     return 0 if ok else 1
 
