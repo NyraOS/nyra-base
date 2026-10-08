@@ -1,0 +1,156 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Builds nyra-base (desktop: Debian unstable, x86_64):
+#   bootc from source (on Debian testing) -> mkosi root filesystem from the pinned
+#   snapshot -> bootc layer (Containerfile) -> `bootc container lint --fatal-warnings`.
+# Artifacts: the image as an oci-archive and the package list (SBOM). Nothing is
+# pushed to a registry; signing and publishing come later.
+name: image
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  BOOTC_REF: v1.16.13
+  BOOTC_COMMIT: fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60
+  WORK: /mnt/work
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the snapshot date from mkosi.conf
+        run: |
+          snapshot="$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)"
+          [[ "$snapshot" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]
+          m=("${BASH_REMATCH[@]}")
+          echo "SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(date -u -d "${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z" +%s)" >> "$GITHUB_ENV"
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+          df -h / /mnt
+
+      - name: Build the CI tools image
+        run: sudo podman build -q --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
+
+      # The compiled, stripped bootc is cached (this is the slow part, ~15 min); it is
+      # saved right after the build so a later failing step does not throw it away.
+      - name: Restore the bootc build
+        id: bootc-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/bootc.tar
+          key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', '.github/workflows/image.yml') }}
+
+      - name: Build bootc from source
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/cache
+          sudo podman run --rm -v ~/cache:/cache -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" \
+            -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+            localhost/nyra-tools bash -euxo pipefail -c '
+              git clone -q --depth 1 --branch "$BOOTC_REF" https://github.com/bootc-dev/bootc.git /src
+              test "$(git -C /src rev-parse HEAD)" = "$BOOTC_COMMIT"
+              cd /src
+              cargo fetch --locked
+              CARGO_NET_OFFLINE=true make bin install DESTDIR=/out
+              strip --strip-unneeded /out/usr/bin/bootc /out/usr/bin/system-reinstall-bootc /out/usr/lib/bootc/initramfs-setup
+              install -D -m 0644 Cargo.lock /out/usr/share/doc/bootc/Cargo.lock
+              tar -C /out -cf /cache/bootc.tar .'
+          sudo chown -R "$(id -u):$(id -g)" ~/cache
+
+      - name: Save the bootc build
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/bootc.tar
+          key: ${{ steps.bootc-cache.outputs.cache-primary-key }}
+
+      - name: Restore the mkosi package downloads
+        id: mkosi-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/mkosi-packages
+          key: mkosi-${{ env.SNAPSHOT }}-${{ hashFiles('mkosi/mkosi.conf') }}
+          restore-keys: mkosi-${{ env.SNAPSHOT }}-
+
+      - name: Build the root filesystem with mkosi
+        run: |
+          sudo mkdir -p "$WORK/bootc" "$WORK/out" "$WORK/tmp"
+          sudo tar -C "$WORK/bootc" -xf ~/cache/bootc.tar
+          mkdir -p ~/cache/mkosi-packages
+          sudo podman run --rm --privileged -v "$PWD/mkosi:/src" -v "$WORK:/work" -v ~/cache/mkosi-packages:/packages \
+            localhost/nyra-tools mkosi -C /src \
+              --output-directory=/work/out --workspace-directory=/work/tmp --package-cache-dir=/packages \
+              --extra-tree=/work/bootc:/ --source-date-epoch="$SOURCE_DATE_EPOCH" --force build
+          sudo chown -R "$(id -u):$(id -g)" ~/cache/mkosi-packages
+          ls -l "$WORK/out"
+
+      - name: Save the mkosi package downloads
+        if: steps.mkosi-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/mkosi-packages
+          key: ${{ steps.mkosi-cache.outputs.cache-primary-key }}
+
+      - name: Add the bootc layer and lint
+        run: |
+          id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
+          sudo podman tag "$id" localhost/nyra-base-rootfs:latest
+          sudo podman build --timestamp "$SOURCE_DATE_EPOCH" \
+            --label org.opencontainers.image.version="$SNAPSHOT" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t localhost/nyra-base:ci -f Containerfile . 2>&1 | tee "$WORK/build.log"
+
+      - name: Export the image and the SBOM
+        run: |
+          mkdir -p dist
+          sudo podman save --format oci-archive -o dist/nyra-base.oci.tar localhost/nyra-base:ci
+          cp "$WORK/out/nyra-base-rootfs.manifest" dist/nyra-base.manifest.json
+          cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
+          sudo chown -R "$(id -u):$(id -g)" dist
+          m=dist/nyra-base.manifest.json
+          {
+            echo "## nyra-base (desktop, x86_64)"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Debian snapshot | \`$SNAPSHOT\` (unstable) |"
+            echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`) |"
+            echo "| Kernel | linux-image-amd64 $(jq -r '.packages[] | select(.name == "linux-image-amd64") | .version' "$m") |"
+            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc |"
+            echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), $(du -h dist/nyra-base.oci.tar | cut -f1) oci-archive |"
+            echo
+            echo "\`bootc container lint --fatal-warnings\`"
+            echo '```'
+            sed -n '/bootc container lint/,$p' "$WORK/build.log" | grep -v '^COMMIT\|^-->\|^STEP\|^Successfully\|^[0-9a-f]\{64\}$' | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-sbom
+          path: |
+            dist/nyra-base.manifest.json
+            dist/bootc-*.Cargo.lock
+          retention-days: 90
+
+      - name: Upload the image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-oci-archive
+          path: dist/nyra-base.oci.tar
+          retention-days: 14

@@ -10,9 +10,19 @@ This repository holds only the base: the image recipe, the boot chain and the te
 
 ## Status
 
-Early work. The approach was validated in a VM: build, install, differential updates, automatic rollback after failed boots, signature enforcement, immutability, disk encryption, KDE Plasma. Results and lessons: [`docs/LOG.md`](docs/LOG.md) (added as the recipe moves here).
+Early work. The approach was validated in a VM: build, install, differential updates, automatic rollback after failed boots, signature enforcement, immutability, disk encryption, KDE Plasma. Lessons learned: [`docs/LESSONS.md`](docs/LESSONS.md).
 
 We are probably among the first to run bootc seriously on Debian. Findings go back upstream (bootc issue [#865](https://github.com/bootc-dev/bootc/issues/865)).
+
+## Building
+
+CI (`.github/workflows/image.yml`) builds the desktop image on every pull request:
+
+1. bootc, from a pinned release tag, compiled on Debian testing (`ci/tools.Containerfile`).
+2. The root filesystem, by mkosi from the Debian snapshot set in [`mkosi/mkosi.conf`](mkosi/mkosi.conf) (`Snapshot=`, the only place where the date lives).
+3. The bootc layer ([`Containerfile`](Containerfile)): initramfs, root filesystem layout, `/usr` drop-ins, then `bootc container lint --fatal-warnings`.
+
+The image (oci-archive) and its SBOM are workflow artifacts: the Debian package list (mkosi JSON manifest, exact versions) and bootc's `Cargo.lock` (the Rust crates compiled into bootc; also shipped in the image as `/usr/share/doc/bootc/Cargo.lock`). Nothing is pushed to a registry yet.
 
 ## Contributing
 

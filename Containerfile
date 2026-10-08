@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nyra-base: the bootc layer on top of the mkosi output (mkosi/mkosi.conf).
+# The initramfs and root filesystem steps follow bootcrew/mono (Apache-2.0,
+# https://github.com/bootcrew/mono).
+ARG ROOTFS=localhost/nyra-base-rootfs:latest
+FROM ${ROOTFS}
+
+# bootc expects the kernel next to its modules.
+RUN kver="$(ls /usr/lib/modules)" && [ "$(echo "$kver" | wc -l)" = 1 ] && \
+    { [ -e "/usr/lib/modules/$kver/vmlinuz" ] || cp "/boot/vmlinuz-$kver" "/usr/lib/modules/$kver/vmlinuz"; }
+
+# Configuration only through /usr: on installed systems /etc is kept across updates.
+# (systemd-networkd and systemd-resolved are already enabled by the presets mkosi applies.)
+# - no automatic update + reboot (bootc-fetch-apply-updates timer and service), no XFS healer on an ext4 root
+# - wired network with DHCP; resolved without LLMNR and mDNS (no listening ports on the LAN)
+RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; do \
+      mkdir -p "/usr/lib/systemd/system/$u.d" && \
+      printf '# Nyra: updates are applied by nyra-updated, never with an automatic reboot\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-bootc-auto-reboot\n' \
+        > "/usr/lib/systemd/system/$u.d/10-nyra.conf"; done && \
+    mkdir -p /usr/lib/systemd/system/xfs_healer@.service.d /usr/lib/systemd/resolved.conf.d \
+      /usr/lib/systemd/network /usr/lib/dracut/dracut.conf.d && \
+    printf '# Nyra: the root filesystem is not XFS\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-xfs-healer\n' \
+      > /usr/lib/systemd/system/xfs_healer@.service.d/10-nyra.conf && \
+    printf '# Nyra: no name resolution services listening on the network\n[Resolve]\nLLMNR=no\nMulticastDNS=no\n' \
+      > /usr/lib/systemd/resolved.conf.d/10-nyra.conf && \
+    printf 'L! /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n' > /usr/lib/tmpfiles.d/resolv-conf.conf && \
+    printf '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n' > /usr/lib/systemd/network/80-nyra-wired.network && \
+    systemctl is-enabled systemd-networkd.service && systemctl is-enabled systemd-resolved.service
+
+# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
+RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
+    printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
+      > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss "\n' \
+      > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
+    kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver"
+
+# bootc root filesystem layout: state lives in /var, /usr is read-only, composefs on.
+RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt /var && \
+    mkdir -p /sysroot /boot /usr/lib/ostree /var && \
+    ln -sT sysroot/ostree /ostree && ln -sT var/roothome /root && ln -sT var/srv /srv && \
+    ln -sT var/opt /opt && ln -sT var/mnt /mnt && ln -sT var/home /home && ln -sT ../var/usrlocal /usr/local && \
+    printf 'd /var/%s 0755 root root -\n' opt home srv mnt usrlocal > /usr/lib/tmpfiles.d/bootc-base-dirs.conf && \
+    printf 'd /var/roothome 0700 root root -\nd /run/media 0755 root root -\n' >> /usr/lib/tmpfiles.d/bootc-base-dirs.conf && \
+    printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' > /usr/lib/ostree/prepare-root.conf && \
+    sed -i 's|^HOME=.*|HOME=/var/home|' /etc/default/useradd
+
+LABEL containers.bootc=1
+RUN bootc container lint --fatal-warnings
