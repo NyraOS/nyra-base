@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Proves that the GitHub-hosted runners can run our VM tests with hardware
+# acceleration: enable /dev/kvm for the runner user, check it, then boot a small
+# x86_64 Debian VM headless with QEMU + KVM (UEFI) and report the boot time.
+name: kvm
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kvm-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  kvm-boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Official Debian 13 "nocloud" image (root login on the console, no cloud-init).
+      # Pinned build; the SHA512 is checked against this value and against the published SHA512SUMS.
+      DEBIAN_CLOUD_BUILD: 20261001-2618
+      DEBIAN_CLOUD_SHA512: 456f244f66bdfad45be8c1378630effac0ea2a67e826c99c280edb8a40b747b73aa67057fa39130aacd53df82a662683e06238667fd1f15bbda581c02383eb46
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Check /dev/kvm
+        run: test -r /dev/kvm && test -w /dev/kvm && echo "/dev/kvm is usable by $(id -un)"
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
+          qemu-system-x86_64 --version
+
+      - name: Cache the Debian cloud image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/vm-images
+          key: debian-13-nocloud-amd64-${{ env.DEBIAN_CLOUD_BUILD }}
+
+      - name: Download and verify the Debian cloud image
+        run: |
+          img="debian-13-nocloud-amd64-${DEBIAN_CLOUD_BUILD}.qcow2"
+          base="https://cloud.debian.org/images/cloud/trixie/${DEBIAN_CLOUD_BUILD}"
+          mkdir -p ~/vm-images
+          [ -f ~/vm-images/"$img" ] || curl -fsSL --retry 3 -o ~/vm-images/"$img" "$base/$img"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/SHA512SUMS" "$base/SHA512SUMS"
+          published="$(awk -v f="$img" '$2 == f { print $1 }' "$RUNNER_TEMP/SHA512SUMS")"
+          if [ "$published" != "$DEBIAN_CLOUD_SHA512" ]; then
+            echo "::error::published SHA512SUMS (${published:-missing}) does not match the pinned hash"; exit 1
+          fi
+          echo "$DEBIAN_CLOUD_SHA512  $HOME/vm-images/$img" | sha512sum -c -
+          echo "VM_DISK=$HOME/vm-images/$img" >> "$GITHUB_ENV"
+
+      - name: Boot the VM with KVM
+        run: |
+          {
+            echo "## KVM on the GitHub runner"
+            echo
+            echo "| Runner | |"
+            echo "|---|---|"
+            echo "| Image | ${ImageOS:-?} ${ImageVersion:-?} |"
+            echo "| CPU | $(nproc) x $(sed -n 's/^model name\s*: //p' /proc/cpuinfo | head -1) |"
+            echo "| Kernel | $(uname -r) |"
+            echo "| QEMU | $(qemu-system-x86_64 --version | head -1) |"
+            echo "| Guest | Debian 13 nocloud ${DEBIAN_CLOUD_BUILD}, UEFI (OVMF), 2 vCPU, 2 GiB |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/vm/vm-boot.py \
+            --disk "$VM_DISK" --timeout 180 \
+            --command 'test "$(systemd-detect-virt)" = kvm && echo "virtualization: kvm"' \
+            --command 'systemctl is-system-running --wait && systemd-analyze' \
+            --command 'uname -r' \
+            --log "$RUNNER_TEMP/serial.log" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --title "Debian 13 boot with KVM"
+
+      - name: Upload the serial log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kvm-serial-log
+          path: ${{ runner.temp }}/serial.log
+          if-no-files-found: ignore
+          retention-days: 14
