@@ -27,13 +27,21 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
     printf '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n' > /usr/lib/systemd/network/80-nyra-wired.network && \
     systemctl is-enabled systemd-networkd.service && systemctl is-enabled systemd-resolved.service
 
+# Our files in /usr: the signature policy (docs/SIGNING.md) and the boot settings (docs/BOOT.md).
+COPY files/usr/ /usr/
+
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
 # signature; the policy and the Sigstore trust roots live in /usr. containers/image only reads
 # /etc/containers, so /etc gets symlinks and nothing else: the content still updates with the image.
-COPY files/usr/lib/nyra/ /usr/lib/nyra/
 RUN mkdir -p /etc/containers/registries.d && \
     ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && \
     ln -sfn /usr/lib/nyra/containers/registries.d/nyra.yaml /etc/containers/registries.d/nyra.yaml
+
+# Boot (docs/BOOT.md), on the ESP, where bootc does neither: loader.conf from /usr (no command
+# line editor at the boot menu) and three boot tries for every newly staged version.
+RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/systemd/system/multi-user.target.wants && \
+    ln -s ../nyra-boot-loader-conf.service ../nyra-boot-counter.service . && \
+    test -f nyra-boot-loader-conf.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \

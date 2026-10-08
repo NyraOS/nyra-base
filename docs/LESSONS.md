@@ -53,6 +53,36 @@ Each line is something that broke or surprised us once.
 - The bootc image has an empty `/var` (tmpfiles fills it at boot): running the image's own tools
   in a container (skopeo unpacking an oci-archive) needs `--tmpfs /var/tmp`.
 
+## Boot chain (docs/BOOT.md)
+- Debian ships the signed boot binaries as packages: `shim-signed` (signed by both the Microsoft UEFI
+  CA 2011 and 2023; depends on `systemd-boot` as an alternative to GRUB) and
+  `systemd-boot-efi-amd64-signed`. `bootctl install` picks `systemd-boot*.efi.signed` over the
+  unsigned file by itself.
+- bootc's systemd-boot install does not place shim. shim on the removable-media path
+  (`\EFI\BOOT\BOOTX64.EFI`) starts `grubx64.efi` from its own directory; without `fbx64.efi` next to
+  it, it does not run the fallback that creates firmware entries.
+- systemd-boot loads images through shim's verification, so a key in the MOK list is enough for a
+  UKI; firmware `db` is not needed. A refused UKI shows `Error loading EFI binary …: Security
+  violation`, then shim starts MokManager (10 s countdown) before the firmware moves on.
+- For tests, a MOK can be written straight into the OVMF variables (`virt-fw-vars --add-mok`), no
+  MokManager interaction. The Secure Boot OVMF needs `-machine smm=on` and a secure pflash.
+- With Secure Boot on and a `.cmdline` in the UKI, systemd-stub ignores the command line the boot
+  loader passes (entry `options`, the menu editor).
+- With Type #1 entries and Secure Boot on, shim accepts Debian's signed kernel, but the initramfs and
+  the command line are not verified at all.
+- systemd-boot reads its settings only from the ESP (`loader/loader.conf`), the editor is on by
+  default, and `bootctl install` writes the file (only if it is missing) without `editor no`.
+- bootc (composefs) writes a staged version's entries to `loader/entries.staged` when it stages it and
+  swaps the directory in at shutdown. Adding the boot counter there, before the swap, makes it atomic
+  with the entry. bootc reads entries by content and sort key, so the `+N-M` suffix does not confuse it.
+- The ESP at `/boot` is an automount (systemd-gpt-auto-generator) that unmounts after two idle
+  minutes, and an automount cannot be triggered once the shutdown transaction is queued. Anything that
+  writes the ESP at shutdown mounts the partition itself (`LoaderDevicePartUUID`), as bootc does.
+- `systemctl is-enabled` reports `disabled` for units enabled only through `/usr/lib/systemd/system/*.wants/`
+  links, although systemd starts them: do not use it to check vendor enablement.
+- Debian's kernel packages now put `vmlinuz` in `/usr/lib/modules/<kver>/`; the signed image is in
+  `linux-binary-<kver>`, `linux-image-<kver>` is only a metapackage.
+
 ## Testing in CI
 - The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`
   takes ~15 s, and the installed system reaches the login prompt 12–16 s after QEMU starts
@@ -76,3 +106,6 @@ Each line is something that broke or surprised us once.
   and save its cache before pushing again.
 - `bootc status --format json` is canonical JSON (one line, sorted keys), and `--booted` drops the staged
   and rollback entries. The test needs exactly one `imageDigest` in that output.
+- Boot tests that follow one system across reboots write to the disk (`vm-boot.py --persist`) and shut
+  down cleanly (`--poweroff`), so `bootc-finalize-staged` runs. The VM reaches a registry on the runner
+  as `10.0.2.2` (QEMU user networking), declared `insecure` in the guest's `/etc` on the test disk.

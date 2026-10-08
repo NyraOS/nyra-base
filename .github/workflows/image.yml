@@ -6,7 +6,8 @@
 # pushed to a public registry; publishing comes later (NyraOS#25).
 # Release builds (push or manual run on main) use no cached content, and the sign job signs
 # them keylessly (docs/SIGNING.md).
-# Then install-boot installs that oci-archive to a disk image and boots it (KVM).
+# Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
+# boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md).
 name: image
 on:
   push:
@@ -171,6 +172,10 @@ jobs:
   # vm-boot.py --autologin logs in on the serial console through a systemd credential.
   # The digest check reads only the booted entry (--booted drops staged and rollback)
   # and needs exactly one imageDigest there, equal to the loaded image's.
+  # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
+  # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> UKI signed with a throwaway key
+  # enrolled as MOK; unsigned and wrongly signed UKIs refused) and tools/vm/boot-counting.sh (an
+  # update that never gets healthy falls back after 3 tries, a healthy one is blessed).
   # Security: this job runs images built from pull requests with --privileged and
   # /dev mounted, so it must stay on ephemeral GitHub-hosted runners; never run it on
   # self-hosted runners for pull_request events.
@@ -195,7 +200,8 @@ jobs:
       - name: Install QEMU and OVMF
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+            python3-virt-firmware systemd-ukify sbsigntool
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -212,6 +218,7 @@ jobs:
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
 
       - name: Install to a disk image with bootc
+        id: install
         run: |
           truncate -s 12G "$WORK/disk.raw"
           start=$SECONDS
@@ -249,12 +256,22 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
 
-      - name: Upload the serial log
+      - name: Secure Boot chain (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: tools/vm/secure-boot.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Boot counting across updates (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          tools/vm/boot-counting.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
+            "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the serial logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-boot-serial-log
-          path: ${{ runner.temp }}/serial.log
+          path: ${{ runner.temp }}/serial*.log
           if-no-files-found: ignore
           retention-days: 14
 

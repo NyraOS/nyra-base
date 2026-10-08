@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=Nyra: boot loader settings on the ESP from /usr
+Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/BOOT.md
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/esp-sync loader-conf
+
+[Install]
+WantedBy=multi-user.target

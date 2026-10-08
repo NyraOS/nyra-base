@@ -1,0 +1,53 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: what bootc does not do on the ESP, see docs/BOOT.md.
+#   esp-sync loader-conf   at boot: /boot/loader/loader.conf = /usr/lib/nyra/boot/loader.conf
+#   esp-sync boot-counter  at shutdown, before bootc-finalize-staged moves the staged entries in:
+#                          the new entry gets three tries (systemd boot counting, "+3")
+set -eu
+
+loader_conf() {
+	src=/usr/lib/nyra/boot/loader.conf
+	dst=/boot/loader/loader.conf
+	cmp -s "$src" "$dst" && return 0
+	cp "$src" "$dst.nyra-new"
+	sync
+	mv -f "$dst.nyra-new" "$dst"
+	sync
+	echo "esp-sync: $dst updated from $src"
+}
+
+boot_counter() {
+	# /boot is an automount that expires when idle, and it cannot be mounted again during
+	# shutdown: mount the ESP privately, as bootc does, by the partition systemd-boot reported.
+	uuid="$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f |
+		tr -d '\000' | tr 'A-F' 'a-f')"
+	esp="$(mktemp -d /run/nyra-esp.XXXXXX)"
+	mount -t vfat -o umask=0077 "/dev/disk/by-partuuid/$uuid" "$esp"
+	trap 'umount "$esp" && rmdir "$esp"' EXIT
+	staged="$esp/loader/entries.staged"
+	[ -d "$staged" ] || return 0
+	# The running system's entry is the one with our composefs digest (bootc renames the files).
+	booted="$(sed -n 's/.*composefs=?\{0,1\}\([0-9a-f]\{1,\}\).*/\1/p' /proc/cmdline)"
+	if [ -z "$booted" ]; then
+		echo "esp-sync: no composefs digest on the kernel command line" >&2
+		return 1
+	fi
+	for f in "$staged"/*.conf; do
+		[ -e "$f" ] || continue
+		case "${f##*/}" in *+*) continue ;; esac
+		grep -q "composefs=?\{0,1\}$booted" "$f" && continue
+		mv "$f" "${f%.conf}+3.conf"
+		echo "esp-sync: boot counting on for ${f##*/} (3 tries)"
+	done
+	sync
+}
+
+case "${1:-}" in
+loader-conf) loader_conf ;;
+boot-counter) boot_counter ;;
+*)
+	echo "usage: esp-sync loader-conf|boot-counter" >&2
+	exit 2
+	;;
+esac
