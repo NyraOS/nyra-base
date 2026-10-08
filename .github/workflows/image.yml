@@ -47,28 +47,22 @@ jobs:
 
       # The compiled, stripped bootc is cached (this is the slow part, ~15 min); it is
       # saved right after the build so a later failing step does not throw it away.
+      # The key covers only what the build depends on: the pinned commit, the snapshot
+      # (tools image packages, SOURCE_DATE_EPOCH), the tools image and ci/build-bootc.sh.
       - name: Restore the bootc build
         id: bootc-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/cache/bootc.tar
-          key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', '.github/workflows/image.yml') }}
+          key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
 
       - name: Build bootc from source
         if: steps.bootc-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/cache
-          sudo podman run --rm -v ~/cache:/cache -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" \
-            -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-            localhost/nyra-tools bash -euxo pipefail -c '
-              git clone -q --depth 1 --branch "$BOOTC_REF" https://github.com/bootc-dev/bootc.git /src
-              test "$(git -C /src rev-parse HEAD)" = "$BOOTC_COMMIT"
-              cd /src
-              cargo fetch --locked
-              CARGO_NET_OFFLINE=true make bin install DESTDIR=/out
-              strip --strip-unneeded /out/usr/bin/bootc /out/usr/bin/system-reinstall-bootc /out/usr/lib/bootc/initramfs-setup
-              install -D -m 0644 Cargo.lock /out/usr/share/doc/bootc/Cargo.lock
-              tar -C /out -cf /cache/bootc.tar .'
+          sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
+            -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+            localhost/nyra-tools bash /ci/build-bootc.sh
           sudo chown -R "$(id -u):$(id -g)" ~/cache
 
       - name: Save the bootc build
@@ -161,6 +155,11 @@ jobs:
   # then boots it with QEMU + KVM + OVMF. Test-only access, nothing changed in the
   # image: console=ttyS0 is an install-time kernel argument on this test disk, and
   # vm-boot.py --autologin logs in on the serial console through a systemd credential.
+  # The digest check reads only the booted entry (--booted drops staged and rollback)
+  # and needs exactly one imageDigest there, equal to the loaded image's.
+  # Security: this job runs images built from pull requests with --privileged and
+  # /dev mounted, so it must stay on ephemeral GitHub-hosted runners; never run it on
+  # self-hosted runners for pull_request events.
   install-boot:
     needs: build
     runs-on: ubuntu-24.04
@@ -229,7 +228,7 @@ jobs:
             --disk "$WORK/disk.qcow2" --timeout 240 \
             --command 'test "$(systemd-detect-virt)" = kvm && echo "virtualization: kvm"' \
             --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; systemd-analyze; test "$s" = running' \
-            --command "bootc status && bootc status --format json | grep -E '\"imageDigest\": ?\"$IMAGE_DIGEST\"'" \
+            --command 'bootc status && d="$(bootc status --booted --format json | grep -o "\"imageDigest\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted imageDigest: $d" && test "$d" = '"$IMAGE_DIGEST" \
             --command 'findmnt -T /usr; findmnt -T /usr -no OPTIONS | tr , "\n" | grep -qx ro && touch /usr/.nyra-rw-test 2>&1 | grep "Read-only file system"' \
             --command 'cat /proc/cmdline' \
             --log "$RUNNER_TEMP/serial.log" \

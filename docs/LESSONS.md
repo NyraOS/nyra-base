@@ -62,3 +62,10 @@ Each line is something that broke or surprised us once.
 - The install + boot job runs images built from pull requests, as root in a `--privileged` container
   and in a VM with KVM. It must stay on ephemeral GitHub-hosted runners: never run `pull_request`
   jobs on self-hosted runners.
+- The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
+  editing the test jobs does not rebuild bootc (~15 min). Anything that changes the bootc build output
+  belongs in that script, or the cache keeps serving the old build.
+- The workflows cancel the previous run of the same branch on a new push: let a cold bootc build finish
+  and save its cache before pushing again.
+- `bootc status --format json` is canonical JSON (one line, sorted keys), and `--booted` drops the staged
+  and rollback entries. The test needs exactly one `imageDigest` in that output.
