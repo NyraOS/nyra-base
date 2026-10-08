@@ -1,0 +1,13 @@
+# Updates for the GitHub Actions pinned by SHA in .github/workflows (NyraOS DECIZII F151).
+# Minor and patch updates come grouped in one PR. Container images in run: lines and
+# Containerfiles are pinned by digest and updated by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
