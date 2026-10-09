@@ -43,6 +43,16 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
     ln -s ../nyra-boot-loader-conf.service ../nyra-boot-counter.service . && \
     test -f nyra-boot-loader-conf.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
 
+# Units that Debian packages enable but that have no purpose in the base (docs/DEFAULTS.md, the
+# reasons are there), blocked from /usr; a layer that needs one creates /usr/lib/nyra/allow-<unit>.
+RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
+      podman.socket podman.service podman-auto-update.timer podman-auto-update.service \
+      netavark-dhcp-proxy.socket netavark-dhcp-proxy.service \
+      e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service; do \
+      test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \
+      printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
+        > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
+
 # Secure defaults (docs/DEFAULTS.md): AppArmor profiles and the inbound firewall at every boot,
 # enabled from /usr; systemd-networkd does not start without the firewall.
 RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \

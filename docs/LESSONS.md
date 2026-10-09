@@ -107,6 +107,31 @@ Each line is something that broke or surprised us once.
 - Debian's kernel packages now put `vmlinuz` in `/usr/lib/modules/<kver>/`; the signed image is in
   `linux-binary-<kver>`, `linux-image-<kver>` is only a metapackage.
 
+## Secure defaults (docs/DEFAULTS.md)
+- Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
+  podman's root API (`podman.socket` and `podman.service` started at boot), `podman-auto-update.timer`,
+  netavark's DHCP proxy, `dpkg-db-backup.timer` (no dpkg database to back up), e2scrub (no LVM) and
+  `nftables.service`. The boot log on the serial console (`Started …`, `Listening on …`, `Finished …`)
+  lists them; a `ConditionPathExists=` drop-in in `/usr` blocks them.
+- Debian's `nftables.service` loads `/etc/nftables.conf`, which starts with `flush ruleset`. Next to
+  another ruleset loaded before `network-pre.target`, the order between the two is a race: block it
+  and order our unit after it.
+- systemd-networkd with DHCP leaves no socket in `ss -tuln` once it has a lease: in the base only
+  resolved's stub listens.
+- `blacklist` in modprobe.d also stops the load that `mount` asks for through the `fs-<type>` alias
+  (the kernel logs `request_module fs-f2fs succeeded, but still no fs?`); `modprobe <name>` still works.
+- A guest command in `vm-boot.py` passes on the status of its last command, and the guest shell has
+  no `set -e` or `pipefail`: a `for` loop reports only its last iteration, and `x="$(cmd | awk …)"`
+  hides a failing `cmd`. Join checks with `&&`, set a flag in loops, require non-empty input
+  (`tools/vm/security-defaults.sh --self-test` covers this with stubs).
+- Unblocking a socket or timer without its service does not work: the trigger keeps hitting the
+  blocked service until systemd's trigger limit fails the socket.
+- A firewall test inside the VM that connects to the machine's own address proves nothing: that
+  traffic goes through loopback. A network namespace joined by a veth pair is outside the host's
+  addresses, so its connection meets the input chain like traffic from the LAN.
+- Under Secure Boot with a UKI, the kernel command line is the one inside the UKI: arguments from
+  `/usr/lib/bootc/kargs.d` reach Type #1 entries (bootc install, updates), not a hand-built UKI.
+
 ## Testing in CI
 - The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`
   takes ~15 s, and the installed system reaches the login prompt 12–16 s after QEMU starts

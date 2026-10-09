@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Inbound default deny (docs/DEFAULTS.md), in place before any network interface is configured.
 # systemd-networkd requires it (drop-in in the Containerfile): no firewall, no network.
+# After nftables.service: Debian's loader starts /etc/nftables.conf with "flush ruleset". It is
+# blocked in the image; if a layer turns it back on, it must not run after us.
 [Unit]
 Description=Nyra inbound firewall (default deny)
 DefaultDependencies=no
 Wants=network-pre.target
+After=nftables.service
 Before=network-pre.target shutdown.target
 Conflicts=shutdown.target
 
