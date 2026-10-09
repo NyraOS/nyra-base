@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The root filesystem is found by its GPT partition type (systemd-gpt-auto-generator) and mounted
+# read-write; composefs keeps /usr read-only. Part of the command line sealed in the UKI.
+kargs = ["rw"]

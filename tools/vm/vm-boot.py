@@ -12,7 +12,8 @@ start to the login prompt and the command outputs are appended as Markdown to
 
 --secure-boot boots the Secure Boot firmware with the given variable store.
 --refused PATTERN expects the opposite of a boot: PATTERN shows up on the
-console and no kernel starts (the kernel prints "Linux version" on ttyS0).
+console and no system starts (no "Linux version" from a kernel with console=ttyS0,
+no login prompt from the getty that a credential puts on ttyS0).
 --persist writes to the disk (otherwise QEMU snapshot mode), --poweroff ends
 with a clean shutdown, so several runs can follow one system across reboots.
 
@@ -70,13 +71,14 @@ class Console:
 
 
 def refused(con, pattern, timeout):
-    """PATTERN shows up on the console, and no kernel has started 30 s later."""
+    """PATTERN shows up on the console, and no system has started 60 s later: no kernel message
+    (only with console=ttyS0) and no login prompt (the getty on ttyS0 comes from a credential)."""
     m = con.wait_for(pattern.encode(), timeout)
     if not m:
         raise RuntimeError(f"no {pattern!r} on the console within {timeout} s")
-    if con.wait_for(rb"Linux version", 30):
-        raise RuntimeError("a kernel started")
-    return f"`{m.group().decode(errors='replace')}`, no kernel started within 30 s"
+    if con.wait_for(rb"Linux version|login: ", 60, m.end()):
+        raise RuntimeError("a system started")
+    return f"`{m.group().decode(errors='replace')}`, no system started within 60 s"
 
 
 def login_and_run(con, a, password, t0, rows, outputs):
@@ -141,7 +143,9 @@ def main():
            "-drive", f"if=pflash,format=raw,file={tmp}/vars.fd",
            "-drive", disk if a.persist else disk + ",snapshot=on",
            "-nic", "user,model=virtio-net-pci", "-device", "virtio-rng-pci",
-           "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC"]
+           "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
+           # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
+           "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
     if a.autologin:
         cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
