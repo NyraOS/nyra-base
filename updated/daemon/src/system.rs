@@ -164,6 +164,14 @@ pub fn on_trial(bless_status: &str) -> bool {
 /// and removes the staged boot entries before `bootc-finalize-staged` would swap them in.
 pub const DISCARDED: &str = "/run/nyra-updated/discarded";
 
+/// Removes the discarded version's staged boot entries from the ESP at once; `esp-sync` removes them
+/// again at shutdown, so a failure here still leaves the version unfinalized.
+pub fn esp_sync_discard() -> Command {
+    let mut cmd = Command::new("/usr/lib/nyra/boot/esp-sync");
+    cmd.arg("discard");
+    cmd
+}
+
 pub struct Real;
 
 impl System for Real {
@@ -228,7 +236,8 @@ impl System for Real {
         let path = Path::new(DISCARDED);
         let dir = path.parent().expect("a directory");
         std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
-        std::fs::write(path, digest).map_err(|e| Error::Io(format!("{DISCARDED}: {e}")))
+        std::fs::write(path, digest).map_err(|e| Error::Io(format!("{DISCARDED}: {e}")))?;
+        run_ok(&mut esp_sync_discard(), SHORT).map(drop)
     }
 
     fn discarded(&mut self) -> Result<Option<String>, Error> {

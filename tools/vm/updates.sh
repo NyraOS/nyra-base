@@ -287,7 +287,7 @@ vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command 'journalctl -b -u systemd-bless-boot -o cat --no-pager' \
   --command "$lib; outcome s1 UpToDate" \
   --command "$lib; outcome s2 Staged && expect staged $d4" \
-  --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
+  --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
   --command 'bootc status --format json'
 
 vm "v2 again: boot order kept; v3 staged" --poweroff \
@@ -298,7 +298,7 @@ vm "v3 fails its health check three times, back on v2 by itself" --poweroff --bo
   --command "$lib; expect booted $d2 && running && entries | grep -F +0-3" \
   --command "$lib; refused s4 'this machine fell back from it' && expect staged none" \
   --command "$lib; outcome s8 Staged && expect staged $d8 && expect rollback $d3" \
-  --command "$lib; outcome s8r Discarded && test -e /run/nyra-updated/discarded && expect rollback $d3"
+  --command "$lib; outcome s8r Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect rollback $d3"
 l="$logs/serial-updates-$n.log"
 grep -a 'nyra-updated health-failed:' "$l" || true
 echo "kernel starts: $(grep -c 'Linux version' "$l"), full reboots by nyra-updated: $(grep -ac 'nyra-updated health-failed: Reboot' "$l")"

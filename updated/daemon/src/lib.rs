@@ -439,9 +439,10 @@ pub trait System {
     /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
     /// there is no rollback deployment.
     fn rollback(&mut self) -> Result<(), Error>;
-    /// The staged deployment (this digest) must never boot: it is not finalized at shutdown, and the
-    /// boot entries stay as they are (`/run/nyra-updated/discarded`, read by `esp-sync`). Until the
-    /// next reboot, anything staged is discarded with it.
+    /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
+    /// and again at shutdown, so it is not finalized and the boot entries stay as they are
+    /// (`/run/nyra-updated/discarded`, `esp-sync`). Until the next reboot, anything staged is
+    /// discarded with it. An error after the digest is recorded still leaves it unfinalized.
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error>;
     /// The digest discarded on this boot, if any.
     fn discarded(&mut self) -> Result<Option<String>, Error>;

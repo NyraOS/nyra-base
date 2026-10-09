@@ -96,8 +96,9 @@ A staged deployment that becomes unacceptable before the reboot (a digest other 
 retracted, failed, or below the version floor) is never finalized, whatever the rollback deployment
 is, and the boot order is not touched. bootc keeps the staged deployment in `/run` and only swaps
 its boot entries in at shutdown (`bootc-finalize-staged`). `nyra-updated` writes the digest to
-`/run/nyra-updated/discarded`; at shutdown, before that swap, `esp-sync` (`nyra-boot-counter.service`)
-removes the staged entries from the ESP. `bootc-finalize-staged` then has nothing to swap in (it
+`/run/nyra-updated/discarded` and removes the staged entries from the ESP at once (`esp-sync discard`);
+at shutdown, before that swap, `esp-sync` (`nyra-boot-counter.service`) removes them again, in case
+that failed or something was staged since. `bootc-finalize-staged` then has nothing to swap in (it
 reports an error), the next boot is the running version, and no entry of the discarded version is
 left for a later update. Until the reboot `nyra-updated` stages nothing else, and anything staged
 by hand is discarded with it.

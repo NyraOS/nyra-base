@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! One test (at least) per rule of the crate documentation, with a fake [`System`].
 
-use super::system::{curl, on_trial, parse_status, run};
+use super::system::{curl, esp_sync_discard, on_trial, parse_status, run, DISCARDED};
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use nyra_channel_sheet::{pae, PAYLOAD_TYPE};
@@ -1017,6 +1017,16 @@ fn the_sheet_is_fetched_without_curlrc_over_tls_1_2_or_newer() {
     assert!(args.contains(&"--tlsv1.2"));
     assert!(!args.contains(&"-L") && !args.contains(&"--location"));
     assert_eq!(args.last(), Some(&SHEET_URL));
+}
+
+#[test]
+fn a_discard_removes_the_staged_entries_at_once_through_esp_sync() {
+    // esp-sync discard acts only when nyra-updated recorded the digest; boot-counter repeats it at
+    // shutdown.
+    let cmd = esp_sync_discard();
+    assert_eq!(cmd.get_program(), "/usr/lib/nyra/boot/esp-sync");
+    assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["discard"]);
+    assert_eq!(DISCARDED, "/run/nyra-updated/discarded");
 }
 
 #[test]
