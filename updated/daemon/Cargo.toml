@@ -10,7 +10,7 @@ description = "Nyra OS system updates: the safety rules around bootc"
 
 [dependencies]
 base64 = "0.22"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 libc = "0.2"
 nyra-channel-sheet = { path = "../channel-sheet" }
 serde = { version = "1", features = ["derive"] }
