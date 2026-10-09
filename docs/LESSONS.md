@@ -123,6 +123,8 @@ Each line is something that broke or surprised us once.
   straight from the PE file (`shim.debian,1,Debian,shim,16.1,…`; systemd-boot's vendor field is
   "Debian GNU/Linux", not "Debian"). Never write an older boot loader over a newer one: the newer one
   may be there because of a revocation.
+- `systemd-bless-boot status` after a soft reboot describes the last full boot, which may have been
+  another system version: check `systemctl show -P SoftRebootsCount` before trusting it.
 - systemd mounts the ESP with `fmask=0177,dmask=0077`: only root can read it, and no file on it is
   executable.
 - `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition

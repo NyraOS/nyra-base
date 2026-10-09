@@ -192,14 +192,16 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   the booted image's by the Debian version in its SBAT section (plain text in the PE file):
   - missing, or damaged (no SBAT, another component, the same version with other bytes): written
     again;
-  - **newer on the ESP: kept.** A newer shim or systemd-boot may be there because of an SBAT or `dbx`
-    revocation; if the machine falls back to an older system version (boot counting, rollback, an
-    old entry picked in the menu), writing its older boot loader back could leave both copies
-    revoked under Secure Boot;
+  - **newer on the ESP: kept**, with a warning in the journal (priority `warning`). A newer shim or
+    systemd-boot may be there because of an SBAT or `dbx` revocation; if the machine falls back to an
+    older system version (boot counting, rollback, an old entry picked in the menu), writing its older
+    boot loader back could leave both copies revoked under Secure Boot;
   - **older on the ESP: replaced only from a blessed boot** (`systemd-bless-boot status` is `good` or
     `clean`), so a version still on trial never replaces a boot loader that works. The unit is not
     ordered after `systemd-bless-boot` (a health check ordered after `multi-user.target` would make
-    a cycle), so in practice the newer boot loader is written at the first boot after the blessing.
+    a cycle), so the newer boot loader is written in the blessed boot or, at the latest, the next
+    one. After a soft reboot (`SoftRebootsCount` above 0) the bless status is the last full boot's,
+    possibly another version's: such a boot counts as not blessed.
 
   Each write is a new file, then a rename, so a failed write leaves the old one; `EFI/nyra` is
   written before `EFI/BOOT`, so an interrupted repair or update still leaves one complete copy. When
@@ -215,7 +217,8 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   no execute bit on files); CI checks it.
 
 CI follows one system through eleven boots, with Secure Boot on and one firmware variable store kept
-across them (`vm-boot.py --keep-vars`):
+across them (`vm-boot.py --keep-vars`). The image's command line imports no credentials, so the test
+console add-on on that disk is replaced by one signed with a key enrolled as a MOK in this test only:
 
 | Boot | Done before it | Expected |
 |---|---|---|
@@ -229,8 +232,8 @@ across them (`vm-boot.py --keep-vars`):
 | 7 | space freed | the repair completes |
 | 8 | a newer systemd-boot in `\EFI\BOOT` than the image's | kept |
 | 9 | an older one there; this version on trial (counted entry, `boot-complete.target` fails) | not replaced yet, `systemd-bless-boot status` is `indeterminate` |
-| 10 | | healthy: blessed (`good`) |
-| 11 | | `clean`; the image's systemd-boot is written |
+| 10 | | healthy: blessed (`good`); the image's systemd-boot is written in this boot or, at the latest, the next one |
+| 11 | | `clean`; the boot files are the image's |
 
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
 section; the copy is never started (those boots go through `\EFI\nyra`), so its broken signature

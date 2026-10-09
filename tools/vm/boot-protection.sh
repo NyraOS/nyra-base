@@ -20,11 +20,15 @@
 #      boot loader, then a fallback to this version): kept, never replaced by the older one;
 #   9. an older one there and this version on trial (a counted entry whose boot-complete.target
 #      fails): not replaced yet;
-#  10. the same version healthy: blessed;
-#  11. the next boot: the newer boot loader from this image is written.
+#  10. the same version healthy: blessed; the newer boot loader from this image is written in this
+#      boot or, at the latest, the next one;
+#  11. the next boot: not counted any more ("clean"), the boot files are the image's.
 # "Newer" and "older" are made by changing the first digit of the Debian version in the file's
 # SBAT section; that copy is never started (the boots go through EFI/nyra), so its signature does
 # not matter.
+# The image's command line imports no systemd credentials, so the test console add-on that
+# tools/vm/test-console.sh put on the disk is replaced by one signed with a key made here and
+# enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the end).
 #   tools/vm/boot-protection.sh IMAGE DISK.qcow2 UKI_CERT WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -35,9 +39,14 @@ loop=""
 mkdir -p "$mnt" "$bp/ref"
 trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop" || true; rm -rf "$bp"' EXIT
 
-# Owner GUID: shim's. Secure Boot on, Microsoft keys, the image's UKI certificate as a MOK.
+openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI add-on test key" \
+  -keyout "$bp/local.key" -out "$bp/local.crt" 2>/dev/null
+tools/vm/test-addon.sh "$image" "$bp/console.addon.efi" systemd.import_credentials=yes "$bp/local.key" "$bp/local.crt"
+# Owner GUID: shim's. Secure Boot on, Microsoft keys, the image's UKI certificate and the local key as
+# MOKs.
 virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$bp/vars.fd" \
-  --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$uki_cert"
+  --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$uki_cert" \
+  --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$bp/local.crt"
 
 cid="$(sudo podman create -q "$image")"
 for f in /usr/lib/shim/shimx64.efi.signed /usr/lib/shim/mmx64.efi.signed \
@@ -74,6 +83,8 @@ for d in nyra BOOT; do
 done
 sudo cmp "$shim" "$mnt/EFI/nyra/shimx64.efi"
 sudo cmp "$shim" "$mnt/EFI/BOOT/BOOTX64.EFI"
+sudo test -f "$mnt/loader/addons/nyra-test-console.addon.efi"
+sudo cp "$bp/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
 sudo umount "$mnt"
 
 vm() {
@@ -175,7 +186,7 @@ vm --log "$logs/serial-boot-protection-8.log" \
   --title "Boot protection 8: a newer systemd-boot on the ESP than this image's is kept" \
   --command "$(loader '\EFI\nyra\grubx64.efi')" \
   --command "$repair" \
-  --command "journalctl -b -u nyra-boot-repair -o cat | grep 'is newer than this image' && ! cmp -s /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed $fallback_sdboot"
+  --command "journalctl -b -u nyra-boot-repair -p warning -o cat | grep 'is newer than this image' && ! cmp -s /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed $fallback_sdboot"
 check_kept() { sudo sha256sum -c "$bp/newer.sha256"; }
 with_esp check_kept
 
@@ -202,7 +213,7 @@ vm --log "$logs/serial-boot-protection-10.log" \
   --command 'ls /boot/loader/entries; b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = good'
 
 vm --log "$logs/serial-boot-protection-11.log" \
-  --title "Boot protection 11: after the blessing, the newer systemd-boot from this image is written" \
+  --title "Boot protection 11: not counted any more, the boot files are the image's" \
   --command "$(loader '\EFI\nyra\grubx64.efi')" \
   --command "$repair" \
   --command 'b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = clean' \
