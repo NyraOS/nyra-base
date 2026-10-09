@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nyra-updated (daemon/) and the channel sheet library it uses (channel-sheet/): docs/UPDATES.md.
+[workspace]
+members = ["channel-sheet", "daemon"]
+resolver = "2"

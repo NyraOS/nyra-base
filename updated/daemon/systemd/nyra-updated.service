@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Not in the image yet (NyraOS#66). Started by nyra-updated.timer; prepares an update, never
+# reboots. It does nothing on a boot whose health checks did not pass (boot-complete.target).
+[Unit]
+Description=Nyra: check for a system update and prepare it
+After=boot-complete.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated check
