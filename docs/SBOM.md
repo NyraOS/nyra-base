@@ -70,8 +70,12 @@ the point: the gate answers "is anything known now".
    ```
 
    The reason says why the image is not exposed (or what limits the damage) and what ends the
-   exception. Entries go through review like any other change (security review is required). An
-   expired entry blocks again; an entry that matches nothing any more is reported for removal.
+   exception. Entries go through review like any other change (security review is required).
+   `id` can be any of the advisory's IDs (for a crate: RUSTSEC, GHSA or CVE, through OSV aliases),
+   so one entry covers the issue however many records OSV returns for it. The same `id` and
+   `package` twice makes the file invalid, and an invalid file blocks the build (the SBOM is still
+   written and uploaded). An expired entry blocks again; an entry that no longer blocks (now medium
+   or low) or matches nothing any more (fixed, package gone) is reported for removal.
 3. **Exposed and no fix:** remove or replace the package, or patch it in the Nyra apt repository.
 
 F151 gives 48 hours for critical and 7 days for high vulnerabilities once a fix exists. A
@@ -88,5 +92,8 @@ BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.
   /tmp/sbom/nyra-base.manifest.json /tmp/sbom/bootc-*.Cargo.lock /tmp/sbom/nyra-base.cdx.json
 ```
 
-It needs network access (about 25 MB: the snapshot `Packages` index and the tracker data) and
+The offline tests (canned tracker and OSV data) run first in CI:
+`/tmp/sbom-venv/bin/python tools/sbom/test_sbom.py`.
+
+The scan needs network access (about 25 MB: the snapshot `Packages` index and the tracker data) and
 takes about 10 seconds.

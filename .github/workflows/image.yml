@@ -168,6 +168,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"

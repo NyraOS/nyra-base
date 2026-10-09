@@ -11,6 +11,8 @@ Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/
 Writes the SBOM, then prints a Markdown report and exits 1 if a vulnerability blocks the build:
 critical, high or unknown severity, not marked unimportant by Debian, and not listed in
 tools/sbom/mitigations.toml with a reason and an expiry date at most 90 days ahead.
+An entry matches by ID or any OSV alias; duplicates refuse the file; entries that no longer
+block are reported for removal. Offline tests: tools/sbom/test_sbom.py.
 """
 import datetime
 import gzip
@@ -186,7 +188,7 @@ def debian_findings(debs):
                 continue
             findings.append({"id": vid, "package": src, "version": version, "fixed": fixed,
                              "debian_high": sid["urgency"] == "high",
-                             "osv": [f"DEBIAN-{vid}"] + ([vid] if vid.startswith("CVE-") else []),
+                             "ids": {vid}, "osv": [f"DEBIAN-{vid}"] + ([vid] if vid.startswith("CVE-") else []),
                              "about": info.get("description", "")})
     return findings, unimportant
 
@@ -201,31 +203,42 @@ def crate_findings(crates):
             record = json.loads(fetch(f"{OSV}/vulns/{v['id']}"))
             info = [a.get("database_specific", {}).get("informational") for a in record["affected"]]
             findings.append({"id": v["id"], "package": c["name"], "version": c["version"], "fixed": None,
+                             "ids": {v["id"], *record.get("aliases", [])},
                              "debian_high": False, "osv": [v["id"]], "about": record.get("summary", ""),
                              "informational": next((i for i in info if i), None)})
+    # OSV aliases are not always listed both ways: findings of one crate that share an ID share all IDs.
+    for f in findings:
+        for g in findings:
+            if f["package"] == g["package"] and f["ids"] & g["ids"]:
+                f["ids"] |= g["ids"]
+                g["ids"] = f["ids"]
     return findings
 
 
 def load_mitigations(today):
     entries = tomllib.load(open(MITIGATIONS, "rb")).get("mitigation", [])
+    out = {}
     for e in entries:
         ok = all(isinstance(e.get(k), str) and e[k].strip() for k in ("id", "package", "reason"))
         if not ok or type(e.get("expires")) is not datetime.date:
             sys.exit(f"sbom.py: tools/sbom/mitigations.toml: each entry needs id, package, reason and expires (a date): {e}")
         if (e["expires"] - today).days > MAX_DAYS:
             sys.exit(f"sbom.py: tools/sbom/mitigations.toml: {e['id']} expires more than {MAX_DAYS} days ahead; review it closer to the date")
-    return {(e["id"], e["package"]): e for e in entries}
+        if (e["id"], e["package"]) in out:
+            sys.exit(f"sbom.py: tools/sbom/mitigations.toml: {e['id']} ({e['package']}) is listed twice")
+        out[e["id"], e["package"]] = e
+    return out
 
 
 def main():
     manifest_path, lock_path, sbom_path = sys.argv[1:4]
     snapshot = mkosi_setting("Snapshot")
     today = datetime.datetime.now(datetime.UTC).date()
-    mitigations = load_mitigations(today)
     manifest = json.load(open(manifest_path))
     crates = [p for p in tomllib.load(open(lock_path, "rb"))["package"] if "source" in p]
     debs = debian_sources(manifest, snapshot)
     count = write_sbom(sbom_path, snapshot, debs, crates, os.environ["BOOTC_REF"], os.environ["BOOTC_COMMIT"])
+    mitigations = load_mitigations(today)  # after the SBOM: an invalid file still blocks, but the SBOM is there
 
     findings, unimportant = debian_findings(debs)
     findings += crate_findings(crates)
@@ -236,20 +249,27 @@ def main():
                 level = "high"
             f["score"], f["level"] = score, level
 
+    def level(f):
+        return f.get("informational") or (f"{f['level']} {f['score']}" if f["score"] is not None else f["level"])
+
+    # An entry matches a finding of the same package by its ID or any OSV alias (RUSTSEC, GHSA, CVE).
     blocking, accepted, expired, other = [], [], [], []
+    needed, no_longer = set(), {}
     for f in sorted(findings, key=lambda f: (f["package"], f["id"])):
-        m = mitigations.pop((f["id"], f["package"]), None)
+        m = next((m for (i, p), m in mitigations.items() if p == f["package"] and i in f["ids"]), None)
+        key = m and (m["id"], m["package"])
         if f.get("informational") or f["level"] not in BLOCKING:
             other.append(f)
+            if m:
+                no_longer[key] = level(f)
         elif m and m["expires"] >= today:
             accepted.append((f, m))
+            needed.add(key)
         else:
             blocking.append(f)
             if m:
                 expired.append(m)
-
-    def level(f):
-        return f.get("informational") or (f"{f['level']} {f['score']}" if f["score"] is not None else f["level"])
+                needed.add(key)
 
     def fixed(f):
         return f"{f['fixed']} (bump the snapshot)" if f["fixed"] else ""
@@ -274,8 +294,11 @@ def main():
         print()
     for m in expired:
         print(f"- Mitigation for {m['id']} ({m['package']}) expired on {m['expires']}: review it again.")
-    for m in mitigations.values():
-        print(f"- Mitigation for {m['id']} ({m['package']}) matches nothing any more: remove it.")
+    for key, m in mitigations.items():
+        if key in no_longer and key not in needed:
+            print(f"- Mitigation for {m['id']} ({m['package']}) no longer blocks (now {no_longer[key]}): remove it.")
+        elif key not in needed:
+            print(f"- Mitigation for {m['id']} ({m['package']}) matches nothing any more (fixed or gone): remove it.")
     if accepted:
         print("\n### Accepted\n\n| ID | Package | Severity | Expires | Reason |\n|---|---|---|---|---|")
         for f, m in accepted:
