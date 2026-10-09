@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Health check (nyra-health-.service.d): the core services of the base are running.
+[Unit]
+Description=Nyra health check: core services are running
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+After=dbus.service systemd-journald.service systemd-logind.service systemd-udevd.service
+After=systemd-networkd.service systemd-resolved.service
+
+[Service]
+Type=oneshot
+CapabilityBoundingSet=
+ExecStart=/usr/bin/systemctl is-active --quiet dbus.service
+ExecStart=/usr/bin/systemctl is-active --quiet systemd-journald.service
+ExecStart=/usr/bin/systemctl is-active --quiet systemd-logind.service
+ExecStart=/usr/bin/systemctl is-active --quiet systemd-udevd.service
+ExecStart=/usr/bin/systemctl is-active --quiet systemd-networkd.service
+ExecStart=/usr/bin/systemctl is-active --quiet systemd-resolved.service
+
+[Install]
+RequiredBy=boot-complete.target

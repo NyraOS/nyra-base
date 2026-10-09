@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Started by any failed nyra-health-*.service: a full reboot while the version is on trial (or after
+# a soft reboot), so systemd-boot's boot counting falls back (docs/UPDATES.md, docs/BOOT.md).
+[Unit]
+Description=Nyra: a health check failed, reboot so boot counting can fall back
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated health-failed
+# It only reads the boot state (systemctl, systemd-bless-boot, EFI variables) and asks for a reboot.
+# systemd-bless-boot status must find the ESP (the /boot automount) and the entry on it: no
+# ProtectSystem=, no empty CapabilityBoundingSet= and no RestrictSUIDSGID= (openat2) here.
+NoNewPrivileges=yes
+ProtectHome=tmpfs
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX

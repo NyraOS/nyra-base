@@ -8,6 +8,15 @@
 # with SEALED=<the committed image> and the signed UKI as the build context "uki".
 ARG ROOTFS=localhost/nyra-base-rootfs:latest
 ARG SEALED=sealed
+ARG TOOLS=localhost/nyra-tools
+
+# nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
+# bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
+FROM ${TOOLS} AS updated
+COPY updated/ /src/
+RUN --mount=type=tmpfs,dst=/root cd /src && cargo build --release --locked -p nyra-updated && \
+    strip target/release/nyra-updated
+
 FROM ${ROOTFS} AS base
 
 # bootc expects the kernel next to its modules.
@@ -32,8 +41,11 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
     printf '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n' > /usr/lib/systemd/network/80-nyra-wired.network && \
     systemctl is-enabled systemd-networkd.service && systemctl is-enabled systemd-resolved.service
 
-# Our files in /usr: the signature policy (docs/SIGNING.md) and the boot settings (docs/BOOT.md).
+# Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
+# the update units and configuration (docs/UPDATES.md).
 COPY files/usr/ /usr/
+COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
+COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
 # signature; the policy and the Sigstore trust roots live in /usr. containers/image only reads
@@ -65,6 +77,18 @@ RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/syste
     test -f apparmor.service && test -f nyra-firewall.service && test -x /usr/sbin/nft && \
     printf '# Nyra: no network without the inbound firewall\n[Unit]\nRequires=nyra-firewall.service\nAfter=nyra-firewall.service\n' \
       > /usr/lib/systemd/system/systemd-networkd.service.d/10-nyra-firewall.conf
+
+# Updates (docs/UPDATES.md): the check timer, and the health checks that boot-complete.target requires,
+# with the target pulled in on every boot (not only on counted ones). The build fails if a unit does
+# not verify, or if the configuration is invalid or trusts a test key. (systemd-analyze writes to
+# /run, which must stay empty in the image.)
+RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
+    ln -s ../nyra-updated.timer timers.target.wants/ && \
+    ln -s ../boot-complete.target multi-user.target.wants/ && \
+    ln -s ../nyra-health-system.service boot-complete.target.requires/ && \
+    systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
+      nyra-updated-health-failed.service nyra-health-system.service systemd-bless-boot.service && \
+    /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \

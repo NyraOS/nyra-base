@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Started by nyra-updated.timer: one update check (docs/UPDATES.md). It stages an update and never
+# reboots; on a boot whose health checks did not pass (boot-complete.target) it does nothing.
+[Unit]
+Description=Nyra: check for a system update and prepare it
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+After=boot-complete.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated check
+# nyra-updated stops a pull after 2 h itself (bootc and its helpers); this is only a backstop.
+TimeoutStartSec=2h30min
+StateDirectory=nyra-updated
+StateDirectoryMode=0700
+UMask=0077
+# Sandboxing, as far as bootc allows: it runs as root in its own mount namespace (it remounts
+# /sysroot and mounts the ESP privately), pulls over the network and writes /sysroot and /var.
+# No RestrictSUIDSGID=: it makes openat2() fail with ENOSYS, and bootc has no fallback ("Opening
+# runtime auth file: Function not implemented").
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=tmpfs
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
