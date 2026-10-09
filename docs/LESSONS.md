@@ -113,3 +113,5 @@ Each line is something that broke or surprised us once.
 - Boot tests that follow one system across reboots write to the disk (`vm-boot.py --persist`) and shut
   down cleanly (`--poweroff`), so `bootc-finalize-staged` runs. The VM reaches a registry on the runner
   as `10.0.2.2` (QEMU user networking), declared `insecure` in the guest's `/etc` on the test disk.
+- The `shellcheck` workflow lints the shell scripts with the version preinstalled on the Ubuntu runner,
+  at `-S warning`. Run it locally before pushing: the image workflow takes long and fails much later.

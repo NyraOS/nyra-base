@@ -41,14 +41,16 @@ The `test` key is not in the firmware's `db`, so only shim (through the MOK list
 the signed UKI: systemd-boot loads images through shim's verification protocol. The keys exist only
 in the job's work directory on the ephemeral runner and are deleted at the end.
 
-Not covered yet: the real installer, MokManager enrollment on a real machine, our own kernel (F133),
-SBAT/dbx revocation scenarios (F139).
+Not covered yet: the real installer, MokManager enrollment on a real machine, a kernel built and
+signed by Nyra (today it is Debian's), and revocation: what happens when SBAT or `dbx` updates
+revoke an old shim or systemd-boot.
 
 ## What changes for the real Nyra key
 
 Nothing in the chain; only where the key lives and who signs:
 
-- **The key** is generated offline and kept on a hardware token (F151); CI and agents never see it.
+- **The key** is generated offline and kept on a hardware token, so that a compromised CI runner or
+  developer machine cannot sign a boot image; CI and automated tooling never see it.
   Only its certificate goes into the image (for example `/usr/lib/nyra/secureboot/nyra.crt`), for the
   installer.
 - **Enrollment:** the installer runs `mokutil --import` with that certificate; on the next boot the
@@ -61,13 +63,15 @@ Nothing in the chain; only where the key lives and who signs:
   installs and updates UKIs (`bootType: uki`) and writes no Type #1 entries. Signing it without
   putting the key in CI needs one of: a signing service backed by the hardware key or a KMS (`sbsign`
   through PKCS#11), or bootc's external-signing flow (CI builds the unsigned UKI, it is signed
-  offline, the signed file is injected). To decide with Security; image signing is off until `main`
-  is protected (F167), and the same rule applies here.
+  offline, the signed file is injected). Still to decide, with a security review. Image signing stays
+  off until `main` is a protected branch, because anyone who can push to `main` could otherwise get
+  their code signed (`docs/SIGNING.md`); the same rule applies here.
 - **shim on the ESP:** bootc installs only systemd-boot. The installer copies shim and MokManager
   from `/usr/lib/shim/` (as the test does), and the updater must keep shim current for SBAT and
-  `dbx` revocations (F139). `bootctl update` does not overwrite shim (it only replaces systemd-boot).
-- **Kernel modules** are signed by Debian today; our own kernel (F133) will sign them with the Nyra
-  key in the MOK list.
+  `dbx` revocations, or a revoked shim stops booting. `bootctl update` does not overwrite shim (it
+  only replaces systemd-boot).
+- **Kernel modules** are signed by Debian today; once Nyra builds its own kernel, its modules will be
+  signed with the Nyra key in the MOK list.
 
 ### Until then: the gap in today's install
 
@@ -78,7 +82,7 @@ UKIs only.
 
 ## The kernel command line is fixed
 
-The security review of #3 (credentials) found that `systemd.set_credential=` and
+The security review of the install and boot test (#3) found that `systemd.set_credential=` and
 `systemd.unit-dropin.*` work from the kernel command line, so anyone at the keyboard could add, for
 example, a root autologin from the boot menu editor. Two layers close it:
 
@@ -95,7 +99,7 @@ example, a root autologin from the boot menu editor. Two layers close it:
 
 Still open: whether to also stop importing credentials from firmware tables (SMBIOS, `fw_cfg`) in
 production (`systemd.import_credentials=no` in the sealed command line), which the tests use for
-console access. To decide with Security.
+console access; a security review decides.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

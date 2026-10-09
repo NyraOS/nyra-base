@@ -17,7 +17,10 @@ image="$1" disk="$2" work="$3" logs="$4" summary="$5"
 sb="$work/secure-boot"
 mnt="$sb/esp"
 uki=/EFI/Linux/nyra-test.efi
+loop=""
 mkdir -p "$mnt"
+# Set before the keys exist, so they are deleted whatever fails.
+trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop"; rm -rf "$sb"' EXIT
 
 # Throwaway keys: "test" is enrolled as a MOK, "other" is not.
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI throwaway test key" \
@@ -40,7 +43,6 @@ sudo chown -R "$(id -u):$(id -g)" "$sb"
 
 qemu-img convert -O raw "$disk" "$sb/disk.raw"
 loop="$(sudo losetup -P --show -f "$sb/disk.raw")"
-trap 'sudo umount -q "$mnt" 2>/dev/null || true; sudo losetup -d "$loop"; rm -rf "$sb"' EXIT
 esp=""
 for p in "$loop"p*; do
   if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
