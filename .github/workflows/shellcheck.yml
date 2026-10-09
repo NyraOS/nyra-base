@@ -26,5 +26,5 @@ jobs:
             head -n 1 "$f" | grep -qE '^#!(/usr)?/bin/(env )?(ba|da)?sh( |$)' && echo "$f"; done)
           printf '%s\n' "${scripts[@]}"
           shellcheck -S warning "${scripts[@]}"
-      - name: Self-test of the T15 guest commands (tools/vm/security-defaults.sh)
+      - name: Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)
         run: tools/vm/security-defaults.sh --self-test

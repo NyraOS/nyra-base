@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Kernel lockdown "integrity" always (NyraOS F101, docs/DEFAULTS.md). Debian's kernel turns it on
+# Kernel lockdown "integrity" always: closed by default (docs/DEFAULTS.md). Debian's kernel turns it on
 # by itself under Secure Boot; this keeps it on when Secure Boot is off. bootc applies it at install
 # and on every update.
 kargs = ["lockdown=integrity"]

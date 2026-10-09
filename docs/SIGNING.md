@@ -119,10 +119,10 @@ pinned commit in `trust-roots.sh` and run it.
 
 ## Setting up the signer (owner, once)
 
-**Rule: signing stays off until `main` is protected** (owner's decision, F167). Anyone who can push
-to `main`, or start the workflow manually on `main`, gets a signed image (see "Who can sign" below).
-Today `main` of this private repository is not protected (free plan, F163) and the agents work
-through the owner's account (F159), so they could push to `main` directly. The Google Cloud setup
+**Rule: signing stays off until `main` is protected.** Anyone who can push to `main`, or start the
+workflow manually on `main`, gets a signed image (see "Who can sign" below). While this repository
+is private on GitHub's free plan, `main` cannot be protected, so anyone with write access, including
+automated contributors, could push to it directly. The Google Cloud setup
 below can be prepared at any time, but the two repository variables (step 2) are **not** set before
 `main` requires pull requests with no direct pushes: when nyra-base moves to the NyraOS organisation
 as a public repository, or with GitHub Team.
@@ -179,8 +179,8 @@ Then, in this order:
 **Who can sign:**
 - **anyone who can push to `main` or start the workflow manually on `main`**: the workflow runs
   whatever is on `main`, and the attribute condition cannot tell a reviewed merge from a direct push
-  by the same account. While `main` is unprotected, that would include the agents, which is why
-  signing stays off until then (rule above);
+  by the same account. While `main` is unprotected, that would include anyone with write access,
+  automated contributors too, which is why signing stays off until then (rule above);
 - any Google principal with `iam.serviceAccounts.getOpenIdToken` on the service account: `Owner`,
   `Service Account Token Creator`, `Service Account OpenID Connect Identity Token Creator`,
   `Workload Identity User`, or a custom role with that permission. Keep the project's members to
@@ -188,7 +188,7 @@ Then, in this order:
 
 Every signature is public in Rekor under the signer's address, so an unexpected one is visible.
 
-**When the repository moves** (to the NyraOS organisation, F163), update the attribute condition and
+**When the repository moves** (to the NyraOS organisation), update the attribute condition and
 the binding with the new repository and owner IDs. Machines do not change: they trust the service
 account's address, not the repository.
 

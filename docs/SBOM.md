@@ -2,7 +2,7 @@
 
 Every build of nyra-base produces a software bill of materials and checks it for known
 vulnerabilities. A known critical or high vulnerability without a documented mitigation fails the
-build, so it is never signed or released (NyraOS DECIZII F151).
+build, so it is never signed or released.
 
 The last step of the `build` job in `.github/workflows/image.yml` runs
 [`tools/sbom/sbom.py`](../tools/sbom/sbom.py). It writes these files to the `nyra-base-sbom`
@@ -78,7 +78,7 @@ the point: the gate answers "is anything known now".
    or low) or matches nothing any more (fixed, package gone) is reported for removal.
 3. **Exposed and no fix:** remove or replace the package, or patch it in the Nyra apt repository.
 
-F151 gives 48 hours for critical and 7 days for high vulnerabilities once a fix exists. A
+Our rule is 48 hours for critical and 7 days for high vulnerabilities once a fix exists. A
 mitigation entry for a fixable vulnerability should only bridge that time (a snapshot bump that is
 waiting for a Debian transition, for example), so its expiry should be just as short.
 

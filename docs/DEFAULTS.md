@@ -1,8 +1,9 @@
 # Secure defaults
 
-What an installed nyra-base system turns on by itself (NyraOS T15, DECIZII F101, F151, F168), and
-how CI proves it. `tools/vm/security-defaults.sh` boots the disk that the `install-boot` job
-installed with `bootc install to-disk` and fails on any regression.
+What an installed nyra-base system turns on by itself, closed by default (a feature that weakens
+it is something the user switches on, not off), and how CI proves it.
+`tools/vm/security-defaults.sh` boots the disk that the `install-boot` job installed with
+`bootc install to-disk` and fails on any regression.
 
 | Default | How | Checked in the VM |
 |---|---|---|
@@ -11,7 +12,7 @@ installed with `bootc install to-disk` and fails on any regression.
 | Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
-| Signature policy in place (F168) | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
+| Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, signed UKI; unsigned and wrongly

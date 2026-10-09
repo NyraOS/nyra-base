@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# CI only: the secure defaults of an installed system (NyraOS T15, docs/DEFAULTS.md), checked in
+# CI only: the secure defaults of an installed system (docs/DEFAULTS.md), checked in
 # one boot of the installed test disk (QEMU snapshot mode, the disk is not changed):
 # AppArmor on with profiles in enforce mode, kernel lockdown "integrity", the inbound firewall
 # (default deny, proven with a connection from a network namespace), only declared listening
@@ -90,7 +90,7 @@ firewall_probe='ip netns add probe && ip link add v0 type veth peer name v1 netn
 filesystems='modprobe --showconfig | grep -x "blacklist f2fs" && ! modprobe --showconfig | grep -xE "blacklist (vfat|exfat|ntfs3|ext4|btrfs|xfs|udf|isofs|hfsplus|squashfs|erofs|overlay)" && truncate -s 64M /tmp/fs.img && ! mount -o loop -t f2fs /tmp/fs.img /mnt && ! grep -qw f2fs /proc/filesystems && echo "f2fs: not autoloaded" && mkfs.vfat /tmp/fs.img >/dev/null && mount -o loop /tmp/fs.img /mnt && findmnt /mnt && umount /mnt'
 
 python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
-  --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults (T15)" \
+  --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
   --command 'cat /sys/kernel/security/lsm; echo; test "$(cat /sys/module/apparmor/parameters/enabled)" = Y && systemctl is-active apparmor.service && p=/sys/kernel/security/apparmor/profiles && echo "profiles: $(wc -l < $p), enforce: $(grep -c "(enforce)" $p)" && grep -q "(enforce)" $p' \
   --command 'cat /sys/kernel/security/lockdown; grep -q "\[integrity\]" /sys/kernel/security/lockdown' \

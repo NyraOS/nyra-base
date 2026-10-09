@@ -1,5 +1,6 @@
 # Updates for the GitHub Actions pinned by SHA in .github/workflows and for the Python package
-# pinned by hash in tools/sbom/requirements.txt (NyraOS DECIZII F151).
+# pinned by hash in tools/sbom/requirements.txt: pins keep CI from running code nobody reviewed, and
+# Dependabot keeps the pins current.
 # Minor and patch updates of the actions come grouped in one PR. Container images in run: lines and
 # Containerfiles are pinned by digest and updated by hand.
 version: 2
