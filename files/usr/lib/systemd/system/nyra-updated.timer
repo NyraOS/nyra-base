@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Not in the image yet (NyraOS#66). Never bootc-fetch-apply-updates.timer (it reboots).
+# Update checks (docs/UPDATES.md). Never bootc-fetch-apply-updates.timer: it reboots by itself.
 [Unit]
 Description=Nyra: check for system updates
+Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/UPDATES.md
 
 [Timer]
 OnBootSec=15min

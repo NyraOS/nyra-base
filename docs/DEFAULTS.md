@@ -74,7 +74,8 @@ and stop run `flush ruleset`, which removes `inet nyra` while `nyra-firewall.ser
 `active`. `systemctl restart nyra-firewall` loads the Nyra rules again. (`After=nftables.service`
 only orders the two at boot.)
 
-Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `podman-restart.service`
+Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
+(update checks, docs/UPDATES.md), `podman-restart.service`
 (starts the user's rootful containers with `--restart=always` at boot), `podman-clean-transient.service`.
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run

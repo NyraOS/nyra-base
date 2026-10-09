@@ -10,7 +10,8 @@
 # with the fresh bootc build), and the sign job signs
 # them keylessly (docs/SIGNING.md).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
-# boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md).
+# boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
+# and nyra-updated across real updates (docs/UPDATES.md).
 name: image
 on:
   push:
@@ -151,6 +152,18 @@ jobs:
           tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK"
           sudo rm -rf "$WORK/policy-test"
 
+      # The Containerfile runs `nyra-updated check-config` on the image; here it must refuse the key of
+      # the test fixtures (its private key is public), so a build that ships it fails.
+      - name: Refuse a test channel sheet key (docs/UPDATES.md)
+        run: |
+          if out="$(sudo podman run --rm -v "$PWD/updated/channel-sheet/tests/data/seed1.pub.pem:/usr/lib/nyra/updates/channel-sheet.pem:ro,z" \
+              localhost/nyra-base:ci /usr/libexec/nyra-updated check-config 2>&1)"; then
+            echo "::error::check-config accepted the seed1 test key: $out"
+            exit 1
+          fi
+          echo "$out"
+          grep -q "holds a test key" <<<"$out"
+
       - name: Export the image and the SBOM
         run: |
           mkdir -p dist
@@ -229,7 +242,7 @@ jobs:
   install-boot:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -316,6 +329,10 @@ jobs:
         run: |
           tools/vm/boot-counting.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Updates across real versions, Titanic T2-T5 (docs/UPDATES.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the serial logs
         if: always()

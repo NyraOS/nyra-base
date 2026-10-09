@@ -15,6 +15,11 @@ start to the login prompt and the command outputs are appended as Markdown to
 console and no kernel starts (the kernel prints "Linux version" on ttyS0).
 --persist writes to the disk (otherwise QEMU snapshot mode), --poweroff ends
 with a clean shutdown, so several runs can follow one system across reboots.
+--power-cut-at REGEX kills QEMU (a power cut) as soon as REGEX shows up on the
+console, during the boot or during a command; the commands before it must pass.
+--boots N logs in only after the Nth kernel start, for a guest that reboots by
+itself first. A command written "@reboot CMD" is typed without waiting for its
+result, then the script logs in again at the next login prompt (a soft reboot).
 
 KVM is mandatory: accel=kvm, no fallback to emulation.
 """
@@ -39,9 +44,11 @@ AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --
 class Console:
     """Guest serial console: everything QEMU prints, plus a way to type."""
 
-    def __init__(self, proc, log):
-        self.proc, self.log = proc, log
+    def __init__(self, proc, log, cut_at=None):
+        self.proc, self.log, self.cut_at = proc, log, cut_at
         self.buf = b""
+        self.cut = None  # seconds after start when QEMU was killed by --power-cut-at
+        self.t0 = time.monotonic()
         self.lock = threading.Lock()
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -51,6 +58,9 @@ class Console:
                 self.buf += chunk
             self.log.write(chunk)
             self.log.flush()
+            if self.cut_at and self.cut is None and re.search(self.cut_at, self.buf):
+                self.proc.kill()
+                self.cut = time.monotonic() - self.t0
 
     def wait_for(self, pattern, timeout, start=0):
         """Wait for `pattern` after offset `start`; None on timeout or if QEMU exits."""
@@ -79,19 +89,17 @@ def refused(con, pattern, timeout):
     return f"`{m.group().decode(errors='replace')}`, no kernel started within 30 s"
 
 
-def login_and_run(con, a, password, t0, rows, outputs):
-    """Wait for the login prompt, log in as root and run the commands; True if all exit 0."""
-    proc = con.proc
-    m = con.wait_for(rb"login: ", a.timeout)
+def login(con, a, password, start):
+    """Wait for a login prompt after offset `start` and log in as root on the console."""
+    m = con.wait_for(rb"login: ", a.timeout, start)
     if not m:
-        if proc.poll() is not None:
-            raise RuntimeError(f"QEMU exited with code {proc.returncode} after "
-                               f"{time.monotonic() - t0:.1f} s, before the login prompt")
+        if con.proc.poll() is not None:
+            raise RuntimeError(f"QEMU exited with code {con.proc.returncode} after "
+                               f"{time.monotonic() - con.t0:.1f} s, before the login prompt")
         raise RuntimeError(f"no login prompt within {a.timeout} s")
-    rows.append(("QEMU start to login prompt", f"{time.monotonic() - t0:.1f} s"))
     # From the end of the prompt, not the end of the buffer: with autologin the
     # shell prompt can already be there.
-    start = m.end()
+    start += m.end()
     if not a.autologin:
         con.type("root\r")
         if con.wait_for(rb"Password: ", 10, start):
@@ -99,18 +107,34 @@ def login_and_run(con, a, password, t0, rows, outputs):
             con.type(password + "\r")
     if not con.wait_for(rb"# ", 60, start):
         raise RuntimeError("no root shell after logging in on the console")
-    ok = True
+
+
+def login_and_run(con, a, password, rows, outputs):
+    """Log in as root (after the --boots-th kernel start) and run the commands."""
+    start = 0
+    for n in range(a.boots if a.boots > 1 else 0):
+        m = con.wait_for(rb"Linux version", a.timeout, start)
+        if not m:
+            raise RuntimeError(f"kernel start {n + 1} of {a.boots} not seen within {a.timeout} s")
+        start += m.end()
+    login(con, a, password, start)
+    rows.append(("QEMU start to login prompt", f"{time.monotonic() - con.t0:.1f} s"))
     for i, c in enumerate(a.command):
         start = len(con.buf)
+        if c.startswith("@reboot "):
+            con.type(c[len("@reboot "):] + "\r")
+            login(con, a, password, start)
+            outputs.append((c, 0, f"logged in again {time.monotonic() - con.t0:.1f} s after QEMU start"))
+            continue
         # The quotes keep the echoed command line from matching the markers.
         con.type(f"echo @@S''TART{i}@@; {c}; echo @@E''XIT{i}=$?@@\r")
         m = con.wait_for(rf"(?s)@@START{i}@@(.*)@@EXIT{i}=(\d+)@@".encode(), 300, start)
         if not m:
+            if con.cut is not None:
+                return
             raise RuntimeError(f"no result from: {c}")
         out = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]|\r", b"", m.group(1)).decode(errors="replace").strip()
         outputs.append((c, int(m.group(2)), out))
-        ok = ok and m.group(2) == b"0"
-    return ok
 
 
 def main():
@@ -120,6 +144,8 @@ def main():
     p.add_argument("--secure-boot", metavar="VARS", help="Secure Boot firmware with this variable store")
     p.add_argument("--refused", metavar="PATTERN", help="expect the boot to be refused with PATTERN")
     p.add_argument("--poweroff", action="store_true", help="shut the guest down cleanly after the commands")
+    p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
+    p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     p.add_argument("--timeout", type=int, default=300, help="seconds to reach the login prompt")
     p.add_argument("--command", action="append", default=[], help="command to run as root in the guest")
     p.add_argument("--log", required=True, help="serial console log file")
@@ -151,15 +177,23 @@ def main():
 
     ok, rows, outputs = True, [], []
     with open(a.log, "wb") as log:
-        t0 = time.monotonic()
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        con = Console(proc, log)
+        con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode())
         try:
             if a.refused:
                 rows.append(("Boot refused", refused(con, a.refused, a.timeout)))
             else:
-                ok = login_and_run(con, a, password, t0, rows, outputs)
-                if ok and a.poweroff:
+                login_and_run(con, a, password, rows, outputs)
+                ok = all(rc == 0 for _, rc, _ in outputs)
+                if a.power_cut_at:
+                    try:  # the pattern can arrive with the last command's result
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if con.cut is None:
+                        raise RuntimeError(f"no {a.power_cut_at!r} on the console: no power cut")
+                    rows.append(("Power cut", f"QEMU killed at {a.power_cut_at!r}, {con.cut:.1f} s after start"))
+                elif ok and a.poweroff:
                     con.type("systemctl poweroff\r")
                     try:
                         proc.wait(timeout=180)
@@ -167,8 +201,12 @@ def main():
                         raise RuntimeError("no power-off within 180 s") from None
                     rows.append(("Power-off", f"clean, QEMU exited with code {proc.returncode}"))
         except RuntimeError as e:
-            ok = False
-            rows.append(("Error", str(e)))
+            if con.cut is not None and a.power_cut_at:
+                ok = all(rc == 0 for _, rc, _ in outputs)
+                rows.append(("Power cut", f"QEMU killed at {a.power_cut_at!r}, {con.cut:.1f} s after start"))
+            else:
+                ok = False
+                rows.append(("Error", str(e)))
         finally:
             proc.kill()
             proc.wait()

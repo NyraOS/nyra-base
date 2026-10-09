@@ -10,9 +10,7 @@ is unhealthy (`docs/LESSONS.md`). `nyra-updated` adds those rules. It lives in [
 | [`updated/daemon`](../updated/daemon) | `nyra-updated`, run by systemd: the safety rules around bootc |
 
 CI (`.github/workflows/updated.yml`) runs `cargo fmt`, `clippy`, the unit tests and `cargo audit` on
-every change under `updated/`, and the audit weekly.
-
-Not in the image yet: the binary, its systemd units and the health checks go in with NyraOS#66.
+every change under `updated/`, and the audit weekly. The VM tests are at the end of this page.
 
 ## The channel sheet
 
@@ -84,4 +82,108 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
    reported as an error.
 10. Nothing is done when the booted image is not from `updates.nyraos.com/<repository>`: the server is
     fixed in code, because the signature policy covers exactly that name (`docs/SIGNING.md`). An owner
-    who switched to their own image keeps it.
+    who switched to their own image keeps it, and the outcome (`ForeignImage`) is logged as a warning
+    at every check, so such a machine is not silently without updates. The installer must therefore
+    install with an explicit tag (`updates.nyraos.com/nyra-base:stable`): without one the image counts
+    as foreign.
+11. A staged version that gets retracted, or that the machine fell back from, is discarded before
+    the reboot, the same way as in rule 7.
+
+### Discarding a staged deployment (rules 7 and 11)
+
+bootc has no command that only drops a staged deployment. On the composefs backend `bootc rollback`
+removes the staged deployment and swaps the boot order of the booted and the rollback deployment at
+once (it rewrites `loader/entries` on the ESP, without boot counters); a second call swaps the order
+back. So `nyra-updated` calls it twice, and only when the rollback deployment would be an acceptable
+boot (not failed, not retracted, not below the version floor), because between the two calls, or if
+the second one fails, the rollback deployment is the next boot. Then it reads `bootc status` again:
+no staged deployment, the same booted and rollback deployments, the same boot order; otherwise the
+error says what boots next. Without an acceptable rollback deployment (for example the first update
+after the installation) nothing is touched and the error says that the staged version stays.
+
+## In the image
+
+| Path | What |
+|---|---|
+| `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
+| `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable |
+| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**, so every sheet is refused (fail closed) until the real key is committed, like the signer placeholder in `policy.json` |
+| `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target` |
+| `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running |
+| `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
+| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8) |
+| `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
+
+The image build runs `systemd-analyze verify` on these units and `nyra-updated check-config`, which
+fails on an invalid configuration or on a key from the test fixtures; CI also checks that it does
+fail with the `seed1` fixture key in place. `boot-complete.target` is pulled in on every boot (not
+only when systemd-boot counts tries), so the health checks always run and `nyra-updated` can rely on
+the target being active on a healthy boot.
+
+**Health checks** are units named `nyra-health-*.service` that `boot-complete.target` requires
+(links in `/usr/lib/systemd/system/boot-complete.target.requires/`). A failure keeps the boot from
+being blessed and, while the version is on trial, reboots so systemd-boot can fall back. They finish
+before `systemd-user-sessions.service`, so nobody can log in while they run and an unprivileged user
+cannot make one fail (which would force reboots and mark a good version failed). A check that bootc
+itself works (`bootc status`) would be valuable, but bootc needs its own boot entries for that, and the
+Secure Boot test lays the ESP out by hand without them (`docs/BOOT.md`); it comes with the UKI layout.
+
+**Soft reboots** skip the firmware, so systemd-boot does not count a try, while
+`LoaderBootCountPath` still names the entry of the last full boot. `systemd-bless-boot` would then
+bless an entry that did not just pass its health checks, or fail because bootc renamed it (the system
+ends up `degraded`). The drop-in skips it when `SoftRebootsCount` is not 0. A health check that fails
+after a soft reboot makes `nyra-updated health-failed` reboot fully, and the new version's entry,
+which still has its `+3`, is counted from then on.
+
+**Sandboxing.** `nyra-updated.service` runs bootc, which needs root, its own mount namespace (it
+remounts `/sysroot` and mounts the ESP privately), the network, `/sysroot` and `/var`: it gets
+`ProtectSystem=full`, `ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup
+protections and a list of address families (`systemd-analyze security`: 6.5). The health checks and
+`health-failed` only read state and ask systemd for a reboot: no network, no capabilities where
+possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutStartSec` is above that.
+
+**What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
+foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
+Settings, which will read it through the daemon (the file is root-only, like the rest of the state).
+When the state file is broken, every check fails with a message naming it, and updates stop (fail
+closed: forgetting it would forget the sequence and the retractions). The repair, until Settings
+offers it: move `/var/lib/nyra-updated/state.json` away; the next check starts over, and the version
+floor still applies.
+
+## Tests in a VM (`tools/vm/updates.sh`)
+
+The `install-boot` job follows one installed VM through 15 boots and real updates. Everything the
+guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
+`/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
+only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
+guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
+port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
+v0-v7 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
+bootc reads it.
+
+| Titanic | Scenario | Expected |
+|---|---|---|
+| T4 | the installed image, no sheet key | `nyra-updated check` fails: no trusted key |
+| T4 | unsigned image from `updates.nyraos.com`, shipped policy | `bootc switch` refused |
+| T4 | unsigned, and signed with another key, test policy | refused |
+| — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |
+| T4 | sheet signed with another key | refused |
+| T2 | power cut while the update downloads (random delay) | the old version boots; the next check stages it again |
+| T2 | power cut after staging, before finalization | the old version boots, nothing staged; staged again |
+| T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
+| — | staged version retracted before the reboot | discarded (`bootc rollback` twice), boot order kept, proven by the next boot |
+| T3 | new version whose health check fails | it reboots by itself three times, systemd-boot falls back, the version is marked failed and refused |
+| T5 | captive portal answers HTML | refused (malformed sheet) |
+| T5 | spoofed server (certificate not from a trusted CA) | refused (TLS) |
+| T4 | older version served (downgrade), replayed older sheet | refused |
+| — | soft reboot into a new version from a counted boot | `systemd-bless-boot` skipped, system `running`, the entry keeps `+3` |
+| T4 | signed retraction below the version floor | refused |
+| T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
+| T5 | registry down | refused, nothing staged |
+| T5 | corrupted layer in the registry | refused, nothing staged |
+| T4 | another image's valid layer served in place of the right one | refused (the blob does not match the signed manifest when bootc's image proxy finishes reading it), nothing staged; staged once the registry is repaired |
+
+Not covered yet: power cuts at many random moments and during finalization, a slow (50 kbit/s) link
+and a server that stalls mid-download (the 2-hour limit is unit-tested only), DNS answers for another
+host, a substituted layer of exactly the same size (the test's substitute differs in size, so it does not prove the digest check on its own), a broken kernel or initramfs (a kernel panic needs `panic=` to reboot at all), and the real
+keyless signature (the `sign` job, `docs/SIGNING.md`).

@@ -124,7 +124,7 @@ unhealthy version (a test-only unit required by `boot-complete.target` fails), w
 times and is never blessed; systemd-boot falls back to the installed version on its own; that one
 switches to a healthy version, which is blessed on its first boot.
 
-Still to build (in `nyra-updated`, LESSONS): an automatic reboot when a health check fails (in CI
-the test powers the VM off after each try), marking the failed version so it is not offered or
-staged again, the full reboot after a failed soft reboot, and moving the counter into the UKI file
-name (`EFI/Linux/…+3.efi`) when we switch to UKIs.
+The automatic reboot when a health check fails, marking the failed version, the full reboot after a
+soft reboot and the real health checks are in `nyra-updated` and its units (`docs/UPDATES.md`, tested
+in `tools/vm/updates.sh`). Still to build: moving the counter into the UKI file name
+(`EFI/Linux/…+3.efi`) when we switch to UKIs.
