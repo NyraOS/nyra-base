@@ -3,7 +3,7 @@
 # so it stops first: the counter is in place before bootc swaps loader/entries.staged in.
 [Unit]
 Description=Nyra: three boot tries for a newly staged system version
-Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/BOOT.md
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
 After=bootc-finalize-staged.service
 
 [Service]

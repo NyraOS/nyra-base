@@ -148,7 +148,7 @@ gcloud iam workload-identity-pools providers create-oidc nyra-base \
   --location=global --workload-identity-pool=github --display-name="nyra-base image workflow" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id" \
-  --attribute-condition="assertion.repository_id == '1409437710' && assertion.repository_owner_id == '251765279' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'WaggSoftware/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'"
+  --attribute-condition="assertion.repository_id == '1412332787' && assertion.repository_owner_id == '339787017' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'NyraOS/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'"
 
 # Only identities from that provider may act as the signer.
 gcloud iam service-accounts add-iam-policy-binding "$SIGNER" --role=roles/iam.workloadIdentityUser \
@@ -170,10 +170,10 @@ Then, in this order:
 2. Only once `main` is protected (rule above), set the two **repository variables** (Settings › Secrets
    and variables › Actions › Variables; they are not secrets):
    ```sh
-   gh variable set GCP_WIF_PROVIDER -R WaggSoftware/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
-   gh variable set GCP_SIGNER_SA    -R WaggSoftware/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
+   gh variable set GCP_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
+   gh variable set GCP_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
    ```
-3. Run the workflow on `main` (`gh workflow run image.yml -R WaggSoftware/nyra-base --ref main`):
+3. Run the workflow on `main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`):
    it builds, signs and verifies. The job summary shows the signed digest.
 
 **Who can sign:**

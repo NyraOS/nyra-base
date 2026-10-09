@@ -32,7 +32,7 @@ Release builds (`main`) use no cached content and are signed keylessly in CI (Si
 
 ## Contributing
 
-Every change goes through a pull request and must keep the test battery green. Security issues: please do not open a public issue; write to the maintainers first (a `SECURITY.md` follows).
+Every change goes through a pull request and must keep the test battery green. Security issues: please do not open a public issue; report them privately as described in [`SECURITY.md`](SECURITY.md). How to contribute: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

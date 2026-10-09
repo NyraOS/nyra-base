@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [Unit]
 Description=Nyra: boot loader settings on the ESP from /usr
-Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/BOOT.md
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
 RequiresMountsFor=/boot
 
 [Service]
