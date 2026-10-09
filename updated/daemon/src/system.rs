@@ -159,6 +159,11 @@ pub fn on_trial(bless_status: &str) -> bool {
     matches!(bless_status.trim(), "indeterminate" | "dirty" | "bad")
 }
 
+/// The staged deployment discarded on this boot (rules 7 and 11). It lives in `/run`, like bootc's
+/// own record of the staged deployment, so it ends with this boot. `esp-sync` reads it at shutdown
+/// and removes the staged boot entries before `bootc-finalize-staged` would swap them in.
+pub const DISCARDED: &str = "/run/nyra-updated/discarded";
+
 pub struct Real;
 
 impl System for Real {
@@ -217,6 +222,21 @@ impl System for Real {
 
     fn rollback(&mut self) -> Result<(), Error> {
         run_ok(Command::new("bootc").arg("rollback"), SHORT).map(drop)
+    }
+
+    fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
+        let path = Path::new(DISCARDED);
+        let dir = path.parent().expect("a directory");
+        std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
+        std::fs::write(path, digest).map_err(|e| Error::Io(format!("{DISCARDED}: {e}")))
+    }
+
+    fn discarded(&mut self) -> Result<Option<String>, Error> {
+        match std::fs::read_to_string(DISCARDED) {
+            Ok(d) => Ok(Some(d.trim().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::Io(format!("{DISCARDED}: {e}"))),
+        }
     }
 
     fn reboot(&mut self) -> Result<(), Error> {

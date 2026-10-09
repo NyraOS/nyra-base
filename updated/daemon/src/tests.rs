@@ -128,8 +128,8 @@ struct Fake {
     store_dir: PathBuf,
     /// The state on disk at the moment `stage` was called.
     state_at_stage: Option<State>,
-    /// `bootc rollback` call number (1-based) that fails.
-    rollback_fails_at: Option<usize>,
+    /// The staged deployment discarded on this boot (`/run/nyra-updated/discarded`).
+    discarded: Option<String>,
 }
 
 impl Fake {
@@ -151,7 +151,7 @@ impl Fake {
             calls: Vec::new(),
             store_dir: dir.store().dir,
             state_at_stage: None,
-            rollback_fails_at: None,
+            discarded: None,
         }
     }
     fn staged(&self) -> Vec<&String> {
@@ -200,13 +200,21 @@ impl System for Fake {
     /// discards a staged deployment and swaps the boot order.
     fn rollback(&mut self) -> Result<(), Error> {
         self.calls.push("rollback".into());
-        let n = self.calls.iter().filter(|c| *c == "rollback").count();
-        if self.status.rollback.is_none() || self.rollback_fails_at == Some(n) {
+        if self.status.rollback.is_none() {
             return Err(Error::Command("bootc rollback failed".into()));
         }
         self.status.staged = None;
         self.status.rollback_queued = !self.status.rollback_queued;
         Ok(())
+    }
+    /// The staged deployment stays in bootc's status until the reboot; it is just not finalized.
+    fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
+        self.calls.push(format!("discard {digest}"));
+        self.discarded = Some(digest.into());
+        Ok(())
+    }
+    fn discarded(&mut self) -> Result<Option<String>, Error> {
+        Ok(self.discarded.clone())
     }
     fn reboot(&mut self) -> Result<(), Error> {
         self.calls.push("reboot".into());
@@ -235,8 +243,11 @@ fn a_newer_version_is_staged_pinned_by_digest_and_not_applied() {
     assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
 }
 
-fn rollbacks(fake: &Fake) -> usize {
-    fake.calls.iter().filter(|c| *c == "rollback").count()
+fn discards(fake: &Fake) -> Vec<&String> {
+    fake.calls
+        .iter()
+        .filter(|c| c.starts_with("discard "))
+        .collect()
 }
 
 #[test]
@@ -252,15 +263,15 @@ fn a_staged_digest_other_than_the_sheet_is_an_error() {
             found: Z.into()
         })
     );
-    // The wrong deployment is discarded and the booted version stays the next boot.
-    assert_eq!(fake.status.staged, None);
+    // The wrong deployment is never finalized; the boot order is not touched.
+    assert_eq!(discards(&fake), vec![&format!("discard {Z}")]);
+    assert!(!fake.calls.contains(&"rollback".to_string()));
     assert!(!fake.status.rollback_queued);
-    assert_eq!(rollbacks(&fake), 2);
 }
 
 #[test]
-fn a_wrong_staged_deployment_is_not_discarded_through_an_unacceptable_rollback() {
-    // Between the two `bootc rollback` calls the rollback deployment is the next boot.
+fn a_wrong_staged_deployment_is_discarded_whatever_the_rollback_deployment_is() {
+    // No rollback deployment (the first update), one below the floor, one that failed.
     for (rollback, failed) in [(None, None), (dep(Z), None), (dep(A), Some(A))] {
         let dir = TempDir::new();
         if let Some(f) = failed {
@@ -274,67 +285,16 @@ fn a_wrong_staged_deployment_is_not_discarded_through_an_unacceptable_rollback()
         let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
         fake.status.rollback = rollback.clone();
         fake.stage_digest = Some(Z.into());
-        let err = run_check(&mut fake, &dir).unwrap_err();
+        assert!(matches!(
+            run_check(&mut fake, &dir),
+            Err(Error::DigestMismatch { .. })
+        ));
+        assert_eq!(fake.discarded.as_deref(), Some(Z), "{rollback:?}");
         assert!(
-            matches!(&err, Error::NotDiscarded { staged, .. } if staged == Z),
-            "{rollback:?}: {err}"
+            !fake.calls.contains(&"rollback".to_string()),
+            "{rollback:?}"
         );
-        assert_eq!(rollbacks(&fake), 0, "{rollback:?}");
-        assert_eq!(Status::digest(&fake.status.staged), Some(Z));
     }
-}
-
-#[test]
-fn a_failed_discard_says_what_boots_next() {
-    let dir = TempDir::new();
-    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
-    fake.status.rollback = dep(A);
-    fake.stage_digest = Some(Z.into());
-    fake.rollback_fails_at = Some(2);
-    let err = run_check(&mut fake, &dir).unwrap_err().to_string();
-    assert!(err.contains(&format!("next boot: {A}")), "{err}");
-}
-
-#[test]
-fn a_discard_that_changes_more_than_the_staged_deployment_is_reported() {
-    struct Swapping(Fake);
-    impl System for Swapping {
-        fn status(&mut self) -> Result<Status, Error> {
-            self.0.status()
-        }
-        fn boot_complete(&mut self) -> Result<bool, Error> {
-            self.0.boot_complete()
-        }
-        fn boot_info(&mut self) -> Result<BootInfo, Error> {
-            self.0.boot_info()
-        }
-        fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error> {
-            self.0.fetch_sheet(url)
-        }
-        fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
-            self.0.stage(image_ref)
-        }
-        /// A bootc whose second call does nothing: the rollback deployment stays the next boot.
-        fn rollback(&mut self) -> Result<(), Error> {
-            if self.0.calls.contains(&"rollback".to_string()) {
-                self.0.calls.push("rollback".into());
-                return Ok(());
-            }
-            self.0.rollback()
-        }
-        fn reboot(&mut self) -> Result<(), Error> {
-            self.0.reboot()
-        }
-    }
-    let dir = TempDir::new();
-    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
-    fake.status.rollback = dep(A);
-    fake.stage_digest = Some(Z.into());
-    let mut sys = Swapping(fake);
-    let err = check(&mut sys, &dir.store(), &config(), NOW)
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains(&format!("next boot: {A}")), "{err}");
 }
 
 // --- rule 10: only our own images -------------------------------------------------------------
@@ -763,13 +723,56 @@ fn a_staged_version_retracted_before_the_reboot_is_discarded() {
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
     fake.sheet = sheet(101, B, &[C]);
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
-    assert_eq!(fake.status.staged, None);
-    assert!(!fake.status.rollback_queued);
-    assert_eq!(rollbacks(&fake), 2);
+    assert_eq!(discards(&fake), vec![&format!("discard {C}")]);
+    assert!(!fake.calls.contains(&"rollback".to_string()));
     assert_eq!(dir.store().load().unwrap().pending, None);
-    // Nothing more to do: B is the channel's current version.
-    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
-    assert_eq!(rollbacks(&fake), 2);
+    // Until the reboot nothing more happens, not even a sheet fetch.
+    let calls = fake.calls.len();
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
+    assert_eq!(fake.calls.len(), calls);
+}
+
+#[test]
+fn a_retracted_staged_version_is_discarded_when_the_rollback_deployment_failed() {
+    // B failed its health checks and the machine came back to A; C was staged, then retracted
+    // before the reboot. The rollback deployment is B: C must not boot anyway.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(B))));
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(B),
+        ..Status::default()
+    };
+    fake.sheet = sheet(101, C, &[]);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert!(dir.store().load().unwrap().failed.contains(B));
+    fake.sheet = sheet(102, A, &[C]);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
+    assert_eq!(fake.discarded.as_deref(), Some(C));
+    assert!(!fake.calls.contains(&"rollback".to_string()));
+}
+
+#[test]
+fn a_staged_version_below_the_floor_or_failed_is_discarded() {
+    for (staged, failed) in [(Z, None), (C, Some(C))] {
+        let dir = TempDir::new();
+        if let Some(f) = failed {
+            dir.store()
+                .save(&State {
+                    failed: [f.to_string()].into(),
+                    ..State::default()
+                })
+                .unwrap();
+        }
+        let mut fake = Fake::new(&dir, B, sheet(100, B, &[]));
+        fake.status.staged = dep(staged); // staged by hand
+        assert_eq!(
+            run_check(&mut fake, &dir),
+            Ok(Outcome::Discarded(staged.into()))
+        );
+        assert_eq!(fake.discarded.as_deref(), Some(staged));
+    }
 }
 
 // --- rule 8: health check failures ------------------------------------------------------------

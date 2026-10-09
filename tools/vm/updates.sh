@@ -12,7 +12,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v7: 2026.10.1-7, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v8: 2026.10.1-8, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -21,18 +21,20 @@
 #   4  v1: v2 staged again; power cut before the staged version is finalized
 #   5  v1: v2 staged again; clean shutdown
 #   6  power cut when v2's kernel starts (first try)
-#   7  v2, second try, blessed; v4 staged, then retracted: discarded (bootc rollback twice)
-#   8  v2 again (boot order kept); v3 staged
+#   7  v2, second try, blessed; v4 staged, then retracted: discarded (never finalized)
+#   8  v2 again (boot order kept, no staged entries left); v3 staged
 #   9  v3 fails its health check and reboots by itself, three times; systemd-boot falls back to v2;
-#      v3 is marked failed and refused; v5 staged
-#  10  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
+#      v3 is marked failed and refused; v8 staged, then retracted: discarded, with the failed v3 as
+#      rollback deployment
+#  10  v2 again, v8 not finalized; v5 staged
+#  11  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
 #      into v6: not blessed, system not degraded
-#  11  v6, first full boot: signed retraction below the version floor refused; retraction to the
+#  12  v6, first full boot: signed retraction below the version floor refused; retraction to the
 #      local rollback deployment (v5) uses bootc rollback
-#  12  v5, registry down: refused, nothing staged
-#  13  v5, a corrupted layer of v7 in the registry: refused, nothing staged
-#  14  v5, a valid layer of the same size with other content served for v7's: refused (digest)
-#  15  v5, registry repaired: v7 staged
+#  13  v5, registry down: refused, nothing staged
+#  14  v5, a corrupted layer of v7 in the registry: refused, nothing staged
+#  15  v5, a valid layer of the same size with other content served for v7's: refused (digest)
+#  16  v5, registry repaired: v7 staged
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -92,7 +94,7 @@ version() { # version NAME VERSION [Containerfile lines]
     sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
       --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
-for n in 0 1 4 5 6 7; do version "v$n" "2026.10.$n"; done
+for n in 0 1 4 5 6 7 8; do version "v$n" "2026.10.$n"; done
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
 # of boot 3 and the power cut lands in the middle of it.
 version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
@@ -122,11 +124,12 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
 d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")" d7="$(cat "$u/v7.digest")"
+d8="$(cat "$u/v8.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -148,6 +151,8 @@ sheet wrong wrong 100 "$d2" 2026.10.2
 sheet s2 sheet 200 "$d4" 2026.10.4
 sheet s3 sheet 300 "$d2" 2026.10.2 "$d4"
 sheet s4 sheet 400 "$d3" 2026.10.3 "$d4"
+sheet s8 sheet 450 "$d8" 2026.10.8 "$d4"
+sheet s8r sheet 460 "$d2" 2026.10.2 "$d4" "$d8"
 sheet s5 sheet 500 "$d5" 2026.10.5 "$d4"
 sheet downgrade sheet 550 "$d1" 2026.10.1 "$d4"
 sheet floor sheet 600 "$old" 2026.9.1 "$d4" "$d6"
@@ -282,21 +287,26 @@ vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command 'journalctl -b -u systemd-bless-boot -o cat --no-pager' \
   --command "$lib; outcome s1 UpToDate" \
   --command "$lib; outcome s2 Staged && expect staged $d4" \
-  --command "$lib; outcome s3 Discarded && expect staged none && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
+  --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
   --command 'bootc status --format json'
 
 vm "v2 again: boot order kept; v3 staged" --poweroff \
-  --command "$lib; expect booted $d2 && expect rollback $d1 && running" \
+  --command "$lib; expect booted $d2 && expect rollback $d1 && expect staged none && ! test -e /boot/loader/entries.staged && running" \
   --command "$lib; outcome s4 Staged && expect staged $d3"
 
 vm "v3 fails its health check three times, back on v2 by itself" --poweroff --boots 4 \
   --command "$lib; expect booted $d2 && running && entries | grep -F +0-3" \
   --command "$lib; refused s4 'this machine fell back from it' && expect staged none" \
-  --command "$lib; outcome s5 Staged && expect staged $d5"
+  --command "$lib; outcome s8 Staged && expect staged $d8 && expect rollback $d3" \
+  --command "$lib; outcome s8r Discarded && test -e /run/nyra-updated/discarded && expect rollback $d3"
 l="$logs/serial-updates-$n.log"
 grep -a 'nyra-updated health-failed:' "$l" || true
 echo "kernel starts: $(grep -c 'Linux version' "$l"), full reboots by nyra-updated: $(grep -ac 'nyra-updated health-failed: Reboot' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'nyra-updated health-failed: Reboot' "$l")" = 3 ]
+
+vm "v2 again, the retracted v8 was not finalized although the rollback deployment failed; v5 staged" --poweroff \
+  --command "$lib; expect booted $d2 && expect rollback $d3 && expect staged none && ! test -e /boot/loader/entries.staged && running" \
+  --command "$lib; outcome s5 Staged && expect staged $d5"
 
 vm "v5: hostile network, downgrade, replay; soft reboot into v6" --poweroff \
   --command "$lib; expect booted $d5 && running && blessed" \
