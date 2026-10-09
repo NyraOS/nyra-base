@@ -1040,6 +1040,42 @@ fn the_seed1_test_key_is_refused_as_a_production_key() {
 }
 
 #[test]
+fn a_key_file_without_keys_means_updates_are_not_configured() {
+    let dir = TempDir::new();
+    fs::create_dir_all(&dir.0).unwrap();
+    let conf = dir.0.join("updated.conf");
+    let keys = dir.0.join("channel-sheet.pem");
+    fs::write(
+        &conf,
+        "repository = nyra\nchannel = stable\nversion_floor = 2026.10.1\n",
+    )
+    .unwrap();
+
+    // No key (the image until the real key is committed): not configured, not an error.
+    fs::write(&keys, "# no key yet\n").unwrap();
+    assert!(Config::load(&conf, &keys).unwrap().is_none());
+    // A key: configured.
+    fs::write(&keys, pem(&signer())).unwrap();
+    assert_eq!(Config::load(&conf, &keys).unwrap().unwrap().keys.len(), 1);
+    // A broken key file and a missing one stay errors.
+    fs::write(
+        &keys,
+        "-----BEGIN PUBLIC KEY-----\nnot base64\n-----END PUBLIC KEY-----\n",
+    )
+    .unwrap();
+    assert_eq!(
+        Config::load(&conf, &keys).unwrap_err(),
+        Error::Sheet(nyra_channel_sheet::Error::InvalidPublicKey)
+    );
+    fs::remove_file(&keys).unwrap();
+    assert!(matches!(Config::load(&conf, &keys), Err(Error::Io(_))));
+    // An invalid configuration with no key is an error too, not "not configured".
+    fs::write(&keys, "").unwrap();
+    fs::write(&conf, "repository = nyra\n").unwrap();
+    assert!(matches!(Config::load(&conf, &keys), Err(Error::Config(_))));
+}
+
+#[test]
 fn a_key_file_without_keys_is_refused() {
     assert_eq!(
         load_keys("").unwrap_err(),

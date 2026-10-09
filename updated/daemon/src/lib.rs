@@ -216,6 +216,18 @@ impl Config {
         Ok(config)
     }
 
+    /// Reads the configuration files of the image. `Ok(None)`: the key file holds no key, so
+    /// updates are not configured (every sheet would be refused; there is nothing to check). A
+    /// missing or unreadable file, a broken key or an invalid configuration is an error.
+    pub fn load(conf: &Path, keys: &Path) -> Result<Option<Config>, Error> {
+        let read = |p: &Path| fs::read_to_string(p).map_err(|e| io(p, e));
+        match Config::parse(&read(conf)?, &read(keys)?) {
+            Ok(cfg) => Ok(Some(cfg)),
+            Err(Error::Sheet(nyra_channel_sheet::Error::NoTrustedKeys)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn sheet_url(&self) -> String {
         format!(
             "https://{HOST}/channels/{}/{}",

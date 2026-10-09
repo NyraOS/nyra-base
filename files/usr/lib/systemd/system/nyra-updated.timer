@@ -2,7 +2,7 @@
 # Update checks (docs/UPDATES.md). Never bootc-fetch-apply-updates.timer: it reboots by itself.
 [Unit]
 Description=Nyra: check for system updates
-Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/UPDATES.md
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
 
 [Timer]
 OnBootSec=15min

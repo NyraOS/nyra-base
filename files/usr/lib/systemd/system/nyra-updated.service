@@ -3,7 +3,7 @@
 # reboots; on a boot whose health checks did not pass (boot-complete.target) it does nothing.
 [Unit]
 Description=Nyra: check for a system update and prepare it
-Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/UPDATES.md
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
 After=boot-complete.target network-online.target
 Wants=network-online.target
 

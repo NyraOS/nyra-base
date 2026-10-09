@@ -3,7 +3,7 @@
 # a soft reboot), so systemd-boot's boot counting falls back (docs/UPDATES.md, docs/BOOT.md).
 [Unit]
 Description=Nyra: a health check failed, reboot so boot counting can fall back
-Documentation=https://github.com/WaggSoftware/nyra-base/blob/main/docs/UPDATES.md
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
 DefaultDependencies=no
 
 [Service]

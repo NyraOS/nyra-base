@@ -14,10 +14,10 @@
 #
 # Test versions of IMAGE (v1-v7: 2026.10.1-7, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
-#   1  installed image: no sheet key, fail closed; unsigned refused by the shipped policy; test trust
+#   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
-#   3  v1: a sheet signed with another key refused; power cut while v2 downloads
+#   3  v1: a sheet signed with another key refused; power cut while v2 downloads (throttled link)
 #   4  v1: v2 staged again; power cut before the staged version is finalized
 #   5  v1: v2 staged again; clean shutdown
 #   6  power cut when v2's kernel starts (first try)
@@ -31,7 +31,7 @@
 #      local rollback deployment (v5) uses bootc rollback
 #  12  v5, registry down: refused, nothing staged
 #  13  v5, a corrupted layer of v7 in the registry: refused, nothing staged
-#  14  v5, another image's valid layer served for v7's: refused, nothing staged
+#  14  v5, a valid layer of the same size with other content served for v7's: refused (digest)
 #  15  v5, registry repaired: v7 staged
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -67,7 +67,10 @@ version() { # version NAME VERSION [Containerfile lines]
   sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
     -f "$u/Containerfile.$1" "$u/context" >/dev/null
 }
-for n in 0 1 2 4 5 6 7; do version "v$n" "2026.10.$n"; done
+for n in 0 1 4 5 6 7; do version "v$n" "2026.10.$n"; done
+# v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
+# of boot 3 and the power cut lands in the middle of it.
+version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
 version v3 2026.10.3 "$(cat <<'EOF'
 RUN printf '%s\n' '[Unit]' 'Description=Test only: a health check that always fails' '[Service]' \
       'Type=oneshot' 'ExecStart=/usr/bin/false' > /usr/lib/systemd/system/nyra-health-test.service && \
@@ -153,7 +156,7 @@ server.socket = ctx.wrap_socket(server.socket, server_side=True)
 server.serve_forever()
 EOF
 sudo python3 -I "$u/sheet-server.py" "$u/sheets" "$u/server.crt" "$u/server.key" &
-trap 'sudo pkill -f sheet-server.py || true' EXIT
+trap 'sudo pkill -f sheet-server.py || true; sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
 for _ in $(seq 30); do curl -fs --cacert "$u/ca.crt" https://updates.nyraos.com/_test/select/s1 >/dev/null && break; sleep 1; done
 curl -fsS --cacert "$u/ca.crt" https://updates.nyraos.com/channels/nyra-base/stable | jq -e .payloadType >/dev/null
 
@@ -209,7 +212,7 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   --command "$lib; running && systemctl is-active boot-complete.target && systemctl is-active nyra-health-system.service && systemctl is-active nyra-updated.timer" \
   --command 'systemd-analyze security --no-pager nyra-updated.service | tail -1; /usr/libexec/nyra-updated check-config' \
   --command 'bootc status --format json' \
-  --command "$lib; ! run_check && grep -q 'no trusted channel sheet key' /var/lib/nyra-updated/last-check.json" \
+  --command "$lib; run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \
   --command "$lib; refused_switch updates.nyraos.com/nyra-base:v0 'A signature was required, but no signature exists'" \
   --command 'ln -sfn /etc/nyra-test/policy.json /etc/containers/policy.json' \
@@ -222,15 +225,22 @@ vm "v0 from another registry: foreign image" --poweroff \
   --command "$lib; outcome s1 ForeignImage && journalctl -u nyra-updated -p warning -o cat | grep ForeignImage" \
   --command 'bootc switch --quiet updates.nyraos.com/nyra-base:stable'
 
-cut=$((RANDOM % 6 + 2))
+# The registry's answers (port 80) at 2 Mbit/s for this boot only: the power cut comes while
+# nyra-updated is still pulling v2 (the unit is still activating, nothing is staged yet).
+sudo tc qdisc add dev lo root handle 1: htb default 10
+sudo tc class add dev lo parent 1: classid 1:10 htb rate 10gbit
+sudo tc class add dev lo parent 1: classid 1:20 htb rate 2mbit ceil 2mbit
+sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport 80 0xffff flowid 1:20
+cut=$((RANDOM % 9 + 4))
 vm "v1: wrong sheet key; power cut ${cut} s into the download of v2" --power-cut-at POWERCUT \
   --command "$lib; expect booted $d1 && running && blessed" \
   --command 'bootc status --format json' \
   --command "$lib; refused wrong 'signature does not verify'" \
-  --command "$lib; select_sheet s1 && systemctl start --no-block nyra-updated.service && sleep $cut && echo POWER''CUT"
+  --command "$lib; select_sheet s1 && systemctl start --no-block nyra-updated.service && sleep $cut && systemctl is-active nyra-updated.service | grep -x activating && expect staged none && echo POWER''CUT"
+sudo tc qdisc del dev lo root
 
 vm "v1 after the power cut: v2 staged again; power cut before finalization" --power-cut-at POWERCUT \
-  --command "$lib; expect booted $d1 && running && digest staged" \
+  --command "$lib; expect booted $d1 && running && expect staged none" \
   --command "$lib; outcome s1 Staged && expect staged $d2 && expect rollback $d0" \
   --command 'bootc status --format json' \
   --command 'echo POWER''CUT'
@@ -283,7 +293,7 @@ vm "v6, first full boot: retraction below the floor refused; retraction to v5 by
 sudo podman stop -t 1 nyra-test-registry >/dev/null
 vm "v5, registry down" --poweroff \
   --command "$lib; expect booted $d5 && running" \
-  --command "$lib; refused s7 '' && expect staged none"
+  --command "$lib; refused s7 'connect: connection refused' && expect staged none"
 sudo podman start nyra-test-registry >/dev/null
 for _ in $(seq 30); do curl -fs http://updates.nyraos.com/v2/ >/dev/null && break; sleep 1; done
 
@@ -295,18 +305,18 @@ top() { # the registry's file for the last layer of image $1
 }
 blob="$(top "$d7")"
 sudo podman exec nyra-test-registry sh -c "cp $blob $blob.orig && printf CORRUPT | dd of=$blob bs=1 seek=64 conv=notrunc 2>/dev/null"
+# Bytes changed inside the compressed layer: refused when the layer is read (its digest, or the
+# decompression or unpacking that runs alongside).
 vm "v5, a corrupted layer of v7" --poweroff \
-  --command "$lib; refused s7 '' && expect staged none && expect booted $d5"
-# Another valid layer (v6's) served in place of v7's, with its own size (the registry restarted, so
-# it does not answer with the size it cached): only the digest check can catch it.
-sudo podman exec nyra-test-registry sh -c "cp $(top "$d6") $blob"
-sudo podman restart -t 1 nyra-test-registry >/dev/null
-for _ in $(seq 30); do curl -fs http://updates.nyraos.com/v2/ >/dev/null && break; sleep 1; done
-vm "v5, another valid layer in place of v7's" --poweroff \
-  --command "$lib; refused s7 '' && expect staged none && expect booted $d5"
+  --command "$lib; refused s7 'Unable to pull container image.*(corrupted blob|decompression error|header error|unexpected end of file)' && expect staged none && expect booted $d5"
+# A valid layer with other content and exactly the same size (tools/vm/same-size-layer.py): only the
+# layer digest, checked by the image proxy against the signed manifest, can refuse it.
+sudo podman exec nyra-test-registry cat "$blob.orig" >"$u/v7-top.orig"
+python3 -I tools/vm/same-size-layer.py "$u/v7-top.orig" 2026.10.7 000000000 "$u/v7-top.same-size"
+sudo podman cp "$u/v7-top.same-size" "nyra-test-registry:$blob"
+vm "v5, a layer of the same size with other content in place of v7's" --poweroff \
+  --command "$lib; refused s7 'Unable to pull container image.*FinishPipe.*corrupted blob, expecting' && expect staged none && expect booted $d5"
 sudo podman exec nyra-test-registry sh -c "mv $blob.orig $blob"
-sudo podman restart -t 1 nyra-test-registry >/dev/null # forget the size it cached for the blob
-for _ in $(seq 30); do curl -fs http://updates.nyraos.com/v2/ >/dev/null && break; sleep 1; done
 
 vm "v5, registry repaired: v7 staged" --poweroff \
   --command "$lib; outcome s7 Staged && expect staged $d7 && expect booted $d5"

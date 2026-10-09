@@ -107,7 +107,7 @@ after the installation) nothing is touched and the error says that the staged ve
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable |
-| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**, so every sheet is refused (fail closed) until the real key is committed, like the signer placeholder in `policy.json` |
+| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
@@ -163,12 +163,12 @@ bootc reads it.
 
 | Titanic | Scenario | Expected |
 |---|---|---|
-| T4 | the installed image, no sheet key | `nyra-updated check` fails: no trusted key |
+| T4 | the installed image, no sheet key | "updates are not configured" (`ok: false`), nothing fetched, the unit not failed |
 | T4 | unsigned image from `updates.nyraos.com`, shipped policy | `bootc switch` refused |
 | T4 | unsigned, and signed with another key, test policy | refused |
 | — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |
 | T4 | sheet signed with another key | refused |
-| T2 | power cut while the update downloads (random delay) | the old version boots; the next check stages it again |
+| T2 | power cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 4–12 s into a ~16 MiB pull, while `nyra-updated` is still activating and nothing is staged) | the old version boots, nothing staged; the next check stages it again |
 | T2 | power cut after staging, before finalization | the old version boots, nothing staged; staged again |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
 | — | staged version retracted before the reboot | discarded (`bootc rollback` twice), boot order kept, proven by the next boot |
@@ -179,11 +179,11 @@ bootc reads it.
 | — | soft reboot into a new version from a counted boot | `systemd-bless-boot` skipped, system `running`, the entry keeps `+3` |
 | T4 | signed retraction below the version floor | refused |
 | T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
-| T5 | registry down | refused, nothing staged |
-| T5 | corrupted layer in the registry | refused, nothing staged |
-| T4 | another image's valid layer served in place of the right one | refused (the blob does not match the signed manifest when bootc's image proxy finishes reading it), nothing staged; staged once the registry is repaired |
+| T5 | registry down | refused (connection refused), nothing staged |
+| T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
+| T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 
 Not covered yet: power cuts at many random moments and during finalization, a slow (50 kbit/s) link
 and a server that stalls mid-download (the 2-hour limit is unit-tested only), DNS answers for another
-host, a substituted layer of exactly the same size (the test's substitute differs in size, so it does not prove the digest check on its own), a broken kernel or initramfs (a kernel panic needs `panic=` to reboot at all), and the real
+host, a broken kernel or initramfs (a kernel panic needs `panic=` to reboot at all), and the real
 keyless signature (the `sign` job, `docs/SIGNING.md`).

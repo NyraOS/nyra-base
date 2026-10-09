@@ -16,48 +16,49 @@ const KEYS: &str = "/usr/lib/nyra/updates/channel-sheet.pem";
 const STATE_DIR: &str = "/var/lib/nyra-updated";
 const LOCK: &str = "/run/nyra-updated.lock";
 
-fn read(path: &str) -> Result<String, Error> {
-    std::fs::read_to_string(path).map_err(|e| Error::Io(format!("{path}: {e}")))
+/// Updates are not configured: the image ships no channel sheet key yet (docs/UPDATES.md).
+const NOT_CONFIGURED: &str =
+    "updates are not configured: no channel sheet key in /usr/lib/nyra/updates/channel-sheet.pem";
+
+fn config() -> Result<Option<Config>, Error> {
+    Config::load(Path::new(CONFIG), Path::new(KEYS))
 }
 
-fn config() -> Result<Config, Error> {
-    Config::parse(&read(CONFIG)?, &read(KEYS)?)
-}
-
-/// The result line and its journal priority (sd-daemon prefix: 3 error, 4 warning, 6 info).
-fn run(command: &str, now: u64) -> Result<(u8, String), Error> {
+/// The journal priority (sd-daemon prefix: 3 error, 4 warning, 6 info), whether the command did
+/// its job (for last-check.json) and the result line.
+fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
     match command {
         "check" => {
             let _lock = Lock::acquire(Path::new(LOCK))?;
             let store = Store {
                 dir: STATE_DIR.into(),
             };
-            let outcome = check(&mut Real, &store, &config()?, now)?;
+            // Not an error that leaves the unit failed: every machine would be degraded, which
+            // hides real failures. Every sheet stays refused.
+            let Some(cfg) = config()? else {
+                return Ok((4, false, NOT_CONFIGURED.into()));
+            };
+            let outcome = check(&mut Real, &store, &cfg, now)?;
             // An owner's own image gets no updates from us: say so, every time.
             let priority = if matches!(outcome, Outcome::ForeignImage(_)) {
                 4
             } else {
                 6
             };
-            Ok((priority, format!("{outcome:?}")))
+            Ok((priority, true, format!("{outcome:?}")))
         }
         "health-failed" => {
             // The boot state it decided on, for the journal.
             let info = Real.boot_info()?;
-            on_health_failure(&mut Real).map(|a| (6, format!("{a:?} ({info:?})")))
+            on_health_failure(&mut Real).map(|a| (6, true, format!("{a:?} ({info:?})")))
         }
-        "check-config" => match config() {
-            Ok(cfg) => Ok((
+        "check-config" => match config()? {
+            Some(cfg) => Ok((
                 6,
+                true,
                 format!("{} trusted channel sheet key(s)", cfg.keys.len()),
             )),
-            // Fail closed until the real key is committed, like the signer placeholder in the
-            // signature policy (docs/UPDATES.md).
-            Err(Error::Sheet(nyra_channel_sheet::Error::NoTrustedKeys)) => Ok((
-                4,
-                "no trusted channel sheet key yet: every sheet is refused".into(),
-            )),
-            Err(e) => Err(e),
+            None => Ok((4, true, NOT_CONFIGURED.into())),
         },
         _ => Err(Error::Config(
             "usage: nyra-updated check|health-failed|check-config".into(),
@@ -74,7 +75,7 @@ fn main() -> ExitCode {
     let result = run(&command, now);
     if command == "check" {
         let (ok, message) = match &result {
-            Ok((_, m)) => (true, m.clone()),
+            Ok((_, ok, m)) => (*ok, m.clone()),
             Err(e) => (false, e.to_string()),
         };
         let store = Store {
@@ -85,7 +86,7 @@ fn main() -> ExitCode {
         }
     }
     match result {
-        Ok((priority, message)) => {
+        Ok((priority, _, message)) => {
             println!("<{priority}>nyra-updated {command}: {message}");
             ExitCode::SUCCESS
         }

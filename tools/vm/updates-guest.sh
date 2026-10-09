@@ -58,10 +58,10 @@ outcome() { # outcome SHEET PATTERN: the check succeeds with a result matching P
 	select_sheet "$1" && run_check && grep -q -- "$2" /var/lib/nyra-updated/last-check.json
 }
 
-refused() { # refused SHEET PATTERN: the check fails with an error matching PATTERN
+refused() { # refused SHEET REGEX: the check fails with an error matching REGEX (grep -E)
 	select_sheet "$1" || return 1
 	! run_check && grep -q '"ok":false' /var/lib/nyra-updated/last-check.json &&
-		grep -q -- "$2" /var/lib/nyra-updated/last-check.json
+		grep -qE -- "$2" /var/lib/nyra-updated/last-check.json
 }
 
 refused_switch() { # refused_switch IMAGE PATTERN: bootc switch fails with an error matching PATTERN
