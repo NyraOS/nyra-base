@@ -6,8 +6,9 @@
 #   it, signed in the build job with that run's key (UKI_CERT), enrolled here as a MOK.
 # Checks: bootc installed only the UKI (a "uki" entry, no kernel or initramfs of its own); the
 # signed UKI boots; the same UKI with a changed initramfs (signature kept), without a signature,
-# or signed with a key that is not enrolled is refused; unsigned add-ons and plain credentials on
-# the ESP have no effect (a signed add-on does: the files are where the stub looks); kernel
+# or signed with a key that is not enrolled is refused; unsigned add-ons are refused (a signed add-on
+# applies: the files are where the stub looks); credentials on the ESP are ignored with the image's
+# command line (a control boot with credential import on shows that they are read); kernel
 # arguments added in the boot entry are ignored (what the boot menu editor would do); the image's
 # command line imports no systemd credentials: one passed over SMBIOS has no effect, unless the
 # test add-on turns import back on (the last occurrence on the command line wins).
@@ -165,8 +166,9 @@ sudo cp "$sb/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
 sudo umount "$mnt"
 
 # Add-ons and credentials: only add-ons signed with an enrolled key may change the command line (the
-# control add-on next to the UKI, and the test console for every UKI); the plain credentials must
-# have no effect.
+# control add-on next to the UKI, and the test console for every UKI). With credential import on
+# (the test console add-on), the plain credentials on the ESP are read: neither sets its value, and
+# systemd-sysctl does not start. That is the control for the boot after it.
 sudo mount "$esp" "$mnt"
 sudo mkdir -p "$mnt$uki.extra.d" "$mnt/loader/addons" "$mnt/loader/credentials"
 sudo cp "$sb/unsigned.addon.efi" "$sb/control.addon.efi" "$mnt$uki.extra.d/"
@@ -175,11 +177,30 @@ sudo cp "$sb/uki.cred" "$mnt$uki.extra.d/tmpfiles.extra.cred"
 sudo cp "$sb/global.cred" "$mnt/loader/credentials/sysctl.extra.cred"
 sudo umount "$mnt"
 vm --autologin --log "$logs/serial-secure-boot-extras.log" \
-  --title "Secure Boot: unsigned add-ons and plain credentials on the ESP have no effect" \
+  --title "Secure Boot: unsigned add-ons refused; with the test add-on, credentials on the ESP are read (control)" \
   --command 'cat /proc/cmdline; grep -q "nyra.addon.signed=1" /proc/cmdline && grep -q "systemd.import_credentials=yes" /proc/cmdline && ! grep -Eq "nyra.addon.(unsigned|global)" /proc/cmdline' \
   --command 'ls -l /run/nyra-cred-* 2>&1; d="$(cat /proc/sys/kernel/domainname)"; echo "domainname: $d"; test ! -e /run/nyra-cred-uki && test "$d" != nyra-cred-global' \
-  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; ls -lR /.extra /run/credentials 2>&1 | head -40; journalctl -b -o cat --no-pager | grep -i -e credential -e addon | head -20' \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = degraded && systemctl is-failed --quiet systemd-sysctl.service && test "$(systemctl list-units --state=failed --no-legend --plain | wc -l)" = 1' \
   || fail=1
+
+# The same credentials on the ESP, read by the console (no login): a unit that does not start shows
+# as "Failed to start". With the test add-on (control) it shows; with the image's command line (only
+# the add-on that turns off systemd-firstboot's prompts) nothing fails.
+failed='Failed to start|status=243/CREDENTIALS'
+vm --log "$logs/serial-secure-boot-esp-credentials-control.log" \
+  --title "Secure Boot: with the test add-on, credentials on the ESP are read (console control)" \
+  --marker "$failed" --marker-expected yes || fail=1
+sudo mount "$esp" "$mnt"
+sudo rm "$mnt/loader/addons/nyra-test-console.addon.efi"
+sudo cp "$sb/firstboot.addon.efi" "$mnt/loader/addons/nyra-test-firstboot.addon.efi"
+sudo umount "$mnt"
+vm --log "$logs/serial-secure-boot-esp-credentials.log" \
+  --title "Secure Boot: with the image's command line, credentials on the ESP are ignored" \
+  --marker "$failed" --marker-expected no || fail=1
+sudo mount "$esp" "$mnt"
+sudo rm "$mnt/loader/addons/nyra-test-firstboot.addon.efi"
+sudo cp "$sb/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
+sudo umount "$mnt"
 
 # The entry that starts the signed UKI with an extra kernel argument, as the boot menu editor would:
 # with Secure Boot, systemd-stub ignores it and uses the command line in the UKI.

@@ -64,7 +64,8 @@ The `install-boot` job takes the disk that `bootc install` produced and, on a co
 | the same UKI with one byte of the initramfs changed, signature kept | refused | `Error loading EFI binary \EFI\Linux\bootc\bootc_composefs-….efi: Security violation`, no system starts |
 | the same UKI without a signature | refused | same |
 | the same UKI signed with a key that is not enrolled | refused | same |
-| unsigned add-ons (`<uki>.efi.extra.d/`, `loader/addons/`), signed add-ons in both places (a control next to the UKI, the test console for every UKI), plain credentials (`tmpfiles.extra` next to the UKI, `sysctl.extra` in `loader/credentials/`) | only the signed add-ons apply | their arguments on `/proc/cmdline`, none from the unsigned ones; neither credential took effect |
+| unsigned add-ons (`<uki>.efi.extra.d/`, `loader/addons/`), signed add-ons in both places (a control next to the UKI, the test console for every UKI), plain credentials (`tmpfiles.extra` next to the UKI, `sysctl.extra` in `loader/credentials/`) | only the signed add-ons apply; with the test add-on (import on) the credentials are read (control) | their arguments on `/proc/cmdline`, none from the unsigned ones; neither credential sets its value; the boot is not clean (`systemd-sysctl` does not start) |
+| the same credentials on the ESP, with the image's command line (only a signed add-on with `systemd.firstboot=no`) | ignored | nothing fails to start (console), where the same boot with the test add-on shows the failure (control) |
 | bootc's entry + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
 | the image's command line (only a signed add-on with `systemd.firstboot=no`) + a credential over SMBIOS that adds a drop-in printing a marker | no effect | the marker never shows on the console after `multi-user.target` |
 | the same with the test console add-on (`systemd.import_credentials=yes`) | the credential applies (control) | the marker shows; in the first boot, the drop-in's file exists |
@@ -154,10 +155,10 @@ example, a root autologin from the boot menu editor. Two layers close it:
    the stub accepts it; there, any physical attacker can also boot another system, so that is not a
    boundary we can hold.
 
-Credentials: plain credential files on the ESP (`*.cred`, which systemd-stub passes on) have no
-effect, as the test shows: systemd logs them as "untrusted credentials" and only accepts them
-encrypted ("Unable to decrypt credential 'tmpfiles.extra', skipping"). Credentials encrypted for
-the machine's TPM would be accepted; that is the TPM policy question above.
+Credentials: the production image ignores credential files placed on the ESP (`*.cred`, which
+systemd-stub passes on), together with every other source, below; the test shows a clean boot with
+them present. With credential import on, systemd treats them as "untrusted" and does not use a
+plain one as a setting.
 
 The sealed command line also imports no systemd credentials at all (`systemd.import_credentials=no`,
 `/usr/lib/bootc/kargs.d/20-nyra-credentials.toml`): none from firmware tables (SMBIOS, `fw_cfg`),

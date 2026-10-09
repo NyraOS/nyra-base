@@ -328,7 +328,7 @@ jobs:
   # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
   # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> the image's UKI, signed with this
   # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
-  # and plain credentials on the ESP without effect) and tools/vm/boot-counting.sh (an update that
+  # refused, credentials on the ESP or over SMBIOS ignored) and tools/vm/boot-counting.sh (an update that
   # never gets healthy falls back after 3 tries, a healthy one is blessed).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
