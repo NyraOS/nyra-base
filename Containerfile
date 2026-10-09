@@ -54,11 +54,12 @@ RUN mkdir -p /etc/containers/registries.d && \
     ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && \
     ln -sfn /usr/lib/nyra/containers/registries.d/nyra.yaml /etc/containers/registries.d/nyra.yaml
 
-# Boot (docs/BOOT.md), on the ESP, where bootc does neither: loader.conf from /usr (no command
-# line editor at the boot menu) and three boot tries for every newly staged version.
+# Boot (docs/BOOT.md), on the ESP, where bootc does neither: at every boot the boot files (shim,
+# systemd-boot, MokManager; named and fallback copies), loader.conf (no command line editor) and the
+# "Nyra OS" firmware entry first in BootOrder; three boot tries for every newly staged version.
 RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/systemd/system/multi-user.target.wants && \
-    ln -s ../nyra-boot-loader-conf.service ../nyra-boot-counter.service . && \
-    test -f nyra-boot-loader-conf.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
+    ln -s ../nyra-boot-repair.service ../nyra-boot-counter.service . && \
+    test -f nyra-boot-repair.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
 
 # Units that Debian packages enable but that have no purpose in the base (docs/DEFAULTS.md, the
 # reasons are there), blocked from /usr; a layer that needs one creates /usr/lib/nyra/allow-<unit>.

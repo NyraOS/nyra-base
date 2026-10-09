@@ -331,8 +331,9 @@ jobs:
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
-  # (bootc install to-disk, composefs backend, systemd-boot) on a loopback file,
-  # then boots it with QEMU + KVM + OVMF. The image boots only its sealed UKI, whose command line
+  # (bootc install to-disk, composefs backend, systemd-boot, then esp-sync install for the boot
+  # files and loader.conf the installer puts on the ESP) on a loopback file, then boots it with
+  # QEMU + KVM + OVMF. The image boots only its sealed UKI, whose command line
   # cannot change, so the test-only console access (a getty on ttyS0, root autologin for that boot)
   # is set up by vm-boot.py, with a test add-on on the test disk's ESP (tools/vm/test-console.sh);
   # nothing changes in the image.
@@ -342,7 +343,10 @@ jobs:
   # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> the image's UKI, signed with this
   # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
   # refused, credentials on the ESP or over SMBIOS ignored) and tools/vm/boot-counting.sh (an update that
-  # never gets healthy falls back after 3 tries, a healthy one is blessed).
+  # never gets healthy falls back after 3 tries, a healthy one is blessed), and tools/vm/boot-protection.sh
+  # (Secure Boot, one firmware variable store across eleven boots: editor off from the first boot,
+  # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,
+  # no older boot loader over a newer one, a newer one only after the version is blessed).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
@@ -397,6 +401,14 @@ jobs:
             localhost/nyra-base:ci \
             bootc install to-disk --composefs-backend --bootloader systemd --filesystem ext4 \
               --wipe --via-loopback /output/disk.raw
+          # What the installer does next (docs/BOOT.md): the boot files and loader.conf on the new ESP,
+          # from the image, before the first boot.
+          loop="$(sudo losetup -P --show -f "$WORK/disk.raw")"
+          for p in "$loop"p*; do [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ] && esp="$p"; done
+          mkdir -p "$WORK/esp" && sudo mount "$esp" "$WORK/esp"
+          sudo podman run --rm --network none -v "$WORK/esp:/esp" localhost/nyra-base:ci \
+            /usr/lib/nyra/boot/esp-sync install /esp
+          sudo umount "$WORK/esp" && sudo losetup -d "$loop"
           echo "INSTALL_SECONDS=$((SECONDS - start))" >> "$GITHUB_ENV"
           sudo chown "$(id -u):$(id -g)" "$WORK/disk.raw"
           tools/vm/test-console.sh localhost/nyra-base:ci "$WORK/disk.raw" "$WORK"
@@ -411,7 +423,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Image | \`localhost/nyra-base:ci\` \`$IMAGE_DIGEST\` |"
-            echo "| Install | \`bootc install to-disk --composefs-backend --bootloader systemd\`, ext4, loopback, ${INSTALL_SECONDS} s |"
+            echo "| Install | \`bootc install to-disk --composefs-backend --bootloader systemd\`, ext4, loopback, then \`esp-sync install\` on the ESP, ${INSTALL_SECONDS} s |"
             echo "| VM | QEMU $(qemu-system-x86_64 --version | head -1 | awk '{print $4}'), KVM, UEFI (OVMF), 2 vCPU, 2 GiB |"
             echo "| Test-only access | a getty on ttyS0 and root autologin, set up by vm-boot.py with a test add-on on the ESP (tools/vm/test-console.sh); the image's command line has no console |"
             echo
@@ -438,6 +450,14 @@ jobs:
         run: |
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/vm/secure-boot.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Boot protection (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/boot-protection.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Boot counting across updates (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

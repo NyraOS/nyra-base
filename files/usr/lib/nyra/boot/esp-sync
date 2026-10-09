@@ -1,20 +1,127 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra OS: what bootc does not do on the ESP, see docs/BOOT.md.
-#   esp-sync loader-conf   at boot: /boot/loader/loader.conf = /usr/lib/nyra/boot/loader.conf
+#   esp-sync install ESP   at install time, on the mounted ESP of the new system: the boot files
+#                          below and loader/loader.conf, before the first boot (no firmware entry)
+#   esp-sync repair        at every boot, on /boot: the same files where missing or damaged, never
+#                          an older version over a newer one, a newer version only from a blessed
+#                          boot; then the "Nyra OS" firmware entry, first in BootOrder
 #   esp-sync boot-counter  at shutdown, before bootc-finalize-staged moves the staged entries in:
 #                          the new entry gets three tries (systemd boot counting, "+3")
+# The boot files are two independent copies, so one damaged copy still leaves a way to boot:
+#   EFI/nyra/shimx64.efi   started by the "Nyra OS" firmware entry
+#   EFI/BOOT/BOOTX64.EFI   the fallback path, started by any firmware that has no boot entries
+# each shim with systemd-boot as grubx64.efi (the name shim starts) and MokManager (mmx64.efi)
+# next to it.
 set -eu
 
-loader_conf() {
-	src=/usr/lib/nyra/boot/loader.conf
-	dst=/boot/loader/loader.conf
+SHIM=/usr/lib/shim/shimx64.efi.signed
+MOKMANAGER=/usr/lib/shim/mmx64.efi.signed
+SDBOOT=/usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed
+LOADER_CONF=/usr/lib/nyra/boot/loader.conf
+LABEL="Nyra OS"
+TAB="$(printf '\t')"
+
+# Replaces DST with SRC only when they differ: a new file next to it, then a rename, so an
+# interrupted or failed write (ESP full) leaves the old file in place.
+put() {
+	src="$1" dst="$2"
 	cmp -s "$src" "$dst" && return 0
-	cp "$src" "$dst.nyra-new"
-	sync
-	mv -f "$dst.nyra-new" "$dst"
-	sync
+	if ! mkdir -p "${dst%/*}" || ! cp "$src" "$dst.nyra-new" || ! sync; then
+		rm -f "$dst.nyra-new"
+		echo "esp-sync: could not write $dst" >&2
+		return 1
+	fi
+	mv -f "$dst.nyra-new" "$dst" && sync || return 1
 	echo "esp-sync: $dst updated from $src"
+}
+
+# "<component> <version>" from the Debian line of a binary's SBAT section (plain text in the PE file),
+# for example "shim.debian 16.1" or "systemd-boot.debian 262-1"; empty if there is none.
+sbat() {
+	grep -a -m 1 -oE '^[a-z0-9-]+\.debian,[0-9]+,[^,]+,[^,]+,[^,]+,' "$1" 2>/dev/null | head -n 1 |
+		awk -F , '{ print $1, $5 }'
+}
+
+# Version $1 is newer than version $2.
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+
+# This boot may bring newer boot binaries to the ESP: at install time, or once this system version
+# is blessed (systemd-bless-boot: "good" once boot-complete.target was reached in a counted boot,
+# "clean" when the entry has no counter any more, from the boot after that on). A version still on
+# trial must not replace what works. After a soft reboot the status is that of the last full boot,
+# which may have been another version: not blessed.
+blessed() {
+	[ "$MODE" = install ] && return 0
+	[ "$(systemctl show -P SoftRebootsCount 2>/dev/null || echo 1)" = 0 ] || return 1
+	case "$(/usr/lib/systemd/systemd-bless-boot status 2>/dev/null)" in good | clean) return 0 ;; esac
+	return 1
+}
+
+# A boot binary: written when missing or damaged (no SBAT, another component, the same version with
+# other bytes). Never an older version over a newer one: a newer shim or systemd-boot may be there
+# because of a revocation (SBAT, dbx), and writing the old one back could leave both copies
+# unbootable under Secure Boot. A newer version only from a blessed boot.
+boot_file() {
+	src="$1" dst="$2"
+	cmp -s "$src" "$dst" && return 0
+	[ -e "$dst" ] || { put "$src" "$dst"; return; }
+	s="$(sbat "$src")" d="$(sbat "$dst")"
+	[ -n "$s" ] || { echo "esp-sync: no SBAT version in $src" >&2; return 1; }
+	if [ -z "$d" ] || [ "${d% *}" != "${s% *}" ] || [ "${d#* }" = "${s#* }" ]; then
+		put "$src" "$dst"
+	elif newer "${d#* }" "${s#* }"; then
+		# A warning in the journal (the <4> prefix): a newer boot loader than the running system's.
+		echo "<4>esp-sync: $dst (${d#* }) is newer than this image's (${s#* }): kept"
+	elif blessed; then
+		put "$src" "$dst"
+	else
+		echo "esp-sync: $dst: ${s#* } from this image replaces ${d#* } once this version is blessed"
+	fi
+}
+
+# All boot files on the ESP mounted at $1. EFI/nyra first: if this stops half-way, the fallback
+# copy in EFI/BOOT is still complete.
+files() {
+	esp="$1" rc=0
+	boot_file "$SHIM" "$esp/EFI/nyra/shimx64.efi" || rc=1
+	boot_file "$SDBOOT" "$esp/EFI/nyra/grubx64.efi" || rc=1
+	boot_file "$MOKMANAGER" "$esp/EFI/nyra/mmx64.efi" || rc=1
+	boot_file "$SHIM" "$esp/EFI/BOOT/BOOTX64.EFI" || rc=1
+	boot_file "$SDBOOT" "$esp/EFI/BOOT/grubx64.efi" || rc=1
+	boot_file "$MOKMANAGER" "$esp/EFI/BOOT/mmx64.efi" || rc=1
+	put "$LOADER_CONF" "$esp/loader/loader.conf" || rc=1
+	return "$rc"
+}
+
+# Firmware boot entries labelled "Nyra OS" (efibootmgr -v lines).
+labelled() { efibootmgr -v | grep "^Boot[0-9A-F]\{4\}\*\{0,1\} $LABEL$TAB" || true; }
+
+# The "Nyra OS" firmware entry for EFI/nyra/shimx64.efi on the ESP at /boot, first in BootOrder.
+# Only entries for this ESP are touched: one with that label and another file is replaced; entries
+# of another Nyra installation (another disk, a USB stick) and BootNext are left alone.
+firmware_entry() {
+	dev="$(findmnt -no SOURCE -t vfat /boot)" && [ -b "$dev" ] || { echo "esp-sync: no ESP at /boot" >&2; return 1; }
+	part="$(cat "/sys/class/block/${dev##*/}/partition")" || return 1
+	disk="/dev/$(lsblk -no PKNAME "$dev")" && partuuid="$(lsblk -no PARTUUID "$dev")" || return 1
+	num="$(labelled | grep -iF "$partuuid" | grep -iF 'nyra\shimx64.efi' | head -n 1 | cut -c 5-8)"
+	if [ -z "$num" ]; then
+		for n in $(labelled | grep -iF "$partuuid" | cut -c 5-8); do efibootmgr -q -b "$n" -B || return 1; done
+		efibootmgr -q -c -d "$disk" -p "$part" -L "$LABEL" -l '\EFI\nyra\shimx64.efi' || return 1
+		num="$(labelled | grep -iF "$partuuid" | head -n 1 | cut -c 5-8)"
+		[ -n "$num" ] || { echo "esp-sync: could not create the \"$LABEL\" firmware entry" >&2; return 1; }
+		echo "esp-sync: firmware entry Boot$num \"$LABEL\" created"
+	fi
+	labelled | grep -q "^Boot$num\*" || efibootmgr -q -b "$num" -a || return 1
+	order="$(efibootmgr | sed -n 's/^BootOrder: //p')"
+	case "$order" in
+	"$num" | "$num",*) ;;
+	*)
+		rest="$(printf '%s\n' "$order" | tr ',' '\n' | grep -vx "$num" | paste -sd ',' -)"
+		efibootmgr -q -o "$num${rest:+,$rest}" || return 1
+		echo "esp-sync: BootOrder was ${order:-empty}, Boot$num \"$LABEL\" is first again"
+		;;
+	esac
 }
 
 boot_counter() {
@@ -49,11 +156,22 @@ boot_counter() {
 	sync
 }
 
-case "${1:-}" in
-loader-conf) loader_conf ;;
+MODE="${1:-}"
+case "$MODE" in
+install)
+	[ -d "${2:-}/EFI" ] || { echo "usage: esp-sync install ESP (the mounted ESP, with its EFI directory)" >&2; exit 2; }
+	files "$2"
+	;;
+repair)
+	# Both run even if the files fail (ESP full): the firmware entry needs no space on it.
+	rc=0
+	files /boot || rc=1
+	firmware_entry || rc=1
+	exit "$rc"
+	;;
 boot-counter) boot_counter ;;
 *)
-	echo "usage: esp-sync loader-conf|boot-counter" >&2
+	echo "usage: esp-sync install ESP|repair|boot-counter" >&2
 	exit 2
 	;;
 esac
