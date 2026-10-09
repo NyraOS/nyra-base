@@ -17,16 +17,40 @@ image="$1" image_digest="$2" disk="$3" work="$4" logs="$5" summary="$6"
 bc="$work/boot-counting"
 mkdir -p "$bc/context"
 
-sudo podman build -q -t localhost/nyra-test:unhealthy -f - "$bc/context" <<EOF
-FROM $image
+# A test version is IMAGE plus one change, so its composefs digest differs and its UKI must be
+# rebuilt (docs/BOOT.md): from the committed root filesystem, with the kernel and initramfs taken
+# out of IMAGE's UKI. Unsigned: these boots run without Secure Boot.
+cat > "$bc/kernel-from-uki.py" <<'EOF'
+import sys
+import pefile
+pe = pefile.PE(sys.argv[1])
+for s in pe.sections:
+    name = {b".linux": "vmlinuz", b".initrd": "initramfs.img"}.get(s.Name.rstrip(b"\0"))
+    if name:
+        with open(f"{sys.argv[2]}/{name}", "wb") as f:
+            f.write(s.get_data()[:s.Misc_VirtualSize])
+EOF
+test_version() { # test_version TAG: the change comes on stdin, as Containerfile RUN lines
+  local t="$1"
+  { echo "FROM $image"; echo "RUN rm -rf /boot/EFI"; cat; } | sudo podman build -q -t "localhost/nyra-test:$t-rootfs" -f - "$bc/context"
+  mkdir -p "$bc/$t-uki"
+  sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
+    --mount "type=image,source=localhost/nyra-test:$t-rootfs,target=/target" \
+    -v "$bc/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$bc/$t-uki:/out" "$image" \
+    sh -c 'u="$(ls /boot/EFI/Linux/*.efi)" && k="$(basename "$u" .efi)" && mkdir -p "/tmp/kernel/$k" &&
+      python3 /kernel-from-uki.py "$u" "/tmp/kernel/$k" &&
+      bootc container ukify --rootfs /target --kernel-dir "/tmp/kernel/$k" -- --output "/out/$k.efi"'
+  printf 'FROM localhost/nyra-test:%s-rootfs\nCOPY --from=uki . /boot/EFI/Linux/\n' "$t" |
+    sudo podman build -q -t "localhost/nyra-test:$t" --build-context uki="$bc/$t-uki" -f - "$bc/context"
+}
+test_version unhealthy <<'EOF'
 RUN printf '%s\n' '[Unit]' 'Description=Test only: a health check that always fails' \
       'Before=boot-complete.target' '[Service]' 'Type=oneshot' 'ExecStart=/usr/bin/false' \
       > /usr/lib/systemd/system/nyra-test-unhealthy.service && \
     mkdir -p /usr/lib/systemd/system/boot-complete.target.requires && \
     ln -s ../nyra-test-unhealthy.service /usr/lib/systemd/system/boot-complete.target.requires/
 EOF
-sudo podman build -q -t localhost/nyra-test:healthy -f - "$bc/context" <<EOF
-FROM $image
+test_version healthy <<'EOF'
 RUN echo healthy > /usr/lib/nyra-test-version
 EOF
 tools/signing/local-registry.sh "$bc"

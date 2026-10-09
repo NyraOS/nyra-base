@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Builds nyra-base (desktop: Debian unstable, x86_64):
 #   bootc from source (on Debian testing) -> mkosi root filesystem from the pinned
-#   snapshot -> bootc layer (Containerfile) -> `bootc container lint --fatal-warnings`.
+#   snapshot -> bootc layer (Containerfile) -> sealed UKI, signed with a key made for the run
+#   (ci/build-image.sh, docs/BOOT.md) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
 # bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
 # documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
@@ -97,6 +98,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-24.04
+    outputs:
+      uki_cert: ${{ steps.image.outputs.uki_cert }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -188,15 +191,19 @@ jobs:
           path: ~/cache/mkosi-packages
           key: ${{ steps.mkosi-cache.outputs.cache-primary-key }}
 
-      - name: Add the bootc layer and lint
+      # The UKI is signed with a key made for this run only (ci/build-image.sh, docs/BOOT.md); its
+      # certificate goes to install-boot as a job output, for the Secure Boot test.
+      - name: Add the bootc layer, the sealed UKI, and lint
+        id: image
         run: |
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool >/dev/null
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
-          sudo podman build --timestamp "$SOURCE_DATE_EPOCH" \
+          ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
             --label org.opencontainers.image.version="$SNAPSHOT" \
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" \
-            -t localhost/nyra-base:ci -f Containerfile . 2>&1 | tee "$WORK/build.log"
+            --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
+          echo "uki_cert=$(base64 -w0 "$WORK/uki/uki.crt")" >> "$GITHUB_OUTPUT"
 
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
@@ -312,15 +319,16 @@ jobs:
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot) on a loopback file,
-  # then boots it with QEMU + KVM + OVMF. Test-only access, nothing changed in the
-  # image: console=ttyS0 is an install-time kernel argument on this test disk, and
-  # vm-boot.py --autologin logs in on the serial console through a systemd credential.
+  # then boots it with QEMU + KVM + OVMF. The image boots only its sealed UKI, whose command line
+  # cannot change, so the test-only console access (a getty on ttyS0, root autologin for that boot)
+  # is set up by vm-boot.py through QEMU; nothing changes in the image.
   # The digest check reads only the booted entry (--booted drops staged and rollback)
   # and needs exactly one imageDigest there, equal to the loaded image's.
   # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
-  # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> UKI signed with a throwaway key
-  # enrolled as MOK; unsigned and wrongly signed UKIs refused) and tools/vm/boot-counting.sh (an
-  # update that never gets healthy falls back after 3 tries, a healthy one is blessed).
+  # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> the image's UKI, signed with this
+  # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
+  # and plain credentials on the ESP without effect) and tools/vm/boot-counting.sh (an update that
+  # never gets healthy falls back after 3 tries, a healthy one is blessed).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
@@ -374,7 +382,7 @@ jobs:
             -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v "$WORK:/output" \
             localhost/nyra-base:ci \
             bootc install to-disk --composefs-backend --bootloader systemd --filesystem ext4 \
-              --karg console=ttyS0,115200 --wipe --via-loopback /output/disk.raw
+              --wipe --via-loopback /output/disk.raw
           echo "INSTALL_SECONDS=$((SECONDS - start))" >> "$GITHUB_ENV"
           sudo chown "$(id -u):$(id -g)" "$WORK/disk.raw"
           qemu-img convert -O qcow2 "$WORK/disk.raw" "$WORK/disk.qcow2"
@@ -390,7 +398,7 @@ jobs:
             echo "| Image | \`localhost/nyra-base:ci\` \`$IMAGE_DIGEST\` |"
             echo "| Install | \`bootc install to-disk --composefs-backend --bootloader systemd\`, ext4, loopback, ${INSTALL_SECONDS} s |"
             echo "| VM | QEMU $(qemu-system-x86_64 --version | head -1 | awk '{print $4}'), KVM, UEFI (OVMF), 2 vCPU, 2 GiB |"
-            echo "| Test-only access | kernel argument \`console=ttyS0,115200\` on the test disk; root autologin on ttyS0 via a systemd credential |"
+            echo "| Test-only access | a getty on ttyS0 and root autologin, set up by vm-boot.py for this VM (the sealed UKI's command line has no console) |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           python3 tools/vm/vm-boot.py --autologin \
@@ -410,7 +418,11 @@ jobs:
 
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: tools/vm/secure-boot.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/secure-boot.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Boot counting across updates (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

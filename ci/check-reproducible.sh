@@ -15,8 +15,9 @@ sudo podman run --rm --privileged -v "$PWD/mkosi:/src" -v "$WORK:/work" -v ~/cac
     --extra-tree=/work/bootc:/ --source-date-epoch="$SOURCE_DATE_EPOCH" --force build
 id="$(sudo podman pull -q "oci:$WORK/out2/nyra-base-rootfs")"
 sudo podman tag "$id" localhost/nyra-base-rootfs:again
-sudo podman build -q --no-cache --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS=localhost/nyra-base-rootfs:again \
-  -t localhost/nyra-base:again -f Containerfile . >/dev/null
+# Same steps as the first build (ci/build-image.sh), with the UKI it signed: the root filesystem is
+# rebuilt and compared, the signature is not made twice.
+ci/build-image.sh localhost/nyra-base-rootfs:again localhost/nyra-base:again "$WORK/uki" -q --no-cache >/dev/null
 
 layers() { sudo podman image inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$1"; }
 if diff <(layers localhost/nyra-base:ci) <(layers localhost/nyra-base:again); then

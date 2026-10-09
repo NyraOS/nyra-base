@@ -138,14 +138,33 @@ Each line is something that broke or surprised us once.
 - Under Secure Boot with a UKI, the kernel command line is the one inside the UKI: arguments from
   `/usr/lib/bootc/kargs.d` reach Type #1 entries (bootc install, updates), not a hand-built UKI.
 
+## Sealed UKI (docs/BOOT.md)
+- bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
+  `bootc container ukify` (it needs `ukify` in the image: `systemd-ukify`). A UKI in
+  `/boot/EFI/Linux/` makes `bootc install` write only a `uki` entry (systemd-boot's key for a UKI
+  path), for `EFI/Linux/bootc/bootc_composefs-<digest>.efi`.
+- The composefs digest covers file times. `podman build --timestamp` rewrites them when it commits,
+  so a UKI computed from the build stage does not match the image: compute it from the committed
+  image (`podman run --mount type=image,…`).
+- `bootc install --karg` is refused with a UKI, and the sealed command line cannot get
+  `console=ttyS0` for tests. The credential `getty.ttys.serial=ttyS0` gives a getty on the serial
+  port without it. In QEMU without a display, systemd-stub appends `console=uart,io,0x3f8` by itself,
+  so kernel messages still arrive; "no system started" checks also look for the login prompt.
+- Credentials that systemd-stub picks up from the ESP (`*.cred`) arrive as "untrusted": systemd
+  only uses them if they decrypt, so a plain file has no effect.
+- Any image built on top of a sealed image needs a new UKI (its digest changes); the kernel and
+  initramfs can be taken out of the old UKI's `.linux` and `.initrd` sections.
+- Boot counting keeps working on bootc's `uki` entries (`…+3.conf`): the UKI's own name must not
+  change, bootc refers to it by path.
+
 ## Testing in CI
 - The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`
   takes ~15 s, and the installed system reaches the login prompt 12–16 s after QEMU starts
   (`systemd-analyze`: 9–11 s).
 - With root autologin the shell prompt can appear in the same instant as the login prompt: wait for it
   from the end of the login prompt, not from whatever the console buffer holds when you look.
-- On x86 the serial console needs `console=ttyS0`. The test passes it with `bootc install --karg`, so it
-  lives only in the test disk's boot entry, never in the image.
+- On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
+  pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
   in `/etc/shadow`. For console access the test passes a `systemd.unit-dropin.serial-getty@ttyS0.service`
   credential over SMBIOS (root autologin for that boot only).

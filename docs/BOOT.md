@@ -14,71 +14,122 @@ The image ships the signed boot binaries from Debian: `shim-signed` (`/usr/lib/s
 `mmx64.efi.signed`, plus `mokutil`) and `systemd-boot-efi-amd64-signed`. `bootc install` runs
 `bootctl install`, which prefers the `.signed` systemd-boot, so the ESP gets the Debian-signed one.
 
+## The sealed UKI (`ci/build-image.sh`)
+
+The image boots only a UKI (Unified Kernel Image: systemd-stub + kernel + initramfs + command
+line in one PE file), built in the image build with bootc's sealed-image flow:
+
+1. **Root filesystem without kernel** (Containerfile target `sealed`): `bootc container
+   split-kernel-and-rootfs` moves `vmlinuz` and `initramfs.img` out of `/usr/lib/modules/<kver>/`,
+   since they end up inside the UKI. The image is committed.
+2. **UKI** from that committed image: `bootc container ukify` computes the composefs digest of the
+   root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today `rw
+   lockdown=integrity composefs=…`: no root device, systemd-gpt-auto-generator finds the root
+   partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
+   build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
+   covers them. bootc checks the digest again at install and update, and refuses a UKI that does
+   not match.
+3. **Signing outside the image build.** In CI the UKI is signed with a key made for that run only:
+   generated, used once, deleted; only its certificate leaves the step (a job output), for the
+   Secure Boot test. Nothing persists, nothing is cached or uploaded.
+4. **Final image:** the committed root filesystem plus the signed UKI in `/boot/EFI/Linux/<kver>.efi`.
+
+`bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
+the ESP and a boot entry of type `uki` (`loader/entries/*.conf` with a single `uki` line, no `linux`,
+`initrd` or `options`). Updates do the same. External kernel arguments are refused
+(`bootc install --karg` fails with a UKI), so the test console is set up differently, below.
+
+Test versions built on top of the image (boot counting) need their own UKI, because any change
+changes the digest: `tools/vm/boot-counting.sh` takes the kernel and initramfs out of the image's
+UKI and runs `bootc container ukify` on the committed test image (unsigned: those boots run without
+Secure Boot).
+
 ## What CI proves (`tools/vm/secure-boot.sh`)
 
 The `install-boot` job takes the disk that `bootc install` produced and, on a copy of it:
 
-1. generates two throwaway keys on the runner: `test` and `other`;
-2. enrolls `test` as a MOK (Machine Owner Key) directly in the firmware variables with
-   `virt-fw-vars --add-mok`, on top of Ubuntu's OVMF variables with Secure Boot on and the
-   Microsoft keys (this stands in for the user confirming the key in MokManager);
-3. builds a UKI with `ukify` from the kernel, initramfs and the whole `options` line of the entry bootc
-   wrote (so the composefs digest and the root device are inside the signed file), and signs it with
-   `test`; the same UKI is also kept unsigned and signed with `other`;
-4. lays out the ESP the way the installer will: shim as `\EFI\BOOT\BOOTX64.EFI`, systemd-boot next
-   to it as `grubx64.efi` (the name shim starts), MokManager as `mmx64.efi`, the UKI in
-   `\EFI\Linux\`, and no Type #1 entry;
-5. boots it with the Secure Boot firmware (OVMF `secboot`, SMM).
+1. checks that the ESP holds only the UKI: one `uki` entry for `EFI/Linux/bootc/bootc_composefs-<digest>.efi`,
+   no kernel or initramfs file anywhere, and that UKI verifies against this run's certificate;
+2. enrolls this run's UKI certificate, and a local add-on test key, as MOKs (Machine Owner Keys)
+   directly in the firmware variables with `virt-fw-vars --add-mok`, on top of Ubuntu's OVMF
+   variables with Secure Boot on and the Microsoft keys (this stands in for the user confirming the
+   key in MokManager);
+3. lays out the ESP the way the installer will: shim as `\EFI\BOOT\BOOTX64.EFI`, systemd-boot next
+   to it as `grubx64.efi` (the name shim starts), MokManager as `mmx64.efi`;
+4. boots it with the Secure Boot firmware (OVMF `secboot`, SMM).
 
 | Boot | Expected | Checked in the guest or on the console |
 |---|---|---|
-| UKI signed with `test` | boots | `mokutil --sb-state` = enabled, `test` listed by `mokutil --list-enrolled` (only shim publishes that list), entry `nyra-test.efi` started through systemd-stub, kernel lockdown `[integrity]`, composefs digest on `/proc/cmdline`, system `running` |
-| UKI without a signature | refused | `Error loading EFI binary \EFI\Linux\nyra-test.efi: Security violation`, no kernel |
-| UKI signed with `other` | refused | same |
-| entry `efi <signed UKI>` + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
+| the image's UKI, signed with this run's key | boots | `mokutil --sb-state` = enabled, the key listed by `mokutil --list-enrolled` (only shim publishes that list), bootc's entry started through systemd-stub, kernel lockdown `[integrity]`, `composefs=<digest>` on `/proc/cmdline`, system `running` |
+| the same UKI with one byte of the initramfs changed, signature kept | refused | `Error loading EFI binary \EFI\Linux\bootc\bootc_composefs-….efi: Security violation`, no system starts |
+| the same UKI without a signature | refused | same |
+| the same UKI signed with a key that is not enrolled | refused | same |
+| unsigned add-ons (`<uki>.efi.extra.d/`, `loader/addons/`), a signed control add-on, plain credentials (`<uki>.efi.extra.d/`, `loader/credentials/`) | only the signed add-on applies | its argument on `/proc/cmdline`, none from the unsigned ones; the `tmpfiles.extra` credentials did not create their files |
+| bootc's entry + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
 
-The `test` key is not in the firmware's `db`, so only shim (through the MOK list) can have accepted
-the signed UKI: systemd-boot loads images through shim's verification protocol. The keys exist only
-in the job's work directory on the ephemeral runner and are deleted at the end.
+The keys are not in the firmware's `db`, so only shim (through the MOK list) can have accepted the
+signed UKI: systemd-boot loads images through shim's verification protocol, and systemd-stub does
+the same for add-ons. "No system starts" means neither a kernel message nor a login prompt within
+60 s. The keys made by the test live only in the job's work directory on the ephemeral runner and
+are deleted at the end.
+
+**Console access in the tests.** The sealed command line has no `console=ttyS0`, and the image does
+not get one for the tests' sake: the test harness (`vm-boot.py`) sets up a getty on the serial port,
+and root autologin, for the test VM only. Kernel messages still reach the serial log in the VM:
+systemd-stub itself appended `console=uart,io,0x3f8` to the command line (observed in CI; it does so
+when the firmware's only console is a serial port). That is the one thing the stub adds to the
+sealed command line; on a machine with a screen it adds nothing.
 
 Not covered yet: the real installer, MokManager enrollment on a real machine, a kernel built and
 signed by Nyra (today it is Debian's), and revocation: what happens when SBAT or `dbx` updates
 revoke an old shim or systemd-boot.
 
-## What changes for the real Nyra key
+## What remains for the real Nyra key
 
-Nothing in the chain; only where the key lives and who signs:
+The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and when:
 
-- **The key** is generated offline and kept on a hardware token, so that a compromised CI runner or
-  developer machine cannot sign a boot image; CI and automated tooling never see it.
-  Only its certificate goes into the image (for example `/usr/lib/nyra/secureboot/nyra.crt`), for the
-  installer.
+- **The key** is generated offline and kept on a hardware token (or in a KMS/HSM), so that a
+  compromised CI runner or developer machine cannot sign a boot image; CI and automated tooling
+  never see it. Only its certificate goes into the image (for example
+  `/usr/lib/nyra/secureboot/nyra.crt`), for the installer.
+- **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one:
+  either a signing service backed by the token or KMS (`sbsign` through PKCS#11, or
+  `systemd-sbsign` with a provider), or bootc's external-signing flow (the UKI is signed offline and
+  injected, bootc#1498). Still to decide with a security review, together with image signing:
+  both stay off until `main` is a protected branch (`docs/SIGNING.md`).
 - **Enrollment:** the installer runs `mokutil --import` with that certificate; on the next boot the
-  user confirms it once in MokManager (a one-time password shown by the installer). This is the same
-  step Debian and Ubuntu use for DKMS keys. A machine whose owner prefers it can put the
-  certificate in `db` instead (setup mode); shim checks `db` too.
-- **The UKI comes from the image build**, not from the test: bootc's sealed-image flow
-  (`bootc container split-kernel-and-rootfs`, then `bootc container ukify`, which puts the composefs
-  digest on the command line), the signed UKI copied to `/boot/EFI/Linux/` in the image. bootc then
-  installs and updates UKIs (`bootType: uki`) and writes no Type #1 entries. Signing it without
-  putting the key in CI needs one of: a signing service backed by the hardware key or a KMS (`sbsign`
-  through PKCS#11), or bootc's external-signing flow (CI builds the unsigned UKI, it is signed
-  offline, the signed file is injected). Still to decide, with a security review. Image signing stays
-  off until `main` is a protected branch, because anyone who can push to `main` could otherwise get
-  their code signed (`docs/SIGNING.md`); the same rule applies here.
+  user confirms it once in MokManager (a one-time password shown by the installer). A machine whose
+  owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.
+- **Add-ons:** the Nyra key never signs a generic command-line add-on. A signed add-on applies to
+  any Nyra UKI (the control add-on in the test proves that), so one such file would undo the fixed
+  command line on every machine.
 - **shim on the ESP:** bootc installs only systemd-boot. The installer copies shim and MokManager
   from `/usr/lib/shim/` (as the test does), and the updater must keep shim current for SBAT and
-  `dbx` revocations, or a revoked shim stops booting. `bootctl update` does not overwrite shim (it
-  only replaces systemd-boot).
+  `dbx` revocations, or a revoked shim stops booting. `bootctl update` does not overwrite shim.
 - **Kernel modules** are signed by Debian today; once Nyra builds its own kernel, its modules will be
   signed with the Nyra key in the MOK list.
 
-### Until then: the gap in today's install
+### What Secure Boot alone does not stop
 
-Today bootc installs Type #1 entries (kernel and initramfs as separate files, command line in the
-entry). With Secure Boot on, shim accepts the Debian-signed kernel, but **nothing verifies the
-initramfs or the command line**. Only the signed UKI closes that, which is why production must boot
-UKIs only.
+shim trusts everything Debian signs. Anyone who can write the ESP (root on the machine, or the
+disk out of the machine) can add a boot entry with a Debian-signed kernel and an initramfs of their
+own: shim accepts the kernel, and nothing checks that initramfs. Secure Boot therefore keeps
+unsigned code out of the boot, but does not by itself prove that the Nyra UKI booted. Two rules
+follow, for the owner to confirm when TPM unlock is built:
+
+- **TPM2 unlock never depends on PCR 7 alone** (PCR 7 says "Secure Boot on, these keys", which a
+  Debian-signed boot also satisfies). It binds to a **signed policy on PCR 11** (the UKI's sections
+  as measured by systemd-stub; `ukify --measure` with `--pcr-private-key`, policy signed by a Nyra
+  key) **plus PCR 7**. That needs `systemd-measure`/`ukify --measure` in the signing step and the
+  public PCR key in the image; not built yet.
+- **An old Nyra UKI, still validly signed, can boot an old image version** if someone puts it on
+  the ESP (bootc has no downgrade protection either, LESSONS). Options, not decided:
+  - SBAT generations in the UKI (`.sbat` section): revoking old ones needs shim's SBAT policy
+    update on every machine; coarse, and a mistake bricks boots;
+  - the TPM policy: sign the PCR 11 policy with a key per release line, and stop signing old
+    policies (or rotate the policy key), so an old UKI boots but no longer unlocks the disk;
+  - both. Decision points for the owner: which of these, how often the policy key rotates, and
+    whether an old version may still boot without unlocking (recovery) or must not boot at all.
 
 ## The kernel command line is fixed
 
@@ -86,20 +137,21 @@ The security review of the install and boot test (#3) found that `systemd.set_cr
 `systemd.unit-dropin.*` work from the kernel command line, so anyone at the keyboard could add, for
 example, a root autologin from the boot menu editor. Two layers close it:
 
-1. **`editor no`** (now): `/usr/lib/nyra/boot/loader.conf` is copied to the ESP's
-   `loader/loader.conf` by `nyra-boot-loader-conf.service` at every boot when they differ.
-   systemd-boot reads its settings only from the ESP, the editor is on by default, and
-   `bootctl install` writes a loader.conf without it; there is no `/usr` hook in bootc or bootctl.
-   The very first boot after installation still has the editor until that unit runs: the installer
-   should write the file too.
-2. **UKI with a fixed command line under Secure Boot** (the direction): systemd-stub ignores any
-   command line passed by the boot loader when Secure Boot is on and the UKI has its own `.cmdline`.
-   CI proves it (last row of the table above). Without Secure Boot the stub accepts it; there, any
-   physical attacker can also boot another system, so that is not a boundary we can hold.
+1. **`editor no`**: `/usr/lib/nyra/boot/loader.conf` is copied to the ESP's `loader/loader.conf`
+   by `nyra-boot-loader-conf.service` at every boot when they differ. systemd-boot reads its
+   settings only from the ESP, the editor is on by default, and `bootctl install` writes a
+   loader.conf without it; there is no `/usr` hook in bootc or bootctl. The very first boot after
+   installation still has the editor until that unit runs: the installer should write the file too.
+2. **The sealed UKI:** systemd-stub ignores any command line passed by the boot loader when Secure
+   Boot is on and the UKI has its own `.cmdline` (last row of the table above). Without Secure Boot
+   the stub accepts it; there, any physical attacker can also boot another system, so that is not a
+   boundary we can hold.
 
-Still open: whether to also stop importing credentials from firmware tables (SMBIOS, `fw_cfg`) in
-production (`systemd.import_credentials=no` in the sealed command line), which the tests use for
-console access; a security review decides.
+Credentials: plain credential files on the ESP (`*.cred`, which systemd-stub passes on) have no
+effect, as the test shows: systemd logs them as "untrusted credentials" and only accepts them
+encrypted ("Unable to decrypt credential 'tmpfiles.extra', skipping"). Credentials encrypted for
+the machine's TPM would be accepted; that is the TPM policy question above. Further hardening of
+the sealed command line is tracked separately.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 
@@ -124,7 +176,13 @@ unhealthy version (a test-only unit required by `boot-complete.target` fails), w
 times and is never blessed; systemd-boot falls back to the installed version on its own; that one
 switches to a healthy version, which is blessed on its first boot.
 
+**With UKIs** nothing changes: bootc still writes a Type #1 entry per version, of type `uki`
+(`uki /EFI/Linux/bootc/bootc_composefs-<digest>.efi`), and systemd-boot counts tries on that entry's file
+name exactly as before. The counter does not move into the UKI's file name: bootc refers to the UKI
+by its exact path from the entry, and the UKI is not auto-discovered (it is under
+`EFI/Linux/bootc/`, which systemd-boot does not scan). `nyra-boot-counter` finds the running
+system's entry by the digest in the UKI's file name (or, for Type #1 kernels, in `options`).
+
 Still to build (in `nyra-updated`, LESSONS): an automatic reboot when a health check fails (in CI
 the test powers the VM off after each try), marking the failed version so it is not offered or
-staged again, the full reboot after a failed soft reboot, and moving the counter into the UKI file
-name (`EFI/Linux/…+3.efi`) when we switch to UKIs.
+staged again, and the full reboot after a failed soft reboot.

@@ -2,8 +2,13 @@
 # nyra-base: the bootc layer on top of the mkosi output (mkosi/mkosi.conf).
 # The initramfs and root filesystem steps follow bootcrew/mono (Apache-2.0,
 # https://github.com/bootcrew/mono).
+# Sealed boot (docs/BOOT.md): the kernel and initramfs leave /usr and go into a UKI whose command
+# line pins the composefs digest. ci/build-image.sh runs the steps: target "sealed", the UKI from
+# that committed image (bootc container ukify), signing outside the build, then this file again
+# with SEALED=<the committed image> and the signed UKI as the build context "uki".
 ARG ROOTFS=localhost/nyra-base-rootfs:latest
-FROM ${ROOTFS}
+ARG SEALED=sealed
+FROM ${ROOTFS} AS base
 
 # bootc expects the kernel next to its modules.
 RUN kver="$(ls /usr/lib/modules)" && [ "$(echo "$kver" | wc -l)" = 1 ] && \
@@ -79,5 +84,15 @@ RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt /var && \
     printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' > /usr/lib/ostree/prepare-root.conf && \
     sed -i 's|^HOME=.*|HOME=/var/home|' /etc/default/useradd
 
+FROM base AS kernel
+RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+FROM kernel AS sealed
+RUN rm -rf /kernel
+
+# The final image: the sealed root filesystem plus the signed UKI. bootc installs and updates only
+# the UKI (a "uki" boot entry), never a kernel and initramfs of its own.
+FROM ${SEALED}
+COPY --from=uki . /boot/EFI/Linux/
 LABEL containers.bootc=1
 RUN bootc container lint --fatal-warnings
