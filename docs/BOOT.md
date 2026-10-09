@@ -111,9 +111,10 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
 - **Add-ons:** the Nyra key never signs a generic command-line add-on. A signed add-on applies to
   any Nyra UKI (the control add-on in the test proves that), so one such file would undo the fixed
   command line on every machine.
-- **shim on the ESP:** bootc installs only systemd-boot. The installer copies shim and MokManager
-  from `/usr/lib/shim/` (as the test does), and the updater must keep shim current for SBAT and
-  `dbx` revocations, or a revoked shim stops booting. `bootctl update` does not overwrite shim.
+- **shim on the ESP:** bootc installs only systemd-boot. `esp-sync install` puts shim and MokManager
+  from `/usr/lib/shim/` on the ESP at install time, and `nyra-boot-repair` keeps them equal to the
+  booted image's at every boot (see "Boot protection"), so an image with a newer shim brings it to
+  the ESP for SBAT and `dbx` revocations. `bootctl update` does not overwrite shim.
 - **Kernel modules** are signed by Debian today; once Nyra builds its own kernel, its modules will be
   signed with the Nyra key in the MOK list.
 
@@ -145,11 +146,12 @@ The security review of the install and boot test (#3) found that `systemd.set_cr
 `systemd.unit-dropin.*` work from the kernel command line, so anyone at the keyboard could add, for
 example, a root autologin from the boot menu editor. Two layers close it:
 
-1. **`editor no`**: `/usr/lib/nyra/boot/loader.conf` is copied to the ESP's `loader/loader.conf`
-   by `nyra-boot-loader-conf.service` at every boot when they differ. systemd-boot reads its
-   settings only from the ESP, the editor is on by default, and `bootctl install` writes a
-   loader.conf without it; there is no `/usr` hook in bootc or bootctl. The very first boot after
-   installation still has the editor until that unit runs: the installer should write the file too.
+1. **`editor no`**: `/usr/lib/nyra/boot/loader.conf` is written to the ESP's `loader/loader.conf`
+   at install time (`esp-sync install`) and again by `nyra-boot-repair.service` at every boot when
+   they differ. systemd-boot reads its settings only from the ESP, the editor is on by default, and
+   `bootctl install` writes a loader.conf without it; there is no `/usr` hook in bootc or bootctl.
+   CI checks the file on the installed disk before its first boot, and that the first boot found
+   nothing to repair.
 2. **The sealed UKI:** systemd-stub ignores any command line passed by the boot loader when Secure
    Boot is on and the UKI has its own `.cmdline` (last row of the table above). Without Secure Boot
    the stub accepts it; there, any physical attacker can also boot another system, so that is not a
@@ -167,6 +169,55 @@ boot; settings for a machine come from the installer and from `/etc`. Only an ad
 enrolled key could turn import back on, which is why the Nyra key never signs a generic
 command-line add-on. Without credentials, `systemd-firstboot` asks for its settings at the first
 boot, so the installer must provide them.
+
+## Boot protection (`tools/vm/boot-protection.sh`)
+
+The firmware has to find a boot loader even when its boot entries are gone (a firmware reset or
+update), another system put itself first (Windows does after large updates), or a file on the ESP
+is damaged. `/usr/lib/nyra/boot/esp-sync` keeps two independent copies of the boot files on the ESP:
+
+| Path | Started by | Next to it |
+|---|---|---|
+| `\EFI\nyra\shimx64.efi` | the "Nyra OS" firmware entry | `grubx64.efi` (Debian-signed systemd-boot, the name shim starts), `mmx64.efi` (MokManager) |
+| `\EFI\BOOT\BOOTX64.EFI` (shim) | any UEFI firmware, without boot entries (the fallback path) | the same two files |
+
+Both lead to the same systemd-boot settings (`loader/loader.conf`) and entries. bootc's own copy of
+systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
+
+- **At install time** (`esp-sync install ESP`, from the image, on the new system's mounted ESP): the
+  two copies and `loader.conf`, before the first boot. No firmware entry: it is created by the
+  installed system itself, on the machine it runs on. bootc has no install hook, so the installer
+  calls it after `bootc install`; in CI the `install-boot` job does.
+- **At every boot** (`nyra-boot-repair.service`, `esp-sync repair`): any of those files that is
+  missing or differs from the booted image's is written again (a new file, then a rename, so a
+  failed write leaves the old one); the "Nyra OS" firmware entry is created if it is missing or
+  points elsewhere, and put first in `BootOrder` again if something else was put first. `EFI/nyra` is
+  written before `EFI/BOOT`, so an interrupted repair or update still leaves one complete copy. When
+  it cannot repair (ESP full), the unit fails and the system shows as degraded; nothing half-written
+  stays on the ESP.
+- **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
+  root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
+  no execute bit on files); CI checks it.
+
+CI follows one system through seven boots, with Secure Boot on and one firmware variable store kept
+across them (`vm-boot.py --keep-vars`):
+
+| Boot | Done before it | Expected |
+|---|---|---|
+| 0 (no boot) | `bootc install`, then `esp-sync install` | `loader.conf` with `editor no`, both copies of the boot files as in the image |
+| 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root |
+| 2 | | boots through `\EFI\nyra`; the test adds another entry, which is put first |
+| 3 | | that entry fails (its file does not exist); "Nyra OS" boots and is first again |
+| 4 | `\EFI\nyra\grubx64.efi` cut in half (an interrupted update) | the firmware falls back to `\EFI\BOOT`; the file is repaired |
+| 5 | `\EFI\BOOT\BOOTX64.EFI` and `grubx64.efi` deleted | boots through "Nyra OS"; both are back |
+| 6 | ESP filled, `\EFI\BOOT\grubx64.efi` changed by one byte | boots through "Nyra OS"; the repair fails visibly, no half-written file |
+| 7 | space freed | the repair completes |
+
+What the installer must still do (not part of this repository's tests): put the ESP on its own
+partition for Nyra (not shared with Windows), with the GPT attributes that hide it from Windows, and
+call `esp-sync install` after `bootc install`. Not covered yet: letting the user choose which system
+comes first (today "Nyra OS" is always put first again; "Restart in Windows" will use `BootNext`), a
+shim update that SBAT or `dbx` revocation forces, and a recovery entry in the boot menu.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

@@ -10,7 +10,9 @@ ask for them. The time from QEMU
 start to the login prompt and the command outputs are appended as Markdown to
 --summary (for example $GITHUB_STEP_SUMMARY).
 
---secure-boot boots the Secure Boot firmware with the given variable store.
+--secure-boot boots the Secure Boot firmware with a copy of the given variable store;
+with --keep-vars the store itself is used, so firmware variables written in the guest
+(boot entries, BootOrder) are there for the next run.
 --refused PATTERN expects the opposite of a boot: PATTERN shows up on the
 console and no system starts (no "Linux version" from a kernel with console=ttyS0,
 no login prompt from the getty that a credential puts on ttyS0).
@@ -162,6 +164,7 @@ def main():
     p.add_argument("--disk", required=True, help="qcow2 (or .raw) image; not written unless --persist")
     p.add_argument("--persist", action="store_true", help="write to the disk instead of a snapshot")
     p.add_argument("--secure-boot", metavar="VARS", help="Secure Boot firmware with this variable store")
+    p.add_argument("--keep-vars", action="store_true", help="write to the --secure-boot store instead of a copy")
     p.add_argument("--refused", metavar="PATTERN", help="expect the boot to be refused with PATTERN")
     p.add_argument("--poweroff", action="store_true", help="shut the guest down cleanly after the commands")
     p.add_argument("--timeout", type=int, default=300, help="seconds to reach the login prompt")
@@ -177,10 +180,14 @@ def main():
     p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     a = p.parse_args()
+    if a.keep_vars and not a.secure_boot:
+        p.error("--keep-vars needs --secure-boot")
 
     password = secrets.token_urlsafe(12)
     tmp = tempfile.mkdtemp()
-    shutil.copyfile(a.secure_boot or OVMF_VARS, f"{tmp}/vars.fd")
+    vars_fd = a.secure_boot if a.keep_vars else f"{tmp}/vars.fd"
+    if not a.keep_vars:
+        shutil.copyfile(a.secure_boot or OVMF_VARS, vars_fd)
     # The Secure Boot firmware keeps its variables in SMM, out of reach of the guest OS.
     machine = ["q35,smm=on,accel=kvm", "-global", "driver=cfi.pflash01,property=secure,value=on"] \
         if a.secure_boot else ["q35,accel=kvm"]
@@ -188,7 +195,7 @@ def main():
     cmd = ["qemu-system-x86_64", "-machine", *machine, "-cpu", "host", "-smp", "2", "-m", "2048",
            "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "stdio",
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE_SECBOOT if a.secure_boot else OVMF_CODE}",
-           "-drive", f"if=pflash,format=raw,file={tmp}/vars.fd",
+           "-drive", f"if=pflash,format=raw,file={vars_fd}",
            "-drive", disk if a.persist else disk + ",snapshot=on",
            "-nic", "user,model=virtio-net-pci", "-device", "virtio-rng-pci",
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",

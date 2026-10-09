@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# At every boot: the boot files and loader.conf on the ESP as in this image, the "Nyra OS" firmware
+# entry first in BootOrder (docs/BOOT.md). It fails, visibly, when it cannot repair (ESP full).
+[Unit]
+Description=Nyra: boot files, loader.conf and firmware entry from /usr
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/esp-sync repair
+
+[Install]
+WantedBy=multi-user.target
