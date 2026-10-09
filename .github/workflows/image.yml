@@ -11,6 +11,9 @@
 # them keylessly (docs/SIGNING.md).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md).
+# CI runs only what a change needs (docs/LESSONS.md): the changes job runs build and install-boot
+# only when a file that can affect the image or its tests changed; a change only in tools/sbom/ runs
+# the scan against the last image built on main instead (sbom job). Skipped jobs count as passed.
 name: image
 on:
   push:
@@ -19,9 +22,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# A new push to a pull request cancels its older run; on main a running release is never cancelled.
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 defaults:
   run:
     shell: bash
@@ -33,7 +37,65 @@ env:
   WORK: /mnt/work
   RELEASE: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
 jobs:
+  # Which jobs a change needs. Files that cannot change the image or its tests (the list below, kept
+  # short on purpose) skip build and install-boot; anything else, including a new directory, runs
+  # them. Manual runs always build.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image: ${{ steps.files.outputs.image }}
+      sbom: ${{ steps.files.outputs.sbom }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          image=false sbom=false count=0 files=""
+          # On main, compare with the last commit that passed this workflow, not with the previous
+          # push: GitHub drops a queued run when a newer one arrives, and its changes must not be lost.
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            BASE="$(gh run list -R "$GITHUB_REPOSITORY" --workflow image.yml --branch main --event push \
+              --status success -L 1 --json headSha --jq '.[0].headSha // empty')" || BASE=""
+          fi
+          # Any doubt (manual run, no earlier success, an API error) builds: a missed build is worse
+          # than spent minutes.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            image=true
+          elif [ -z "$BASE" ] || ! gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > "$RUNNER_TEMP/compare.json" ||
+               ! count="$(jq -e '.files | arrays | length' "$RUNNER_TEMP/compare.json")"; then
+            echo "::warning::Could not list the changed files since ${BASE:-the last successful build}; building."
+            image=true count=0
+          else
+            # Both names of a renamed file: moving a file out of the image changes the image.
+            files="$(jq -r '.files[] | .filename, .previous_filename // empty' "$RUNNER_TEMP/compare.json")"
+          fi
+          while read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              docs/* | LICENSE | .github/CODEOWNERS | .github/dependabot.yml | tools/hooks/*) ;;
+              .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
+              .github/workflows/shellcheck.yml) ;;
+              tools/sbom/*) sbom=true ;;
+              */*) image=true ;;
+              *.md) ;; # Markdown at the top level only (README.md); elsewhere it may be part of the image
+              *) image=true ;;
+            esac
+          done <<<"$files"
+          # The compare API lists at most 300 files: a longer list may hide an image file.
+          [ "$count" -lt 300 ] || image=true
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "sbom=$sbom" >> "$GITHUB_OUTPUT"
+          echo "Changed files: $count; build and install-boot: $image; tools/sbom changed: $sbom"
+
   build:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -208,6 +270,45 @@ jobs:
             dist/nyra-base.manifest.json
             dist/bootc-*.Cargo.lock
           retention-days: 90
+
+  # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
+  # branch's scanner and mitigations against the package list and Cargo.lock of the last image built
+  # on main (its nyra-base-sbom artifact), so the result is the one the next build would give.
+  sbom:
+    needs: changes
+    if: needs.changes.outputs.sbom == 'true' && needs.changes.outputs.image != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: SBOM and vulnerability scan against the last image built on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The SBOM artifact of the newest successful push run on main that built (never a fork's
+          # branch named main); runs that skipped the build have none.
+          id=""
+          for run in $(gh run list -R "$GITHUB_REPOSITORY" --workflow image.yml --branch main --event push \
+                         --status success -L 30 --json databaseId --jq '.[].databaseId'); do
+            id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=nyra-base-sbom" \
+              --jq '[.artifacts[] | select(.expired == false)][0].id // empty')"
+            [ -z "$id" ] || break
+          done
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::No SBOM artifact from a successful build on main"; exit 1; }
+          mkdir -p dist
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/sbom.zip"
+          unzip -q -o "$RUNNER_TEMP/sbom.zip" nyra-base.manifest.json "bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" -d dist
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot) on a loopback file,

@@ -171,6 +171,13 @@ Each line is something that broke or surprised us once.
   (`gh workflow run bootc-cache.yml`) and push the pull request after it finishes.
 - `set -e` also applies inside an `EXIT` trap: a failing command there skips the rest of the trap.
   Clean-up steps that may fail get `|| true` before anything that must run (deleting keys).
+- **Keep CI runs to what a change needs.** Every job counts rounded up to a whole minute. While this
+  repository was private, its 2000 included minutes a month were gone in nine days: a pull request push
+  cost ~25 minutes (image ~20, the KVM probe ~2, gitleaks twice, shellcheck), a merge ~29. On a private
+  repository, check the usage before heavy CI work: `gh api organizations/<org>/settings/billing/usage`
+  (works without `admin:org`; sum `quantity` for the `Actions Linux` SKU this month). Since then `image.yml` builds only when a
+  file that can affect the image or its tests changed, a change only in `tools/sbom/` scans the last image
+  built on main, the KVM probe is manual, and gitleaks runs once per push (pull_request runs only for forks).
 - `bootc status --format json` is canonical JSON (one line, sorted keys), and `--booted` drops the staged
   and rollback entries. The test needs exactly one `imageDigest` in that output.
 - Boot tests that follow one system across reboots write to the disk (`vm-boot.py --persist`) and shut

@@ -2,11 +2,10 @@
 # Proves that the GitHub-hosted runners can run our VM tests with hardware
 # acceleration: enable /dev/kvm for the runner user, check it, then boot a small
 # x86_64 Debian VM headless with QEMU + KVM (UEFI) and report the boot time.
+# Manual only (gh workflow run kvm.yml): image.yml's install-boot boots our own image with KVM on
+# every change that matters, so this probe only spent ~2 CI minutes per push (docs/LESSONS.md).
 name: kvm
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
