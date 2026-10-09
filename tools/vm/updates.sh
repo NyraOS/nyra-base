@@ -37,6 +37,9 @@
 set -euo pipefail
 
 image="$1" disk="$2" work="$3" logs="$4" summary="$5"
+# The setup is traced: it boots nothing, so a failure there leaves no serial log to read.
+PS4='+ updates.sh:$LINENO: '
+set -x
 u="$work/updates"
 mkdir -p "$u/context" "$u/sheets"
 
@@ -61,11 +64,33 @@ skopeo generate-sigstore-key --output-prefix /u/attacker --passphrase-file /u/pa
 sudo chown -R "$(id -u):$(id -g)" "$u"
 
 # --- test versions ---------------------------------------------------------------------------------
+# A test version changes /usr, so its composefs digest changes and it needs its own UKI, built as in
+# tools/vm/boot-counting.sh: from the committed root filesystem, with the kernel and initramfs taken
+# out of IMAGE's UKI. Unsigned: these boots run without Secure Boot.
+cat >"$u/kernel-from-uki.py" <<'EOF'
+import sys
+import pefile
+pe = pefile.PE(sys.argv[1])
+for s in pe.sections:
+    name = {b".linux": "vmlinuz", b".initrd": "initramfs.img"}.get(s.Name.rstrip(b"\0"))
+    if name:
+        with open(f"{sys.argv[2]}/{name}", "wb") as f:
+            f.write(s.get_data()[:s.Misc_VirtualSize])
+EOF
 version() { # version NAME VERSION [Containerfile lines]
-  printf 'FROM %s\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version\n%s\n' \
+  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version\n%s\n' \
     "$image" "$2" "${3:-}" >"$u/Containerfile.$1"
-  sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
-    -f "$u/Containerfile.$1" "$u/context" >/dev/null
+  sudo podman build -q -t "localhost/nyra-test:$1-rootfs" -f "$u/Containerfile.$1" "$u/context" >/dev/null
+  mkdir -p "$u/$1-uki"
+  sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
+    --mount "type=image,source=localhost/nyra-test:$1-rootfs,target=/target" \
+    -v "$u/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$u/$1-uki:/out" "$image" \
+    sh -c 'u="$(ls /boot/EFI/Linux/*.efi)" && k="$(basename "$u" .efi)" && mkdir -p "/tmp/kernel/$k" &&
+      python3 /kernel-from-uki.py "$u" "/tmp/kernel/$k" &&
+      bootc container ukify --rootfs /target --kernel-dir "/tmp/kernel/$k" -- --output "/out/$k.efi"' >/dev/null
+  printf 'FROM localhost/nyra-test:%s-rootfs\nCOPY --from=uki . /boot/EFI/Linux/\n' "$1" |
+    sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
+      --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
 for n in 0 1 4 5 6 7; do version "v$n" "2026.10.$n"; done
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
@@ -160,6 +185,7 @@ trap 'sudo pkill -f sheet-server.py || true; sudo tc qdisc del dev lo root 2>/de
 for _ in $(seq 30); do curl -fs --cacert "$u/ca.crt" https://updates.nyraos.com/_test/select/s1 >/dev/null && break; sleep 1; done
 curl -fsS --cacert "$u/ca.crt" https://updates.nyraos.com/channels/nyra-base/stable | jq -e .payloadType >/dev/null
 
+set +x
 # --- the guest ---------------------------------------------------------------------------------------
 cp "$disk" "$u/disk.qcow2"
 n=0
@@ -311,7 +337,8 @@ vm "v5, a corrupted layer of v7" --poweroff \
   --command "$lib; refused s7 'Unable to pull container image.*(corrupted blob|decompression error|header error|unexpected end of file)' && expect staged none && expect booted $d5"
 # A valid layer with other content and exactly the same size (tools/vm/same-size-layer.py): only the
 # layer digest, checked by the image proxy against the signed manifest, can refuse it.
-sudo podman exec nyra-test-registry cat "$blob.orig" >"$u/v7-top.orig"
+sudo podman cp "nyra-test-registry:$blob.orig" "$u/v7-top.orig"
+sudo chown "$(id -u):$(id -g)" "$u/v7-top.orig"
 python3 -I tools/vm/same-size-layer.py "$u/v7-top.orig" 2026.10.7 000000000 "$u/v7-top.same-size"
 sudo podman cp "$u/v7-top.same-size" "nyra-test-registry:$blob"
 vm "v5, a layer of the same size with other content in place of v7's" --poweroff \
