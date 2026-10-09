@@ -43,6 +43,14 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
     ln -s ../nyra-boot-loader-conf.service ../nyra-boot-counter.service . && \
     test -f nyra-boot-loader-conf.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
 
+# Secure defaults (docs/DEFAULTS.md): AppArmor profiles and the inbound firewall at every boot,
+# enabled from /usr; systemd-networkd does not start without the firewall.
+RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
+    cd /usr/lib/systemd/system/sysinit.target.wants && ln -sf ../apparmor.service ../nyra-firewall.service . && \
+    test -f apparmor.service && test -f nyra-firewall.service && test -x /usr/sbin/nft && \
+    printf '# Nyra: no network without the inbound firewall\n[Unit]\nRequires=nyra-firewall.service\nAfter=nyra-firewall.service\n' \
+      > /usr/lib/systemd/system/systemd-networkd.service.d/10-nyra-firewall.conf
+
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \

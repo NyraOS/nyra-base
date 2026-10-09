@@ -204,6 +204,9 @@ jobs:
   # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> UKI signed with a throwaway key
   # enrolled as MOK; unsigned and wrongly signed UKIs refused) and tools/vm/boot-counting.sh (an
   # update that never gets healthy falls back after 3 tries, a healthy one is blessed).
+  # Secure defaults (docs/DEFAULTS.md, NyraOS T15), one more boot of the installed disk in snapshot
+  # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
+  # policy, filesystem autoload).
   # Security: this job runs images built from pull requests with --privileged and
   # /dev mounted, so it must stay on ephemeral GitHub-hosted runners; never run it on
   # self-hosted runners for pull_request events.
@@ -283,6 +286,10 @@ jobs:
             --log "$RUNNER_TEMP/serial.log" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
+
+      - name: Secure defaults (docs/DEFAULTS.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: tools/vm/security-defaults.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

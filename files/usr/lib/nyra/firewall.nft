@@ -1,0 +1,18 @@
+#!/usr/sbin/nft -f
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra inbound firewall (docs/DEFAULTS.md), loaded by nyra-firewall.service before the network.
+# Nothing from the network reaches a local socket unless it answers a connection this machine
+# started. Outbound and forwarded (container) traffic is not filtered here.
+destroy table inet nyra
+
+table inet nyra {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state established,related accept
+		# IPv6 does not work without neighbour discovery, router advertisements and MLD queries.
+		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, mld-listener-query } accept
+		# DHCPv6 replies from the link (DHCPv4 uses a packet socket, before this hook).
+		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+	}
+}
