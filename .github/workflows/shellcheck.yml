@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Lints the shell scripts with the shellcheck preinstalled on the GitHub-hosted Ubuntu runner.
+# The scripts are the tracked files whose first line is a sh/bash/dash shebang.
 name: shellcheck
 on:
   push:
@@ -7,6 +8,9 @@ on:
   pull_request:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   shellcheck:
     runs-on: ubuntu-24.04
@@ -18,4 +22,7 @@ jobs:
       - name: shellcheck
         run: |
           shellcheck --version
-          shellcheck -S warning ci/*.sh tools/*/*.sh tools/hooks/pre-push files/usr/lib/nyra/boot/esp-sync
+          mapfile -t scripts < <(git ls-files | while read -r f; do
+            head -n 1 "$f" | grep -qE '^#!(/usr)?/bin/(env )?(ba|da)?sh( |$)' && echo "$f"; done)
+          printf '%s\n' "${scripts[@]}"
+          shellcheck -S warning "${scripts[@]}"

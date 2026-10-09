@@ -23,6 +23,8 @@ defaults:
   run:
     shell: bash
 env:
+  # bootc-cache.yml reads BOOTC_REF and BOOTC_COMMIT from these two lines and saves the bootc build on
+  # main under the same cache key as the build job below.
   BOOTC_REF: v1.16.13
   BOOTC_COMMIT: fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60
   WORK: /mnt/work

@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Shares the bootc build (~35 min) with pull requests. A cache saved by a pull request is visible only
+# to that pull request; a cache saved on main is visible to all of them. The image workflow does not
+# keep main's cache reliably: a release build compiles bootc itself, and a later merge cancels the
+# run before it saves. This workflow builds only bootc, under the same key as the build job in
+# image.yml, and is never cancelled while it runs. It stops after the lookup when the key is saved.
+name: bootc-cache
+on:
+  push:
+    branches: [main]
+    paths:
+      - ci/build-bootc.sh
+      - ci/tools.Containerfile
+      - mkosi/mkosi.conf
+      - .github/workflows/image.yml
+      - .github/workflows/bootc-cache.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: bootc-cache
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  bootc:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the cache key inputs (as image.yml does)
+        run: |
+          ref="$(sed -n 's/^  BOOTC_REF: //p' .github/workflows/image.yml)"
+          commit="$(sed -n 's/^  BOOTC_COMMIT: //p' .github/workflows/image.yml)"
+          [[ "$ref" =~ ^v[0-9.]+$ && "$commit" =~ ^[0-9a-f]{40}$ ]]
+          snapshot="$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)"
+          [[ "$snapshot" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]
+          m=("${BASH_REMATCH[@]}")
+          {
+            echo "BOOTC_REF=$ref"
+            echo "BOOTC_COMMIT=$commit"
+            echo "SNAPSHOT=$snapshot"
+            echo "SOURCE_DATE_EPOCH=$(date -u -d "${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z" +%s)"
+          } >> "$GITHUB_ENV"
+
+      - name: Look the bootc build up
+        id: bootc-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          lookup-only: true
+          path: ~/cache/bootc.tar
+          key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
+
+      - name: Build the CI tools image
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        run: sudo podman build -q --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
+
+      - name: Build bootc from source
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/cache
+          sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
+            -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+            localhost/nyra-tools bash /ci/build-bootc.sh
+          sudo chown -R "$(id -u):$(id -g)" ~/cache
+
+      - name: Save the bootc build
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/bootc.tar
+          key: ${{ steps.bootc-cache.outputs.cache-primary-key }}

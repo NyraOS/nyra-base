@@ -19,8 +19,9 @@ mnt="$sb/esp"
 uki=/EFI/Linux/nyra-test.efi
 loop=""
 mkdir -p "$mnt"
-# Set before the keys exist, so they are deleted whatever fails.
-trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop"; rm -rf "$sb"' EXIT
+# Set before the keys exist, so they are deleted whatever fails. set -e also applies inside the trap:
+# every step before rm -rf must not fail.
+trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop" || true; rm -rf "$sb"' EXIT
 
 # Throwaway keys: "test" is enrolled as a MOK, "other" is not.
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI throwaway test key" \

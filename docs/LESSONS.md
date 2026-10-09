@@ -104,14 +104,26 @@ Each line is something that broke or surprised us once.
   and in a VM with KVM. It must stay on ephemeral GitHub-hosted runners: never run `pull_request`
   jobs on self-hosted runners.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
-  editing the test jobs does not rebuild bootc (~15 min). Anything that changes the bootc build output
+  editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
 - The workflows cancel the previous run of the same branch on a new push: let a cold bootc build finish
   and save its cache before pushing again.
+- **Release builds do not use the cache, pull requests do.** A release is what users install and what
+  gets signed, so it is built only from pinned sources, never from a file another run left behind.
+  Pull requests only test, so they restore the bootc build.
+- A cache saved by a pull request is visible only to that pull request; a cache saved on `main` is
+  visible to all. Release runs on `main` were cancelled by the next merge before they saved, so after a
+  key change every new pull request built bootc from scratch (~38 min instead of ~8). The
+  `bootc-cache` workflow saves it on `main` and is never cancelled while it runs. If a pull request
+  still misses (the cache is evicted after 7 days without use), run it by hand on `main`
+  (`gh workflow run bootc-cache.yml`) and push the pull request after it finishes.
+- `set -e` also applies inside an `EXIT` trap: a failing command there skips the rest of the trap.
+  Clean-up steps that may fail get `|| true` before anything that must run (deleting keys).
 - `bootc status --format json` is canonical JSON (one line, sorted keys), and `--booted` drops the staged
   and rollback entries. The test needs exactly one `imageDigest` in that output.
 - Boot tests that follow one system across reboots write to the disk (`vm-boot.py --persist`) and shut
   down cleanly (`--poweroff`), so `bootc-finalize-staged` runs. The VM reaches a registry on the runner
   as `10.0.2.2` (QEMU user networking), declared `insecure` in the guest's `/etc` on the test disk.
-- The `shellcheck` workflow lints the shell scripts with the version preinstalled on the Ubuntu runner,
-  at `-S warning`. Run it locally before pushing: the image workflow takes long and fails much later.
+- The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
+  preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
+  takes long and fails much later.
