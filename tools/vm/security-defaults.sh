@@ -35,7 +35,7 @@ systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed)\.service
 systemd-[a-z0-9-]+\.socket
 (serial-)?getty@[a-zA-Z0-9]+\.service
 user@[0-9]+\.service
-(fstrim|systemd-tmpfiles-clean)\.timer
+(fstrim|systemd-tmpfiles-clean|nyra-updated)\.timer
 EOF
 units='s="$(systemctl list-units --type=service,timer,socket --state=running,waiting,listening --no-legend --plain)" && test -n "$s" && u="$(echo "$s" | awk "{print \$1}")" && echo "$u" && x="$(echo "$u" | grep -vxE "'"${units_allowed//$'\n'/|}"'" || true)" && { test -z "$x" || { echo "undeclared units: $x"; false; }; }'
 # The units blocked in the Containerfile ("no purpose in the base") are all exactly "inactive"

@@ -27,7 +27,8 @@
 //! 6. A retraction to the version that is already the local rollback deployment uses
 //!    `bootc rollback` (bootc would answer "No changes" to a switch).
 //! 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a wrong
-//!    staged deployment is discarded (`bootc rollback` twice: discard, then the order back).
+//!    staged deployment is discarded ([`discard_staged`]: `bootc rollback` twice, only when the
+//!    rollback deployment is an acceptable boot, then `bootc status` is checked).
 //! 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which
 //!    bypasses boot counting), and never on a version that is not on trial (no reboot loop).
 //! 9. The first healthy boot of a new version must have been a full boot with a boot counter
@@ -36,6 +37,9 @@
 //!    This daemon never soft-reboots (the [`System`] trait has no soft reboot at all).
 //! 10. Nothing is done when the booted image is not from `updates.nyraos.com/<repository>`
 //!     ([`HOST`] is fixed in code, `docs/SIGNING.md`): an owner who switched to their own image keeps it.
+//!     The outcome says so ([`Outcome::ForeignImage`]), so such a machine is not silently without updates.
+//! 11. A staged version that gets retracted, or that the machine fell back from, is discarded before
+//!     the reboot, the same way as in rule 7.
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -93,6 +97,11 @@ pub enum Error {
     Config(String),
     /// A test fixture key in the production key file.
     TestKey,
+    /// A staged deployment that must not boot could not be discarded (rule 7).
+    NotDiscarded {
+        staged: String,
+        why: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -119,6 +128,9 @@ impl fmt::Display for Error {
             Error::Timeout(what) => write!(f, "{what} timed out and was stopped"),
             Error::Command(e) | Error::Io(e) | Error::Config(e) => write!(f, "{e}"),
             Error::TestKey => write!(f, "the channel sheet key file holds a test key"),
+            Error::NotDiscarded { staged, why } => {
+                write!(f, "could not discard the staged {staged}: {why}")
+            }
         }
     }
 }
@@ -169,7 +181,8 @@ fn is_repository(name: &str) -> bool {
 
 impl Config {
     /// `conf`: `key = value` lines (`repository`, `channel`, `version_floor`), `#` comments.
-    /// `pem`: the channel sheet keys. Everything is required: no defaults, no unknown keys.
+    /// `pem`: the channel sheet keys. Everything is required: no defaults, no unknown or repeated
+    /// keys (a repeated key must not silently win).
     pub fn parse(conf: &str, pem: &str) -> Result<Config, Error> {
         let mut map = BTreeMap::new();
         for line in conf.lines().map(str::trim) {
@@ -179,7 +192,12 @@ impl Config {
             let (k, v) = line
                 .split_once('=')
                 .ok_or_else(|| Error::Config(format!("not key = value: {line:?}")))?;
-            map.insert(k.trim().to_string(), v.trim().to_string());
+            if map
+                .insert(k.trim().to_string(), v.trim().to_string())
+                .is_some()
+            {
+                return Err(Error::Config(format!("{} is set twice", k.trim())));
+            }
         }
         let mut get = |k: &str, valid: &dyn Fn(&str) -> bool| {
             map.remove(k)
@@ -316,6 +334,14 @@ impl Store {
             .map_err(|e| io(&self.dir, e))
     }
 
+    /// The outcome of the last check, `last-check.json` (`time`: Unix seconds, `ok`, `message`):
+    /// a broken state or an image without updates must not stay silent. The journal has the same
+    /// line; Settings will read this file through the daemon.
+    pub fn save_report(&self, time: u64, ok: bool, message: &str) -> Result<(), Error> {
+        let report = serde_json::json!({"time": time, "ok": ok, "message": message});
+        self.write_atomic("last-check.json", report.to_string().as_bytes())
+    }
+
     /// The install code: 32 random bytes made on first use, kept in `install-code` (0600). It
     /// never leaves the machine; it only picks the rollout group.
     pub fn install_code(&self) -> Result<Vec<u8>, Error> {
@@ -372,6 +398,8 @@ pub struct Status {
     pub booted: Option<Deployment>,
     pub staged: Option<Deployment>,
     pub rollback: Option<Deployment>,
+    /// The rollback deployment is the next boot (`bootc rollback` was run).
+    pub rollback_queued: bool,
 }
 
 impl Status {
@@ -387,7 +415,7 @@ pub struct BootInfo {
     /// version now running.
     pub soft_rebooted: bool,
     /// The booted entry is on trial (systemd-boot counts its tries; `systemd-bless-boot status`
-    /// is `indeterminate` or `bad`).
+    /// is `indeterminate`, `dirty` on the last try, or `bad`).
     pub on_trial: bool,
     /// systemd-boot started this boot's entry with a tries counter (`LoaderBootCountPath`).
     pub counted: bool,
@@ -403,7 +431,9 @@ pub trait System {
     fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error>;
     /// Prepares `image_ref` for the next boot, without applying it (`bootc switch`).
     fn stage(&mut self, image_ref: &str) -> Result<(), Error>;
-    /// Makes the rollback deployment the next boot and discards a staged one (`bootc rollback`).
+    /// Discards a staged deployment and swaps the boot order (`bootc rollback`): the rollback
+    /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
+    /// there is no rollback deployment.
     fn rollback(&mut self) -> Result<(), Error>;
     /// A full reboot. There is deliberately no soft reboot here.
     fn reboot(&mut self) -> Result<(), Error>;
@@ -424,6 +454,8 @@ pub enum Outcome {
     Staged(Image),
     /// The target is the local rollback deployment: `bootc rollback` made it the next boot.
     RolledBack(Image),
+    /// The staged deployment (this digest) was retracted or failed and was discarded (rule 11).
+    Discarded(String),
 }
 
 /// SHA-256 (hex) of the payload of a sheet envelope that [`verify`] accepted.
@@ -485,6 +517,74 @@ pub fn offered_rollback<'a>(status: &'a Status, state: &State) -> Option<&'a Dep
         .filter(|d| !state.failed.contains(&d.digest) && !state.retracted.contains(&d.digest))
 }
 
+/// Discards the staged deployment and leaves the boot order as it was (rules 7 and 11).
+///
+/// On the composefs backend `bootc rollback` drops the staged deployment and swaps the boot order
+/// of the booted and the rollback deployment; a second call swaps it back. Between the two calls
+/// (and if the second one fails) the rollback deployment is the next boot, so this is done only if
+/// that is an acceptable boot: not failed, not retracted, not below the version floor. Afterwards
+/// `bootc status` must be the one from before, without the staged deployment.
+pub fn discard_staged(
+    sys: &mut impl System,
+    before: &Status,
+    state: &State,
+    floor: &str,
+) -> Result<(), Error> {
+    let refuse = |why: String| Error::NotDiscarded {
+        staged: Status::digest(&before.staged).unwrap_or("none").to_string(),
+        why,
+    };
+    let rollback = before
+        .rollback
+        .as_ref()
+        .ok_or_else(|| refuse("there is no rollback deployment to swap with".into()))?;
+    let fallback = Image {
+        digest: rollback.digest.clone(),
+        version: rollback.version.clone().unwrap_or_default(),
+    };
+    check_target(&fallback, state, floor).map_err(|e| {
+        refuse(format!(
+            "the rollback deployment is not an acceptable boot: {e}"
+        ))
+    })?;
+    match sys
+        .rollback()
+        .and_then(|()| sys.rollback())
+        .and_then(|()| sys.status())
+    {
+        Ok(after)
+            if after.staged.is_none()
+                && after.booted == before.booted
+                && after.rollback == before.rollback
+                && after.rollback_queued == before.rollback_queued =>
+        {
+            Ok(())
+        }
+        Ok(after) => Err(refuse(format!(
+            "bootc status changed in another way, {}",
+            next_boot(&after)
+        ))),
+        Err(e) => Err(refuse(format!(
+            "{e}, {}",
+            sys.status()
+                .map(|s| next_boot(&s))
+                .unwrap_or_else(|e| format!("next boot unknown ({e})"))
+        ))),
+    }
+}
+
+/// Which deployment boots next, for error messages.
+fn next_boot(s: &Status) -> String {
+    let next = if s.staged.is_some() {
+        &s.staged
+    } else if s.rollback_queued {
+        &s.rollback
+    } else {
+        &s.booted
+    };
+    format!("next boot: {}", Status::digest(next).unwrap_or("unknown"))
+}
+
 /// One update check (see the crate documentation). `now`: Unix seconds.
 pub fn check(
     sys: &mut impl System,
@@ -544,6 +644,16 @@ pub fn check(
     state.retracted.extend(sheet.retracted.iter().cloned());
     store.save(&state)?;
 
+    // Rule 11: a staged version that must not boot is discarded now, not after the reboot.
+    if let Some(staged) = status.staged.as_ref().map(|d| d.digest.clone()) {
+        if state.retracted.contains(&staged) || state.failed.contains(&staged) {
+            discard_staged(sys, &status, &state, &cfg.version_floor)?;
+            state.pending = None;
+            store.save(&state)?;
+            return Ok(Outcome::Discarded(staged));
+        }
+    }
+
     let installed = Image {
         digest: booted.digest.clone(),
         version: booted.version.clone().unwrap_or_default(),
@@ -569,12 +679,15 @@ pub fn check(
     state.pending = Some(target.digest.clone());
     store.save(&state)?;
     sys.stage(&cfg.image_ref(&target.digest))?;
-    let staged = sys.status()?.staged.map(|d| d.digest).unwrap_or_default();
+    let after = sys.status()?;
+    let staged = Status::digest(&after.staged)
+        .unwrap_or_default()
+        .to_string();
     if staged != target.digest {
-        // Rule 7: the wrong deployment must not boot. `bootc rollback` discards the staged one
-        // and swaps the boot order; the second call swaps it back.
-        sys.rollback()?;
-        sys.rollback()?;
+        // Rule 7: the wrong deployment must not boot.
+        if after.staged.is_some() {
+            discard_staged(sys, &after, &state, &cfg.version_floor)?;
+        }
         return Err(Error::DigestMismatch {
             expected: target.digest,
             found: staged,

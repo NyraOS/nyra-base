@@ -90,6 +90,8 @@ pub fn parse_status(json: &[u8]) -> Result<Status, Error> {
         staged: Option<Entry>,
         booted: Option<Entry>,
         rollback: Option<Entry>,
+        #[serde(rename = "rollbackQueued", default)]
+        rollback_queued: bool,
     }
     #[derive(Deserialize)]
     struct Entry {
@@ -123,6 +125,7 @@ pub fn parse_status(json: &[u8]) -> Result<Status, Error> {
         booted: dep(host.status.booted),
         staged: dep(host.status.staged),
         rollback: dep(host.status.rollback),
+        rollback_queued: host.status.rollback_queued,
     })
 }
 
@@ -150,6 +153,12 @@ pub fn curl(url: &str) -> Command {
     cmd
 }
 
+/// `systemd-bless-boot status`: the booted entry still counts tries. `indeterminate` while tries
+/// are left, `dirty` on the last one (seen in the VM on the third try), `bad` once marked bad.
+pub fn on_trial(bless_status: &str) -> bool {
+    matches!(bless_status.trim(), "indeterminate" | "dirty" | "bad")
+}
+
 pub struct Real;
 
 impl System for Real {
@@ -173,7 +182,7 @@ impl System for Real {
             Command::new("systemctl").args(["show", "--property=SoftRebootsCount", "--value"]),
             SHORT,
         )?;
-        // Prints good, bad, indeterminate or clean; exits non-zero for some of them.
+        // Prints good, bad, indeterminate, dirty or clean; exits non-zero for some of them.
         let bless = run(
             Command::new("/usr/lib/systemd/systemd-bless-boot").arg("status"),
             SHORT,
@@ -185,7 +194,7 @@ impl System for Real {
                 .parse::<u64>()
                 .unwrap_or(0)
                 > 0,
-            on_trial: matches!(bless.trim(), "indeterminate" | "bad"),
+            on_trial: on_trial(&bless),
             counted: Path::new(LOADER_BOOT_COUNT_PATH).exists(),
         })
     }

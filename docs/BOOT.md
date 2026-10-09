@@ -198,6 +198,6 @@ by its exact path from the entry, and the UKI is not auto-discovered (it is unde
 `EFI/Linux/bootc/`, which systemd-boot does not scan). `nyra-boot-counter` finds the running
 system's entry by the digest in the UKI's file name (or, for Type #1 kernels, in `options`).
 
-Still to build (in `nyra-updated`, LESSONS): an automatic reboot when a health check fails (in CI
-the test powers the VM off after each try), marking the failed version so it is not offered or
-staged again, and the full reboot after a failed soft reboot.
+The automatic reboot when a health check fails, marking the failed version, the full reboot after a
+soft reboot and the real health checks are in `nyra-updated` and its units (`docs/UPDATES.md`, tested
+in `tools/vm/updates.sh`).

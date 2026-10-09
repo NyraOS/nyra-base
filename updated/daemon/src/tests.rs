@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! One test (at least) per rule of the crate documentation, with a fake [`System`].
 
-use super::system::{curl, parse_status, run};
+use super::system::{curl, on_trial, parse_status, run};
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use nyra_channel_sheet::{pae, PAYLOAD_TYPE};
@@ -128,8 +128,8 @@ struct Fake {
     store_dir: PathBuf,
     /// The state on disk at the moment `stage` was called.
     state_at_stage: Option<State>,
-    /// The rollback deployment is the next boot.
-    rollback_queued: bool,
+    /// `bootc rollback` call number (1-based) that fails.
+    rollback_fails_at: Option<usize>,
 }
 
 impl Fake {
@@ -151,7 +151,7 @@ impl Fake {
             calls: Vec::new(),
             store_dir: dir.store().dir,
             state_at_stage: None,
-            rollback_queued: false,
+            rollback_fails_at: None,
         }
     }
     fn staged(&self) -> Vec<&String> {
@@ -196,11 +196,16 @@ impl System for Fake {
         });
         Ok(())
     }
-    /// Like `bootc rollback`: discards a staged deployment and swaps the boot order.
+    /// Like `bootc rollback` on composefs: fails without a rollback deployment, otherwise
+    /// discards a staged deployment and swaps the boot order.
     fn rollback(&mut self) -> Result<(), Error> {
         self.calls.push("rollback".into());
+        let n = self.calls.iter().filter(|c| *c == "rollback").count();
+        if self.status.rollback.is_none() || self.rollback_fails_at == Some(n) {
+            return Err(Error::Command("bootc rollback failed".into()));
+        }
         self.status.staged = None;
-        self.rollback_queued = !self.rollback_queued;
+        self.status.rollback_queued = !self.status.rollback_queued;
         Ok(())
     }
     fn reboot(&mut self) -> Result<(), Error> {
@@ -230,23 +235,106 @@ fn a_newer_version_is_staged_pinned_by_digest_and_not_applied() {
     assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
 }
 
+fn rollbacks(fake: &Fake) -> usize {
+    fake.calls.iter().filter(|c| *c == "rollback").count()
+}
+
 #[test]
 fn a_staged_digest_other_than_the_sheet_is_an_error() {
     let dir = TempDir::new();
-    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
-    fake.status.rollback = dep(Z);
-    fake.stage_digest = Some(B.into());
+    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+    fake.status.rollback = dep(A);
+    fake.stage_digest = Some(Z.into());
     assert_eq!(
         run_check(&mut fake, &dir),
         Err(Error::DigestMismatch {
             expected: C.into(),
-            found: B.into()
+            found: Z.into()
         })
     );
     // The wrong deployment is discarded and the booted version stays the next boot.
     assert_eq!(fake.status.staged, None);
-    assert!(!fake.rollback_queued);
-    assert_eq!(fake.calls.iter().filter(|c| *c == "rollback").count(), 2);
+    assert!(!fake.status.rollback_queued);
+    assert_eq!(rollbacks(&fake), 2);
+}
+
+#[test]
+fn a_wrong_staged_deployment_is_not_discarded_through_an_unacceptable_rollback() {
+    // Between the two `bootc rollback` calls the rollback deployment is the next boot.
+    for (rollback, failed) in [(None, None), (dep(Z), None), (dep(A), Some(A))] {
+        let dir = TempDir::new();
+        if let Some(f) = failed {
+            dir.store()
+                .save(&State {
+                    failed: [f.to_string()].into(),
+                    ..State::default()
+                })
+                .unwrap();
+        }
+        let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+        fake.status.rollback = rollback.clone();
+        fake.stage_digest = Some(Z.into());
+        let err = run_check(&mut fake, &dir).unwrap_err();
+        assert!(
+            matches!(&err, Error::NotDiscarded { staged, .. } if staged == Z),
+            "{rollback:?}: {err}"
+        );
+        assert_eq!(rollbacks(&fake), 0, "{rollback:?}");
+        assert_eq!(Status::digest(&fake.status.staged), Some(Z));
+    }
+}
+
+#[test]
+fn a_failed_discard_says_what_boots_next() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+    fake.status.rollback = dep(A);
+    fake.stage_digest = Some(Z.into());
+    fake.rollback_fails_at = Some(2);
+    let err = run_check(&mut fake, &dir).unwrap_err().to_string();
+    assert!(err.contains(&format!("next boot: {A}")), "{err}");
+}
+
+#[test]
+fn a_discard_that_changes_more_than_the_staged_deployment_is_reported() {
+    struct Swapping(Fake);
+    impl System for Swapping {
+        fn status(&mut self) -> Result<Status, Error> {
+            self.0.status()
+        }
+        fn boot_complete(&mut self) -> Result<bool, Error> {
+            self.0.boot_complete()
+        }
+        fn boot_info(&mut self) -> Result<BootInfo, Error> {
+            self.0.boot_info()
+        }
+        fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error> {
+            self.0.fetch_sheet(url)
+        }
+        fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
+            self.0.stage(image_ref)
+        }
+        /// A bootc whose second call does nothing: the rollback deployment stays the next boot.
+        fn rollback(&mut self) -> Result<(), Error> {
+            if self.0.calls.contains(&"rollback".to_string()) {
+                self.0.calls.push("rollback".into());
+                return Ok(());
+            }
+            self.0.rollback()
+        }
+        fn reboot(&mut self) -> Result<(), Error> {
+            self.0.reboot()
+        }
+    }
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+    fake.status.rollback = dep(A);
+    fake.stage_digest = Some(Z.into());
+    let mut sys = Swapping(fake);
+    let err = check(&mut sys, &dir.store(), &config(), NOW)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(&format!("next boot: {A}")), "{err}");
 }
 
 // --- rule 10: only our own images -------------------------------------------------------------
@@ -537,6 +625,7 @@ fn a_version_the_machine_fell_back_from_is_marked_failed_and_never_staged_again(
         booted: dep(A),
         staged: None,
         rollback: dep(C),
+        ..Status::default()
     };
     assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
     let state = dir.store().load().unwrap();
@@ -555,6 +644,7 @@ fn a_version_that_booted_healthy_is_confirmed() {
         booted: dep(C),
         staged: None,
         rollback: dep(A),
+        ..Status::default()
     };
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
     let state = dir.store().load().unwrap();
@@ -572,6 +662,7 @@ fn a_new_version_booted_without_a_boot_counter_is_reported() {
         booted: dep(C),
         staged: None,
         rollback: dep(A),
+        ..Status::default()
     };
     fake.boot.counted = false; // nyra-boot-counter failed silently
     assert_eq!(
@@ -625,6 +716,7 @@ fn a_retracted_rollback_deployment_is_not_offered() {
         booted: dep(C),
         staged: None,
         rollback: dep(B),
+        ..Status::default()
     };
     assert_eq!(offered_rollback(&status, &state), None);
 }
@@ -661,6 +753,25 @@ fn a_failed_rollback_deployment_is_not_used_for_a_retraction() {
     assert!(!fake.calls.contains(&"rollback".to_string()));
 }
 
+// --- rule 11: a staged version that must not boot ---------------------------------------------
+
+#[test]
+fn a_staged_version_retracted_before_the_reboot_is_discarded() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+    fake.status.rollback = dep(A);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    fake.sheet = sheet(101, B, &[C]);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
+    assert_eq!(fake.status.staged, None);
+    assert!(!fake.status.rollback_queued);
+    assert_eq!(rollbacks(&fake), 2);
+    assert_eq!(dir.store().load().unwrap().pending, None);
+    // Nothing more to do: B is the channel's current version.
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    assert_eq!(rollbacks(&fake), 2);
+}
+
 // --- rule 8: health check failures ------------------------------------------------------------
 
 #[test]
@@ -679,6 +790,17 @@ fn a_failed_health_check_after_a_soft_reboot_reboots_fully() {
     fake.boot.soft_rebooted = true;
     assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Reboot));
     assert_eq!(fake.calls, vec!["reboot"]);
+}
+
+#[test]
+fn every_try_of_a_counted_entry_is_on_trial() {
+    // systemd-bless-boot status on the three tries of an unhealthy version, then after blessing.
+    for s in ["indeterminate\n", "indeterminate\n", "dirty\n", "bad\n"] {
+        assert!(on_trial(s), "{s}");
+    }
+    for s in ["good\n", "clean\n", ""] {
+        assert!(!on_trial(s), "{s}");
+    }
 }
 
 #[test]
@@ -765,6 +887,20 @@ fn the_install_code_is_random_private_and_stable() {
 const CONF: &str =
     "# Nyra updates\nrepository = nyra\nchannel = stable\nversion_floor = 2026.10.1\n";
 
+#[test]
+fn the_last_check_is_reported_privately() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    store.save_report(NOW, false, "no signature").unwrap();
+    let path = store.dir.join("last-check.json");
+    let report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        report,
+        json!({"time": NOW, "ok": false, "message": "no signature"})
+    );
+    assert_eq!(mode(&path), 0o600);
+}
+
 fn pem(key: &SigningKey) -> String {
     // SubjectPublicKeyInfo for Ed25519: a fixed prefix, then the 32-byte key.
     let mut der = vec![
@@ -798,6 +934,16 @@ fn an_incomplete_or_unknown_config_is_refused() {
     assert!(Config::parse(&bad_floor, &key).is_err());
     let extra = format!("{CONF}tag = latest\n");
     assert!(matches!(Config::parse(&extra, &key), Err(Error::Config(_))));
+}
+
+#[test]
+fn a_repeated_config_key_is_refused() {
+    let conf =
+        "repository = nyra\nchannel = stable\nversion_floor = 2026.10.1\nrepository = evil\n";
+    assert_eq!(
+        Config::parse(conf, &pem(&signer())).unwrap_err(),
+        Error::Config("repository is set twice".into())
+    );
 }
 
 #[test]
@@ -926,7 +1072,64 @@ fn bootc_status_json_is_parsed() {
                 image: None, // not the registry transport
             }),
             rollback: dep(A),
+            rollback_queued: false,
         }
     );
     assert!(parse_status(b"{}").is_err());
+}
+
+#[test]
+fn bootc_status_from_our_image_is_parsed() {
+    // Captured on nyra-base in the VM test (tools/vm/updates.sh): bootc v1.16.13, composefs.
+    // Right after the installation: no rollback, the image from local storage.
+    let installed =
+        parse_status(include_bytes!("../tests/data/bootc-status-installed.json")).unwrap();
+    let booted = installed.booted.unwrap();
+    assert_eq!(booted.version, None);
+    assert_eq!(booted.image.as_deref(), Some("localhost/nyra-base:ci"));
+    assert!(!config().is_official(booted.image.as_deref()));
+    assert_eq!(
+        (
+            installed.staged,
+            installed.rollback,
+            installed.rollback_queued
+        ),
+        (None, None, false)
+    );
+
+    // v1 booted by its channel tag, v2 staged by digest, v0 (another registry) as rollback.
+    let v1 = "sha256:f33c75f15a753ee24db0ee4c73d642eff7b1f7b575179c83538756389bfa23b4";
+    let v2 = "sha256:98c4a7afb93599614398391da55b7f7a9b21f28de74a25ce51ae5cff4816443c";
+    let v0 = "sha256:b48d7b7b895992b934aa28ddd8397951f4e801787b813621fcf233a777e6a0ad";
+    let staged = parse_status(include_bytes!("../tests/data/bootc-status-staged.json")).unwrap();
+    let dep = |digest: &str, version: &str, image: String| {
+        Some(Deployment {
+            digest: digest.into(),
+            version: Some(version.into()),
+            image: Some(image),
+        })
+    };
+    assert_eq!(
+        staged,
+        Status {
+            booted: dep(
+                v1,
+                "2026.10.1",
+                "updates.nyraos.com/nyra-base:stable".into()
+            ),
+            staged: dep(
+                v2,
+                "2026.10.2",
+                format!("updates.nyraos.com/nyra-base@{v2}")
+            ),
+            rollback: dep(v0, "2026.10.0", "other.test/nyra-base:v0".into()),
+            rollback_queued: false,
+        }
+    );
+    let cfg = Config {
+        repository: "nyra-base".into(),
+        ..config()
+    };
+    assert!(cfg.is_official(staged.booted.unwrap().image.as_deref()));
+    assert!(!cfg.is_official(staged.rollback.unwrap().image.as_deref()));
 }
