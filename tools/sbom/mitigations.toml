@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Reviewed exceptions to the vulnerability gate (docs/SBOM.md). Each entry accepts one
+# vulnerability in one package (Debian source package or Rust crate) until its expiry date,
+# at most 90 days ahead. Say why the image is not exposed or what limits the damage, and
+# what would end the exception (a fix in Debian, a snapshot bump).
+#
+# [[mitigation]]
+# id = "CVE-2026-00000"
+# package = "example"
+# reason = "Only reachable through X, which the image does not ship or enable."
+# expires = 2026-12-31
+
+# Not in the image: the vulnerable code is in a package or file the image does not ship
+# (checked in the snapshot's .deb contents and the image's /etc/pam.d, 2026-10-09).
+
+[[mitigation]]
+id = "CVE-2026-107161"
+package = "cyrus-sasl2"
+reason = "Heap overflow in the DIGEST-MD5 plugin. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the image; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-82560"
+package = "perl"
+reason = "CPU/memory exhaustion in Pod::Text. Pod::Text is in perl-modules-5.42, which is not in the image; perl-base ships no Pod/Text.pm."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-85498"
+package = "policykit-1"
+reason = "Stack buffer underflow in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd). polkitd is not in the image; only libpolkit-agent-1-0 and libpolkit-gobject-1-0 are, and they contain no helper."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2025-8941"
+package = "pam"
+reason = "Symlink/race in pam_namespace. No file in the image's /etc/pam.d (login, passwd, su, runuser, other...) or /usr/lib/pam.d loads pam_namespace.so, so the module never runs."
+expires = 2027-01-07
+
+# Waiting for a Debian fix: exploitable only with an attacker-controlled X server, a crafted
+# file or a specific API use that nothing in the base image does. End: the fixed Debian version
+# reaches our snapshot.
+
+[[mitigation]]
+id = "CVE-2026-88806"
+package = "libx11"
+reason = "Buffer overflow while handling replies from a malicious X server. The base image runs no X server and no X client sessions (libx11 is only a library dependency). Fixed upstream in libX11 1.8.14."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-88807"
+package = "libxrender"
+reason = "Heap overflow while handling replies from a malicious X server. The base image runs no X server and no X client sessions (libxrender is only a library dependency). Fixed upstream in libXrender 0.9.13."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-0F03E5"
+package = "libheif"
+reason = "libheif parser/encoder issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded (or an image encoded) through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-18A2CE"
+package = "libheif"
+reason = "libheif parser/encoder issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded (or an image encoded) through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-21F713"
+package = "libheif"
+reason = "libheif parser issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-956D99"
+package = "libheif"
+reason = "GHSA-9c75-9g8r-4728: allocation amplification from a crafted JPEG 2000 image. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-DB3DE2"
+package = "libheif"
+reason = "GHSA-qwpf-5wf7-r996: use-after-free in the encoder path (ImageItem::encode_to_bitstream_and_boxes). Needs a program encoding HEIF images; nothing in the base image does."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "TEMP-0000000-F2B97A"
+package = "libheif"
+reason = "GHSA-v8qw-hwjv-44hw: allocation before dimension checks on the AV1 path. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-102010"
+package = "gcc-16"
+reason = "libstdc++ reallocation bug in erase_if on a binary-heap priority queue. Needs a program using that API on attacker-influenced data; no known component of the base image does. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95619"
+package = "gcc-16"
+reason = "libstdc++ integer overflow in aligned operator new with huge sizes. Needs a program passing attacker-controlled sizes to aligned new; no known component of the base image does. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-85091"
+package = "zlib"
+reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no known component of the base image does. Waiting for the Debian zlib upload."
+expires = 2026-11-08
+
+# Linux kernel: long-standing issues with no upstream fix, carried by every distribution.
+
+[[mitigation]]
+id = "CVE-2019-19449"
+package = "linux"
+reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. Mounting needs root and the base image has no automounter (no udisks2). Follow-up: block autoloading of unused filesystems."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2019-19814"
+package = "linux"
+reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. Mounting needs root and the base image has no automounter (no udisks2). Follow-up: block autoloading of unused filesystems."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3847"
+package = "linux"
+reason = "OverlayFS copy-up of file capabilities on setuid files; local attacker who can mount overlayfs. No upstream fix; Debian tracks it unfixed in every release."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3864"
+package = "linux"
+reason = "Dumpable flag of SUID descendants with a non-default core_pattern pipe handler; local attacker. No upstream fix; the image sets no core_pattern pipe handler of its own (systemd-coredump is not installed)."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2024-21803"
+package = "linux"
+reason = "Use-after-free in the Bluetooth modules; needs Bluetooth hardware and local access. The base image ships no Bluetooth stack (no bluez). No upstream fix identified by Debian."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2013-7445"
+package = "linux"
+reason = "DRM GEM objects can be used to consume memory (local denial of service, no score). Known upstream since 2015 without a fix; the impact is limited to memory exhaustion by a local user."
+expires = 2027-01-07
+
+# Critical with a fix upstream but not in Debian yet: bridge only.
+
+[[mitigation]]
+id = "CVE-2026-94603"
+package = "podman"
+reason = "podman run of a checkpoint image from a registry ignores user sandboxing (GHSA-2cvf-wqm6-wr9g, fixed upstream in 5.8.8). No image is delivered to users yet (signing stays off, NyraOS F167); shipping a fixed podman before any user image is tracked in WaggSoftware/NyraOS#71."
+expires = 2026-10-16

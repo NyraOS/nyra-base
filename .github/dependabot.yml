@@ -1,5 +1,6 @@
-# Updates for the GitHub Actions pinned by SHA in .github/workflows (NyraOS DECIZII F151).
-# Minor and patch updates come grouped in one PR. Container images in run: lines and
+# Updates for the GitHub Actions pinned by SHA in .github/workflows and for the Python package
+# pinned by hash in tools/sbom/requirements.txt (NyraOS DECIZII F151).
+# Minor and patch updates of the actions come grouped in one PR. Container images in run: lines and
 # Containerfiles are pinned by digest and updated by hand.
 version: 2
 updates:
@@ -11,3 +12,8 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+  - package-ecosystem: pip
+    directory: /tools/sbom
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1

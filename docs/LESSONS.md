@@ -18,6 +18,14 @@ Each line is something that broke or surprised us once.
   `mkosi/mkosi.conf` is the whole system.
 - **mkosi removes the dpkg database** from the image. The package list for the SBOM and vulnerability
   scanning comes from `ManifestFormat=json` (exact versions).
+- The mkosi manifest names binary packages only (name, version, architecture). Vulnerability data
+  (Debian Security Tracker, OSV) is keyed by source package and source version, which differ for
+  binNMUs (`libbz2-1.0 1.0.8-6+b2` comes from `bzip2 1.0.8-6`). The snapshot's `Packages` index maps one
+  to the other (`docs/SBOM.md`).
+- The Debian Security Tracker JSON has no CVSS scores, and its urgency is `not yet assigned` for most
+  CVEs. OSV's `DEBIAN-CVE-*` records carry the CVSS vectors (v3 or v4) but cover Debian releases, not
+  `sid`: querying OSV with a `sid` version matches open ranges of older releases. So the tracker says
+  whether `sid` is affected and OSV says how badly.
 - The mkosi container needs `python3-pefile`.
 - **apt only warns on a suite mismatch.** A correctly signed InRelease for another suite (unstable
   served where testing was asked) is accepted with `W: Conflicting distribution`. `ci/tools.Containerfile`

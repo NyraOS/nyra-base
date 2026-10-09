@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# CVSS scores for tools/sbom/sbom.py (Red Hat Product Security, LGPL-3.0-or-later, pure Python, no dependencies).
+cvss==3.6 --hash=sha256:e342c6ad9c7eb69d2aebbbc2768a03cabd57eb947c806e145de5b936219833ea

@@ -2,8 +2,10 @@
 # Builds nyra-base (desktop: Debian unstable, x86_64):
 #   bootc from source (on Debian testing) -> mkosi root filesystem from the pinned
 #   snapshot -> bootc layer (Containerfile) -> `bootc container lint --fatal-warnings`.
-# Artifacts: the image as an oci-archive and the package list (SBOM). Nothing is
-# pushed to a public registry; publishing comes later (NyraOS#25).
+# Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
+# bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
+# documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
+# publishing comes later (NyraOS#25).
 # Release builds (push or manual run on main) use no cached content, and the sign job signs
 # them keylessly (docs/SIGNING.md).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
@@ -151,21 +153,37 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload the SBOM
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: nyra-base-sbom
-          path: |
-            dist/nyra-base.manifest.json
-            dist/bootc-*.Cargo.lock
-          retention-days: 90
-
       - name: Upload the image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nyra-base-oci-archive
           path: dist/nyra-base.oci.tar
           retention-days: 14
+
+      # Last step, after the image is uploaded: the scan fetches data from the network (Debian
+      # snapshot index, Debian Security Tracker, OSV) and runs one pinned PyPI package, and none of
+      # that gets a chance to touch the image. A blocking finding fails this job, so install-boot
+      # and sign do not run.
+      - name: SBOM and vulnerability scan (docs/SBOM.md)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
+            | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Uploaded even when the scan blocks, to see why. Releases will attach the SBOM (NyraOS#25).
+      - name: Upload the SBOM
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-sbom
+          path: |
+            dist/nyra-base.cdx.json
+            dist/nyra-base.vulnerabilities.md
+            dist/nyra-base.manifest.json
+            dist/bootc-*.Cargo.lock
+          retention-days: 90
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot) on a loopback file,
