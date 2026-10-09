@@ -30,6 +30,8 @@ The same job checks the secure defaults of the installed system ([`docs/DEFAULTS
 
 Release builds (`main`) use no cached content and are signed keylessly in CI (Sigstore, through a Google service account); the image refuses unsigned images from the Nyra registry. Details: [`docs/SIGNING.md`](docs/SIGNING.md).
 
+System updates go through `nyra-updated` ([`updated/`](updated)): the signed channel sheet, rollouts, no downgrades, and the reactions bootc does not have by itself (a failed health check on a new version, a version the machine fell back from). Details: [`docs/UPDATES.md`](docs/UPDATES.md).
+
 ## Contributing
 
 Every change goes through a pull request and must keep the test battery green. Security issues: please do not open a public issue; report them privately as described in [`SECURITY.md`](SECURITY.md). How to contribute: [`CONTRIBUTING.md`](CONTRIBUTING.md).

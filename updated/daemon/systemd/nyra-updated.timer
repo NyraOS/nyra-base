@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Not in the image yet (NyraOS#66). Never bootc-fetch-apply-updates.timer (it reboots).
+[Unit]
+Description=Nyra: check for system updates
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

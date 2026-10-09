@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Tests for nyra-updated and the channel sheet library (updated/, docs/UPDATES.md): format, lints,
+# unit tests and known vulnerabilities in the locked dependencies.
+name: updated
+on:
+  push:
+    branches: [main]
+    paths: ["updated/**", ".github/workflows/updated.yml"]
+  pull_request:
+    paths: ["updated/**", ".github/workflows/updated.yml"]
+  schedule:
+    - cron: "37 5 * * 1" # weekly cargo audit, so new advisories show up without a code change
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: updated
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-audit
+      - run: cargo audit
