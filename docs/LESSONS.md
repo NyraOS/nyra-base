@@ -113,6 +113,17 @@ Each line is something that broke or surprised us once.
 - Debian's kernel packages now put `vmlinuz` in `/usr/lib/modules/<kver>/`; the signed image is in
   `linux-binary-<kver>`, `linux-image-<kver>` is only a metapackage.
 
+- **Boot protection (seen in CI, OVMF):** a firmware entry whose file is missing, or whose shim
+  cannot start a damaged `grubx64.efi`, makes the firmware try the next entry in `BootOrder`; the
+  automatic disk entry then starts the fallback path (`\EFI\BOOT\BOOTX64.EFI`). The firmware's own
+  `UiApp` entry is in `BootOrder` but is never started automatically. A damaged first choice costs
+  about 4 s. shim starts `grubx64.efi` from its own directory, and systemd-boot reports that path in
+  `LoaderImageIdentifier`, which is how a test tells which copy booted.
+- systemd mounts the ESP with `fmask=0177,dmask=0077`: only root can read it, and no file on it is
+  executable.
+- `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition
+  UUID and path, so an old "Nyra OS" entry for another disk is replaced, not reused.
+
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
   podman's root API (`podman.socket` and `podman.service` started at boot), `podman-auto-update.timer`,
@@ -168,6 +179,9 @@ Each line is something that broke or surprised us once.
   change, bootc refers to it by path.
 
 ## Testing in CI
+- Guest commands in `vm-boot.py --command` are typed into the root login shell: an `exit` in one
+  ends that shell, and the result marker never comes. Chain with `&&` instead. With `--keep-vars`
+  the firmware variables (boot entries, `BootOrder`) carry over between boots, as on a real machine.
 - The install + boot test runs on GitHub-hosted runners with KVM: `bootc install to-disk --via-loopback`
   takes ~15 s, and the installed system reaches the login prompt 12–16 s after QEMU starts
   (`systemd-analyze`: 9–11 s).
