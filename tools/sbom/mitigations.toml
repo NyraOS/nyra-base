@@ -107,6 +107,53 @@ package = "zlib"
 reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no known component of the base image does. Waiting for the Debian zlib upload."
 expires = 2026-11-08
 
+# GnuTLS 3.8.13: certificate validation issues published 2026-10-09, no fix in Debian yet. Reachable
+# only by the few programs that link GnuTLS, none of which runs by itself. End: a fixed gnutls28.
+
+[[mitigation]]
+id = "CVE-2026-67693"
+package = "gnutls28"
+reason = "End-entity X.509 certificates with a contradictory Key Usage and Extended Key Usage are not rejected. In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-88647"
+package = "gnutls28"
+reason = "Hostname verification bypass through the Common Name fallback with a crafted certificate. In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-88648"
+package = "gnutls28"
+reason = "A subordinate CA can bypass cross-domain restrictions (incomplete X.509 implementation). In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95184"
+package = "gnutls28"
+reason = "Legitimate certificates rejected (denial of service). In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95209"
+package = "gnutls28"
+reason = "Legitimate CA certificates rejected (denial of service). In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95210"
+package = "gnutls28"
+reason = "Certificates with invalid extensions accepted (improper certificate validation). In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
+expires = 2026-11-08
+
+# Linux: fixed upstream, waiting for the Debian kernel upload. End: a fixed linux in our snapshot.
+
+[[mitigation]]
+id = "CVE-2026-98375"
+package = "linux"
+reason = "xen-netfront: RX packets with a short Ethernet header from the Xen network backend (XSA-522). Only reachable when the system runs as a Xen guest, and then only from the Xen backend, which already controls the guest's network. Fixed upstream (commit 089e58805c45); waiting for a Debian linux upload."
+expires = 2026-11-08
+
 # Linux kernel: long-standing issues with no upstream fix, carried by every distribution.
 
 [[mitigation]]
