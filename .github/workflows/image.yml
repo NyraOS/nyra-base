@@ -120,6 +120,13 @@ jobs:
             --label org.opencontainers.image.revision="$GITHUB_SHA" \
             -t localhost/nyra-base:ci -f Containerfile . 2>&1 | tee "$WORK/build.log"
 
+      # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
+      # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
+      # Containerfile, run `gh workflow run image.yml --ref <branch>`.
+      - name: Build again and compare the layers
+        if: github.event_name != 'pull_request'
+        run: ci/check-reproducible.sh
+
       - name: Test the signature policy (docs/SIGNING.md)
         run: |
           tools/signing/trust-roots.sh "$RUNNER_TEMP/trust-roots"

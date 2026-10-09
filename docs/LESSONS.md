@@ -13,6 +13,18 @@ Each line is something that broke or surprised us once.
   forward-compatible libraries (libselinux, libostree).
 - **bootc needs `libclang`** to build (bindgen for the SELinux bindings), plus `libostree-dev`,
   `libselinux1-dev`, `libssl-dev`, `libzstd-dev`, `go-md2man`.
+- **Two builds of the same commit must give the same layers.** With the snapshot and
+  `SOURCE_DATE_EPOCH` pinned (mkosi sets every mtime to it, `podman build --timestamp` too, dracut runs
+  with `reproducible=yes`), two image builds on top of the same bootc binary differed in two files of
+  mkosi's layer: `/var/log/alternatives.log` (update-alternatives writes the wall-clock time) and
+  `/var/cache/ldconfig/aux-cache` (inode numbers and change times). `RemoveFiles=` in `mkosi.conf` drops
+  them. The final file system did not even contain them (bootc's layout removes `/var`), but the layer
+  digest still changed. The image workflow builds a second time on `main` and compares the layers
+  (`ci/check-reproducible.sh`), which lists the differing files when it fails.
+- **bootc's own build is not reproducible yet:** two compiles of the same `BOOTC_COMMIT` give a different
+  `/usr/bin/bootc` (symbols in another order), tracked in WaggSoftware/NyraOS#73. The check above reuses
+  the bootc binary of the first build, so it does not catch that; it also runs on one runner, so it does
+  not catch what depends on the host.
 - **Strip bootc.** Debug info makes it ~378 MB; stripped it is ~40 MB.
 - **mkosi installs only what is listed.** No `passwd`, `login`, `util-linux` unless named. The list in
   `mkosi/mkosi.conf` is the whole system.
