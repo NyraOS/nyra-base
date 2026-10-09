@@ -344,8 +344,9 @@ jobs:
   # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
   # refused, credentials on the ESP or over SMBIOS ignored) and tools/vm/boot-counting.sh (an update that
   # never gets healthy falls back after 3 tries, a healthy one is blessed), and tools/vm/boot-protection.sh
-  # (Secure Boot, one firmware variable store across seven boots: editor off from the first boot,
-  # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full).
+  # (Secure Boot, one firmware variable store across eleven boots: editor off from the first boot,
+  # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,
+  # no older boot loader over a newer one, a newer one only after the version is blessed).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).

@@ -119,6 +119,10 @@ Each line is something that broke or surprised us once.
   `UiApp` entry is in `BootOrder` but is never started automatically. A damaged first choice costs
   about 4 s. shim starts `grubx64.efi` from its own directory, and systemd-boot reports that path in
   `LoaderImageIdentifier`, which is how a test tells which copy booted.
+- Boot binaries on the ESP are compared by the Debian line of their SBAT section, which `grep -a` reads
+  straight from the PE file (`shim.debian,1,Debian,shim,16.1,…`; systemd-boot's vendor field is
+  "Debian GNU/Linux", not "Debian"). Never write an older boot loader over a newer one: the newer one
+  may be there because of a revocation.
 - systemd mounts the ESP with `fmask=0177,dmask=0077`: only root can read it, and no file on it is
   executable.
 - `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition

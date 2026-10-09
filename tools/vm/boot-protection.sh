@@ -15,7 +15,16 @@
 #   5. fallback files deleted: boots through "Nyra OS", the files are back;
 #   6. ESP full and the fallback systemd-boot corrupted: boots through "Nyra OS", the repair fails
 #      visibly and leaves no half-written file;
-#   7. space freed: the repair completes.
+#   7. space freed: the repair completes;
+#   8. a newer systemd-boot in EFI/BOOT than this image's (as after an update that brought a newer
+#      boot loader, then a fallback to this version): kept, never replaced by the older one;
+#   9. an older one there and this version on trial (a counted entry whose boot-complete.target
+#      fails): not replaced yet;
+#  10. the same version healthy: blessed;
+#  11. the next boot: the newer boot loader from this image is written.
+# "Newer" and "older" are made by changing the first digit of the Debian version in the file's
+# SBAT section; that copy is never started (the boots go through EFI/nyra), so its signature does
+# not matter.
 #   tools/vm/boot-protection.sh IMAGE DISK.qcow2 UKI_CERT WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -142,4 +151,59 @@ vm --log "$logs/serial-boot-protection-7.log" \
   --title "Boot protection 7: space freed: the repair completes" \
   --command "$(loader '\EFI\nyra\grubx64.efi')" \
   --command "$repair" \
+  --command "$same"
+
+# Sets the first digit of the Debian version in systemd-boot's SBAT section (FILE DIGIT), in place.
+set_version() {
+  sudo python3 - "$1" "$2" <<'PY'
+import sys
+f, digit = sys.argv[1], sys.argv[2].encode()
+b = bytearray(open(f, "rb").read())
+i = b.index(b"\nsystemd-boot.debian,") + 1
+for _ in range(4):
+    i = b.index(b",", i) + 1
+b[i:i + 1] = digit
+open(f, "wb").write(b)
+PY
+  echo "$1: $(sudo grep -a -m 1 -oE '^systemd-boot\.debian,[^,]+,[^,]+,[^,]+,[^,]+' "$1")"
+}
+fallback_sdboot='/boot/EFI/BOOT/grubx64.efi'
+
+newer_on_esp() { set_version "$mnt/EFI/BOOT/grubx64.efi" 9; sudo sha256sum "$mnt/EFI/BOOT/grubx64.efi" | tee "$bp/newer.sha256"; }
+with_esp newer_on_esp
+vm --log "$logs/serial-boot-protection-8.log" \
+  --title "Boot protection 8: a newer systemd-boot on the ESP than this image's is kept" \
+  --command "$(loader '\EFI\nyra\grubx64.efi')" \
+  --command "$repair" \
+  --command "journalctl -b -u nyra-boot-repair -o cat | grep 'is newer than this image' && ! cmp -s /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed $fallback_sdboot"
+check_kept() { sudo sha256sum -c "$bp/newer.sha256"; }
+with_esp check_kept
+
+older_on_esp_on_trial() {
+  sudo cp "$sdboot" "$mnt/EFI/BOOT/grubx64.efi"
+  set_version "$mnt/EFI/BOOT/grubx64.efi" 1
+  local entries=("$mnt"/loader/entries/*.conf)
+  test "${#entries[@]}" = 1
+  sudo mv "${entries[0]}" "${entries[0]%.conf}+3.conf"
+  ls "$mnt/loader/entries"
+}
+with_esp older_on_esp_on_trial
+vm --log "$logs/serial-boot-protection-9.log" \
+  --credential $'systemd.unit-dropin.boot-complete.target=[Unit]\nRequires=nyra-test-missing.service\n' \
+  --title "Boot protection 9: an older systemd-boot on the ESP, this version on trial: not replaced yet" \
+  --command "$(loader '\EFI\nyra\grubx64.efi')" \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; ls /boot/loader/entries; b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = indeterminate' \
+  --command "journalctl -b -u nyra-boot-repair -o cat | grep 'once this version is blessed' && ! cmp -s /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed $fallback_sdboot"
+
+vm --log "$logs/serial-boot-protection-10.log" \
+  --title "Boot protection 10: the same version healthy: blessed" \
+  --command "$(loader '\EFI\nyra\grubx64.efi')" \
+  --command "$repair" \
+  --command 'ls /boot/loader/entries; b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = good'
+
+vm --log "$logs/serial-boot-protection-11.log" \
+  --title "Boot protection 11: after the blessing, the newer systemd-boot from this image is written" \
+  --command "$(loader '\EFI\nyra\grubx64.efi')" \
+  --command "$repair" \
+  --command 'b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = clean' \
   --command "$same"

@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# At every boot: the boot files and loader.conf on the ESP as in this image, the "Nyra OS" firmware
+# At every boot: the boot files and loader.conf on the ESP as in this image (never an older boot
+# loader over a newer one, a newer one only once this version is blessed), the "Nyra OS" firmware
 # entry first in BootOrder (docs/BOOT.md). It fails, visibly, when it cannot repair (ESP full).
+# Not ordered after systemd-bless-boot (a health check ordered after multi-user.target would make a
+# cycle): a newer boot loader from a version on trial is written at the first boot after it is blessed.
 [Unit]
 Description=Nyra: boot files, loader.conf and firmware entry from /usr
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md

@@ -188,18 +188,33 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   two copies and `loader.conf`, before the first boot. No firmware entry: it is created by the
   installed system itself, on the machine it runs on. bootc has no install hook, so the installer
   calls it after `bootc install`; in CI the `install-boot` job does.
-- **At every boot** (`nyra-boot-repair.service`, `esp-sync repair`): any of those files that is
-  missing or differs from the booted image's is written again (a new file, then a rename, so a
-  failed write leaves the old one); the "Nyra OS" firmware entry is created if it is missing or
-  points elsewhere, and put first in `BootOrder` again if something else was put first. `EFI/nyra` is
+- **At every boot** (`nyra-boot-repair.service`, `esp-sync repair`), each boot file is compared with
+  the booted image's by the Debian version in its SBAT section (plain text in the PE file):
+  - missing, or damaged (no SBAT, another component, the same version with other bytes): written
+    again;
+  - **newer on the ESP: kept.** A newer shim or systemd-boot may be there because of an SBAT or `dbx`
+    revocation; if the machine falls back to an older system version (boot counting, rollback, an
+    old entry picked in the menu), writing its older boot loader back could leave both copies
+    revoked under Secure Boot;
+  - **older on the ESP: replaced only from a blessed boot** (`systemd-bless-boot status` is `good` or
+    `clean`), so a version still on trial never replaces a boot loader that works. The unit is not
+    ordered after `systemd-bless-boot` (a health check ordered after `multi-user.target` would make
+    a cycle), so in practice the newer boot loader is written at the first boot after the blessing.
+
+  Each write is a new file, then a rename, so a failed write leaves the old one; `EFI/nyra` is
   written before `EFI/BOOT`, so an interrupted repair or update still leaves one complete copy. When
   it cannot repair (ESP full), the unit fails and the system shows as degraded; nothing half-written
-  stays on the ESP.
+  stays on the ESP. `loader.conf` is always made equal to the image's.
+
+  The "Nyra OS" firmware entry is created if this ESP has none (or one for another file), and put
+  first in `BootOrder` again if something else was put first. Only entries for this ESP's partition
+  are touched: another Nyra installation (another disk, a USB stick) keeps its entries, and
+  `BootNext` (a one-time choice, such as "Restart in Windows") is left alone.
 - **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
   root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
   no execute bit on files); CI checks it.
 
-CI follows one system through seven boots, with Secure Boot on and one firmware variable store kept
+CI follows one system through eleven boots, with Secure Boot on and one firmware variable store kept
 across them (`vm-boot.py --keep-vars`):
 
 | Boot | Done before it | Expected |
@@ -212,12 +227,20 @@ across them (`vm-boot.py --keep-vars`):
 | 5 | `\EFI\BOOT\BOOTX64.EFI` and `grubx64.efi` deleted | boots through "Nyra OS"; both are back |
 | 6 | ESP filled, `\EFI\BOOT\grubx64.efi` changed by one byte | boots through "Nyra OS"; the repair fails visibly, no half-written file |
 | 7 | space freed | the repair completes |
+| 8 | a newer systemd-boot in `\EFI\BOOT` than the image's | kept |
+| 9 | an older one there; this version on trial (counted entry, `boot-complete.target` fails) | not replaced yet, `systemd-bless-boot status` is `indeterminate` |
+| 10 | | healthy: blessed (`good`) |
+| 11 | | `clean`; the image's systemd-boot is written |
+
+"Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
+section; the copy is never started (those boots go through `\EFI\nyra`), so its broken signature
+does not matter.
 
 What the installer must still do (not part of this repository's tests): put the ESP on its own
 partition for Nyra (not shared with Windows), with the GPT attributes that hide it from Windows, and
 call `esp-sync install` after `bootc install`. Not covered yet: letting the user choose which system
-comes first (today "Nyra OS" is always put first again; "Restart in Windows" will use `BootNext`), a
-shim update that SBAT or `dbx` revocation forces, and a recovery entry in the boot menu.
+comes first ("Nyra OS" is put first again by design; "Restart in Windows" will use `BootNext`), a
+real shim update forced by an SBAT or `dbx` revocation, and a recovery entry in the boot menu.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 
