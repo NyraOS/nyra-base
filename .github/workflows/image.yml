@@ -321,7 +321,8 @@ jobs:
   # (bootc install to-disk, composefs backend, systemd-boot) on a loopback file,
   # then boots it with QEMU + KVM + OVMF. The image boots only its sealed UKI, whose command line
   # cannot change, so the test-only console access (a getty on ttyS0, root autologin for that boot)
-  # is set up by vm-boot.py through QEMU; nothing changes in the image.
+  # is set up by vm-boot.py, with a test add-on on the test disk's ESP (tools/vm/test-console.sh);
+  # nothing changes in the image.
   # The digest check reads only the booted entry (--booted drops staged and rollback)
   # and needs exactly one imageDigest there, equal to the loaded image's.
   # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
@@ -385,6 +386,7 @@ jobs:
               --wipe --via-loopback /output/disk.raw
           echo "INSTALL_SECONDS=$((SECONDS - start))" >> "$GITHUB_ENV"
           sudo chown "$(id -u):$(id -g)" "$WORK/disk.raw"
+          tools/vm/test-console.sh localhost/nyra-base:ci "$WORK/disk.raw" "$WORK"
           qemu-img convert -O qcow2 "$WORK/disk.raw" "$WORK/disk.qcow2"
           rm "$WORK/disk.raw"
 
@@ -398,7 +400,7 @@ jobs:
             echo "| Image | \`localhost/nyra-base:ci\` \`$IMAGE_DIGEST\` |"
             echo "| Install | \`bootc install to-disk --composefs-backend --bootloader systemd\`, ext4, loopback, ${INSTALL_SECONDS} s |"
             echo "| VM | QEMU $(qemu-system-x86_64 --version | head -1 | awk '{print $4}'), KVM, UEFI (OVMF), 2 vCPU, 2 GiB |"
-            echo "| Test-only access | a getty on ttyS0 and root autologin, set up by vm-boot.py for this VM (the sealed UKI's command line has no console) |"
+            echo "| Test-only access | a getty on ttyS0 and root autologin, set up by vm-boot.py with a test add-on on the ESP (tools/vm/test-console.sh); the image's command line has no console |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           python3 tools/vm/vm-boot.py --autologin \

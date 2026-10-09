@@ -8,7 +8,10 @@
 # signed UKI boots; the same UKI with a changed initramfs (signature kept), without a signature,
 # or signed with a key that is not enrolled is refused; unsigned add-ons and plain credentials on
 # the ESP have no effect (a signed add-on does: the files are where the stub looks); kernel
-# arguments added in the boot entry are ignored (what the boot menu editor would do).
+# arguments added in the boot entry are ignored (what the boot menu editor would do); the image's
+# command line imports no systemd credentials: one passed over SMBIOS has no effect, unless the
+# test add-on turns import back on (the last occurrence on the command line wins).
+# The test console add-on that tools/vm/test-console.sh put on the disk is replaced by a signed one.
 # The keys "local" (enrolled, signs the control add-on) and "other" (not enrolled) are made here,
 # live only in WORKDIR on the ephemeral runner and are deleted at the end: never commit or upload
 # them, never use a real key here.
@@ -72,6 +75,12 @@ sbverify --cert "$uki_cert" "$sb/signed.efi"
 sudo cp "$sb/shimx64.efi.signed" "$mnt/EFI/BOOT/BOOTX64.EFI"
 sudo cp "$sb/systemd-bootx64.efi.signed" "$mnt/EFI/BOOT/grubx64.efi"
 sudo cp "$sb/mmx64.efi.signed" "$mnt/EFI/BOOT/mmx64.efi"
+# The test console (credential import back on) and, for the boot with the image's own command line,
+# only systemd-firstboot's prompts off (no credentials there, and nobody to answer them); both signed.
+test -f "$mnt/loader/addons/nyra-test-console.addon.efi"
+tools/vm/test-addon.sh "$image" "$sb/console.addon.efi" systemd.import_credentials=yes "$sb/local.key" "$sb/local.crt"
+tools/vm/test-addon.sh "$image" "$sb/firstboot.addon.efi" systemd.firstboot=no "$sb/local.key" "$sb/local.crt"
+sudo cp "$sb/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
 sudo umount "$mnt"
 
 # The refused variants of the signed UKI:
@@ -86,13 +95,17 @@ sbattach --remove "$sb/unsigned.efi"
 sbsign --key "$sb/other.key" --cert "$sb/other.crt" --output "$sb/other.efi" "$sb/unsigned.efi"
 
 # Add-ons (extra kernel arguments) next to the UKI and for every UKI, and plain (unencrypted)
-# credentials, a tmpfiles.d line each, for this UKI and for every UKI.
+# credentials, with different names: a tmpfiles.d line for this UKI, a sysctl for every UKI.
 ukify build --stub "$sb/addonx64.efi.stub" --cmdline nyra.addon.unsigned=1 --output "$sb/unsigned.addon.efi"
 ukify build --stub "$sb/addonx64.efi.stub" --cmdline nyra.addon.global=1 --output "$sb/global.addon.efi"
 ukify build --stub "$sb/addonx64.efi.stub" --cmdline nyra.addon.signed=1 --output "$sb/control.addon.efi" \
   --secureboot-private-key "$sb/local.key" --secureboot-certificate "$sb/local.crt"
 printf 'f /run/nyra-cred-uki 0644 root root - injected\n' > "$sb/uki.cred"
-printf 'f /run/nyra-cred-global 0644 root root - injected\n' > "$sb/global.cred"
+printf 'kernel.domainname = nyra-cred-global\n' > "$sb/global.cred"
+# A credential over SMBIOS: a drop-in that prints a marker on the serial console and leaves a file.
+# The printed marker (…-42) does not appear literally in the drop-in.
+dropin="systemd.unit-dropin.systemd-user-sessions.service=[Service]
+ExecStartPost=/bin/sh -c 'echo NYRA-CRED-DROPIN-\$\$((6*7)) >/dev/ttyS0; touch /run/nyra-cred-dropin'"
 
 vm() {
   python3 -B tools/vm/vm-boot.py --secure-boot "$sb/vars.fd" --disk "$sb/disk.raw" --timeout 180 \
@@ -105,7 +118,7 @@ name="${entry##*/}"
 
 # The boots are independent: run them all, fail at the end.
 fail=0
-vm --autologin --log "$logs/serial-secure-boot.log" \
+vm --autologin --log "$logs/serial-secure-boot.log" --credential "$dropin" \
   --title "Secure Boot: shim -> systemd-boot -> the image's UKI, signed with this run's key (MOK)" \
   --command 'mokutil --sb-state; mokutil --sb-state | grep -qx "SecureBoot enabled"' \
   --command 'mokutil --list-enrolled | grep "CN=Nyra CI"; mokutil --list-enrolled | grep -q "CN=Nyra CI per-run UKI key"' \
@@ -113,6 +126,7 @@ vm --autologin --log "$logs/serial-secure-boot.log" \
   --command "e=\"\$($(efivar LoaderEntrySelected))\"; s=\"\$($(efivar StubInfo))\"; echo \"entry: \$e, stub: \$s\"; test \"\$e\" = $name && echo \"\$s\" | grep -q systemd-stub" \
   --command 'cat /sys/kernel/security/lockdown; grep -q "\[integrity\]" /sys/kernel/security/lockdown' \
   --command 'cat /proc/cmdline; grep -Eq "(^| )composefs=[0-9a-f]{128}( |$)" /proc/cmdline' \
+  --command 'grep -Eq "systemd.import_credentials=no .*systemd.import_credentials=yes" /proc/cmdline && test -e /run/nyra-cred-dropin && echo "credentials imported: the test add-on comes later on the command line"' \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
   || fail=1
 
@@ -129,27 +143,48 @@ for variant in tampered unsigned other; do
     --refused 'Error loading EFI binary .*bootc_composefs-[0-9a-f]+\.efi: Security violation' || fail=1
 done
 
-# Add-ons and credentials: only the add-on signed with an enrolled key may change the command line;
-# the plain credentials must not create their files.
+# A credential over SMBIOS with the image's own command line (only the add-on that turns off
+# systemd-firstboot's prompts): no effect. The same boot with the test console add-on prints the
+# marker, so its absence means something.
 sudo mount "$esp" "$mnt"
 sudo cp "$sb/signed.efi" "$mnt$uki"
+sudo umount "$mnt"
+vm --log "$logs/serial-secure-boot-credential-control.log" --credential "$dropin" \
+  --title "Secure Boot: with the test add-on, a credential over SMBIOS takes effect (control)" \
+  --marker 'NYRA-CRED-DROPIN-42' --marker-expected yes || fail=1
+sudo mount "$esp" "$mnt"
+sudo rm "$mnt/loader/addons/nyra-test-console.addon.efi"
+sudo cp "$sb/firstboot.addon.efi" "$mnt/loader/addons/nyra-test-firstboot.addon.efi"
+sudo umount "$mnt"
+vm --log "$logs/serial-secure-boot-credential.log" --credential "$dropin" \
+  --title "Secure Boot: with the image's command line, a credential over SMBIOS has no effect" \
+  --marker 'NYRA-CRED-DROPIN-42' --marker-expected no || fail=1
+sudo mount "$esp" "$mnt"
+sudo rm "$mnt/loader/addons/nyra-test-firstboot.addon.efi"
+sudo cp "$sb/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
+sudo umount "$mnt"
+
+# Add-ons and credentials: only add-ons signed with an enrolled key may change the command line (the
+# control add-on next to the UKI, and the test console for every UKI); the plain credentials must
+# have no effect.
+sudo mount "$esp" "$mnt"
 sudo mkdir -p "$mnt$uki.extra.d" "$mnt/loader/addons" "$mnt/loader/credentials"
 sudo cp "$sb/unsigned.addon.efi" "$sb/control.addon.efi" "$mnt$uki.extra.d/"
 sudo cp "$sb/global.addon.efi" "$mnt/loader/addons/"
 sudo cp "$sb/uki.cred" "$mnt$uki.extra.d/tmpfiles.extra.cred"
-sudo cp "$sb/global.cred" "$mnt/loader/credentials/tmpfiles.extra.cred"
+sudo cp "$sb/global.cred" "$mnt/loader/credentials/sysctl.extra.cred"
 sudo umount "$mnt"
 vm --autologin --log "$logs/serial-secure-boot-extras.log" \
   --title "Secure Boot: unsigned add-ons and plain credentials on the ESP have no effect" \
-  --command 'cat /proc/cmdline; grep -q "nyra.addon.signed=1" /proc/cmdline && ! grep -Eq "nyra.addon.(unsigned|global)" /proc/cmdline' \
-  --command 'ls -l /run/nyra-cred-* 2>&1; test ! -e /run/nyra-cred-uki && test ! -e /run/nyra-cred-global' \
+  --command 'cat /proc/cmdline; grep -q "nyra.addon.signed=1" /proc/cmdline && grep -q "systemd.import_credentials=yes" /proc/cmdline && ! grep -Eq "nyra.addon.(unsigned|global)" /proc/cmdline' \
+  --command 'ls -l /run/nyra-cred-* 2>&1; d="$(cat /proc/sys/kernel/domainname)"; echo "domainname: $d"; test ! -e /run/nyra-cred-uki && test "$d" != nyra-cred-global' \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; ls -lR /.extra /run/credentials 2>&1 | head -40; journalctl -b -o cat --no-pager | grep -i -e credential -e addon | head -20' \
   || fail=1
 
 # The entry that starts the signed UKI with an extra kernel argument, as the boot menu editor would:
 # with Secure Boot, systemd-stub ignores it and uses the command line in the UKI.
 sudo mount "$esp" "$mnt"
-sudo rm -r "$mnt$uki.extra.d" "$mnt/loader/addons" "$mnt/loader/credentials"
+sudo rm -r "$mnt$uki.extra.d" "$mnt/loader/addons/global.addon.efi" "$mnt/loader/credentials"
 printf 'options nyra.injected=1\n' | sudo tee -a "$mnt/loader/entries/$name" >/dev/null
 sudo umount "$mnt"
 vm --autologin --log "$logs/serial-secure-boot-injected.log" \
