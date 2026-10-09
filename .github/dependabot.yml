@@ -1,8 +1,9 @@
-# Updates for the GitHub Actions pinned by SHA in .github/workflows and for the Python package
-# pinned by hash in tools/sbom/requirements.txt: pins keep CI from running code nobody reviewed, and
-# Dependabot keeps the pins current.
-# Minor and patch updates of the actions come grouped in one PR. Container images in run: lines and
-# Containerfiles are pinned by digest and updated by hand.
+# Updates for the GitHub Actions pinned by SHA in .github/workflows, for the Python package pinned
+# by hash in tools/sbom/requirements.txt and for the Rust crates of updated/ (locked in
+# updated/Cargo.lock): pins keep CI from running code nobody reviewed, and Dependabot keeps the pins
+# current.
+# Minor and patch updates of the actions and of the crates come grouped in one PR each. Container
+# images in run: lines and Containerfiles are pinned by digest and updated by hand.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -18,3 +19,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 1
+  - package-ecosystem: cargo
+    directory: /updated
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
