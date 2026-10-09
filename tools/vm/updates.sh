@@ -323,10 +323,11 @@ vm "v5, registry down" --poweroff \
 sudo podman start nyra-test-registry >/dev/null
 for _ in $(seq 30); do curl -fs http://updates.nyraos.com/v2/ >/dev/null && break; sleep 1; done
 
-top() { # the registry's file for the last layer of image $1
+top() { # the registry's file for the layer of image $1 with its version marker (the last layer
+  # holds its UKI, see version())
   local layer
   layer="$(curl -fsS -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
-    "http://updates.nyraos.com/v2/nyra-base/manifests/$1" | jq -r '.layers[-1].digest')"
+    "http://updates.nyraos.com/v2/nyra-base/manifests/$1" | jq -r '.layers[-2].digest')"
   echo "/var/lib/registry/docker/registry/v2/blobs/sha256/${layer:7:2}/${layer:7}/data"
 }
 blob="$(top "$d7")"
