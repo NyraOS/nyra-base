@@ -14,6 +14,12 @@ start to the login prompt and the command outputs are appended as Markdown to
 --refused PATTERN expects the opposite of a boot: PATTERN shows up on the
 console and no system starts (no "Linux version" from a kernel with console=ttyS0,
 no login prompt from the getty that a credential puts on ttyS0).
+--marker PATTERN, with --marker-expected yes|no, does not log in: it waits until
+the console shows that the system reached multi-user.target, waits 20 s more,
+and checks whether PATTERN was printed (by a unit, for example).
+--credential NAME=TEXT passes one more systemd credential over SMBIOS. The
+sealed command line does not import them (docs/BOOT.md); the test disks carry an
+add-on that does (tools/vm/test-addon.sh).
 --persist writes to the disk (otherwise QEMU snapshot mode), --poweroff ends
 with a clean shutdown, so several runs can follow one system across reboots.
 
@@ -81,6 +87,18 @@ def refused(con, pattern, timeout):
     return f"`{m.group().decode(errors='replace')}`, no system started within 60 s"
 
 
+def marker(con, pattern, expected, timeout):
+    """multi-user.target is reached, 20 s pass, and PATTERN was printed or not, as expected."""
+    if not con.wait_for(rb"Reached target .*Multi-User System", timeout):
+        raise RuntimeError(f"multi-user.target not reached within {timeout} s")
+    time.sleep(20)
+    with con.lock:
+        seen = re.search(pattern.encode(), con.buf) is not None
+    if seen != expected:
+        raise RuntimeError(f"{pattern!r} {'not ' if expected else ''}on the console")
+    return f"`{pattern}` {'printed' if seen else 'not printed'}, as expected"
+
+
 def login_and_run(con, a, password, t0, rows, outputs):
     """Wait for the login prompt, log in as root and run the commands; True if all exit 0."""
     proc = con.proc
@@ -128,6 +146,10 @@ def main():
     p.add_argument("--summary", required=True, help="Markdown report is appended here")
     p.add_argument("--title", default="VM boot")
     p.add_argument("--autologin", action="store_true", help="root login on the console without a password")
+    p.add_argument("--marker", metavar="PATTERN", help="no login: check PATTERN on the console after boot")
+    p.add_argument("--marker-expected", choices=["yes", "no"], default="yes")
+    p.add_argument("--credential", action="append", default=[], metavar="NAME=TEXT",
+                   help="one more systemd credential over SMBIOS")
     a = p.parse_args()
 
     password = secrets.token_urlsafe(12)
@@ -149,6 +171,10 @@ def main():
     if a.autologin:
         cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
+    for c in a.credential:
+        name, _, text = c.partition("=")
+        cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:{name}="
+                + base64.b64encode(text.encode()).decode()]
     print("+ " + " ".join(cmd), flush=True)
     if not a.autologin:
         cmd += ["-smbios", f"type=11,value=io.systemd.credential:passwd.plaintext-password.root={password}"]
@@ -161,6 +187,8 @@ def main():
         try:
             if a.refused:
                 rows.append(("Boot refused", refused(con, a.refused, a.timeout)))
+            elif a.marker:
+                rows.append(("Console", marker(con, a.marker, a.marker_expected == "yes", a.timeout)))
             else:
                 ok = login_and_run(con, a, password, t0, rows, outputs)
                 if ok and a.poweroff:

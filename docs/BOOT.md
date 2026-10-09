@@ -24,8 +24,8 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
    since they end up inside the UKI. The image is committed.
 2. **UKI** from that committed image: `bootc container ukify` computes the composefs digest of the
    root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today `rw
-   lockdown=integrity composefs=…`: no root device, systemd-gpt-auto-generator finds the root
-   partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
+   lockdown=integrity systemd.import_credentials=no composefs=…`: no root device,
+   systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
    covers them. bootc checks the digest again at install and update, and refuses a UKI that does
    not match.
@@ -64,8 +64,11 @@ The `install-boot` job takes the disk that `bootc install` produced and, on a co
 | the same UKI with one byte of the initramfs changed, signature kept | refused | `Error loading EFI binary \EFI\Linux\bootc\bootc_composefs-….efi: Security violation`, no system starts |
 | the same UKI without a signature | refused | same |
 | the same UKI signed with a key that is not enrolled | refused | same |
-| unsigned add-ons (`<uki>.efi.extra.d/`, `loader/addons/`), a signed control add-on, plain credentials (`<uki>.efi.extra.d/`, `loader/credentials/`) | only the signed add-on applies | its argument on `/proc/cmdline`, none from the unsigned ones; the `tmpfiles.extra` credentials did not create their files |
+| unsigned add-ons (`<uki>.efi.extra.d/`, `loader/addons/`), signed add-ons in both places (a control next to the UKI, the test console for every UKI), plain credentials (`tmpfiles.extra` next to the UKI, `sysctl.extra` in `loader/credentials/`) | only the signed add-ons apply; with the test add-on (import on) the credentials are read (control) | their arguments on `/proc/cmdline`, none from the unsigned ones; neither credential sets its value; the boot is not clean (`systemd-sysctl` does not start) |
+| the same credentials on the ESP, with the image's command line (only a signed add-on with `systemd.firstboot=no`) | ignored | nothing fails to start (console), where the same boot with the test add-on shows the failure (control) |
 | bootc's entry + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
+| the image's command line (only a signed add-on with `systemd.firstboot=no`) + a credential over SMBIOS that adds a drop-in printing a marker | no effect | the marker never shows on the console after `multi-user.target` |
+| the same with the test console add-on (`systemd.import_credentials=yes`) | the credential applies (control) | the marker shows; in the first boot, the drop-in's file exists |
 
 The keys are not in the firmware's `db`, so only shim (through the MOK list) can have accepted the
 signed UKI: systemd-boot loads images through shim's verification protocol, and systemd-stub does
@@ -73,9 +76,14 @@ the same for add-ons. "No system starts" means neither a kernel message nor a lo
 60 s. The keys made by the test live only in the job's work directory on the ephemeral runner and
 are deleted at the end.
 
-**Console access in the tests.** The sealed command line has no `console=ttyS0`, and the image does
-not get one for the tests' sake: the test harness (`vm-boot.py`) sets up a getty on the serial port,
-and root autologin, for the test VM only. Kernel messages still reach the serial log in the VM:
+**Console access in the tests.** The sealed command line has no `console=ttyS0` and imports no
+credentials, and the image does not change for the tests' sake. The test harness (`vm-boot.py`)
+passes a getty on the serial port and root autologin as systemd credentials, and every test disk
+gets an add-on in `loader/addons/` (for every UKI, updated ones too) with
+`systemd.import_credentials=yes` (`tools/vm/test-console.sh`): systemd uses the last occurrence on
+the command line, and add-ons come after the UKI's own. It is unsigned on the disks booted without
+Secure Boot; the Secure Boot test replaces it with one signed by a key enrolled only there.
+Kernel messages still reach the serial log in the VM:
 systemd-stub itself appended `console=uart,io,0x3f8` to the command line (observed in CI; it does so
 when the firmware's only console is a serial port). That is the one thing the stub adds to the
 sealed command line; on a machine with a screen it adds nothing.
@@ -147,11 +155,18 @@ example, a root autologin from the boot menu editor. Two layers close it:
    the stub accepts it; there, any physical attacker can also boot another system, so that is not a
    boundary we can hold.
 
-Credentials: plain credential files on the ESP (`*.cred`, which systemd-stub passes on) have no
-effect, as the test shows: systemd logs them as "untrusted credentials" and only accepts them
-encrypted ("Unable to decrypt credential 'tmpfiles.extra', skipping"). Credentials encrypted for
-the machine's TPM would be accepted; that is the TPM policy question above. Further hardening of
-the sealed command line is tracked separately.
+Credentials: the production image ignores credential files placed on the ESP (`*.cred`, which
+systemd-stub passes on), together with every other source, below; the test shows a clean boot with
+them present. With credential import on, systemd treats them as "untrusted" and does not use a
+plain one as a setting.
+
+The sealed command line also imports no systemd credentials at all (`systemd.import_credentials=no`,
+`/usr/lib/bootc/kargs.d/20-nyra-credentials.toml`): none from firmware tables (SMBIOS, `fw_cfg`),
+the kernel command line or systemd-stub. Nothing outside the signed image configures the system at
+boot; settings for a machine come from the installer and from `/etc`. Only an add-on signed with an
+enrolled key could turn import back on, which is why the Nyra key never signs a generic
+command-line add-on. Without credentials, `systemd-firstboot` asks for its settings at the first
+boot, so the installer must provide them.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

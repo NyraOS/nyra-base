@@ -150,8 +150,18 @@ Each line is something that broke or surprised us once.
   `console=ttyS0` for tests. The credential `getty.ttys.serial=ttyS0` gives a getty on the serial
   port without it. In QEMU without a display, systemd-stub appends `console=uart,io,0x3f8` by itself,
   so kernel messages still arrive; "no system started" checks also look for the login prompt.
-- Credentials that systemd-stub picks up from the ESP (`*.cred`) arrive as "untrusted": systemd
-  only uses them if they decrypt, so a plain file has no effect.
+- Credentials that systemd-stub picks up from the ESP (`*.cred`) arrive as "untrusted" and are not
+  used as settings when they do not decrypt; the production image does not import them at all
+  (`systemd.import_credentials=no`). Check the whole system state in such a test, not only the
+  value the credential would have set.
+- `systemd.import_credentials=no` stops every credential import (SMBIOS, `fw_cfg`, kernel command
+  line, systemd-stub), in the initrd and on the host. For a repeated kernel argument systemd uses
+  the last occurrence, and systemd-stub puts add-ons after the UKI's own command line: a signed
+  add-on can turn it back on, so tests do exactly that and the Nyra key never signs such add-ons.
+- Without credentials `systemd-firstboot` prompts on the console at the first boot and the boot
+  waits: a test boot without them needs `systemd.firstboot=no` (a signed add-on here).
+- A check that something did not happen at boot needs a control: the same boot with the effect
+  turned on must show the marker, or its absence proves nothing.
 - Any image built on top of a sealed image needs a new UKI (its digest changes); the kernel and
   initramfs can be taken out of the old UKI's `.linux` and `.initrd` sections.
 - Boot counting keeps working on bootc's `uki` entries (`…+3.conf`): the UKI's own name must not
