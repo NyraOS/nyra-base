@@ -7,8 +7,9 @@
 #   tools/signing/local-registry.sh OUTPUT_DIR
 set -euo pipefail
 
-# registry 3.0.0
-registry=docker.io/library/registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+# registry 3.0.0, the Docker official image through Amazon ECR Public's mirror of the official images (the
+# same digest; Docker Hub limits unauthenticated pulls per runner IP).
+registry=public.ecr.aws/docker/library/registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
 
 sudo podman run -d --name nyra-test-registry --network host -e REGISTRY_HTTP_ADDR=127.0.0.1:80 "$registry" >/dev/null
 echo '127.0.0.1 updates.nyraos.com other.test' | sudo tee -a /etc/hosts >/dev/null
