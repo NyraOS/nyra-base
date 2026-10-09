@@ -19,6 +19,10 @@ Each line is something that broke or surprised us once.
 - **mkosi removes the dpkg database** from the image. The package list for the SBOM and vulnerability
   scanning comes from `ManifestFormat=json` (exact versions).
 - The mkosi container needs `python3-pefile`.
+- **apt only warns on a suite mismatch.** A correctly signed InRelease for another suite (unstable
+  served where testing was asked) is accepted with `W: Conflicting distribution`. `ci/tools.Containerfile`
+  fetches over http, so it checks the InRelease `Suite` and `Date` itself; mkosi fetches the snapshot
+  over https (`snapshot.debian.org`), where a network attacker cannot swap files.
 - At runtime bootc needs `ostree` and `zstd` in the image, or `bootc container lint` complains.
 - **No SSH server in the shared base:** Debian's `openssh-server` generates host keys when it is
   installed, so they would end up in a public image. Enable SSH, with keys generated on the machine, in a
