@@ -21,10 +21,16 @@ Each line is something that broke or surprised us once.
   them. The final file system did not even contain them (bootc's layout removes `/var`), but the layer
   digest still changed. The image workflow builds a second time on `main` and compares the layers
   (`ci/check-reproducible.sh`), which lists the differing files when it fails.
-- **bootc's own build is not reproducible yet:** two compiles of the same `BOOTC_COMMIT` give a different
-  `/usr/bin/bootc` (symbols in another order), tracked in WaggSoftware/NyraOS#73. The check above reuses
-  the bootc binary of the first build, so it does not catch that; it also runs on one runner, so it does
-  not catch what depends on the host.
+- **Two compiles of the same bootc commit must give the same binary.** They did not: zlink-macros 0.7.0
+  (the varlink service macro behind cfsctl in bootc) emits the variants of a generated enum in `HashMap`
+  order, and a proc macro's `HashMap` gets a new random seed in every compiler run, so the enum, and with
+  it the code layout of `/usr/bin/bootc`, changed every time (the other two bootc binaries were
+  identical). zlink-macros 0.7.1 uses a `BTreeMap`; `ci/build-bootc.sh` moves the zlink crates to 0.7.1
+  until bootc's own Cargo.lock does (checked locally: eight expansions with 0.7.0 gave seven variant
+  orders, with 0.7.1 one). The tar of the build is written with fixed order, times and owners. Release
+  builds still compile bootc themselves, then compare the result with the cached build of the same key
+  and fail on any difference. The image check above (`ci/check-reproducible.sh`) reuses one bootc build
+  and runs on one runner, so it does not catch differences in bootc or ones that depend on the host.
 - **Strip bootc.** Debug info makes it ~378 MB; stripped it is ~40 MB.
 - **mkosi installs only what is listed.** No `passwd`, `login`, `util-linux` unless named. The list in
   `mkosi/mkosi.conf` is the whole system.
@@ -155,7 +161,8 @@ Each line is something that broke or surprised us once.
   and save its cache before pushing again.
 - **Release builds do not use the cache, pull requests do.** A release is what users install and what
   gets signed, so it is built only from pinned sources, never from a file another run left behind.
-  Pull requests only test, so they restore the bootc build.
+  Pull requests only test, so they restore the bootc build. A release restores the bootc cache only to
+  compare it with its own fresh compile, never to build from it.
 - A cache saved by a pull request is visible only to that pull request; a cache saved on `main` is
   visible to all. Release runs on `main` were cancelled by the next merge before they saved, so after a
   key change every new pull request built bootc from scratch (~38 min instead of ~8). The

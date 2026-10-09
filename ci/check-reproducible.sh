@@ -4,8 +4,8 @@
 # (Containerfile) a second time from the same inputs and compares the layers with the first build,
 # localhost/nyra-base:ci. On a difference it lists the files that differ in the mkosi layer.
 # Runs after the build job's own build, with its WORK, SOURCE_DATE_EPOCH, tools image and caches.
-# Limit: both builds use the same bootc binary ($WORK/bootc), so bootc's own build is not checked
-# (it is not reproducible yet: WaggSoftware/NyraOS#73), and both run on the same runner.
+# Limit: both builds use the same bootc binary ($WORK/bootc), so bootc's own build is not checked here
+# (release builds compare it with the cached build, see image.yml), and both run on the same runner.
 #   ci/check-reproducible.sh
 set -euo pipefail
 

@@ -6,7 +6,8 @@
 # bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
 # documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
 # publishing comes later (NyraOS#25).
-# Release builds (push or manual run on main) use no cached content, and the sign job signs
+# Release builds (push or manual run on main) use no cached content (the bootc cache is only compared
+# with the fresh bootc build), and the sign job signs
 # them keylessly (docs/SIGNING.md).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md).
@@ -61,8 +62,8 @@ jobs:
         id: bootc-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          # Release builds only look the cache up (to save it if missing), never use it.
-          lookup-only: ${{ env.RELEASE == 'true' }}
+          # Release builds compile bootc themselves and restore the cache only to compare it with
+          # their own build (the next step): two compiles of the same source must be identical.
           path: ~/cache/bootc.tar
           key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
 
@@ -70,10 +71,25 @@ jobs:
         if: steps.bootc-cache.outputs.cache-hit != 'true' || env.RELEASE == 'true'
         run: |
           mkdir -p ~/cache
+          if [ -f ~/cache/bootc.tar ]; then mv ~/cache/bootc.tar ~/cache/bootc.cached.tar; fi
           sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
             -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             localhost/nyra-tools bash /ci/build-bootc.sh
           sudo chown -R "$(id -u):$(id -g)" ~/cache
+          if [ -f ~/cache/bootc.cached.tar ]; then
+            if cmp ~/cache/bootc.cached.tar ~/cache/bootc.tar; then
+              echo "Reproducible: this bootc build is identical to the cached one."
+            else
+              mkdir -p "$RUNNER_TEMP/bootc-cached" "$RUNNER_TEMP/bootc-new"
+              tar -C "$RUNNER_TEMP/bootc-cached" -xf ~/cache/bootc.cached.tar
+              tar -C "$RUNNER_TEMP/bootc-new" -xf ~/cache/bootc.tar
+              diff -rq "$RUNNER_TEMP/bootc-cached" "$RUNNER_TEMP/bootc-new" || true
+              echo "::error::bootc compiled from the same source differs from the cached build (files above)."
+              exit 1
+            fi
+          else
+            echo "::notice::No cached bootc build for this key, nothing to compare."
+          fi
 
       - name: Save the bootc build
         if: steps.bootc-cache.outputs.cache-hit != 'true'
