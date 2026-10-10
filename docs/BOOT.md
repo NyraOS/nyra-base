@@ -24,15 +24,18 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
    since they end up inside the UKI. The image is committed.
 2. **UKI** from that committed image (`ci/ukify.sh`, with a second profile for recovery, see
    "Recovery"): `bootc container ukify` computes the composefs digest of the
-   root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today `rw
-   lockdown=integrity panic=10 systemd.import_credentials=no composefs=…`: no root device,
+   root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today
+   `lockdown=integrity panic=10 rw systemd.import_credentials=no composefs=…`, pinned in
+   `ci/uki-cmdline.txt`: no root device,
    systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
    covers them. bootc checks the digest again at install and update, and refuses a UKI that does
    not match.
 3. **Signing outside the image build.** In CI the UKI is signed with a key made for that run only:
    generated, used once, deleted; only its certificate leaves the step (a job output), for the
-   Secure Boot test. Nothing persists, nothing is cached or uploaded.
+   Secure Boot test. Nothing persists, nothing is cached or uploaded. The step signs exactly one file,
+   and only the sealed UKI: a kernel and exactly the command lines of `ci/uki-cmdline.txt`
+   (`tools/signing/uki-check.py`, docs/SIGNING.md).
 4. **Final image:** the committed root filesystem plus the signed UKI in `/boot/EFI/Linux/<kver>.efi`.
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
@@ -99,8 +102,9 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
 
 - **The key** is generated offline and kept on a hardware token (or in a KMS/HSM), so that a
   compromised CI runner or developer machine cannot sign a boot image; CI and automated tooling
-  never see it. Only its certificate goes into the image (for example
-  `/usr/lib/nyra/secureboot/nyra.crt`), for the installer.
+  never see it. Only its certificate is committed, as `files/usr/lib/nyra/secureboot/nyra.crt`: it
+  goes into the image for the installer, and the release gate (docs/SIGNING.md) refuses to sign an
+  image whose UKI it did not sign. Until it is committed, no image gets a release signature.
 - **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one:
   either a signing service backed by the token or KMS (`sbsign` through PKCS#11, or
   `systemd-sbsign` with a provider), or bootc's external-signing flow (the UKI is signed offline and
@@ -111,7 +115,8 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
   owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.
 - **Add-ons:** the Nyra key never signs a generic command-line add-on. A signed add-on applies to
   any Nyra UKI (the control add-on in the test proves that), so one such file would undo the fixed
-  command line on every machine.
+  command line on every machine. The signing step and the release gate enforce it
+  (`tools/signing/uki-check.py`); whatever signs with the real key must run that check first.
 - **shim on the ESP:** bootc installs only systemd-boot. `esp-sync install` puts shim and MokManager
   from `/usr/lib/shim/` on the ESP at install time, and `nyra-boot-repair` keeps them equal to the
   booted image's at every boot (see "Boot protection"), so an image with a newer shim brings it to
