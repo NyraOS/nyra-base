@@ -241,6 +241,14 @@ Each line is something that broke or surprised us once.
   by an earlier staging that was never finalized (it only clears it for an image already pulled), so
   a power cut between staging and finalization can bring an old entry back with the next update.
   Stale staged entries are removed at every full boot (`esp-sync repair`).
+- bootc-finalize-staged swaps `loader/entries.staged` and `loader/entries` with one
+  `renameat2(RENAME_EXCHANGE)`, then deletes the old set before `fsync`. On the FAT ESP that is not
+  atomic: a power cut there (one random cut in twenty in CI) left no boot entry at all, and systemd-boot
+  showed only "Reboot Into Firmware Interface". A fallback UKI in `EFI/Linux/` with `+0` in its name
+  (sorted last, booted only when nothing else can) does not depend on that directory (`esp-sync`).
+- After staging, bootc fsyncs only the ESP's top directory: a power cut right after `bootc switch`
+  left orphaned clusters and a corrupted `loader/entries.staged` once in CI. `nyra-updated` runs
+  `sync` after every `bootc switch` and `bootc rollback`.
 - `bootc status` on composefs with systemd-boot needs bootc's own Type #1 entries on the ESP ("First
   boot entry not found" otherwise).
 - `bootc switch --apply` to an image that is already staged reboots fully even with `--soft-reboot`

@@ -66,7 +66,9 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
 (`docs/BOOT.md`). Each rule has a unit test (`updated/daemon/src/tests.rs`):
 
 1. One update at a time (a lock); every bootc, systemctl and curl call has a time limit and is killed
-   with its children when it hangs.
+   with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
+   bootc leaves part of what it writes on the ESP in memory, and a power cut then can damage the ESP
+   (FAT has no journal; `patches/upstream/bootc-finalize-entries-swap.md`).
 2. The sheet's sequence and retracted digests are saved atomically before anything acts on the sheet.
 3. A retracted digest is remembered and never a target again; an installed version retracted by any
    accepted sheet may still go back.

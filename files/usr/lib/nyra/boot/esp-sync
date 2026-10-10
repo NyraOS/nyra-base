@@ -2,14 +2,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra OS: what bootc does not do on the ESP, see docs/BOOT.md.
 #   esp-sync install ESP   at install time, on the mounted ESP of the new system: the boot files
-#                          below and loader/loader.conf, before the first boot (no firmware entry)
+#                          below, loader/loader.conf and the fallback, before the first boot (no
+#                          firmware entry)
 #   esp-sync repair        at every boot, on /boot: the same files where missing or damaged, never
 #                          an older version over a newer one, a newer version only from a blessed
 #                          boot; then the "Nyra OS" firmware entry, first in BootOrder; and, after a
-#                          full boot, no stale staged entries
+#                          full boot, no stale staged entries, this version's boot entry put back if
+#                          it is missing, and the fallback moved to this version once it is blessed
 #   esp-sync boot-counter  at shutdown, before bootc-finalize-staged moves the staged entries in:
 #                          the new entry gets three tries (systemd boot counting, "+3"), or the
-#                          staged entries are removed when nyra-updated discarded that version
+#                          staged entries are removed when nyra-updated discarded that version; the
+#                          fallback moved to the running version if bootc would remove its own
 #   esp-sync discard       when nyra-updated discards the staged version: its staged entries are
 #                          removed at once (boot-counter removes them again at shutdown)
 # The boot files are two independent copies, so one damaged copy still leaves a way to boot:
@@ -17,6 +20,15 @@
 #   EFI/BOOT/BOOTX64.EFI   the fallback path, started by any firmware that has no boot entries
 # each shim with systemd-boot as grubx64.efi (the name shim starts) and MokManager (mmx64.efi)
 # next to it.
+# The fallback is a last way to boot that does not depend on loader/entries, which
+# bootc-finalize-staged replaces at shutdown with one rename of two directories, not atomic on FAT
+# (a power cut there can leave no entry at all):
+#   EFI/Linux/nyra-fallback-<digest>+0.efi   a copy of a blessed version's UKI (signed, as bootc
+#                          installed it), found by systemd-boot by itself; "+0" (no tries left) sorts
+#                          it after every other entry, so it boots only when nothing else can
+#   loader/nyra-fallback/<entry>.conf        a copy of that version's boot entry, put back in
+#                          loader/entries when a boot finds its own entry missing (bootc needs it)
+# It always points to a version bootc keeps: the running one, or one in the entries it swaps in.
 set -eu
 
 SHIM=/usr/lib/shim/shimx64.efi.signed
@@ -144,6 +156,63 @@ stale_staged() {
 	echo "esp-sync: stale staged entries removed from /boot/loader/entries.staged"
 }
 
+# The running system's composefs digest; bootc names its UKI EFI/Linux/bootc/bootc_composefs-<digest>.efi.
+booted_digest() { sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline; }
+
+# fallback_set ESP DIGEST: the fallback becomes version DIGEST, then the old one is removed, so
+# there is never a moment without one.
+fallback_set() {
+	fesp="$1" d="$2" fb="$1/EFI/Linux/nyra-fallback-$2+0.efi"
+	if [ ! -e "$fb" ]; then
+		# The same version under another name (systemd-bless-boot drops the counter of an entry it
+		# blessed): renamed back. Otherwise a copy of bootc's UKI.
+		old="$(ls "$fesp/EFI/Linux/nyra-fallback-$d"*.efi 2>/dev/null | head -n 1)"
+		if [ -n "$old" ]; then
+			mv "$old" "$fb" && sync || return 1
+		else
+			put "$fesp/EFI/Linux/bootc/bootc_composefs-$d.efi" "$fb" || return 1
+		fi
+	fi
+	entry="$(grep -l "bootc_composefs-$d\.efi" "$fesp"/loader/entries/*.conf 2>/dev/null | head -n 1)"
+	if [ -n "$entry" ]; then
+		name="$(basename "$entry" .conf | sed -E 's/\+[0-9]+(-[0-9]+)?$//').conf"
+		put "$entry" "$fesp/loader/nyra-fallback/$name" || return 1
+		for f in "$fesp"/loader/nyra-fallback/*.conf; do
+			[ "$f" = "$fesp/loader/nyra-fallback/$name" ] || rm -f "$f"
+		done
+	fi
+	for f in "$fesp"/EFI/Linux/nyra-fallback-*.efi; do
+		[ -e "$f" ] && [ "$f" != "$fb" ] && rm -f "$f"
+	done
+	sync
+}
+
+# The digest of the fallback on the ESP at $1, or nothing.
+fallback_digest() {
+	f="$(ls "$1"/EFI/Linux/nyra-fallback-*.efi 2>/dev/null | head -n 1)"
+	f="${f##*/nyra-fallback-}"
+	printf '%s\n' "${f%%[+.]*}"
+}
+
+# After a full boot: this version's boot entry put back from the fallback's copy when it is missing
+# (booted through the fallback, after a power cut during the swap), so bootc can stage the next
+# update; then the fallback moved to this version once it is blessed.
+fallback() {
+	[ "$(systemctl show --property=SoftRebootsCount --value)" = 0 ] || return 0
+	d="$(booted_digest)"
+	[ -n "$d" ] || { echo "esp-sync: no composefs digest on the kernel command line" >&2; return 1; }
+	if ! grep -q "bootc_composefs-$d\.efi" /boot/loader/entries/*.conf 2>/dev/null; then
+		saved="$(grep -l "bootc_composefs-$d\.efi" /boot/loader/nyra-fallback/*.conf 2>/dev/null | head -n 1)"
+		if [ -z "$saved" ]; then
+			echo "esp-sync: this version has no boot entry and the fallback holds no copy of it" >&2
+			return 1
+		fi
+		mkdir -p /boot/loader/entries && put "$saved" "/boot/loader/entries/${saved##*/}" || return 1
+		echo "<4>esp-sync: the boot entry of this version was missing, put back from the fallback"
+	fi
+	if blessed; then fallback_set /boot "$d"; fi
+}
+
 # Mounts the ESP privately on $esp, as bootc does, by the partition systemd-boot reported: /boot is
 # an automount that expires when idle, and it cannot be mounted again during shutdown.
 mount_esp() {
@@ -187,7 +256,7 @@ boot_counter() {
 	fi
 	# The running system's entry is the one with our composefs digest (bootc renames the files):
 	# in its UKI's file name (uki /EFI/Linux/bootc/bootc_composefs-<digest>.efi), or in its options.
-	booted="$(sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline)"
+	booted="$(booted_digest)"
 	if [ -z "$booted" ]; then
 		echo "esp-sync: no composefs digest on the kernel command line" >&2
 		return 1
@@ -200,6 +269,17 @@ boot_counter() {
 		echo "esp-sync: boot counting on for ${f##*/} (3 tries)"
 	done
 	sync
+	# bootc keeps only the versions in the entries it swaps in (the new one and the running one): a
+	# fallback to another version (the last blessed one, while this one is still on trial) moves to
+	# the running version, before bootc removes the other.
+	fd="$(fallback_digest "$esp")"
+	if [ -z "$fd" ] || ! grep -q "bootc_composefs-$fd\.efi" "$staged"/*.conf 2>/dev/null; then
+		if fallback_set "$esp" "$booted"; then
+			echo "esp-sync: the fallback is now the running version"
+		else
+			echo "esp-sync: could not move the fallback to the running version" >&2
+		fi
+	fi
 }
 
 MODE="${1:-}"
@@ -207,6 +287,10 @@ case "$MODE" in
 install)
 	[ -d "${2:-}/EFI" ] || { echo "usage: esp-sync install ESP (the mounted ESP, with its EFI directory)" >&2; exit 2; }
 	files "$2"
+	# The installed version is the first fallback.
+	d="$(sed -n 's|^uki /EFI/Linux/bootc/bootc_composefs-\([0-9a-f]*\)\.efi$|\1|p' "$2"/loader/entries/*.conf)"
+	case "$d" in *[!0-9a-f]* | "") echo "esp-sync: not one bootc UKI entry in $2/loader/entries" >&2; exit 1 ;; esac
+	fallback_set "$2" "$d"
 	;;
 repair)
 	# Both run even if the files fail (ESP full): the firmware entry needs no space on it.
@@ -214,6 +298,7 @@ repair)
 	files /boot || rc=1
 	firmware_entry || rc=1
 	stale_staged || rc=1
+	fallback || rc=1
 	exit "$rc"
 	;;
 boot-counter) boot_counter ;;

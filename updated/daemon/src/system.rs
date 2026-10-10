@@ -172,6 +172,13 @@ pub fn esp_sync_discard() -> Command {
     cmd
 }
 
+/// Everything bootc wrote on disk before the result counts. bootc fsyncs only the ESP's top
+/// directory, so the new UKI and boot entries can still be in memory, and a power cut then damages
+/// the ESP, which is FAT and has no journal (seen in CI: orphaned clusters, a corrupted directory).
+fn sync() -> Result<(), Error> {
+    run_ok(&mut Command::new("sync"), SHORT).map(drop)
+}
+
 pub struct Real;
 
 impl System for Real {
@@ -224,12 +231,13 @@ impl System for Real {
         run_ok(
             Command::new("bootc").args(["switch", "--quiet", "--", image_ref]),
             STAGE,
-        )
-        .map(drop)
+        )?;
+        sync()
     }
 
     fn rollback(&mut self) -> Result<(), Error> {
-        run_ok(Command::new("bootc").arg("rollback"), SHORT).map(drop)
+        run_ok(Command::new("bootc").arg("rollback"), SHORT)?;
+        sync()
     }
 
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
