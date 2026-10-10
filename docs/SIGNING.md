@@ -163,11 +163,20 @@ pinned commit in `trust-roots.sh` and run it.
 
 ## Setting up the signer (once)
 
-**Rule: signing needs a protected `main`.** Anyone who can push to `main`, or start the workflow
-manually on `main`, gets a signed image (see "Who can sign" below). `main` is protected: changes
-reach it only through pull requests, and nobody, administrators included, can push to it directly.
-Signing stays off until the two repository variables (step 2) are set; the Google Cloud setup below
-can be prepared at any time. If that protection is ever lifted, remove the variables first.
+**Rule: signing stays off while one account can put a change on `main` alone.** Anyone who can get
+a change onto `main`, or start the workflow manually on `main`, gets a signed image (see "Who can
+sign" below). Today `main` requires a pull request and passing checks, and nobody, administrators
+included, can push to it directly. It requires **no approval**, though: the author of a pull request,
+with write access, can merge it alone once the checks pass. Set the two repository variables (step 2)
+only when one of these holds:
+
+- merging into `main` requires an approval from an account other than the author (a required
+  review that also covers the most recent push, or a code owner review from another account);
+- or the maintainers accept, in writing and recorded in this document, that any account with write
+  access can sign.
+
+The Google Cloud setup below can be prepared at any time. If the condition stops holding, remove the
+variables first.
 
 Google Cloud, with a maintainer's account (2-step verification on). Everything below is free: IAM,
 Workload Identity Federation and the token service need no paid product.
@@ -212,8 +221,8 @@ Then, in this order:
    then the `sign` job refuses every image (the UKI release gate above).
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
-2. With `main` protected (rule above), set the two **repository variables** (Settings › Secrets
-   and variables › Actions › Variables; they are not secrets):
+2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
+   variables › Actions › Variables; they are not secrets):
    ```sh
    gh variable set GCP_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
    gh variable set GCP_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
@@ -222,10 +231,11 @@ Then, in this order:
    it builds, signs and verifies. The job summary shows the signed digest.
 
 **Who can sign:**
-- **anyone who can push to `main` or start the workflow manually on `main`**: the workflow runs
-  whatever is on `main`, and the attribute condition cannot tell a reviewed merge from a direct push
-  by the same account. Without the protection on `main`, that would include anyone with write
-  access, automated contributors too, which is why signing needs it (rule above);
+- **anyone who can get a change onto `main` or start the workflow manually on `main`**: the workflow
+  runs whatever is on `main`, and the attribute condition cannot tell a reviewed merge from an
+  unreviewed one. The branch protection only stops direct pushes. Without a required approval from
+  another account, anyone with write access, automated contributors too, can merge their own pull
+  request, a change to the workflow itself included, and get a signature (rule above);
 - any Google principal with `iam.serviceAccounts.getOpenIdToken` on the service account: `Owner`,
   `Service Account Token Creator`, `Service Account OpenID Connect Identity Token Creator`,
   `Workload Identity User`, or a custom role with that permission. Keep the Google Cloud project's
