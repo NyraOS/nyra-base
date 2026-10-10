@@ -147,7 +147,11 @@ push() { # push NAME TAG [SIGSTORE_KEY]
       "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2" && break
     echo "::warning::podman push of $1 failed or took more than 2 minutes (attempt $try of 3)"
     # DIAGNOSTIC: the registry's goroutines too (SIGQUIT ends it), then a fresh registry.
-    sudo ss -tnoi state established '( sport = :80 or dport = :80 )' || true
+    sudo ss -tnoiem '( sport = :80 or dport = :80 )' || true
+    sudo tc -s qdisc show dev lo || true
+    cat /proc/net/sockstat; sysctl net.ipv4.tcp_mem net.ipv4.tcp_rmem net.ipv4.tcp_wmem net.core.rps_sock_flow_entries
+    nstat -az 2>/dev/null | grep -E 'OFO|Prune|RcvQDrop|BacklogDrop|Retrans|TCPLoss|Collapse|ZeroWindow|MemoryPressure|RcvPruned|OfoPruned|TCPTimeouts' || true
+    ip -s link show lo || true
     sudo podman kill -s QUIT nyra-test-registry >/dev/null || true
     sleep 2
     sudo podman logs --tail 400 nyra-test-registry 2>&1 | grep -v 'traces export' || true
@@ -164,6 +168,21 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 push v0 v0
 push v1 stable sigstore
 for n in 2 3 4 5 6 7 8 9 10 11 12 13 14; do push "v$n" "v$n" sigstore; done
+
+# DIAGNOSTIC (not for merge): the pushes again, 8 rounds, each on a fresh registry; a stalled push
+# is stopped with SIGQUIT, so podman prints every goroutine's stack.
+stalls=0
+for round in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sudo podman rm -f nyra-test-registry >/dev/null
+  tools/signing/local-registry.sh "$u"
+  for n in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    t0=$(date +%s)
+    push "v$n" "v$n" sigstore
+    echo "DIAG round $round v$n: $(( $(date +%s) - t0 )) s"
+  done
+done
+echo "DIAG push rounds done"
+exit 0
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
@@ -499,16 +518,3 @@ tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
 
 
-# DIAGNOSTIC (not for merge): the pushes again, 8 rounds, each on a fresh registry; a stalled push
-# is stopped with SIGQUIT, so podman prints every goroutine's stack.
-stalls=0
-for round in 1 2 3 4 5 6 7 8; do
-  sudo podman rm -f nyra-test-registry >/dev/null
-  tools/signing/local-registry.sh "$u"
-  for n in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
-    t0=$(date +%s)
-    push "v$n" "v$n" sigstore
-    echo "DIAG round $round v$n: $(( $(date +%s) - t0 )) s"
-  done
-done
-echo "DIAG push rounds done"
