@@ -88,6 +88,12 @@ done
 sudo cmp "$shim" "$mnt/EFI/nyra/shimx64.efi"
 sudo cmp "$shim" "$mnt/EFI/BOOT/BOOTX64.EFI"
 sudo test -f "$mnt/loader/addons/nyra-test-console.addon.efi"
+# The fallback: a copy of the installed version's UKI, and of its boot entry.
+installed="$(sudo sed -n 's|^uki /EFI/Linux/bootc/bootc_composefs-\([0-9a-f]*\)\.efi$|\1|p' "$mnt"/loader/entries/*.conf)"
+[[ "$installed" =~ ^[0-9a-f]{128}$ ]]
+sudo cmp "$mnt/EFI/Linux/bootc/bootc_composefs-$installed.efi" "$mnt/EFI/Linux/nyra-fallback-$installed+0.efi"
+test "$(sudo find "$mnt/EFI/Linux" -maxdepth 1 -name 'nyra-fallback-*' | wc -l)" = 1
+sudo cmp "$mnt"/loader/entries/*.conf "$mnt"/loader/nyra-fallback/*.conf
 sudo cp "$bp/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
 sudo umount "$mnt"
 

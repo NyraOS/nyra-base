@@ -219,17 +219,35 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   first in `BootOrder` again if something else was put first. Only entries for this ESP's partition
   are touched: another Nyra installation (another disk, a USB stick) keeps its entries, and
   `BootNext` (a one-time choice, such as "Restart in Windows") is left alone.
+- **The fallback.** bootc makes a staged version the default at shutdown by swapping
+  `loader/entries.staged` and `loader/entries` in one rename, then deleting the old set
+  (`bootc-finalize-staged`). On FAT that rename is not atomic, and a power cut during it can leave
+  no usable entry: systemd-boot then shows an empty menu and the machine does not boot
+  (`patches/upstream/`). `esp-sync` therefore keeps a way to boot that does not depend on
+  `loader/entries`, in a directory nothing writes during that swap:
+  - `EFI/Linux/nyra-fallback-<digest>+0.efi`: a copy of a blessed version's UKI, signed as bootc
+    installed it. systemd-boot finds UKIs in `EFI/Linux/` by itself; `+0` (no tries left) sorts it
+    after every other entry, so it boots only when nothing else can. It boots that version's
+    composefs image like bootc's own entry would.
+  - `loader/nyra-fallback/<entry>.conf`: a copy of that version's boot entry. A full boot whose own
+    entry is missing (it came up through the fallback) puts it back in `loader/entries`, with a
+    warning in the journal, because bootc cannot stage the next update without it.
+  - It is written at install time (the installed version), moved to the running version by
+    `esp-sync repair` once that version is blessed (new file first, then the old one removed), and,
+    at shutdown before a swap, moved to the running version if bootc is about to remove the version
+    it points to (the last blessed one, while the running one is still on trial). It therefore
+    always points to a version whose composefs image bootc keeps.
 - **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
   root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
   no execute bit on files); CI checks it.
 
-CI follows one system through eleven boots, with Secure Boot on and one firmware variable store kept
+CI follows one system through fourteen boots, with Secure Boot on and one firmware variable store kept
 across them (`vm-boot.py --keep-vars`). The image's command line imports no credentials, so the test
 console add-on on that disk is replaced by one signed with a key enrolled as a MOK in this test only:
 
 | Boot | Done before it | Expected |
 |---|---|---|
-| 0 (no boot) | `bootc install`, then `esp-sync install` | `loader.conf` with `editor no`, both copies of the boot files as in the image |
+| 0 (no boot) | `bootc install`, then `esp-sync install` | `loader.conf` with `editor no`, both copies of the boot files as in the image, the fallback UKI and entry equal to the installed version's |
 | 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root |
 | 2 | | boots through `\EFI\nyra`; the test adds another entry, which is put first |
 | 3 | | that entry fails (its file does not exist); "Nyra OS" boots and is first again |
@@ -241,6 +259,9 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | 9 | an older one there; this version on trial (counted entry, `boot-complete.target` fails) | not replaced yet, `systemd-bless-boot status` is `indeterminate` |
 | 10 | | healthy: blessed (`good`); the image's systemd-boot is written in this boot or, at the latest, the next one |
 | 11 | | `clean`; the boot files are the image's |
+| 12 | `loader/entries` deleted (what a power cut during the swap can leave) | boots through the fallback UKI; the entry is put back |
+| 13 | `loader/entries` emptied | the same |
+| 14 | | boots through bootc's entry again; one fallback UKI, still `+0` |
 
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
 section; the copy is never started (those boots go through `\EFI\nyra`), so its broken signature
