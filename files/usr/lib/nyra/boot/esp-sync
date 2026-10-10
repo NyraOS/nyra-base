@@ -135,6 +135,11 @@ firmware_entry() {
 stale_staged() {
 	[ "$(systemctl show --property=SoftRebootsCount --value)" = 0 ] || return 0
 	[ -d /boot/loader/entries.staged ] || return 0
+	# Something staged by hand in the first seconds of this boot is not stale.
+	if bootc status --format json 2>/dev/null | grep -q '"staged":{'; then
+		echo "esp-sync: a deployment is staged now, its entries are left alone"
+		return 0
+	fi
 	rm -rf /boot/loader/entries.staged && sync || return 1
 	echo "esp-sync: stale staged entries removed from /boot/loader/entries.staged"
 }

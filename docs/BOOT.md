@@ -210,7 +210,9 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
 
   After a full boot it also removes `loader/entries.staged`: nothing is staged yet then (bootc keeps
   the staged deployment in `/run`), so these entries are stale, left by a staging that was never
-  finalized (a power cut). Stale staged entries are cleaned before a new update is staged, so the
+  finalized (a power cut), unless `bootc status` reports something staged by hand in the first
+  seconds of the boot. It runs before `nyra-updated.service`. Stale staged entries are thus cleaned
+  before a new update is staged, so the
   next update's swap brings in only its own entry and the running one (`patches/upstream/`).
 
   The "Nyra OS" firmware entry is created if this ESP has none (or one for another file), and put
