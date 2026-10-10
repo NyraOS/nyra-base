@@ -339,5 +339,15 @@ Each line is something that broke or surprised us once.
   full disk: prove "full" with a write that fails. bootc on a full root file system fails early
   (`Creating imgstorage: Creating tmpdir: No space left on device`), on a full ESP when it writes the
   UKI (`Writing UKI: No space left on device`); nothing is staged in either case.
+- podman's first command after a boot refreshes its database (`removing container exit codes`),
+  even with no container at all: on a full file system every podman command fails with `database or
+  disk is full` until space is freed. Units that run podman at boot (Debian enables
+  `podman-restart.service` and `podman-clean-transient.service`) then leave the system `degraded`.
+  The serial console only shows `Failed to start`; reproduce without a VM with `unshare -rm`, a small
+  tmpfs as `--root` and a fresh tmpfs as `--runroot` for each "boot".
+- Debian also enables podman's user units for every user (`/etc/systemd/user/*.wants`): a console
+  login as root starts them in root's user manager, which runs podman as root on root's storage.
+  A condition on podman's own files in `/var/lib/containers` therefore cannot tell whether root uses
+  containers.
 - `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
   killed, so a version staged in that boot is never finalized. Stage in a boot of its own.
