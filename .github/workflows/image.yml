@@ -27,8 +27,10 @@ on:
 permissions:
   contents: read
 # A new push to a pull request cancels its older run; on main a running release is never cancelled.
+# github.workflow is the caller's name when titanic.yml calls this workflow, so the nightly run never
+# delays or replaces a pending release build.
 concurrency:
-  group: image-${{ github.ref }}
+  group: image-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 defaults:
   run:
@@ -488,7 +490,8 @@ jobs:
   # GCP_WIF_PROVIDER and GCP_SIGNER_SA are set. Only this job can request an OIDC token.
   sign:
     needs: [build, install-boot]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
+    # github.workflow == 'image': never when titanic.yml calls this workflow.
+    if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

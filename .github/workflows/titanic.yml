@@ -27,8 +27,8 @@ env:
 jobs:
   image:
     uses: ./.github/workflows/image.yml
-    # What image.yml's jobs declare. id-token is only for its sign job, which runs only for a push or
-    # a manual run on main with the signer configured, never at night (docs/SIGNING.md).
+    # What image.yml's jobs declare (GitHub checks them all). id-token is only for its sign job, which
+    # never runs when this workflow calls image.yml (docs/SIGNING.md).
     permissions:
       contents: read
       actions: read

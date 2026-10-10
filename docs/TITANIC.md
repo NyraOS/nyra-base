@@ -12,7 +12,8 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
   and runs the offline self-test of the results script.
 - `titanic.yml` calls [`image.yml`](../.github/workflows/image.yml) unchanged: the image is built
   once, then its `install-boot` job runs every boot, update and security test on it. A nightly run
-  builds with the caches; a manual run on `main` is a release build, like a manual run of `image.yml`.
+  builds with the caches; a manual run on `main` builds without caches, like a release, but is never signed, and it never
+  delays or replaces a release build of `image.yml` (its own concurrency group).
 - Then the `power-cuts` job installs the same image again and cuts the power at random moments of an
   update (below), and the `results` job writes `titanic-results.json`.
 
