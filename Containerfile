@@ -67,6 +67,7 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
 # reasons are there), blocked from /usr; a layer that needs one creates /usr/lib/nyra/allow-<unit>.
 RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       podman.socket podman.service podman-auto-update.timer podman-auto-update.service \
+      podman-restart.service podman-clean-transient.service \
       netavark-dhcp-proxy.socket netavark-dhcp-proxy.service \
       e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service; do \
       test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \

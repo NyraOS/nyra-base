@@ -40,12 +40,12 @@ EOF
 units='s="$(systemctl list-units --type=service,timer,socket --state=running,waiting,listening --no-legend --plain)" && test -n "$s" && u="$(echo "$s" | awk "{print \$1}")" && echo "$u" && x="$(echo "$u" | grep -vxE "'"${units_allowed//$'\n'/|}"'" || true)" && { test -z "$x" || { echo "undeclared units: $x"; false; }; }'
 # The units blocked in the Containerfile ("no purpose in the base") are all exactly "inactive"
 # (an error from systemctl, "active" or "failed" all count against it).
-blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 13 && test -z "$a"'
+blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 15 && test -z "$a"'
 
 if [ "${1:-}" = --self-test ]; then
   t="$(mktemp -d)"
   trap 'rm -rf "$t"' EXIT
-  for i in $(seq -w 1 13); do
+  for i in $(seq -w 1 15); do
     mkdir -p "$t/u$i.service.d" && echo "# Nyra: no purpose in the base image" > "$t/u$i.service.d/10-nyra.conf"
   done
   ss() { [ -z "${FAIL:-}" ] || return 1
@@ -73,10 +73,10 @@ if [ "${1:-}" = --self-test ]; then
   check 0 "blocked: all inactive" "$blocked"
   check 1 "blocked: the first one active" "$blocked" ACTIVE=u01.service
   check 1 "blocked: one in the middle active" "$blocked" ACTIVE=u07.service
-  check 1 "blocked: the last one active" "$blocked" ACTIVE=u13.service
+  check 1 "blocked: the last one active" "$blocked" ACTIVE=u15.service
   check 1 "blocked: systemctl fails" "$blocked" FAIL=1
-  rm -r "$t/u13.service.d"
-  check 1 "blocked: only 12 units blocked" "$blocked"
+  rm -r "$t/u15.service.d"
+  check 1 "blocked: only 14 units blocked" "$blocked"
   exit "$fail"
 fi
 disk="$1" logs="$2" summary="$3"
