@@ -361,5 +361,11 @@ Each line is something that broke or surprised us once.
   login as root starts them in root's user manager, which runs podman as root on root's storage.
   A condition on podman's own files in `/var/lib/containers` therefore cannot tell whether root uses
   containers.
+- `apparmor_parser --write-cache` (Debian's `apparmor.service`) exits without loading any profile
+  when it cannot set up its cache directory for lack of space (`Failed setting up policy cache …: No
+  space left on device`); only a missing parent or a read-only location are ignored. Whether the
+  cache exists depends on a race at the first boot: `apparmor.service` runs next to
+  `systemd-tmpfiles-setup.service`, and without `/var/cache` yet the parser loads without writing a
+  cache. So one T6 run passed and the next had AppArmor failing on the full disk.
 - `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
   killed, so a version staged in that boot is never finalized. Stage in a boot of its own.
