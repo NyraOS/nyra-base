@@ -23,6 +23,7 @@ SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
 UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5 (docs/UPDATES.md)")
+SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATES.md)")
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
@@ -33,8 +34,9 @@ TESTS = {
     "T2": ("Power cuts", "full", [POWER_CUTS, UPDATES],
            "Power cuts at random moments (seed in this file) during the download, staging, "
            "finalization and first boot; nyra-updated stages the update again after cuts at fixed moments."),
-    "T3": ("Broken version", "partial", [COUNTING, UPDATES],
-           "A version whose health check fails falls back within 3 boots and is not offered again. "
+    "T3": ("Broken version", "partial", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
+           "A version whose health check fails falls back within 3 boots and is not offered again; "
+           "the network comes up after every soft reboot and full boot of an update (20 rounds). "
            "Not yet: kernel panic, initramfs without the disk driver, no graphical session, dead network."),
     "T4": ("Signatures and versions", "full", [POLICY, SECURE_BOOT, UPDATES],
            "Unsigned and wrongly signed images and channel sheets, downgrades and replays refused; "
@@ -83,7 +85,8 @@ def evaluate(jobs, run_url):
 
 def self_test():
     every = [{"name": f"image / {j}" if j != "power-cuts" else j, "steps": [{"name": s, "conclusion": "success"}]}
-             for j, s in {BOOT, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES, POWER_CUTS}]
+             for j, s in {BOOT, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES, SOFT_REBOOT_NETWORK,
+                          POWER_CUTS}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T6", "T7", "T15")] == \
         ["partial", "pass", "pass", "not-implemented", "pass", "partial"], r
