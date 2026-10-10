@@ -98,7 +98,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
-      systemd-bless-boot.service && \
+      systemd-bless-boot.service apparmor.service && \
     /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, and the measurement of
