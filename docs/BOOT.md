@@ -22,7 +22,8 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 1. **Root filesystem without kernel** (Containerfile target `sealed`): `bootc container
    split-kernel-and-rootfs` moves `vmlinuz` and `initramfs.img` out of `/usr/lib/modules/<kver>/`,
    since they end up inside the UKI. The image is committed.
-2. **UKI** from that committed image: `bootc container ukify` computes the composefs digest of the
+2. **UKI** from that committed image (`ci/ukify.sh`, with a second profile for recovery, see
+   "Recovery"): `bootc container ukify` computes the composefs digest of the
    root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today `rw
    lockdown=integrity systemd.import_credentials=no composefs=…`: no root device,
    systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
@@ -286,7 +287,65 @@ What the installer must still do (not part of this repository's tests): put the 
 partition for Nyra (not shared with Windows), with the GPT attributes that hide it from Windows, and
 call `esp-sync install` after `bootc install`. Not covered yet: letting the user choose which system
 comes first ("Nyra OS" is put first again by design; "Restart in Windows" will use `BootNext`), a
-real shim update forced by an SBAT or `dbx` revocation, and a recovery entry in the boot menu.
+real shim update forced by an SBAT or `dbx` revocation. The recovery entry is described next.
+
+## Recovery (`tools/vm/recovery.sh`)
+
+The image's UKI has two profiles (a multi-profile UKI, systemd 257 and later), built by
+`ci/ukify.sh` in step 2 of the sealed UKI and signed as one file in step 3:
+
+| Profile | Title | Command line |
+|---|---|---|
+| 0 | Nyra OS | the one bootc writes: `<kargs.d> composefs=<digest>` |
+| 1 | Nyra OS Recovery | the same plus `systemd.unit=rescue.target` |
+
+bootc computes the composefs digest, so `ci/ukify.sh` runs `bootc container ukify` once to read
+the command line, makes the recovery profile PE file with `ukify build --profile --cmdline`, and runs
+`bootc container ukify` again with `--profile` (labelling the base sections as profile 0) and
+`--join-profile` (the recovery profile, profile 1). Both profiles are sealed: under Secure Boot
+the stub ignores any command line from the boot loader, and the only thing a boot entry chooses is
+the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in `StubProfile`).
+
+- **The menu entry** `loader/entries/nyra-recovery.CONF` (`title Nyra OS Recovery`, `uki` = a
+  bootc UKI, `profile 1`, `sort-key nyra-recovery`, after bootc's `bootc-<os>-0/1` in the menu) is
+  written by `nyra-boot-repair` at every boot, for the running system's UKI once that version is
+  blessed (until then it stays on the version it points at, if that is still on the ESP). If that
+  UKI is gone and the running one has no recovery profile, the entry is removed rather than left
+  pointing at nothing. systemd-boot never picks a profile other than 0 by default.
+  - **Why `.CONF`:** bootc 1.16 reads every `*.conf` in `loader/entries` as one of its deployments.
+    An entry for a bootc UKI shows up as an extra "other deployment" in `bootc status` (seen in CI),
+    and any other entry makes `bootc status` fail. bootc matches the suffix in lower case only, while
+    systemd-boot and `bootctl` match it in any case, so the upper-case suffix keeps the entry out of
+    bootc and in the menu. If bootc changes that, the CI check "one booted image in `bootc status`"
+    fails.
+  - The fallback UKI (`EFI/Linux/nyra-fallback-<digest>+0.efi`, see "Boot protection") is the same
+    two-profile UKI, and systemd-boot lists every profile of a UKI it finds there: the menu also
+    shows that version's "Nyra OS Recovery", at the end with the fallback. It is just as sealed.
+  - bootc swaps `loader/entries` at every update: `esp-sync boot-counter` copies the recovery entry
+    into `loader/entries.staged` at shutdown (its boot counting only renames `*.conf`), so it is there
+    after the update too.
+- **Authentication: an administrator's password.** Root has no password, and recovery must not be
+  a root shell for anyone at the keyboard (no `SYSTEMD_SULOGIN_FORCE`). `rescue.service` runs
+  `/usr/lib/nyra/boot/recovery-shell` instead of sulogin (a drop-in in `/usr`): it asks for a user
+  name, accepts only members of the `sudo` group (the administrators) whose account has a usable
+  password (`passwd -S` status `P`: PAM's `nullok` would let an empty password through), and checks
+  the password with `su` through PAM, run as `nobody` so that it has to ask. Only then a root shell
+  starts; leaving it continues to the normal boot target. A wrong password or a non-administrator
+  gives a message and the prompt again, after 3 s. Control-C and Control-Z do nothing at the prompt;
+  Control-D continues the normal boot (as sulogin does). `emergency.service` (a failed boot) still uses sulogin, which refuses
+  a locked root: that stays as it is until the installer decides on it.
+- **TPM:** profile 1 is measured differently from profile 0 (PCR 11 covers its `.cmdline` and
+  `.profile`), so a PCR 11 policy signed only for profile 0 does not unlock the disk in recovery: the
+  disk then needs its password or the recovery key. When TPM unlock is built, sign the PCR policy
+  for the main profile only (`ukify --sign-profile=main`, the profile ID in `ci/ukify.sh`).
+
+CI, on a copy of the installed disk, with Secure Boot on and one firmware variable store: the UKI
+bootc installed verifies with this run's certificate and contains the recovery profile; a normal boot
+writes the entry, and `bootc status` shows one booted image and no queued rollback; the test adds an administrator
+and a plain user and picks the entry for the next boot only (`bootctl set-oneshot`). That boot runs
+profile 1 (`LoaderEntrySelected`, `StubProfile`, `systemd.unit=rescue.target` on the command line,
+Secure Boot on): an administrator with an empty password and a plain user are refused without a
+password prompt, a wrong password gives no shell, the right one gives root in `rescue.target`.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

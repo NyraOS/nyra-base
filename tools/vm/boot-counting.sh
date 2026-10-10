@@ -99,4 +99,4 @@ vm "healthy version, first try, blessed" \
   --command "$(booted "$healthy")" \
   --command "$running" \
   --command 'journalctl -b -u systemd-bless-boot --no-pager -o cat; systemctl is-active --quiet systemd-bless-boot.service' \
-  --command "$entries; test \"\$($entries | wc -l)\" = 2 && ! $entries | grep -F +"
+  --command "$entries; test \"\$(ls /boot/loader/entries/bootc_*.conf | wc -l)\" = 2 && ! ls /boot/loader/entries/bootc_*.conf | grep -F + && test -f /boot/loader/entries/nyra-recovery.CONF"

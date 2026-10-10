@@ -1,0 +1,37 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS recovery (docs/BOOT.md): rescue.target's shell, for an administrator. The "Recovery" profile
+# of the image's UKI boots with systemd.unit=rescue.target; root has no password, so instead of
+# sulogin (root's password) this asks for the user name and password of an administrator: a member
+# of the "sudo" group whose account has a usable password ("passwd -S" status P, so not an empty
+# or locked one, which PAM's nullok would otherwise let through). The password is checked by su
+# through PAM, run as nobody so that it has to ask; only then does the root shell start. Control-C
+# and Control-Z do nothing here; Control-D, or leaving the root shell, continues the normal boot.
+set -u
+trap '' INT QUIT TSTP
+
+while :; do
+	printf '\nNyra OS recovery (Control-D continues the normal boot).\nAdministrator user name: '
+	if ! read -r user; then
+		echo
+		echo "Continuing the normal boot."
+		break
+	fi
+	case "$user" in
+	'' | -* | *[!a-z0-9_.-]*) echo "Not a user name." ;;
+	*)
+		if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx sudo &&
+			[ "$(passwd -S "$user" 2>/dev/null | cut -d ' ' -f 2)" = P ] &&
+			setpriv --reuid=nobody --regid=nogroup --clear-groups -- su -c true -- "$user"; then
+			echo "Recovery shell (root). Leave it with exit to continue booting."
+			# The shell gets the usual Control-C and Control-Z back.
+			trap - INT QUIT TSTP
+			/bin/bash -l
+			break
+		fi
+		echo "Wrong user name or password, or not an administrator."
+		sleep 3
+		;;
+	esac
+done
+exec systemctl --job-mode=fail --no-block default

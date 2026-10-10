@@ -376,4 +376,4 @@ vm "v7 after the power cut: v10 staged, nothing left from v9" --poweroff \
   --command "$lib; outcome s10 Staged && expect staged $d10 && ls /boot/loader/entries.staged && test \"\$(ls /boot/loader/entries.staged | wc -l)\" = 2"
 
 vm "v10 boots, with only its own entry and v7's" --poweroff \
-  --command "$lib; expect booted $d10 && running && entries && test \"\$(entries | wc -l)\" = 2"
+  --command "$lib; expect booted $d10 && running && entries && test \"\$(entries | grep -c '^bootc_.*\.conf\$')\" = 2 && ! entries | grep -i '^nyra-recovery.*+'"

@@ -26,6 +26,9 @@ add-on that does (tools/vm/test-addon.sh).
 with a clean shutdown, so several runs can follow one system across reboots.
 --power-cut-at REGEX kills QEMU (a power cut) as soon as REGEX shows up on the
 console, during the boot or during a command; the commands before it must pass.
+--chat 'EXPECT=>SEND' (repeatable) replaces the login: wait for the regular
+expression EXPECT, type SEND and Enter, in order; then a root shell prompt must
+follow (for a boot that asks for something else than a login, like recovery).
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
 itself first. A command written "@reboot CMD" is typed without waiting for its
 result, then the script logs in again at the next login prompt (a soft reboot).
@@ -124,6 +127,17 @@ def marker(con, pattern, expected, timeout):
 
 def login(con, a, password, start):
     """Wait for a login prompt after offset `start` and log in as root on the console."""
+    if a.chat:
+        for step in a.chat:
+            expect, _, send = step.partition("=>")
+            m = con.wait_for(expect.encode(), a.timeout, start)
+            if not m:
+                raise RuntimeError(f"no {expect!r} on the console within {a.timeout} s")
+            start += m.end()
+            con.type(send + "\r")
+        if not con.wait_for(rb"# ", 60, start):
+            raise RuntimeError("no root shell after the chat")
+        return
     m = con.wait_for(rb"login: ", a.timeout, start)
     if not m:
         if con.proc.poll() is not None:
@@ -204,6 +218,8 @@ def main():
                    help="one more systemd credential over SMBIOS")
     p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
+    p.add_argument("--chat", action="append", default=[], metavar="EXPECT=>SEND",
+                   help="instead of the login: wait for EXPECT, type SEND (repeatable)")
     a = p.parse_args()
     if a.keep_vars and not a.secure_boot:
         p.error("--keep-vars needs --secure-boot")
