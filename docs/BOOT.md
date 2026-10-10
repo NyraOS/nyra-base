@@ -25,17 +25,19 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 2. **UKI** from that committed image (`ci/ukify.sh`, with a second profile for recovery, see
    "Recovery"): `bootc container ukify` computes the composefs digest of the
    root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today
-   `lockdown=integrity panic=10 rw systemd.import_credentials=no composefs=…`, pinned in
+   `lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=…`, pinned in
    `ci/uki-cmdline.txt`: no root device,
    systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
    covers them. bootc checks the digest again at install and update, and refuses a UKI that does
    not match.
-3. **Signing outside the image build.** In CI the UKI is signed with a key made for that run only:
-   generated, used once, deleted; only its certificate leaves the step (a job output), for the
-   Secure Boot test. Nothing persists, nothing is cached or uploaded. The step signs exactly one file,
-   and only the sealed UKI: a kernel and exactly the command lines of `ci/uki-cmdline.txt`
-   (`tools/signing/uki-check.py`, docs/SIGNING.md).
+3. **Signing outside the image build.** First the PCR 11 policy of the main profile (see "TPM2
+   unlock" below), then the whole UKI for Secure Boot. In CI both keys are made for that run only:
+   generated, used once, deleted; only the UKI certificate (a job output, for the Secure Boot test)
+   and the policy's public key leave the step. Nothing persists, nothing is cached or uploaded. The
+   step signs exactly one file, and only the sealed UKI: a kernel and exactly the command lines of
+   `ci/uki-cmdline.txt` (`tools/signing/uki-check.py`, docs/SIGNING.md), with the policy signed for
+   the main profile alone (`tools/signing/pcr-policy.py check`).
 4. **Final image:** the committed root filesystem plus the signed UKI in `/boot/EFI/Linux/<kver>.efi`.
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
@@ -126,25 +128,65 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
 
 ### What Secure Boot alone does not stop
 
-shim trusts everything Debian signs. Anyone who can write the ESP (root on the machine, or the
-disk out of the machine) can add a boot entry with a Debian-signed kernel and an initramfs of their
-own: shim accepts the kernel, and nothing checks that initramfs. Secure Boot therefore keeps
-unsigned code out of the boot, but does not by itself prove that the Nyra UKI booted. Two rules
-follow, for the owner to confirm when TPM unlock is built:
+shim trusts everything Debian signs, so Secure Boot keeps unsigned code out of the boot but does not
+by itself prove that the Nyra UKI booted: a Debian-signed kernel with another initramfs passes it
+too. Disk unlock therefore depends on what the TPM measured, not on Secure Boot alone:
 
-- **TPM2 unlock never depends on PCR 7 alone** (PCR 7 says "Secure Boot on, these keys", which a
-  Debian-signed boot also satisfies). It binds to a **signed policy on PCR 11** (the UKI's sections
-  as measured by systemd-stub; `ukify --measure` with `--pcr-private-key`, policy signed by a Nyra
-  key) **plus PCR 7**. That needs `systemd-measure`/`ukify --measure` in the signing step and the
-  public PCR key in the image; not built yet.
+- **TPM2 unlock never depends on PCR 7 alone** (PCR 7 says "Secure Boot on, these keys", which any
+  boot through shim also satisfies). It binds to the **signed policy on PCR 11** (the Nyra UKI's
+  main profile, "TPM2 unlock" below) **plus PCR 7**.
 - **An old Nyra UKI, still validly signed, can boot an old image version** if someone puts it on
-  the ESP (bootc has no downgrade protection either, LESSONS). Options, not decided:
-  - SBAT generations in the UKI (`.sbat` section): revoking old ones needs shim's SBAT policy
-    update on every machine; coarse, and a mistake bricks boots;
-  - the TPM policy: sign the PCR 11 policy with a key per release line, and stop signing old
-    policies (or rotate the policy key), so an old UKI boots but no longer unlocks the disk;
-  - both. Decision points for the owner: which of these, how often the policy key rotates, and
-    whether an old version may still boot without unlocking (recovery) or must not boot at all.
+  the ESP (bootc has no downgrade protection either, LESSONS). Both answers are used:
+  - **SBAT generations** in the UKI (`.sbat` section) for versions that must not boot at all
+    (revoked through shim's SBAT policy; coarse, so for serious cases only);
+  - **rotating the PCR policy key**: an old UKI carries a policy signed with an old key, so once
+    machines are enrolled with the new key it may still boot, but it no longer unlocks the disk
+    (it asks for the password or the recovery key). How the rotation works is in "TPM2 unlock".
+
+## TPM2 unlock: the signed PCR policy
+
+The disk will be encrypted (LUKS) and, on a machine with a TPM, unlock by itself at boot only when
+the Nyra UKI's main profile booted. This repository builds the signed policy into the UKI and checks
+it; no disk is enrolled yet (that comes with the encryption work, in the installer), and the VM test
+with a software TPM is still to come.
+
+**What is measured.** systemd-stub measures the UKI's sections into PCR 11 before it starts the
+kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`, each
+as its name and the SHA-256 of its content. A profile's own sections replace the base ones, so each
+profile gives another PCR 11: the recovery and reset profiles differ in `.cmdline` and `.profile`.
+systemd then adds the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`).
+
+**What is signed.** `ci/ukify.sh` (no key there) builds the UKI with the policy's public key as
+`.pcrpkey` and, for the main profile only (`--sign-profile main`), a `.pcrsig` section with the
+TPM2 PolicyPCR digests to sign: PCR 11, SHA-256 bank, one per phase. Step 3 of `ci/build-image.sh`
+signs each digest with the policy key (`tools/signing/pcr-policy.py sign`), puts the signatures into
+`.pcrsig` with the image's `ukify --join-pcrsig`, and only then signs the whole UKI for Secure Boot.
+The recovery and reset profiles get no `.pcrsig`: nothing signs their PCR 11, so they can never
+unlock the disk through the TPM.
+
+**What is checked** (`pcr-policy.py check`, in the signing step and in the release gate,
+docs/SIGNING.md): `.pcrpkey` is the expected key; exactly one `.pcrsig`, in the profile with `ID=main`
+(profile 0); every policy in it is SHA-256, PCR 11 only, for that key, with a signature that verifies;
+and the signed digests are exactly the main profile's, computed again from the UKI's sections by the
+script itself (not by systemd-measure), none of them another profile's.
+
+**What the enrollment must bind** (encryption work, not here): `systemd-cryptenroll
+--tpm2-public-key=<.pcrpkey> --tpm2-public-key-pcrs=11 --tpm2-pcrs=7+12`, so that unlock needs:
+- the signed PCR 11 policy (the Nyra UKI's main profile);
+- PCR 7 as enrolled (Secure Boot on, the same keys): never PCR 7 alone;
+- **PCR 12 at its value without add-ons**: systemd-stub measures add-ons and credentials from the
+  ESP into PCR 12, and a Nyra machine has none (the Nyra key never signs an add-on, the release
+  gate refuses any next to the UKI), so anything placed there stops the unlock.
+
+The sealed command line has `rd.shell=0 rd.emergency=reboot`
+(`/usr/lib/bootc/kargs.d/15-nyra-initrd.toml`): a failure in the initrd reboots instead of opening a
+shell, before or after the disk is unlocked. `systemd.import_credentials=no` stays. systemd-cryptsetup
+talks to the TPM over an encrypted session (parameter encryption, salted with the TPM's storage key)
+by itself; the VM test will check that it is in use.
+
+**The policy key.** In CI it is made for each run, like the UKI key, and deleted after signing. The
+real one is described in docs/SIGNING.md ("The PCR policy key"): kept like the UKI key, outside CI,
+with only its public half committed, and rotated.
 
 ## The kernel command line is fixed
 
@@ -354,9 +396,9 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
   Control-D continues the normal boot (as sulogin does). `emergency.service` (a failed boot) still uses sulogin, which refuses
   a locked root: that stays as it is until the installer decides on it.
 - **TPM:** profile 1 is measured differently from profile 0 (PCR 11 covers its `.cmdline` and
-  `.profile`), so a PCR 11 policy signed only for profile 0 does not unlock the disk in recovery: the
-  disk then needs its password or the recovery key. When TPM unlock is built, sign the PCR policy
-  for the main profile only (`ukify --sign-profile=main`, the profile ID in `ci/ukify.sh`).
+  `.profile`), and the PCR policy is signed for the main profile only (`--sign-profile main` in
+  `ci/ukify.sh`), so recovery does not unlock the disk through the TPM: the disk then needs its
+  password or the recovery key ("TPM2 unlock").
 
 CI, on a copy of the installed disk, with Secure Boot on and one firmware variable store: the UKI
 bootc installed verifies with this run's certificate and contains the recovery profile; a normal boot

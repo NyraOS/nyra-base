@@ -255,10 +255,13 @@ jobs:
           sudo rm -rf "$WORK/policy-test"
 
       # The sign job's UKI release gate, on this image (its UKI signed with this run's key): accepted
-      # with this run's certificate, refused as the sign job runs it (the committed Nyra certificate),
-      # and refused for an add-on, another command line, a second UKI or an add-on next to it.
+      # with this run's certificate and policy key, refused as the sign job runs it (the committed Nyra
+      # certificate and policy key), and refused for an add-on, another command line, a second UKI, an
+      # add-on next to it, and a PCR policy missing, not verifying or outside the main profile.
       - name: Test the UKI release gate (docs/SIGNING.md)
-        run: tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" "$WORK"
+        run: |
+          tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
+            "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK"
 
       # The Containerfile runs `nyra-updated check-config` on the image; here it must refuse the key of
       # the test fixtures (its private key is public), so a build that ships it fails.
@@ -602,8 +605,9 @@ jobs:
           rm "$WORK/nyra-base.oci.tar"
 
       # Before anything is signed: the image's /boot holds exactly one UKI, the sealed one
-      # (ci/uki-cmdline.txt), signed with the Nyra certificate committed here. Until that certificate
-      # is committed, every image is refused (docs/SIGNING.md).
+      # (ci/uki-cmdline.txt), with its main profile's PCR policy signed by the Nyra policy key and the
+      # whole file signed with the Nyra certificate, both committed here. Until they are committed,
+      # every image is refused (docs/SIGNING.md).
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
@@ -611,7 +615,8 @@ jobs:
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman rm -f "$cid" >/dev/null
           sudo chown -R "$(id -u):$(id -g)" "$WORK/boot"
-          tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt
+          tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem
 
       - name: Install cosign
         run: |
