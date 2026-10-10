@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# No shell in the initrd: a failure there (the root disk does not unlock, is not found or does not
+# mount) reboots instead of opening an emergency shell, before and after TPM2 unlock (docs/BOOT.md).
+# Part of the command line sealed in the UKI.
+kargs = ["rd.shell=0", "rd.emergency=reboot"]
