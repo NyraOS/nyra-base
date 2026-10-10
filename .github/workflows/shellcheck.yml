@@ -31,6 +31,8 @@ jobs:
           shellcheck -S warning "${scripts[@]}"
       - name: Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)
         run: tools/vm/security-defaults.sh --self-test
+      - name: Self-test of the console matching (tools/vm/vm-boot.py)
+        run: python3 -I tools/vm/vm-boot.py --self-test
       - name: Self-test of the Titanic results (tools/titanic/results.py)
         run: python3 -I tools/titanic/results.py --self-test
       - name: actionlint
