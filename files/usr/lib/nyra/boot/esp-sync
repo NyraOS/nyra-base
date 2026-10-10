@@ -5,7 +5,8 @@
 #                          below and loader/loader.conf, before the first boot (no firmware entry)
 #   esp-sync repair        at every boot, on /boot: the same files where missing or damaged, never
 #                          an older version over a newer one, a newer version only from a blessed
-#                          boot; then the "Nyra OS" firmware entry, first in BootOrder
+#                          boot; then the "Nyra OS" firmware entry, first in BootOrder; and, after a
+#                          full boot, no stale staged entries
 #   esp-sync boot-counter  at shutdown, before bootc-finalize-staged moves the staged entries in:
 #                          the new entry gets three tries (systemd boot counting, "+3"), or the
 #                          staged entries are removed when nyra-updated discarded that version
@@ -127,6 +128,17 @@ firmware_entry() {
 	esac
 }
 
+# At a full boot nothing is staged yet (bootc keeps the staged deployment in /run), so staged entries
+# on the ESP are stale: left by a staging that was never finalized (a power cut). bootc does not
+# always remove them before it stages the next update (patches/upstream/), and the swap at shutdown
+# would bring them back with it. After a soft reboot /run, and what is staged in it, is kept.
+stale_staged() {
+	[ "$(systemctl show --property=SoftRebootsCount --value)" = 0 ] || return 0
+	[ -d /boot/loader/entries.staged ] || return 0
+	rm -rf /boot/loader/entries.staged && sync || return 1
+	echo "esp-sync: stale staged entries removed from /boot/loader/entries.staged"
+}
+
 # Mounts the ESP privately on $esp, as bootc does, by the partition systemd-boot reported: /boot is
 # an automount that expires when idle, and it cannot be mounted again during shutdown.
 mount_esp() {
@@ -196,6 +208,7 @@ repair)
 	rc=0
 	files /boot || rc=1
 	firmware_entry || rc=1
+	stale_staged || rc=1
 	exit "$rc"
 	;;
 boot-counter) boot_counter ;;
