@@ -257,7 +257,10 @@ A new version must prove itself, or the machine goes back to the previous one by
   the new entry in `entries.staged` to `…+3.conf`. The counter therefore lands in the same atomic swap
   as the entry itself; the running system's entry, found by its composefs digest, gets none. It
   mounts the ESP itself (by the partition systemd-boot reports), like bootc: `/boot` is an automount
-  that expires after two idle minutes and cannot be mounted again once shutdown has begun.
+  that expires after two idle minutes and cannot be mounted again once shutdown has begun. When
+  `nyra-updated` discarded the staged version (`/run/nyra-updated/discarded`, docs/UPDATES.md), it
+  removes `entries.staged` instead, so that version is never swapped in (`nyra-updated` has removed it
+  already, with `esp-sync discard`; this is the second time).
 - systemd-boot lowers the counter on every try (`+2-1`, `+1-2`, `+0-3`) and sorts an entry with no
   tries left after all others, so the previous version boots next.
 - `systemd-bless-boot` drops the counter once `boot-complete.target` is reached. Health checks are

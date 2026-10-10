@@ -234,7 +234,9 @@ Each line is something that broke or surprised us once.
   as an OCI manifest).
 - composefs `bootc rollback` needs a rollback deployment, drops a staged deployment and swaps the boot
   order immediately (it rewrites `loader/entries`, without boot counters); called again it swaps back.
-  There is no command that only drops a staged deployment.
+  There is no command that only drops a staged deployment. A staged deployment's entries are only
+  swapped in at shutdown (`bootc-finalize-staged`): removing `loader/entries.staged` before that keeps
+  it from booting without touching the boot order.
 - `bootc status` on composefs with systemd-boot needs bootc's own Type #1 entries on the ESP ("First
   boot entry not found" otherwise).
 - `bootc switch --apply` to an image that is already staged reboots fully even with `--soft-reboot`

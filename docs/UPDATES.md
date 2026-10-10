@@ -75,7 +75,8 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
 5. A version the machine fell back from is marked failed and never staged or offered again.
 6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
    "No changes").
-7. The image is pulled pinned by digest, and the staged digest must be the sheet's.
+7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
+   deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
    boot counting), and never on a version that is not on trial (no reboot loop).
 9. The first healthy boot of a new version must have been a full boot with a boot counter, or it is
@@ -86,20 +87,21 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
     at every check, so such a machine is not silently without updates. The installer must therefore
     install with an explicit tag (`updates.nyraos.com/nyra-base:stable`): without one the image counts
     as foreign.
-11. A staged version that gets retracted, or that the machine fell back from, is discarded before
-    the reboot, the same way as in rule 7.
+11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
+    version floor) is discarded the same way as in rule 7.
 
 ### Discarding a staged deployment (rules 7 and 11)
 
-bootc has no command that only drops a staged deployment. On the composefs backend `bootc rollback`
-removes the staged deployment and swaps the boot order of the booted and the rollback deployment at
-once (it rewrites `loader/entries` on the ESP, without boot counters); a second call swaps the order
-back. So `nyra-updated` calls it twice, and only when the rollback deployment would be an acceptable
-boot (not failed, not retracted, not below the version floor), because between the two calls, or if
-the second one fails, the rollback deployment is the next boot. Then it reads `bootc status` again:
-no staged deployment, the same booted and rollback deployments, the same boot order; otherwise the
-error says what boots next. Without an acceptable rollback deployment (for example the first update
-after the installation) nothing is touched and the error says that the staged version stays.
+A staged deployment that becomes unacceptable before the reboot (a digest other than the sheet's,
+retracted, failed, or below the version floor) is never finalized, whatever the rollback deployment
+is, and the boot order is not touched. bootc keeps the staged deployment in `/run` and only swaps
+its boot entries in at shutdown (`bootc-finalize-staged`). `nyra-updated` writes the digest to
+`/run/nyra-updated/discarded` and removes the staged entries from the ESP at once (`esp-sync discard`);
+at shutdown, before that swap, `esp-sync` (`nyra-boot-counter.service`) removes them again, in case
+that failed or something was staged since. `bootc-finalize-staged` then has nothing to swap in (it
+reports an error), the next boot is the running version, and no entry of the discarded version is
+left for a later update. Until the reboot `nyra-updated` stages nothing else, and anything staged
+by hand is discarded with it.
 
 ## In the image
 
@@ -152,13 +154,13 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 15 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 16 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
 guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
 port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
-v0-v7 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
+v0-v8 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
 bootc reads it.
 
 | Titanic | Scenario | Expected |
@@ -171,7 +173,7 @@ bootc reads it.
 | T2 | power cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 4–12 s into a ~16 MiB pull, while `nyra-updated` is still activating and nothing is staged) | the old version boots, nothing staged; the next check stages it again |
 | T2 | power cut after staging, before finalization | the old version boots, nothing staged; staged again |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
-| — | staged version retracted before the reboot | discarded (`bootc rollback` twice), boot order kept, proven by the next boot |
+| — | staged version retracted before the reboot, with an acceptable rollback deployment and with a failed one | not finalized: the next boot is the running version, boot order and rollback deployment unchanged, no staged entries left |
 | T3 | new version whose health check fails | it reboots by itself three times, systemd-boot falls back, the version is marked failed and refused |
 | T5 | captive portal answers HTML | refused (malformed sheet) |
 | T5 | spoofed server (certificate not from a trusted CA) | refused (TLS) |
