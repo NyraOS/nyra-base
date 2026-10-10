@@ -114,6 +114,7 @@ by hand is discarded with it.
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running |
+| `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8) |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
@@ -128,9 +129,11 @@ the target being active on a healthy boot.
 (links in `/usr/lib/systemd/system/boot-complete.target.requires/`). A failure keeps the boot from
 being blessed and, while the version is on trial, reboots so systemd-boot can fall back. They finish
 before `systemd-user-sessions.service`, so nobody can log in while they run and an unprivileged user
-cannot make one fail (which would force reboots and mark a good version failed). A check that bootc
-itself works (`bootc status`) would be valuable, but bootc needs its own boot entries for that, and the
-Secure Boot test lays the ESP out by hand without them (`docs/BOOT.md`); it comes with the UKI layout.
+cannot make one fail (which would force reboots and mark a good version failed).
+
+A broken kernel or initramfs never reaches the health checks: the sealed command line has `panic=10`
+(`/usr/lib/bootc/kargs.d/10-nyra-panic.toml`), so a kernel panic reboots instead of halting, and the
+version uses up its tries like any unhealthy one.
 
 **Soft reboots** skip the firmware, so systemd-boot does not count a try, while
 `LoaderBootCountPath` still names the entry of the last full boot. `systemd-bless-boot` would then
@@ -186,6 +189,7 @@ bootc reads it.
 | T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
+| T3 | new version whose kernel finds no usable initramfs | it panics and reboots by itself (`panic=10`) three times, systemd-boot falls back, the version is marked failed and refused |
 | T5 | DNS answer for another host (a certificate from a trusted CA, for another name) | refused (TLS name check), nothing staged |
 | T5 | a 50 kbit/s link | the pull is stopped at the time limit, nothing staged; staged later on a normal link |
 | T5 | the registry stops answering in the middle of a pull | the pull is stopped at the time limit, nothing staged; staged once the registry answers |
@@ -203,6 +207,5 @@ not `running` both tests print its journal and the link state.
 Power cuts at many random moments, finalization included, run every night with `bootc` directly
 (`docs/TITANIC.md`). The time limit of a pull is shortened to 90 s in the test versions only
 (`stage_timeout_seconds`), so the slow link and the stalled registry are tested in minutes; production
-keeps 2 hours. Not covered yet: power cuts during finalization with `nyra-updated`, a broken kernel or
-initramfs (a kernel panic needs `panic=` to reboot at all), and the real keyless signature (the `sign`
-job, `docs/SIGNING.md`).
+keeps 2 hours. Not covered yet: power cuts during finalization with `nyra-updated`, and the real keyless
+signature (the `sign` job, `docs/SIGNING.md`).

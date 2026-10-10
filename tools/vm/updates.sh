@@ -12,7 +12,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v13: 2026.10.1-13, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v14: 2026.10.1-14, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -44,6 +44,9 @@
 #  26  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
 #      stalls mid-pull refused, nothing staged; v13 staged
 #  27  v13: the shipped signature policy linked again; then the secure defaults check (T15)
+#  28  v13: v14 staged (its initramfs is broken)
+#  29  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
+#      v14 is marked failed and refused
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -101,15 +104,18 @@ version() { # version NAME VERSION [Containerfile lines]
   mkdir -p "$u/$1-uki"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
     --mount "type=image,source=localhost/nyra-test:$1-rootfs,target=/target" \
-    -v "$u/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$u/$1-uki:/out" "$image" \
+    -v "$u/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$u/$1-uki:/out" -e BROKEN_INITRD="${BROKEN_INITRD:-}" "$image" \
     sh -c 'u="$(ls /boot/EFI/Linux/*.efi)" && k="$(basename "$u" .efi)" && mkdir -p "/tmp/kernel/$k" &&
       python3 /kernel-from-uki.py "$u" "/tmp/kernel/$k" &&
+      { [ -z "$BROKEN_INITRD" ] || head -c 4096 /dev/zero > "/tmp/kernel/$k/initramfs.img"; } &&
       bootc container ukify --rootfs /target --kernel-dir "/tmp/kernel/$k" -- --output "/out/$k.efi"' >/dev/null
   printf 'FROM localhost/nyra-test:%s-rootfs\nCOPY --from=uki . /boot/EFI/Linux/\n' "$1" |
     sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
       --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
 for n in 0 1 4 5 6 7 8 9 10 11 12 13; do version "v$n" "2026.10.$n"; done
+# v14: its UKI carries an initramfs of zeros, so the kernel panics (and reboots, panic=10).
+BROKEN_INITRD=1 version v14 2026.10.14
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
 # of boot 3 and the power cut lands in the middle of it.
 version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
@@ -139,13 +145,14 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7 8 9 10 11 12 13; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8 9 10 11 12 13 14; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
 d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")" d7="$(cat "$u/v7.digest")"
 d8="$(cat "$u/v8.digest")" d9="$(cat "$u/v9.digest")" d10="$(cat "$u/v10.digest")"
 d11="$(cat "$u/v11.digest")" d12="$(cat "$u/v12.digest")" d13="$(cat "$u/v13.digest")"
+d14="$(cat "$u/v14.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -178,6 +185,7 @@ sheet s9 sheet 900 "$d9" 2026.10.9 "$d4" "$d6"
 sheet s10 sheet 1000 "$d10" 2026.10.10 "$d4" "$d6"
 sheet s12 sheet 1200 "$d12" 2026.10.12 "$d4" "$d6"
 sheet s13 sheet 1300 "$d13" 2026.10.13 "$d4" "$d6"
+sheet s14 sheet 1400 "$d14" 2026.10.14 "$d4" "$d6"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -457,3 +465,15 @@ vm "v13: the shipped signature policy again, for the secure defaults check" --po
 mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
+
+# A broken kernel or initramfs (T3): v14's kernel finds no initramfs, panics and reboots after 10 s
+# (panic=10 on the sealed command line), three times; then systemd-boot falls back to v13.
+vm "v13: v14 staged" --poweroff \
+  --command "$lib; expect booted $d13 && running" \
+  --command "$lib; outcome s14 Staged && expect staged $d14"
+vm "v14 panics three times, back on v13 by itself" --poweroff --boots 4 --timeout 300 \
+  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3" \
+  --command "$lib; refused s14 'this machine fell back from it' && expect staged none"
+l="$logs/serial-updates-$n.log"
+echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
+[ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]

@@ -37,8 +37,9 @@ TESTS = {
            "at random moments."),
     "T3": ("Broken version", "partial", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
            "A version whose health check fails falls back within 3 boots and is not offered again; "
-           "the network comes up after every soft reboot and full boot of an update (20 rounds). "
-           "Not yet: kernel panic, initramfs without the disk driver, no graphical session, dead network."),
+           "the network comes up after every soft reboot and full boot of an update (20 rounds); a version "
+           "whose kernel panics (no usable initramfs) reboots by itself and falls back the same way. "
+           "Not yet: no graphical session, dead network."),
     "T4": ("Signatures and versions", "full", [POLICY, SECURE_BOOT, UPDATES],
            "Unsigned and wrongly signed images and channel sheets, downgrades and replays refused; "
            "signed retractions applied."),

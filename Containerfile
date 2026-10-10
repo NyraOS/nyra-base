@@ -88,9 +88,10 @@ RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/syste
 RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
     ln -s ../nyra-updated.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
-    ln -s ../nyra-health-system.service boot-complete.target.requires/ && \
+    ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
-      nyra-updated-health-failed.service nyra-health-system.service systemd-bless-boot.service && \
+      nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
+      systemd-bless-boot.service && \
     /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
