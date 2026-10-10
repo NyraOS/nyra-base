@@ -68,7 +68,13 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
 RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       podman.socket podman.service podman-auto-update.timer podman-auto-update.service \
       netavark-dhcp-proxy.socket netavark-dhcp-proxy.service \
-      e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service; do \
+      e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service \
+      systemd-pcrlock-file-system.service systemd-pcrlock-firmware-code.service \
+      systemd-pcrlock-firmware-config.service systemd-pcrlock-machine-id.service \
+      systemd-pcrlock-make-policy.service systemd-pcrlock-secureboot-authority.service \
+      systemd-pcrlock-secureboot-policy.service systemd-pcrlock.socket systemd-sysupdate-notify-pcrlock.socket \
+      systemd-tpm2-clear.service systemd-pcrextend.socket systemd-pcrmachine.service systemd-pcrproduct.service \
+      systemd-pcrnvdone.service systemd-pcrfs-root.service tpm-udev.path; do \
       test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
