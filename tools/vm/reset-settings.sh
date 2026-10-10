@@ -7,14 +7,16 @@
 #      configuration broken as a user could (garbage in /etc/fstab and /etc/passwd, systemd-resolved
 #      masked, /etc/resolv.conf deleted, a stray file); the reset entry (profile 2) is there; it is
 #      picked for the next boot only (bootctl set-oneshot);
-#   2. the reset entry, answered with something else than RESET: nothing changes, the normal boot
-#      continues;
-#   3. the reset, with a power cut as it starts building the new /etc; 4. a normal boot: /etc is
+#   2-3. the reset entry, answered with something else than RESET, then with Control-D: nothing
+#      changes, the normal boot continues;
+#   4. the reset, with a power cut as it starts building the new /etc; 5. a normal boot: /etc is
 #      either all old or all new, never half;
-#   5. the reset, with a power cut as it switches to the new /etc; 6. the same check;
-#   7. the reset: /etc is the image's again, the system reboots by itself into the normal boot:
+#   6. the reset, with a power cut as it switches to the new /etc; 7. the same check;
+#   8. the reset, with a power cut right after the switch; 9. the new /etc is in place, the system
+#      runs, and the previous /etc is still there as etc.nyra-new (kept by the next reset);
+#   10. the reset: /etc is the image's again, the system reboots by itself into the normal boot:
 #      the breakage is gone, the administrator, their password, their groups and /home are kept, and
-#      so are the machine ID and the host name; the old /etc is kept as etc.nyra-old.
+#      so are the machine ID and the host name; the previous /etc is kept as etc.nyra-old (0700).
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The password is random, for this throwaway disk only.
@@ -68,6 +70,8 @@ efivar() { # guest command that prints a systemd-boot EFI variable (UTF-16 text 
 # /etc entirely as broken in boot 1, or entirely reset: nothing in between.
 whole='a=0; b=0; for t in "test -e /etc/nyra-test-junk" "grep -q garbage /etc/fstab" "grep -q broken-line /etc/passwd" "test -L /etc/systemd/system/systemd-resolved.service"; do if eval "$t"; then a=$((a+1)); else b=$((b+1)); fi; done; echo "old: $a, reset: $b"; test "$a" = 4 || test "$b" = 4'
 answer='Type RESET to reset, anything else or Control-D to boot normally: '
+unchanged='test -e /etc/nyra-test-junk && grep -q garbage /etc/fstab && echo "the settings are as they were"'
+state='s="/sysroot/state/deploy/$(sed -En "s/^(.* )?composefs=([0-9a-f]+)( .*)?$/\2/p" /proc/cmdline)"'
 
 vm --poweroff --log "$logs/serial-reset-settings-1.log" \
   --title "Reset settings 1: an administrator and a host name, then broken settings; the reset entry is there" \
@@ -80,29 +84,45 @@ vm --poweroff --log "$logs/serial-reset-settings-1.log" \
 vm --poweroff --log "$logs/serial-reset-settings-2.log" --chat-then-login --chat "$answer=>no" \
   --title "Reset settings 2: the reset entry answered with something else than RESET: nothing changes" \
   --command "$(efivar LoaderEntrySelected); echo; test \"\$($(efivar LoaderEntrySelected))\" = nyra-reset.conf" \
-  --command 'test -e /etc/nyra-test-junk && grep -q garbage /etc/fstab && echo "the settings are as they were"' \
+  --command "$unchanged" \
   --command "$oneshot"
 
-vm --log "$logs/serial-reset-settings-3.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: building the new /etc' \
-  --title "Reset settings 3: power cut as the reset starts building the new /etc"
+vm --poweroff --log "$logs/serial-reset-settings-3.log" --chat-then-login --chat "$answer=>@ctrl-d" \
+  --title "Reset settings 3: the reset entry answered with Control-D: nothing changes" \
+  --command "$(efivar LoaderEntrySelected); echo; test \"\$($(efivar LoaderEntrySelected))\" = nyra-reset.conf" \
+  --command "$unchanged" \
+  --command "$oneshot"
 
-vm --poweroff --log "$logs/serial-reset-settings-4.log" \
-  --title "Reset settings 4: after that power cut, /etc is whole" \
+vm --log "$logs/serial-reset-settings-4.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: building the new /etc' \
+  --title "Reset settings 4: power cut as the reset starts building the new /etc"
+
+vm --poweroff --log "$logs/serial-reset-settings-5.log" \
+  --title "Reset settings 5: after that power cut, /etc is whole" \
   --command "$whole" \
   --command "$oneshot"
 
-vm --log "$logs/serial-reset-settings-5.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: switching to the new /etc' \
-  --title "Reset settings 5: power cut as the reset switches to the new /etc"
+vm --log "$logs/serial-reset-settings-6.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: switching to the new /etc' \
+  --title "Reset settings 6: power cut as the reset switches to the new /etc"
 
-vm --poweroff --log "$logs/serial-reset-settings-6.log" \
-  --title "Reset settings 6: after that power cut, /etc is whole" \
+vm --poweroff --log "$logs/serial-reset-settings-7.log" \
+  --title "Reset settings 7: after that power cut, /etc is whole" \
   --command "$whole" \
   --command "$oneshot"
 
-vm --poweroff --log "$logs/serial-reset-settings-7.log" --chat-then-login --chat "$answer=>RESET" \
-  --title "Reset settings 7: the reset, then the normal boot with the image's /etc and the kept accounts" \
+vm --log "$logs/serial-reset-settings-8.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: switched to the new /etc' \
+  --title "Reset settings 8: power cut right after the switch"
+
+vm --poweroff --log "$logs/serial-reset-settings-9.log" \
+  --title "Reset settings 9: after that power cut, the new /etc is in place and the previous one is still there" \
   --command "$running" \
-  --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && echo "the broken settings are gone"' \
+  --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test ! -L /etc/systemd/system/systemd-resolved.service && echo "old: 0, reset: 4"' \
+  --command "$state; ls -a \$s; test -e \$s/etc.nyra-new/nyra-test-junk && test ! -e \$s/etc.nyra-new/.nyra-reset-new && echo 'etc.nyra-new holds the previous /etc (no marker)'" \
+  --command "$oneshot"
+
+vm --poweroff --log "$logs/serial-reset-settings-10.log" --chat-then-login --chat "$answer=>RESET" \
+  --title "Reset settings 10: the reset, then the normal boot with the image's /etc and the kept accounts" \
+  --command "$running" \
+  --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
   --command "id nyra-admin && id -nG nyra-admin | grep -qw sudo && passwd -S nyra-admin | grep -q ' P ' && grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow && echo 'the administrator and their password are kept'" \
   --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && cmp /etc/machine-id $before/machine-id && test \"\$(cat /etc/hostname)\" = nyra-test-host && echo '/home, the machine ID and the host name are kept'" \
-  --command 'd="$(sed -En "s/^(.* )?composefs=([0-9a-f]+)( .*)?$/\2/p" /proc/cmdline)"; ls /sysroot/state/deploy/$d/; test -d /sysroot/state/deploy/$d/etc.nyra-old && test ! -e /sysroot/state/deploy/$d/etc.nyra-new && echo "the old /etc is kept as etc.nyra-old"'
+  --command "$state; ls -a \$s; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test ! -e \$s/etc.nyra-new && echo 'the previous /etc is kept as etc.nyra-old (0700)'"

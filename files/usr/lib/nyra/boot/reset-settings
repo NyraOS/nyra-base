@@ -9,9 +9,11 @@
 #   regular users (UID 1000-59999)     their lines in passwd, shadow, subuid and subgid, their own
 #                                      groups, and their membership in the image's groups (sudo:
 #                                      administrators), so /home keeps its owners and they can log in
-# /home and /var are not touched. Power cuts: the new /etc is built next to the old one, then the two
-# directories are exchanged in one step (renameat2 RENAME_EXCHANGE, util-linux exch), so a boot sees
-# either the old /etc or the new one. The old one is kept as etc.nyra-old next to it.
+# /home and /var are not touched. Kept users' lines are copied as they are: this is not a cleanup of
+# a compromised /etc. Power cuts: the new /etc is built next to the old one, then the two directories
+# are exchanged in one step (renameat2 RENAME_EXCHANGE, mv --exchange), so a boot sees either the old
+# /etc or the new one. The old one is kept as etc.nyra-old (mode 0700) next to it, until the next
+# reset replaces it or bootc removes this version.
 set -eu
 trap '' INT QUIT TSTP
 
@@ -36,35 +38,57 @@ if [ "$answer" != RESET ]; then
 	exec systemctl --job-mode=fail --no-block default
 fi
 
-old="$state/etc" new="$state/etc.nyra-new" image=/run/nyra-image-root
-echo "reset-settings: building the new /etc"
+old="$state/etc" new="$state/etc.nyra-new" prev="$state/etc.nyra-old" image=/run/nyra-image-root
 mount -o remount,rw /sysroot
+# Every /etc a reset builds carries the marker .nyra-reset-new until it is in place. A leftover
+# etc.nyra-new with the marker was built by a reset cut short before the switch: it goes. Without
+# it, it is the previous /etc itself, from a reset cut short right after the switch: it is kept.
+rm -f "$old/.nyra-reset-new"
+if [ -d "$new" ]; then
+	if [ -e "$new/.nyra-reset-new" ]; then
+		rm -rf "$new"
+	else
+		rm -rf "$prev"
+		mv "$new" "$prev"
+		chmod 0700 "$prev"
+		echo "reset-settings: the /etc before an interrupted reset is kept as $prev"
+	fi
+fi
+
+echo "reset-settings: building the new /etc"
 # The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
 mkdir -p "$image"
 mount --bind / "$image"
 mount -o remount,bind,ro "$image"
-rm -rf "$new"
-cp -a "$image/etc" "$new"
+mkdir -m 0700 "$new"
+: > "$new/.nyra-reset-new"
+cp -a "$image/etc/." "$new/"
+chmod --reference="$image/etc" "$new"
+chown --reference="$image/etc" "$new"
 umount "$image"
 
+# The line of NAME in FILE (exact match of the first field).
+line() { awk -F: -v n="$2" '$1 == n { print; exit }' "$1" 2>/dev/null || true; }
+has() { [ -n "$(line "$1" "$2")" ]; }
 uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
 if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then cat "$old/machine-id" > "$new/machine-id"; fi
 if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then cat "$old/hostname" > "$new/hostname"; fi
 users="$(awk -F: "NF == 7 && \$1 ~ /^[a-z_][a-z0-9_.-]*\$/ && $uid_ok { print \$1 }" "$old/passwd" 2>/dev/null || true)"
 for u in $users; do
-	grep -q "^$u:" "$new/passwd" && continue
-	grep -m 1 "^$u:" "$old/passwd" >> "$new/passwd"
-	line="$(awk -F: -v u="$u" 'NF == 9 && $1 == u { print; exit }' "$old/shadow" 2>/dev/null || true)"
-	echo "${line:-$u:!:1::::::}" >> "$new/shadow"
+	has "$new/passwd" "$u" && continue
+	line "$old/passwd" "$u" >> "$new/passwd"
+	sh="$(awk -F: -v u="$u" 'NF == 9 && $1 == u { print; exit }' "$old/shadow" 2>/dev/null || true)"
+	echo "${sh:-$u:!:1::::::}" >> "$new/shadow"
 	for f in subuid subgid; do
-		if [ -f "$old/$f" ] && [ -f "$new/$f" ]; then grep "^$u:" "$old/$f" >> "$new/$f" || true; fi
+		if [ -f "$old/$f" ] && [ -f "$new/$f" ]; then line "$old/$f" "$u" >> "$new/$f"; fi
 	done
 done
 # The users' own groups (GID 1000-59999), then their membership in the image's groups.
-awk -F: "NF == 4 && $uid_ok { print \$1 }" "$old/group" 2>/dev/null | while read -r g; do
-	grep -q "^$g:" "$new/group" && continue
-	grep -m 1 "^$g:" "$old/group" >> "$new/group"
-	grep -m 1 "^$g:" "$old/gshadow" >> "$new/gshadow" 2>/dev/null || echo "$g:!::" >> "$new/gshadow"
+for g in $(awk -F: "NF == 4 && $uid_ok { print \$1 }" "$old/group" 2>/dev/null || true); do
+	has "$new/group" "$g" && continue
+	line "$old/group" "$g" >> "$new/group"
+	gs="$(line "$old/gshadow" "$g")"
+	echo "${gs:-$g:!::}" >> "$new/gshadow"
 done
 for f in group gshadow; do
 	[ -f "$old/$f" ] || continue
@@ -83,9 +107,14 @@ done
 
 sync
 echo "reset-settings: switching to the new /etc"
-exch "$new" "$old"
-rm -rf "$state/etc.nyra-old"
-mv "$new" "$state/etc.nyra-old"
+# One step (renameat2 RENAME_EXCHANGE): afterwards etc.nyra-new holds the previous /etc.
+mv -T --exchange "$new" "$old"
 sync
-echo "System settings reset; the previous ones are in $state/etc.nyra-old. Restarting."
+echo "reset-settings: switched to the new /etc"
+rm -f "$old/.nyra-reset-new"
+rm -rf "$prev"
+mv "$new" "$prev"
+chmod 0700 "$prev"
+sync
+echo "System settings reset; the previous ones are in $prev. Restarting."
 exec systemctl reboot

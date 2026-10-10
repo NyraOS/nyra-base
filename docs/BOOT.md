@@ -385,11 +385,21 @@ bootc). A third profile needs no new key and keeps the command line sealed; it b
 
    Everything else comes back from the image: mounts, network settings, enabled or masked services,
    time zone, firewall changes. `/home` and `/var` are not touched.
-3. **Power cuts.** The two directories are exchanged in one step (`renameat2` with
-   `RENAME_EXCHANGE`, util-linux `exch`), so any boot sees either the whole old `/etc` or the whole new
-   one. The old one stays as `etc.nyra-old` next to it, for the user to look at; a half-built
-   `etc.nyra-new` from an interrupted reset is removed by the next one. Then the machine restarts into
-   the normal boot.
+3. **Power cuts.** The two directories are exchanged in one step (`mv --exchange`, that is
+   `renameat2` with `RENAME_EXCHANGE`), so any boot sees either the whole old `/etc` or the whole new
+   one. Every `/etc` the reset builds carries a marker file (`.nyra-reset-new`) until it is in place,
+   which tells the two leftovers of an interrupted reset apart: an `etc.nyra-new` with the marker
+   (cut before the switch) is removed by the next reset; one without it is the previous `/etc` (cut
+   right after the switch) and the next reset keeps it as `etc.nyra-old`. Then the machine restarts
+   into the normal boot.
+4. **The previous `/etc`** stays as `etc.nyra-old` next to it, mode `0700`, for the user (or support)
+   to look at. Only one is kept: the next reset replaces it, and bootc removes it with the rest of
+   that version's state when the version itself is removed.
+
+**Kept as is.** The kept users' lines (`passwd`, `shadow`, groups) are copied unchanged, including
+their group and shell: the reset brings back broken system settings, it does not clean up an `/etc`
+that someone took over. Once the disk is encrypted, `/etc/crypttab` and whatever the unlock needs must
+be kept too.
 
 **No password.** The reset grants no access: root stays locked, the users keep their passwords, and
 everything that changes goes back to the image's (secure) defaults. Asking for an administrator's
@@ -398,15 +408,17 @@ password would make it useless in exactly the case it is for, a broken `/etc/pas
 
 CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
 then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,
-`/etc/resolv.conf` deleted, a stray file); the reset entry answered with something else changes
-nothing; a power cut as the reset starts building the new `/etc`, and another as it switches to it,
-each leave `/etc` whole (all old or all new) on the next boot; the reset itself brings the image's
-`/etc` back and reboots, and the next boot has none of the breakage, the administrator with the same
-password hash and groups, the file in `/home`, the machine ID and the host name.
+`/etc/resolv.conf` deleted, a stray file); the reset entry answered with something else, and with
+Control-D, changes nothing; a power cut as the reset starts building the new `/etc`, and another as it
+switches to it, each leave `/etc` whole (all old or all new) on the next boot; a power cut right after
+the switch leaves the new `/etc` in place, a running system, and the previous `/etc` as `etc.nyra-new`
+(no marker); the reset itself brings the image's `/etc` back and reboots, and the next boot has none
+of the breakage, the administrator with the same password hash and groups, the file in `/home`, the
+machine ID and the host name, and the previous `/etc` as `etc.nyra-old` (`0700`).
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
-networks once NetworkManager is in the image, `/etc/crypttab` if the installer writes one), and a
-"reset everything" that also clears `/var` and `/home` (the factory reset).
+networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
+`/home` (the factory reset).
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

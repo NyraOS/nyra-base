@@ -27,8 +27,9 @@ with a clean shutdown, so several runs can follow one system across reboots.
 --power-cut-at REGEX kills QEMU (a power cut) as soon as REGEX shows up on the
 console, during the boot or during a command; the commands before it must pass.
 --chat 'EXPECT=>SEND' (repeatable) replaces the login: wait for the regular
-expression EXPECT, type SEND and Enter, in order; then a root shell prompt must
-follow (for a boot that asks for something else than a login, like recovery).
+expression EXPECT, type SEND and Enter (SEND "@ctrl-d": Control-D alone), in order;
+then a root shell prompt must follow (for a boot that asks for something else than
+a login, like recovery).
 With --chat-then-login a login prompt follows instead (the guest reboots after the
 chat, for example), and the script logs in there as usual.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
@@ -137,7 +138,7 @@ def login(con, a, password, start):
             if not m:
                 raise RuntimeError(f"no {expect!r} on the console within {a.timeout} s")
             start += m.end()
-            con.type(send + "\r")
+            con.type("\x04" if send == "@ctrl-d" else send + "\r")
         if not a.chat_then_login:
             if not con.wait_for(rb"# ", 60, start):
                 raise RuntimeError("no root shell after the chat")
