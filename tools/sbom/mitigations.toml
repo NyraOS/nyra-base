@@ -146,6 +146,14 @@ package = "gnutls28"
 reason = "Certificates with invalid extensions accepted (improper certificate validation). In the image GnuTLS is only used through libcurl-gnutls (by tpm2-tools and libappstream5) and dirmngr; the image's network clients (systemd-resolved, flatpak, OSTree, podman, skopeo, bootc) use OpenSSL or Go/Rust TLS, and nothing in the base image runs a GnuTLS client by itself. Debian lists it unfixed; end: a fixed gnutls28 in our snapshot."
 expires = 2026-11-08
 
+# Kerberos: fixed upstream (krb5 1.22 branch), waiting for the Debian upload. End: a fixed krb5.
+
+[[mitigation]]
+id = "CVE-2026-107778"
+package = "krb5"
+reason = "Denial of service of GSS-API acceptor services (servers that take Kerberos authentication) by an authenticated client. The base image only has the krb5 client libraries, pulled in by libcurl and libtirpc; it runs no GSS-API acceptor (no sshd, Samba or NFS server, and the secure-defaults check allows no listening socket but resolved's local stub). Fixed upstream; waiting for the Debian upload."
+expires = 2026-11-09
+
 # Linux: fixed upstream, waiting for the Debian kernel upload. End: a fixed linux in our snapshot.
 
 [[mitigation]]
