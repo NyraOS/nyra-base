@@ -229,6 +229,18 @@ Each line is something that broke or surprised us once.
   not with `rw` as our docs said. Read it from a booted `/proc/cmdline` in CI, not from memory. It is
   pinned in `ci/uki-cmdline.txt`: a package that drops its own file in `/usr/lib/bootc/kargs.d` would
   change the sealed command line without any change of ours, and the signing step now refuses that.
+- **The PCR 11 policy can be signed outside the UKI build** (systemd 258 and later): `ukify
+  --policy-digest --pcr-public-key … --sign-profile main` puts the digests to sign (`tbs`) in `.pcrsig`
+  without any key, a plain SHA-256 signature over each (`openssl dgst -sha256 -sign`) is the whole
+  signing, and `ukify --join-pcrsig … --pcrsig @…` writes them back into the same space. With
+  `--policy-digest`, ukify refuses `--phases` (it must match `--pcr-private-key`), so the policy covers
+  systemd's four default phases.
+- Debian ships `systemd-measure` (and `systemd-pcrphase`) in **`systemd-tpm`**, not in `systemd` or
+  `systemd-ukify`; ukify fails with `FileNotFoundError` without it. The initramfs needs dracut's
+  `systemd-pcrextend` module, or the boot phases the policy covers are never measured.
+- The policy's key fingerprint (`pkfp`) is SHA-256 of `i2d_PublicKey`: for RSA the PKCS#1
+  `RSAPublicKey` DER (`openssl rsa -pubin -RSAPublicKey_out -outform DER`), not the
+  SubjectPublicKeyInfo.
 - A refusal test needs a control and a reason: the same gate must accept a correct image in the same
   run, and every refusal must match its expected message. Otherwise a missing tool (`sbverify` not
   installed, `pefile` missing) or a gate that refuses everything looks like a passing negative test.
