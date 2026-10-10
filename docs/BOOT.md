@@ -304,18 +304,19 @@ real shim update forced by an SBAT or `dbx` revocation. The recovery entry is de
 
 ## Recovery (`tools/vm/recovery.sh`)
 
-The image's UKI has two profiles (a multi-profile UKI, systemd 257 and later), built by
+The image's UKI has three profiles (a multi-profile UKI, systemd 257 and later), built by
 `ci/ukify.sh` in step 2 of the sealed UKI and signed as one file in step 3:
 
 | Profile | Title | Command line |
 |---|---|---|
 | 0 | Nyra OS | the one bootc writes: `<kargs.d> composefs=<digest>` |
 | 1 | Nyra OS Recovery | the same plus `systemd.unit=rescue.target` |
+| 2 | Nyra OS Reset settings | the same plus `systemd.unit=nyra-reset-settings.target` (see "Reset system settings") |
 
 bootc computes the composefs digest, so `ci/ukify.sh` runs `bootc container ukify` once to read
 the command line, makes the recovery profile PE file with `ukify build --profile --cmdline`, and runs
 `bootc container ukify` again with `--profile` (labelling the base sections as profile 0) and
-`--join-profile` (the recovery profile, profile 1). Both profiles are sealed: under Secure Boot
+`--join-profile` (the recovery profile, profile 1, then the reset profile, profile 2). All profiles are sealed: under Secure Boot
 the stub ignores any command line from the boot loader, and the only thing a boot entry chooses is
 the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in `StubProfile`).
 
@@ -359,6 +360,53 @@ and a plain user and picks the entry for the next boot only (`bootctl set-onesho
 profile 1 (`LoaderEntrySelected`, `StubProfile`, `systemd.unit=rescue.target` on the command line,
 Secure Boot on): an administrator with an empty password and a plain user are refused without a
 password prompt, a wrong password gives no shell, the right one gives root in `rescue.target`.
+
+## Reset system settings (`tools/vm/reset-settings.sh`)
+
+When a user's changes in `/etc` break the system (`/etc/fstab`, `/etc/passwd`, the network, masked
+or deleted services), the boot menu offers **"Nyra OS Reset settings"**: profile 2 of the same signed
+UKI, with an entry `loader/entries/nyra-reset.CONF` kept by `nyra-boot-repair` exactly like the
+recovery entry (written for the running blessed version, carried across updates, invisible to
+bootc). A third profile needs no new key and keeps the command line sealed; it boots straight into
+`nyra-reset-settings.target`, like `rescue.target`.
+
+`nyra-reset-settings.service` (`/usr/lib/nyra/boot/reset-settings`) asks on the console to type
+`RESET`; anything else, or Control-D, continues the normal boot and changes nothing. Then:
+
+1. **The image's `/etc`.** bootc keeps each version's `/etc` in `/sysroot/state/deploy/<digest>/etc`
+   and bind-mounts it on `/etc`. The image's own `/etc` is under that bind mount: a bind mount of `/`
+   alone shows it. It is copied next to the current one, as `etc.nyra-new`.
+2. **What is kept**, copied from the current `/etc` when it is valid:
+   - `/etc/machine-id`: the machine's identity (the journal, the DHCP client identifier);
+   - `/etc/hostname`: its name on the network;
+   - **regular users** (UID 1000–59999): their lines in `passwd`, `shadow`, `subuid` and `subgid`,
+     their own groups, and their membership in the image's groups (`sudo`: the administrators). Without
+     them the files in `/home` would have no owner and nobody could log in, or open recovery.
+
+   Everything else comes back from the image: mounts, network settings, enabled or masked services,
+   time zone, firewall changes. `/home` and `/var` are not touched.
+3. **Power cuts.** The two directories are exchanged in one step (`renameat2` with
+   `RENAME_EXCHANGE`, util-linux `exch`), so any boot sees either the whole old `/etc` or the whole new
+   one. The old one stays as `etc.nyra-old` next to it, for the user to look at; a half-built
+   `etc.nyra-new` from an interrupted reset is removed by the next one. Then the machine restarts into
+   the normal boot.
+
+**No password.** The reset grants no access: root stays locked, the users keep their passwords, and
+everything that changes goes back to the image's (secure) defaults. Asking for an administrator's
+password would make it useless in exactly the case it is for, a broken `/etc/passwd` or
+`/etc/shadow`. It does undo an administrator's own settings, which is what it is for.
+
+CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
+then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,
+`/etc/resolv.conf` deleted, a stray file); the reset entry answered with something else changes
+nothing; a power cut as the reset starts building the new `/etc`, and another as it switches to it,
+each leave `/etc` whole (all old or all new) on the next boot; the reset itself brings the image's
+`/etc` back and reboots, and the next boot has none of the breakage, the administrator with the same
+password hash and groups, the file in `/home`, the machine ID and the host name.
+
+What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
+networks once NetworkManager is in the image, `/etc/crypttab` if the installer writes one), and a
+"reset everything" that also clears `/var` and `/home` (the factory reset).
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

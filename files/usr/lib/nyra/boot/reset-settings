@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: reset system settings (docs/BOOT.md), run by nyra-reset-settings.service when the "Nyra OS
+# Reset settings" profile of the image's UKI boots. After a typed confirmation, the running system
+# version's /etc (bootc keeps it in /sysroot/state/deploy/<digest>/etc and bind-mounts it on /etc)
+# goes back to the /etc in the image, except:
+#   /etc/machine-id                    the machine's identity (journal, DHCP client ID)
+#   /etc/hostname                      its name on the network
+#   regular users (UID 1000-59999)     their lines in passwd, shadow, subuid and subgid, their own
+#                                      groups, and their membership in the image's groups (sudo:
+#                                      administrators), so /home keeps its owners and they can log in
+# /home and /var are not touched. Power cuts: the new /etc is built next to the old one, then the two
+# directories are exchanged in one step (renameat2 RENAME_EXCHANGE, util-linux exch), so a boot sees
+# either the old /etc or the new one. The old one is kept as etc.nyra-old next to it.
+set -eu
+trap '' INT QUIT TSTP
+
+d="$(sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline)"
+state="/sysroot/state/deploy/$d"
+if [ -z "$d" ] || [ ! -d "$state/etc" ]; then
+	echo "reset-settings: this system's /etc was not found (${state}/etc)" >&2
+	exec systemctl --job-mode=fail --no-block default
+fi
+
+cat <<EOF
+
+Nyra OS: reset system settings.
+Everything in /etc goes back to this system version's defaults. Kept: user accounts and their
+passwords, the machine ID and the host name. Files in /home are not touched.
+EOF
+printf 'Type RESET to reset, anything else or Control-D to boot normally: '
+answer=""
+read -r answer || true
+if [ "$answer" != RESET ]; then
+	echo "Nothing changed. Continuing the normal boot."
+	exec systemctl --job-mode=fail --no-block default
+fi
+
+old="$state/etc" new="$state/etc.nyra-new" image=/run/nyra-image-root
+echo "reset-settings: building the new /etc"
+mount -o remount,rw /sysroot
+# The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
+mkdir -p "$image"
+mount --bind / "$image"
+mount -o remount,bind,ro "$image"
+rm -rf "$new"
+cp -a "$image/etc" "$new"
+umount "$image"
+
+uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
+if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then cat "$old/machine-id" > "$new/machine-id"; fi
+if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then cat "$old/hostname" > "$new/hostname"; fi
+users="$(awk -F: "NF == 7 && \$1 ~ /^[a-z_][a-z0-9_.-]*\$/ && $uid_ok { print \$1 }" "$old/passwd" 2>/dev/null || true)"
+for u in $users; do
+	grep -q "^$u:" "$new/passwd" && continue
+	grep -m 1 "^$u:" "$old/passwd" >> "$new/passwd"
+	line="$(awk -F: -v u="$u" 'NF == 9 && $1 == u { print; exit }' "$old/shadow" 2>/dev/null || true)"
+	echo "${line:-$u:!:1::::::}" >> "$new/shadow"
+	for f in subuid subgid; do
+		if [ -f "$old/$f" ] && [ -f "$new/$f" ]; then grep "^$u:" "$old/$f" >> "$new/$f" || true; fi
+	done
+done
+# The users' own groups (GID 1000-59999), then their membership in the image's groups.
+awk -F: "NF == 4 && $uid_ok { print \$1 }" "$old/group" 2>/dev/null | while read -r g; do
+	grep -q "^$g:" "$new/group" && continue
+	grep -m 1 "^$g:" "$old/group" >> "$new/group"
+	grep -m 1 "^$g:" "$old/gshadow" >> "$new/gshadow" 2>/dev/null || echo "$g:!::" >> "$new/gshadow"
+done
+for f in group gshadow; do
+	[ -f "$old/$f" ] || continue
+	awk -F: -v OFS=: -v users=" $(echo $users) " '
+		NR == FNR { if (NF == 4) old[$1] = $4; next }
+		NF == 4 && ($1 in old) {
+			n = split(old[$1], m, ",")
+			for (i = 1; i <= n; i++)
+				if (index(users, " " m[i] " ") && index("," $4 ",", "," m[i] ",") == 0)
+					$4 = ($4 == "" ? m[i] : $4 "," m[i])
+		}
+		{ print }' "$old/$f" "$new/$f" > "$new/$f.nyra-tmp"
+	cat "$new/$f.nyra-tmp" > "$new/$f"
+	rm "$new/$f.nyra-tmp"
+done
+
+sync
+echo "reset-settings: switching to the new /etc"
+exch "$new" "$old"
+rm -rf "$state/etc.nyra-old"
+mv "$new" "$state/etc.nyra-old"
+sync
+echo "System settings reset; the previous ones are in $state/etc.nyra-old. Restarting."
+exec systemctl reboot

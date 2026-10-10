@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Reset system settings (docs/BOOT.md): /etc back to the running image's, on the console, after a
+# confirmation; then a reboot.
+[Unit]
+Description=Nyra: reset system settings
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=sysinit.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/reset-settings
+StandardInput=tty-force
+StandardOutput=inherit
+StandardError=inherit
+TTYPath=/dev/console
