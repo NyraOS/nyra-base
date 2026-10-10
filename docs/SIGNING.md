@@ -46,25 +46,29 @@ with the Nyra Secure Boot key would install and then fail to boot under Secure B
 get one. Before anything else, the `sign` job runs `tools/signing/uki-gate.sh` on the image's `/boot`
 with the Nyra UKI certificate committed in this repository,
 `files/usr/lib/nyra/secureboot/nyra.crt` (PEM; once committed, it also ships in the image, for the
-installer). It refuses unless:
+installer), and the public key of the Nyra PCR policy key,
+`files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem` (see "The PCR policy key" below). It refuses
+unless:
 
 - `/boot` holds exactly one file, `EFI/Linux/<kernel version>.efi`, and nothing else: no second UKI,
   no add-on (`<uki>.efi.extra.d/`), since `bootc install` installs what it finds there;
 - that file is the sealed UKI (`tools/signing/uki-check.py`): exactly one `.linux` section (a kernel,
   so not an add-on or another PE file), and `.cmdline` sections that are exactly the lines of
   `ci/uki-cmdline.txt`, in order, one per profile, with one composefs digest in all of them;
+- it carries the PCR 11 policy for TPM2 unlock signed for its main profile alone, with that policy
+  key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
 - it is signed with that certificate (`sbverify --cert`).
 
-**No certificate is committed yet** (the Nyra key does not exist yet), so the gate refuses every image:
-fail closed, like the placeholder signer address in the policy.
+**Neither the certificate nor the policy key is committed yet** (the Nyra keys do not exist yet), so
+the gate refuses every image: fail closed, like the placeholder signer address in the policy.
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
 (`EFI/Linux/nyra-fallback-<digest>+0.efi`) exists only on a machine's ESP: `esp-sync` copies the UKI
 bootc installed there, so it is the same signed file and nothing new is signed for it.
 
-The same check guards the signing step itself (`ci/build-image.sh`, step 3): it signs exactly one file,
-and only if `uki-check.py` accepts it, so the key that signs UKIs never signs an add-on (which would
+The same checks guard the signing step itself (`ci/build-image.sh`, step 3): it signs exactly one file,
+and only if `uki-check.py` accepts it and, once its PCR policy is signed, `pcr-policy.py check` too, so the key that signs UKIs never signs an add-on (which would
 apply to every Nyra UKI) or a UKI with another command line. A change to the sealed command line
 (`kargs.d`, the profiles in `ci/ukify.sh`) therefore needs a matching change to `ci/uki-cmdline.txt`
 in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose
@@ -139,14 +143,36 @@ These positive checks first run on the first release build after GCP is configur
 The UKI release gate is tested on every build too (`tools/signing/test-uki-gate.sh`), on the image just
 built, whose UKI is signed with that run's throwaway key:
 
-- accepted with that run's certificate (so the refusals below are not a gate that refuses everything);
-- **refused exactly as the `sign` job runs it**, with the committed Nyra certificate: an image signed
-  with a test key never gets a release signature (today because no certificate is committed; once it
-  is, because the signature does not match);
-- refused with a certificate that did not sign it;
+- accepted with that run's certificate and policy key (so the refusals below are not a gate that
+  refuses everything);
+- **refused exactly as the `sign` job runs it**, with the committed Nyra certificate and policy key:
+  an image signed with test keys never gets a release signature (today because nothing is committed;
+  once it is, because the signatures do not match);
+- refused with a certificate that did not sign it, and with a policy key that is not the UKI's;
 - refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
-  `systemd.import_credentials=on` in its main command line, a second UKI next to it, and an add-on in
-  `<uki>.efi.extra.d/`.
+  `systemd.import_credentials=on` in its main command line, a second UKI next to it, an add-on in
+  `<uki>.efi.extra.d/`, the UKI without its PCR policy, with a policy signature changed by one
+  character, and with the policy moved into the recovery profile.
+
+## The PCR policy key
+
+TPM2 unlock binds to a PCR 11 policy signed with a Nyra key (docs/BOOT.md, "TPM2 unlock"). Its
+signature is part of the UKI, under the Secure Boot signature, so it is made in the same signing step.
+
+- **In CI:** an RSA key made for the run in step 3 of `ci/build-image.sh`, deleted after signing, like
+  the UKI key. Only its public half leaves the step (into the UKI as `.pcrpkey`, and for the tests).
+- **The real key** is kept like the UKI key, never in CI or on a developer machine: a working key in a
+  KMS/HSM, certified by the hardware root that also stands behind the UKI key. Signing a policy is a
+  plain signature over a SHA-256 digest (`pcr-policy.py sign` runs `openssl dgst -sha256 -sign` over
+  each policy digest), which a KMS or a PKCS#11 provider can do instead. Only its public key is
+  committed, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`, next to `nyra.crt`; the
+  release gate refuses any other. Nothing is created yet.
+- **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md): a new key per release line,
+  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key, so a
+  rotation has two steps: an update first enrolls the new key next to the old one (while the disk is
+  unlocked), then, once machines have it, images are signed with the new key only and the old
+  enrollment is removed. Versions signed with the old key still boot, but ask for the disk password
+  or the recovery key. The schedule and the enrollment on update come with the encryption work.
 
 ## Trust roots
 

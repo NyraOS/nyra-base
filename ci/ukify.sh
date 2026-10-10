@@ -10,7 +10,11 @@
 # second run, on the same root filesystem, has the same digest. In it the base sections are profile 0
 # (--profile labels them; ukify puts that .profile section last among them) and the joined profiles
 # are 1 and 2, in that order.
-#   sh ci/ukify.sh   (with the root filesystem at /target, the kernel at /kernel/<kver>, output in /out)
+# TPM2 unlock (docs/BOOT.md): the UKI carries the PCR policy's public key (.pcrpkey, measured in every
+# profile) and, for the main profile only, the PCR 11 policy digests to sign (.pcrsig, SHA-256 bank,
+# systemd's four boot phases). No key is here: step 3 of ci/build-image.sh signs the digests.
+#   sh ci/ukify.sh   (with the root filesystem at /target, the kernel at /kernel/<kver>, the policy's
+#                     public key at /pcr/tpm2-pcr-public-key.pem, output in /out)
 set -eu
 k="$(ls /kernel)"
 uki() { bootc container ukify --rootfs /target --kernel-dir "/kernel/$k" -- "$@"; }
@@ -27,4 +31,6 @@ ukify build --profile "$(printf 'ID=recovery\nTITLE=Nyra OS Recovery')" \
 ukify build --profile "$(printf 'ID=reset\nTITLE=Nyra OS Reset settings')" \
   --cmdline "$cmdline systemd.unit=nyra-reset-settings.target" --output /tmp/reset.profile.efi
 uki --profile "$(printf 'ID=main\nTITLE=Nyra OS')" --join-profile /tmp/recovery.profile.efi \
-  --join-profile /tmp/reset.profile.efi --output "/out/$k.efi"
+  --join-profile /tmp/reset.profile.efi \
+  --pcr-public-key /pcr/tpm2-pcr-public-key.pem --pcr-banks sha256 --policy-digest --json short --sign-profile main \
+  --output "/out/$k.efi"
