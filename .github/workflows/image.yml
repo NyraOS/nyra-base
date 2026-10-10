@@ -233,7 +233,7 @@ jobs:
         run: |
           sudo podman run --rm --entrypoint find localhost/nyra-base:ci / -xdev -type f -perm /6000 | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
           m="$(sudo podman image mount localhost/nyra-base:ci)"
-          sudo getcap -r "$m/usr" | sed "s|^$m||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
+          sudo getcap -r "$m" | sed "s|^$m||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
           sudo podman image umount localhost/nyra-base:ci
           fail=0
           for l in setuid capabilities; do
