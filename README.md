@@ -30,6 +30,8 @@ The same job checks the secure defaults of the installed system ([`docs/DEFAULTS
 
 Release builds (`main`) use no cached content and are signed keylessly in CI (Sigstore, through a Google service account); the image refuses unsigned images from the Nyra registry. Details: [`docs/SIGNING.md`](docs/SIGNING.md).
 
+The whole battery runs every night (`.github/workflows/titanic.yml`): the image workflow, power cuts at random moments of an update, and one result per test T1-T15 in `titanic-results.json`. What each test covers and what is still missing: [`docs/TITANIC.md`](docs/TITANIC.md).
+
 System updates go through `nyra-updated` ([`updated/`](updated)): the signed channel sheet, rollouts, no downgrades, and the reactions bootc does not have by itself (a failed health check on a new version, a version the machine fell back from). Details: [`docs/UPDATES.md`](docs/UPDATES.md).
 
 ## Contributing

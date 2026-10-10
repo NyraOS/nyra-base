@@ -186,7 +186,8 @@ bootc reads it.
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 
-Not covered yet: power cuts at many random moments and during finalization, a slow (50 kbit/s) link
+Power cuts at many random moments, finalization included, run every night with `bootc` directly
+(`docs/TITANIC.md`). Not covered yet: a slow (50 kbit/s) link
 and a server that stalls mid-download (the 2-hour limit is unit-tested only), DNS answers for another
 host, a broken kernel or initramfs (a kernel panic needs `panic=` to reboot at all), and the real
 keyless signature (the `sign` job, `docs/SIGNING.md`).

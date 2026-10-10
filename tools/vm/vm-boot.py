@@ -48,6 +48,15 @@ OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 OVMF_CODE_SECBOOT = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
+# Kernel messages can land in the middle of another line on the console, colour codes included:
+# "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
+KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
+ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def clean(buf):
+    """The console without kernel messages and colour codes, for matching whole status lines."""
+    return ANSI.sub(b"", KERNEL_LINE.sub(b"", buf))
 
 
 class Console:
@@ -71,13 +80,14 @@ class Console:
                 self.proc.kill()
                 self.cut = time.monotonic() - self.t0
 
-    def wait_for(self, pattern, timeout, start=0):
-        """Wait for `pattern` after offset `start`; None on timeout or if QEMU exits."""
+    def wait_for(self, pattern, timeout, start=0, cleaned=False):
+        """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
+        differ); None on timeout or if QEMU exits."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and self.proc.poll() is None:
             with self.lock:
                 buf = self.buf
-            m = re.search(pattern, buf[start:])
+            m = re.search(pattern, clean(buf[start:]) if cleaned else buf[start:])
             if m:
                 return m
             time.sleep(0.2)
@@ -101,11 +111,12 @@ def refused(con, pattern, timeout):
 
 def marker(con, pattern, expected, timeout):
     """multi-user.target is reached, 20 s pass, and PATTERN was printed or not, as expected."""
-    if not con.wait_for(rb"Reached target .*Multi-User System", timeout):
+    if not con.wait_for(rb"Reached target multi-user\.target", timeout, cleaned=True):
         raise RuntimeError(f"multi-user.target not reached within {timeout} s")
     time.sleep(20)
     with con.lock:
-        seen = re.search(pattern.encode(), con.buf) is not None
+        buf = con.buf
+    seen = any(re.search(pattern.encode(), b) for b in (buf, clean(buf)))
     if seen != expected:
         raise RuntimeError(f"{pattern!r} {'not ' if expected else ''}on the console")
     return f"`{pattern}` {'printed' if seen else 'not printed'}, as expected"
@@ -159,7 +170,21 @@ def login_and_run(con, a, password, rows, outputs):
         outputs.append((c, int(m.group(2)), out))
 
 
+def self_test():
+    """The console line that split in CI, and lines that must not count."""
+    split = (b"[\x1b[0;32m  OK  \x1b[0m] Reached target \x1b[0;1;39mmulti-user.target\x1b[0"
+             b"[    9.857548] clocksource: Watchdog remote CPU 1 read timed out\r\nm - Multi-User System.\r\n")
+    whole = b"[\x1b[0;32m  OK  \x1b[0m] Reached target \x1b[0;1;39mmulti-user.target\x1b[0m - Multi-User System.\r\r\n"
+    target = rb"Reached target multi-user\.target"
+    assert re.search(target, clean(split)) and re.search(target, clean(whole))
+    assert not re.search(target, clean(b"Created symlink /etc/systemd/system/multi-user.target.wants/x.service\r\n"))
+    assert clean(b"[  OK  ] Started x.\r\n[    2.61] systemd[1]: y\r\n") == b"[  OK  ] Started x.\r\n"
+    print("vm-boot.py: self-test passed")
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--disk", required=True, help="qcow2 (or .raw) image; not written unless --persist")
     p.add_argument("--persist", action="store_true", help="write to the disk instead of a snapshot")
