@@ -309,8 +309,9 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
 - **The menu entry** `loader/entries/nyra-recovery.CONF` (`title Nyra OS Recovery`, `uki` = a
   bootc UKI, `profile 1`, `sort-key nyra-recovery`, after bootc's `bootc-<os>-0/1` in the menu) is
   written by `nyra-boot-repair` at every boot, for the running system's UKI once that version is
-  blessed (until then it stays on the version it points at, if that is still on the ESP).
-  systemd-boot never picks a profile other than 0 by default.
+  blessed (until then it stays on the version it points at, if that is still on the ESP). If that
+  UKI is gone and the running one has no recovery profile, the entry is removed rather than left
+  pointing at nothing. systemd-boot never picks a profile other than 0 by default.
   - **Why `.CONF`:** bootc 1.16 reads every `*.conf` in `loader/entries` as one of its deployments.
     An entry for a bootc UKI shows up as an extra "other deployment" in `bootc status` (seen in CI),
     and any other entry makes `bootc status` fail. bootc matches the suffix in lower case only, while

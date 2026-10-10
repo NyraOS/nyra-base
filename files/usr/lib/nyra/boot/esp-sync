@@ -121,13 +121,19 @@ booted_digest() { sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/
 # The recovery boot entry: profile 1 ("Nyra OS Recovery", systemd.unit=rescue.target) of a UKI that
 # bootc installed, next to bootc's own entries. It points at the running system's UKI, once this
 # version is blessed; until then it stays on the version it points at, if that is still on the ESP.
-# Its sort-key puts it after bootc's entries in the menu.
+# Its sort-key puts it after bootc's entries in the menu. If the running system's UKI has no recovery
+# profile (an image without one) and the UKI the entry points at is gone, the entry is removed.
 recovery_entry() {
 	digest="$(booted_digest)" uki=""
 	[ -n "$digest" ] && uki="/EFI/Linux/bootc/bootc_composefs-$digest.efi"
-	# Only a UKI that has the profile (older images had none).
-	[ -n "$uki" ] && grep -aq 'TITLE=Nyra OS Recovery' "/boot$uki" 2>/dev/null || return 0
 	cur="$(sed -n 's/^uki //p' "/boot/$RECOVERY" 2>/dev/null || true)"
+	if [ -z "$uki" ] || ! grep -aq 'TITLE=Nyra OS Recovery' "/boot$uki" 2>/dev/null; then
+		if [ -n "$cur" ] && [ ! -f "/boot$cur" ]; then
+			rm -f "/boot/$RECOVERY" && sync || return 1
+			echo "esp-sync: /boot/$RECOVERY removed: its UKI is gone, and this one has no recovery profile"
+		fi
+		return 0
+	fi
 	if [ -n "$cur" ] && [ "$cur" != "$uki" ] && [ -f "/boot$cur" ] && ! blessed; then return 0; fi
 	printf 'title Nyra OS Recovery\nsort-key nyra-recovery\nuki %s\nprofile 1\n' "$uki" \
 		> /run/nyra-recovery.conf || return 1
