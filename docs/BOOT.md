@@ -387,14 +387,18 @@ bootc). A third profile needs no new key and keeps the command line sealed; it b
    time zone, firewall changes. `/home` and `/var` are not touched.
 3. **Power cuts.** The two directories are exchanged in one step (`mv --exchange`, that is
    `renameat2` with `RENAME_EXCHANGE`), so any boot sees either the whole old `/etc` or the whole new
-   one. Every `/etc` the reset builds carries a marker file (`.nyra-reset-new`) until it is in place,
-   which tells the two leftovers of an interrupted reset apart: an `etc.nyra-new` with the marker
-   (cut before the switch) is removed by the next reset; one without it is the previous `/etc` (cut
-   right after the switch) and the next reset keeps it as `etc.nyra-old`. Then the machine restarts
-   into the normal boot.
+   one. Every `/etc` the reset builds carries a marker file (`.nyra-reset-new`) until it is in place;
+   the directory is made as `etc.nyra-tmp` with the marker inside and only then renamed to
+   `etc.nyra-new`, so an `etc.nyra-new` without the marker can only be the previous `/etc`. That tells
+   the leftovers of an interrupted reset apart: `etc.nyra-tmp` (cut right after the directory was
+   made) and an `etc.nyra-new` with the marker (cut before the switch) are removed by the next reset;
+   an `etc.nyra-new` without it is the previous `/etc` (cut right after the switch), and the next reset
+   keeps it as `etc.nyra-old`. Then the machine restarts into the normal boot.
 4. **The previous `/etc`** stays as `etc.nyra-old` next to it, mode `0700`, for the user (or support)
    to look at. Only one is kept: the next reset replaces it, and bootc removes it with the rest of
-   that version's state when the version itself is removed.
+   that version's state when the version itself is removed. That includes a previous `/etc` kept from
+   an interrupted reset: the next reset keeps it at its start and replaces it at its end, so it
+   survives only if that reset is interrupted too.
 
 **Kept as is.** The kept users' lines (`passwd`, `shadow`, groups) are copied unchanged, including
 their group and shell: the reset brings back broken system settings, it does not clean up an `/etc`
@@ -412,9 +416,11 @@ then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-re
 Control-D, changes nothing; a power cut as the reset starts building the new `/etc`, and another as it
 switches to it, each leave `/etc` whole (all old or all new) on the next boot; a power cut right after
 the switch leaves the new `/etc` in place, a running system, and the previous `/etc` as `etc.nyra-new`
-(no marker); the reset itself brings the image's `/etc` back and reboots, and the next boot has none
-of the breakage, the administrator with the same password hash and groups, the file in `/home`, the
-machine ID and the host name, and the previous `/etc` as `etc.nyra-old` (`0700`).
+(no marker); a power cut right after the new `/etc`'s directory is made leaves no `etc.nyra-new`
+without its marker and `etc.nyra-old` as it was; the reset itself brings the image's `/etc` back and
+reboots, and the next boot has none of the breakage, the administrator with the same password hash
+and groups, the file in `/home`, the machine ID and the host name, and the previous `/etc` as
+`etc.nyra-old` (`0700`).
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and

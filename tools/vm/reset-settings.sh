@@ -16,7 +16,10 @@
 #      runs, and the previous /etc is still there as etc.nyra-new (kept by the next reset);
 #   10. the reset: /etc is the image's again, the system reboots by itself into the normal boot:
 #      the breakage is gone, the administrator, their password, their groups and /home are kept, and
-#      so are the machine ID and the host name; the previous /etc is kept as etc.nyra-old (0700).
+#      so are the machine ID and the host name; the previous /etc is kept as etc.nyra-old (0700);
+#   11. the reset, with a power cut right after it makes the new /etc's directory; 12. no
+#      etc.nyra-new without its marker (which the next reset would keep instead of etc.nyra-old), and
+#      etc.nyra-old as it was.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The password is random, for this throwaway disk only.
@@ -125,4 +128,13 @@ vm --poweroff --log "$logs/serial-reset-settings-10.log" --chat-then-login --cha
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
   --command "id nyra-admin && id -nG nyra-admin | grep -qw sudo && passwd -S nyra-admin | grep -q ' P ' && grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow && echo 'the administrator and their password are kept'" \
   --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && cmp /etc/machine-id $before/machine-id && test \"\$(cat /etc/hostname)\" = nyra-test-host && echo '/home, the machine ID and the host name are kept'" \
-  --command "$state; ls -a \$s; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test ! -e \$s/etc.nyra-new && echo 'the previous /etc is kept as etc.nyra-old (0700)'"
+  --command "$state; ls -a \$s; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test ! -e \$s/etc.nyra-new && echo 'the previous /etc is kept as etc.nyra-old (0700)'" \
+  --command "$oneshot"
+
+vm --log "$logs/serial-reset-settings-11.log" --chat "$answer=>RESET" --power-cut-at 'reset-settings: preparing the new /etc' \
+  --title "Reset settings 11: power cut right after the new /etc's directory is made"
+
+vm --poweroff --log "$logs/serial-reset-settings-12.log" \
+  --title "Reset settings 12: after that power cut, no etc.nyra-new without its marker, etc.nyra-old as it was" \
+  --command "$running" \
+  --command "$state; ls -a \$s; { test ! -e \$s/etc.nyra-new || test -e \$s/etc.nyra-new/.nyra-reset-new; } && test -f \$s/etc.nyra-old/passwd && test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && echo 'no etc.nyra-new without the marker; etc.nyra-old is intact'"

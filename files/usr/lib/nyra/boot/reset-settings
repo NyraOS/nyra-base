@@ -39,11 +39,15 @@ if [ "$answer" != RESET ]; then
 fi
 
 old="$state/etc" new="$state/etc.nyra-new" prev="$state/etc.nyra-old" image=/run/nyra-image-root
+tmp="$state/etc.nyra-tmp"
 mount -o remount,rw /sysroot
-# Every /etc a reset builds carries the marker .nyra-reset-new until it is in place. A leftover
+# Every /etc a reset builds carries the marker .nyra-reset-new until it is in place; it is made in
+# etc.nyra-tmp and only renamed to etc.nyra-new with the marker inside, so an etc.nyra-new a reset
+# built always has it. A leftover etc.nyra-tmp is an unfinished start: it goes. A leftover
 # etc.nyra-new with the marker was built by a reset cut short before the switch: it goes. Without
 # it, it is the previous /etc itself, from a reset cut short right after the switch: it is kept.
 rm -f "$old/.nyra-reset-new"
+rm -rf "$tmp"
 if [ -d "$new" ]; then
 	if [ -e "$new/.nyra-reset-new" ]; then
 		rm -rf "$new"
@@ -60,8 +64,11 @@ echo "reset-settings: building the new /etc"
 mkdir -p "$image"
 mount --bind / "$image"
 mount -o remount,bind,ro "$image"
-mkdir -m 0700 "$new"
-: > "$new/.nyra-reset-new"
+mkdir -m 0700 "$tmp"
+echo "reset-settings: preparing the new /etc"
+: > "$tmp/.nyra-reset-new"
+sync
+mv -T "$tmp" "$new"
 cp -a "$image/etc/." "$new/"
 chmod --reference="$image/etc" "$new"
 chown --reference="$image/etc" "$new"
