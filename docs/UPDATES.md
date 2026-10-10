@@ -159,13 +159,13 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 19 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 32 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
 guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
 port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
-v0-v10 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
+v0-v16 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
 bootc reads it.
 
 | Titanic | Scenario | Expected |
@@ -195,6 +195,7 @@ bootc reads it.
 | T5 | the registry stops answering in the middle of a pull | the pull is stopped at the time limit, nothing staged; staged once the registry answers |
 | T2 | power cuts at random moments while `nyra-updated` pulls and stages (5 rounds, seed printed) | the running version comes back every time; the update is staged in the end |
 | T15 | the secure defaults after these updates (`tools/vm/security-defaults.sh` on the updated disk) | as after the installation |
+| T9 | the hardware clock in 2099 and in 1970 (systemd sets both to its build time at boot, before the real time), and in 2035 (kept, ahead) | boots; the sheet server's certificate refused (not yet valid, expired), nothing staged; unsigned and wrongly signed images still refused; with the clock set right (by the test: the image has no time synchronization) the update is staged |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
