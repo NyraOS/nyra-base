@@ -154,13 +154,13 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 16 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 19 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
 guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
 port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
-v0-v8 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
+v0-v10 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
 bootc reads it.
 
 | Titanic | Scenario | Expected |
