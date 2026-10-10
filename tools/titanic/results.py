@@ -17,20 +17,22 @@ import sys
 
 # Steps as (job, step name); jobs of image.yml run through titanic.yml's "image" job.
 BOOT = ("install-boot", "Boot the installed disk with KVM")
+TAMPERED = ("install-boot", "Tampered composefs object (Titanic T1)")
 POLICY = ("build", "Test the signature policy (docs/SIGNING.md)")
 DEFAULTS = ("install-boot", "Secure defaults (docs/DEFAULTS.md)")
 SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
-UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5 (docs/UPDATES.md)")
+UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)")
 SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATES.md)")
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
+FULL_DISK = ("full-disk", "Full disk and the space across updates (Titanic T6)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
 TESTS = {
-    "T1": ("Immutability", "partial", [BOOT, POLICY, SECURE_BOOT],
-           "Writes to /usr refused; images and UKIs with a wrong signature refused. "
-           "Not yet: a modified composefs object on disk must give a read error."),
+    "T1": ("Immutability", "full", [BOOT, TAMPERED, POLICY, SECURE_BOOT],
+           "Writes to /usr refused; a composefs object changed on the disk gives a read error, through "
+           "/usr and directly; images and UKIs with a wrong signature refused."),
     "T2": ("Power cuts", "full", [POWER_CUTS, UPDATES],
            "Power cuts at random moments (seed in this file) during the download, staging, "
            "finalization and first boot; nyra-updated stages the update again after cuts at fixed and "
@@ -47,13 +49,19 @@ TESTS = {
            "Registry down, corrupted layer, captive portal, spoofed server, a DNS answer for another "
            "host, a 50 kbit/s link and a registry that stalls mid-pull: refused or stopped at the time "
            "limit, nothing staged, staged later."),
-    "T6": ("Full disk", None, [], "Not written yet."),
+    "T6": ("Full disk", "partial", [FULL_DISK],
+           "The root file system full: the update fails and says why, nothing staged, the system boots "
+           "and runs; the ESP full: the same; the space the system takes stays the same across updates "
+           "(8 in a row). Not yet: the desktop and its message (no graphical session yet)."),
     "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT],
            "EFI variables reset, boot order changed, boot files deleted, cut or corrupted, ESP full: "
            "boots through the fallback path and repairs itself."),
     "T8": ("Configuration broken by the user", None, [],
            "Needs the system settings reset, which does not exist yet."),
-    "T9": ("Wrong clock", None, [], "Not written yet."),
+    "T9": ("Wrong clock", "partial", [UPDATES],
+           "Hardware clock in 2099, 1970 and 2035: boots; the update server's certificate refused, "
+           "nothing staged; unsigned images refused; with the clock set right updates work. Not yet: "
+           "the image has no time synchronization, so only a person can set the clock right."),
     "T10": ("Disk encryption", None, [], "Disk encryption does not exist yet."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
     "T12": ("Hostile root", None, [],
@@ -87,12 +95,12 @@ def evaluate(jobs, run_url):
 
 
 def self_test():
-    every = [{"name": f"image / {j}" if j != "power-cuts" else j, "steps": [{"name": s, "conclusion": "success"}]}
-             for j, s in {BOOT, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES, SOFT_REBOOT_NETWORK,
-                          POWER_CUTS}]
+    every = [{"name": f"image / {j}" if j not in ("power-cuts", "full-disk") else j, "steps": [{"name": s, "conclusion": "success"}]}
+             for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
+                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T15")] == \
-        ["partial", "pass", "pass", "pass", "not-implemented", "pass", "pass"], r
+    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T15")] == \
+        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "not-implemented", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
