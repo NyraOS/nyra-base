@@ -226,6 +226,11 @@ Each line is something that broke or surprised us once.
   change, bootc refers to it by path.
 
 ## Testing in CI
+- On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for
+  good: the kernel shrinks the receiving socket's buffer below one segment, the window it offers is
+  smaller than the sender's MSS, and silly window avoidance keeps the sender waiting (podman push
+  hung about once in 80 pushes; the sender rwnd-limited in persist mode, the receiver's queue empty).
+  The test registry sets the loopback MTU to 1500 (`tools/signing/local-registry.sh`).
 - Guest commands in `vm-boot.py --command` are typed into the root login shell: an `exit` in one
   ends that shell, and the result marker never comes. Chain with `&&` instead. With `--keep-vars`
   the firmware variables (boot entries, `BootOrder`) carry over between boots, as on a real machine.
