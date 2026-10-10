@@ -30,7 +30,7 @@ from our registry that do not carry that signature.
    `updates.nyraos.com/nyra-base`, the name clients use. Signing happens against a throwaway
    registry on the runner (`127.0.0.1`, reached as `updates.nyraos.com` through `/etc/hosts`);
    nothing is published.
-4. **Output** (artifact `nyra-base-signature`, for publishing in NyraOS#25): an OCI layout with
+4. **Output** (artifact `nyra-base-signature`, for publishing later): an OCI layout with
    the signature tagged `sha256-<digest>.sig`, exactly as it must appear on the registry, plus
    `image-digest`. The image itself is the `nyra-base-oci-archive` artifact (same digest).
 
@@ -194,8 +194,8 @@ account's address, not the repository.
 
 ## Not covered here
 
-- The signed channel sheet (channel, version order, freshness): NyraOS#23.
-- Attestations of the SBOM (mkosi package manifest, bootc `Cargo.lock`) and vulnerability
-  thresholds: NyraOS#38.
-- Publishing to `updates.nyraos.com`; the registry Worker must also serve the `nyra-base`
-  repository and the `.sig` tags: NyraOS#25.
+- The signed channel sheet (channel, version order, freshness): docs/UPDATES.md.
+- Attestations of the SBOM (mkosi package manifest, bootc `Cargo.lock`): later. The vulnerability
+  gate on the SBOM is in docs/SBOM.md.
+- Publishing to `updates.nyraos.com`; the update server must also serve the `nyra-base`
+  repository and the `.sig` tags: later.

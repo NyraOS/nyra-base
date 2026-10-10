@@ -6,7 +6,7 @@
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
 # bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
 # documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
-# publishing comes later (NyraOS#25).
+# publishing to the update server comes later.
 # Release builds (push or manual run on main) use no cached content (the bootc cache is only compared
 # with the fresh bootc build), and the sign job signs
 # them keylessly (docs/SIGNING.md).
@@ -311,7 +311,8 @@ jobs:
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Uploaded even when the scan blocks, to see why. Releases will attach the SBOM (NyraOS#25).
+      # Uploaded even when the scan blocks, to see why. Releases will attach the SBOM, once images
+      # are published.
       - name: Upload the SBOM
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -625,7 +626,7 @@ jobs:
       - name: Verify with the shipped policy
         run: tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "$IMAGE_DIGEST"
 
-      # For publishing (NyraOS#25): the signature as an OCI layout, tagged as on the registry.
+      # For publishing (later): the signature as an OCI layout, tagged as on the registry.
       # The image itself is the nyra-base-oci-archive artifact (same manifest digest).
       - name: Export the signature
         env:

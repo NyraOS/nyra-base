@@ -143,7 +143,7 @@ follow, for the owner to confirm when TPM unlock is built:
 
 ## The kernel command line is fixed
 
-The security review of the install and boot test (#3) found that `systemd.set_credential=` and
+A security review of the install and boot test found that `systemd.set_credential=` and
 `systemd.unit-dropin.*` work from the kernel command line, so anyone at the keyboard could add, for
 example, a root autologin from the boot menu editor. Two layers close it:
 

@@ -15,7 +15,7 @@ artifact:
 | `nyra-base.manifest.json` | the mkosi package list it is made from |
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
 
-Releases will attach the SBOM next to the image (NyraOS#25).
+Once images are published, releases will attach the SBOM next to the image.
 
 ## The SBOM
 

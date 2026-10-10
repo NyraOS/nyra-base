@@ -15,10 +15,11 @@ it is something the user switches on, not off), and how CI proves it.
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 
-Covered elsewhere: the Secure Boot chain (shim, systemd-boot, signed UKI; unsigned and wrongly
-signed refused) and boot counting are proven in the same job (docs/BOOT.md); the Nyra MOK and the
-sealed boot come with NyraOS#65. That the defaults survive an update is for the update tests
-(NyraOS#66): they can run this script again after `bootc switch`.
+Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
+signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
+Nyra key comes later (docs/BOOT.md, "What remains for the real Nyra key"). That the defaults survive
+updates is checked by the update tests, which run this script again on the updated disk
+(docs/UPDATES.md, T15).
 
 ## Units
 
@@ -89,7 +90,7 @@ DHCPv6 replies from the link. Everything else that is addressed to this machine 
 Outbound and forwarded traffic is not filtered.
 
 - nftables, not firewalld, for now: the plan's firewall is firewalld with per-network zones and a
-  D-Bus API for the Security app (PLAN-SECURITATE, Phase 1). firewalld would bring `polkitd`
+  D-Bus API for a future Security app. firewalld would bring `polkitd`
   (whose setuid agent helper has an open CVE today), Python GObject bindings and the
   NetworkManager introspection data into the base before anything uses its API. When firewalld
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
