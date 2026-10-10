@@ -137,9 +137,9 @@ sudo mkdir -p /etc/containers/registries.d
 printf 'docker:\n  updates.nyraos.com:\n    use-sigstore-attachments: true\n' |
   sudo tee /etc/containers/registries.d/99-nyra-updates-test.yaml >/dev/null
 push() { # push NAME TAG [SIGSTORE_KEY]
-  # A push takes seconds. In CI podman sometimes stops sending a layer in the middle of the upload
-  # (the registry has the upload open and waits; disk and registry are fine): such a push is stopped
-  # after 2 minutes and tried again, at most 3 times, with what is needed to tell why.
+  # A push takes seconds. One that stalls (as podman did on the loopback's 64 KiB MTU,
+  # tools/signing/local-registry.sh) is stopped after 2 minutes and tried again, at most 3 times,
+  # with what is needed to tell why: the TCP state of the connection and the kernel's counters.
   local try
   for try in 1 2 3; do
     sudo timeout 120 podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
@@ -147,6 +147,8 @@ push() { # push NAME TAG [SIGSTORE_KEY]
       "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2" && break
     echo "::warning::podman push of $1 failed or took more than 2 minutes (attempt $try of 3)"
     df -h / /mnt
+    sudo ss -tnoiem '( sport = :80 or dport = :80 )' || true
+    nstat -az 2>/dev/null | grep -E 'RcvQDrop|Prune|ZeroWindow|TCPTimeouts' || true
     sudo podman logs --tail 10 nyra-test-registry || true
     curl -sS -m 10 -o /dev/null -w 'registry /v2/: HTTP %{http_code} in %{time_total} s\n' http://updates.nyraos.com/v2/ || true
     if [ "$try" = 3 ]; then echo "::error::podman push of $1 failed 3 times"; return 1; fi
