@@ -22,7 +22,11 @@
 #      fails): not replaced yet;
 #  10. the same version healthy: blessed; the newer boot loader from this image is written in this
 #      boot or, at the latest, the next one;
-#  11. the next boot: not counted any more ("clean"), the boot files are the image's.
+#  11. the next boot: not counted any more ("clean"), the boot files are the image's;
+#  12. loader/entries gone, as a power cut during bootc-finalize-staged's swap of loader/entries.staged
+#      and loader/entries can leave it: the fallback UKI in EFI/Linux boots, the entry is put back;
+#  13. loader/entries empty: the same;
+#  14. bootc's entry boots again, the fallback UKI is still there, with no tries left (sorted last).
 # "Newer" and "older" are made by changing the first digit of the Debian version in the file's
 # SBAT section; that copy is never started (the boots go through EFI/nyra), so its signature does
 # not matter.
@@ -100,6 +104,9 @@ repair='s="$(systemctl is-system-running --wait)"; echo "system: $s"; journalctl
 # (Guest commands are typed into the login shell: no "exit" in them.)
 same='u=/usr/lib; cmp $u/shim/shimx64.efi.signed /boot/EFI/nyra/shimx64.efi && cmp $u/shim/shimx64.efi.signed /boot/EFI/BOOT/BOOTX64.EFI && cmp $u/systemd/boot/efi/systemd-bootx64.efi.signed /boot/EFI/nyra/grubx64.efi && cmp $u/systemd/boot/efi/systemd-bootx64.efi.signed /boot/EFI/BOOT/grubx64.efi && cmp $u/shim/mmx64.efi.signed /boot/EFI/nyra/mmx64.efi && cmp $u/shim/mmx64.efi.signed /boot/EFI/BOOT/mmx64.efi && echo "boot files as in /usr"'
 with_esp() { sudo mount "$esp" "$mnt"; "$@"; sudo umount "$mnt"; }
+selected() { # guest command: the boot entry systemd-boot started begins with $1
+  echo "e=\"\$(tail -c +5 /sys/firmware/efi/efivars/LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tr -d '\\000')\"; echo \"entry: \$e\"; case \"\$e\" in $1*) true ;; *) false ;; esac"
+}
 
 # The boots follow one system: stop at the first failure.
 vm --log "$logs/serial-boot-protection-1.log" \
@@ -218,3 +225,29 @@ vm --log "$logs/serial-boot-protection-11.log" \
   --command "$repair" \
   --command 'b="$(/usr/lib/systemd/systemd-bless-boot status)"; echo "bless: $b"; test "$b" = clean' \
   --command "$same"
+
+
+# A power cut during bootc-finalize-staged can leave the ESP without boot entries: it swaps
+# loader/entries.staged and loader/entries in one rename, which FAT does not make atomic.
+no_entries() { sudo rm -rf "$mnt/loader/entries"; }
+with_esp no_entries
+put_back='journalctl -b -u nyra-boot-repair -o cat | grep "put back" && ls /boot/loader/entries/*.conf'
+vm --log "$logs/serial-boot-protection-12.log" \
+  --title "Boot protection 12: loader/entries gone (a power cut during the swap): the fallback UKI boots, the entry is put back" \
+  --command "$(selected nyra-fallback-)" \
+  --command "$repair" \
+  --command "$put_back"
+
+empty_entries() { sudo find "$mnt/loader/entries" -type f -delete; ls -la "$mnt/loader/entries"; }
+with_esp empty_entries
+vm --log "$logs/serial-boot-protection-13.log" \
+  --title "Boot protection 13: loader/entries empty: the fallback UKI boots, the entry is put back" \
+  --command "$(selected nyra-fallback-)" \
+  --command "$repair" \
+  --command "$put_back"
+
+vm --log "$logs/serial-boot-protection-14.log" \
+  --title "Boot protection 14: bootc's entry boots again; the fallback UKI stays, with no tries left" \
+  --command "$(selected bootc_)" \
+  --command "$repair" \
+  --command 'ls /boot/EFI/Linux; f="$(ls /boot/EFI/Linux/nyra-fallback-*)"; test "$(echo "$f" | wc -l)" = 1 && case "$f" in *+0.efi) true ;; *) false ;; esac'
