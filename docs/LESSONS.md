@@ -224,6 +224,14 @@ Each line is something that broke or surprised us once.
   initramfs can be taken out of the old UKI's `.linux` and `.initrd` sections.
 - Boot counting keeps working on bootc's `uki` entries (`…+3.conf`): the UKI's own name must not
   change, bootc refers to it by path.
+- bootc joins the `kargs.d` arguments in file name order (`10-nyra-lockdown`, `10-nyra-panic`,
+  `10-nyra-rw`, `20-nyra-credentials`), so the sealed command line starts with `lockdown=integrity`,
+  not with `rw` as our docs said. Read it from a booted `/proc/cmdline` in CI, not from memory. It is
+  pinned in `ci/uki-cmdline.txt`: a package that drops its own file in `/usr/lib/bootc/kargs.d` would
+  change the sealed command line without any change of ours, and the signing step now refuses that.
+- A refusal test needs a control and a reason: the same gate must accept a correct image in the same
+  run, and every refusal must match its expected message. Otherwise a missing tool (`sbverify` not
+  installed, `pefile` missing) or a gate that refuses everything looks like a passing negative test.
 
 ## Testing in CI
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for

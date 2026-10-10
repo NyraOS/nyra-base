@@ -7,7 +7,8 @@
 #      the ones bootc will see after --timestamp, not the build's;
 #   3. the UKI signed outside the image build. Here: with a key made for this run only, deleted
 #      right after signing; its certificate stays in UKI_DIR for the Secure Boot test. The real
-#      Nyra key will sign at this point, without CI ever holding it;
+#      Nyra key will sign at this point, without CI ever holding it. Only one file is signed, and
+#      only if it is the sealed UKI (tools/signing/uki-check.py, ci/uki-cmdline.txt);
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again.
@@ -33,14 +34,21 @@ if [ ! -d "$uki/signed" ]; then
     -v "$uki/kernel:/kernel:ro" -v "$uki/unsigned:/out" -v "$PWD/ci/ukify.sh:/ukify.sh:ro" "$tag-sealed" \
     sh /ukify.sh
   sudo chown -R "$(id -u):$(id -g)" "$uki"
+  # The signing step signs one file, and only the sealed UKI (tools/signing/uki-check.py): never an
+  # add-on or another PE file, whatever ukify.sh left in the directory.
+  files=("$uki"/unsigned/*)
+  if [ "${#files[@]}" != 1 ] || [[ "${files[0]}" != *.efi ]]; then
+    echo "build-image.sh: expected exactly one UKI to sign, found: ${files[*]}" >&2
+    exit 1
+  fi
+  f="${files[0]}"
+  python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
   key="$(mktemp -d)"
   trap 'rm -rf "$key"' EXIT
   openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI per-run UKI key" \
     -keyout "$key/uki.key" -out "$uki/uki.crt" 2>/dev/null
   mkdir -p "$uki/signed.tmp"
-  for f in "$uki"/unsigned/*.efi; do
-    sbsign --key "$key/uki.key" --cert "$uki/uki.crt" --output "$uki/signed.tmp/${f##*/}" "$f"
-  done
+  sbsign --key "$key/uki.key" --cert "$uki/uki.crt" --output "$uki/signed.tmp/${f##*/}" "$f"
   rm -rf "$key"
   sbverify --cert "$uki/uki.crt" "$uki"/signed.tmp/*.efi
   mv "$uki/signed.tmp" "$uki/signed"

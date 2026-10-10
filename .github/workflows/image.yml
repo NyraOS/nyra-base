@@ -9,7 +9,7 @@
 # publishing to the update server comes later.
 # Release builds (push or manual run on main) use no cached content (the bootc cache is only compared
 # with the fresh bootc build), and the sign job signs
-# them keylessly (docs/SIGNING.md).
+# them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate.
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md).
@@ -210,7 +210,7 @@ jobs:
       - name: Add the bootc layer, the sealed UKI, and lint
         id: image
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool >/dev/null
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
           ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
@@ -253,6 +253,12 @@ jobs:
           tools/signing/local-registry.sh "$WORK"
           tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK"
           sudo rm -rf "$WORK/policy-test"
+
+      # The sign job's UKI release gate, on this image (its UKI signed with this run's key): accepted
+      # with this run's certificate, refused as the sign job runs it (the committed Nyra certificate),
+      # and refused for an add-on, another command line, a second UKI or an add-on next to it.
+      - name: Test the UKI release gate (docs/SIGNING.md)
+        run: tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" "$WORK"
 
       # The Containerfile runs `nyra-updated check-config` on the image; here it must refuse the key of
       # the test fixtures (its private key is public), so a build that ships it fails.
@@ -547,6 +553,7 @@ jobs:
   # e-mail address -> signature recorded in Rekor. No key exists anywhere. Only release builds
   # on GitHub-hosted runners are signed; the job is skipped until the repository variables
   # GCP_WIF_PROVIDER and GCP_SIGNER_SA are set. Only this job can request an OIDC token.
+  # It refuses an image whose UKI is not signed with the committed Nyra certificate (UKI release gate).
   sign:
     needs: [build, install-boot]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
@@ -593,6 +600,18 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           rm "$WORK/nyra-base.oci.tar"
+
+      # Before anything is signed: the image's /boot holds exactly one UKI, the sealed one
+      # (ci/uki-cmdline.txt), signed with the Nyra certificate committed here. Until that certificate
+      # is committed, every image is refused (docs/SIGNING.md).
+      - name: UKI release gate (signed with the committed Nyra certificate)
+        run: |
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          cid="$(sudo podman create -q localhost/nyra-base:ci)"
+          sudo podman cp "$cid:/boot" "$WORK/boot"
+          sudo podman rm -f "$cid" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot"
+          tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt
 
       - name: Install cosign
         run: |

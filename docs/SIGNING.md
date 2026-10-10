@@ -39,6 +39,38 @@ certificate and the Rekor v1 signed entry timestamp (SET). It is the only format
 containers/image (bootc, podman, skopeo) verifies today; cosign 3 defaults to the new bundle
 format, hence `--new-bundle-format=false --use-signing-config=false`.
 
+## The UKI release gate
+
+A release signature says "Nyra machines may install this image". An image whose UKI is not signed
+with the Nyra Secure Boot key would install and then fail to boot under Secure Boot, so it must never
+get one. Before anything else, the `sign` job runs `tools/signing/uki-gate.sh` on the image's `/boot`
+with the Nyra UKI certificate committed in this repository,
+`files/usr/lib/nyra/secureboot/nyra.crt` (PEM; once committed, it also ships in the image, for the
+installer). It refuses unless:
+
+- `/boot` holds exactly one file, `EFI/Linux/<kernel version>.efi`, and nothing else: no second UKI,
+  no add-on (`<uki>.efi.extra.d/`), since `bootc install` installs what it finds there;
+- that file is the sealed UKI (`tools/signing/uki-check.py`): exactly one `.linux` section (a kernel,
+  so not an add-on or another PE file), and `.cmdline` sections that are exactly the lines of
+  `ci/uki-cmdline.txt`, in order, one per profile, with one composefs digest in all of them;
+- it is signed with that certificate (`sbverify --cert`).
+
+**No certificate is committed yet** (the Nyra key does not exist yet), so the gate refuses every image:
+fail closed, like the placeholder signer address in the policy.
+
+"Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
+docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
+(`EFI/Linux/nyra-fallback-<digest>+0.efi`) exists only on a machine's ESP: `esp-sync` copies the UKI
+bootc installed there, so it is the same signed file and nothing new is signed for it.
+
+The same check guards the signing step itself (`ci/build-image.sh`, step 3): it signs exactly one file,
+and only if `uki-check.py` accepts it, so the key that signs UKIs never signs an add-on (which would
+apply to every Nyra UKI) or a UKI with another command line. A change to the sealed command line
+(`kargs.d`, the profiles in `ci/ukify.sh`) therefore needs a matching change to `ci/uki-cmdline.txt`
+in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose
+digest does not match at install time, and `sign` runs only after `install-boot` installed and booted
+this image.
+
 ## How a machine verifies it
 
 The policy ships in `/usr` (read-only, verified by fs-verity, updated with every image):
@@ -104,6 +136,18 @@ In the `sign` job, the same script also checks that:
 
 These positive checks first run on the first release build after GCP is configured (below).
 
+The UKI release gate is tested on every build too (`tools/signing/test-uki-gate.sh`), on the image just
+built, whose UKI is signed with that run's throwaway key:
+
+- accepted with that run's certificate (so the refusals below are not a gate that refuses everything);
+- **refused exactly as the `sign` job runs it**, with the committed Nyra certificate: an image signed
+  with a test key never gets a release signature (today because no certificate is committed; once it
+  is, because the signature does not match);
+- refused with a certificate that did not sign it;
+- refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
+  `systemd.import_credentials=on` in its main command line, a second UKI next to it, and an add-on in
+  `<uki>.efi.extra.d/`.
+
 ## Trust roots
 
 `fulcio-ca.pem` and `rekor.pub` come from `trusted_root.json` in
@@ -165,6 +209,9 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
+0. Commit the Nyra UKI certificate as `files/usr/lib/nyra/secureboot/nyra.crt`, together with the
+   signing of the UKI with the Nyra key (docs/BOOT.md, "What remains for the real Nyra key"). Until
+   then the `sign` job refuses every image (the UKI release gate above).
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once `main` is protected (rule above), set the two **repository variables** (Settings › Secrets
