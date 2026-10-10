@@ -371,7 +371,7 @@ jobs:
   install-boot:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -490,12 +490,12 @@ jobs:
 
       - name: Updates across real versions, Titanic T2-T5 (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        timeout-minutes: 40
+        timeout-minutes: 100
         run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Network across soft reboots (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        timeout-minutes: 45
+        timeout-minutes: 100
         env:
           ROUNDS: ${{ inputs.soft-reboot-rounds || '2' }}
         run: |

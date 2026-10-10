@@ -142,10 +142,17 @@ push() { # push NAME TAG [SIGSTORE_KEY]
   # after 2 minutes and tried again, at most 3 times, with what is needed to tell why.
   local try
   for try in 1 2 3; do
-    sudo timeout 120 podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
+    sudo timeout -s QUIT -k 15 120 podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
       ${3:+--sign-by-sigstore-private-key "$u/$3.private" --sign-passphrase-file "$u/pass"} \
       "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2" && break
     echo "::warning::podman push of $1 failed or took more than 2 minutes (attempt $try of 3)"
+    # DIAGNOSTIC: the registry's goroutines too (SIGQUIT ends it), then a fresh registry.
+    sudo ss -tnoi state established '( sport = :80 or dport = :80 )' || true
+    sudo podman kill -s QUIT nyra-test-registry >/dev/null || true
+    sleep 2
+    sudo podman logs --tail 400 nyra-test-registry 2>&1 | grep -v 'traces export' || true
+    sudo podman rm -f nyra-test-registry >/dev/null || true
+    tools/signing/local-registry.sh "$u"
     df -h / /mnt
     sudo podman logs --tail 10 nyra-test-registry || true
     curl -sS -m 10 -o /dev/null -w 'registry /v2/: HTTP %{http_code} in %{time_total} s\n' http://updates.nyraos.com/v2/ || true
@@ -491,3 +498,17 @@ mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
 
+
+# DIAGNOSTIC (not for merge): the pushes again, 8 rounds, each on a fresh registry; a stalled push
+# is stopped with SIGQUIT, so podman prints every goroutine's stack.
+stalls=0
+for round in 1 2 3 4 5 6 7 8; do
+  sudo podman rm -f nyra-test-registry >/dev/null
+  tools/signing/local-registry.sh "$u"
+  for n in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    t0=$(date +%s)
+    push "v$n" "v$n" sigstore
+    echo "DIAG round $round v$n: $(( $(date +%s) - t0 )) s"
+  done
+done
+echo "DIAG push rounds done"
