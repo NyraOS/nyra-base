@@ -154,7 +154,9 @@ with a software TPM is still to come.
 kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`, each
 as its name and the SHA-256 of its content. A profile's own sections replace the base ones, so each
 profile gives another PCR 11: the recovery and reset profiles differ in `.cmdline` and `.profile`.
-systemd then adds the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`).
+systemd then adds the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`): that is
+systemd-pcrphase, from the `systemd-tpm` package in the image and dracut's `systemd-pcrextend` module
+in the initramfs. Without it PCR 11 would never match a signed policy.
 
 **What is signed.** `ci/ukify.sh` (no key there) builds the UKI with the policy's public key as
 `.pcrpkey` and, for the main profile only (`--sign-profile main`), a `.pcrsig` section with the

@@ -94,11 +94,12 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
       systemd-bless-boot.service && \
     /usr/libexec/nyra-updated check-config
 
-# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
+# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, and the measurement of
+# the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md).
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss "\n' \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver"
 
