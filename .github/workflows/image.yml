@@ -22,6 +22,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # titanic.yml runs this workflow every night and reads the names of its steps (tools/titanic/results.py).
+  workflow_call:
 permissions:
   contents: read
 # A new push to a pull request cancels its older run; on main a running release is never cancelled.
@@ -65,9 +67,9 @@ jobs:
             BASE="$(gh run list -R "$GITHUB_REPOSITORY" --workflow image.yml --branch main --event push \
               --status success -L 1 --json headSha --jq '.[0].headSha // empty')" || BASE=""
           fi
-          # Any doubt (manual run, no earlier success, an API error) builds: a missed build is worse
-          # than spent minutes.
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+          # Any doubt (manual or nightly run, no earlier success, an API error) builds: a missed build is
+          # worse than spent minutes.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [ "$GITHUB_EVENT_NAME" = schedule ]; then
             image=true
           elif [ -z "$BASE" ] || ! gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > "$RUNNER_TEMP/compare.json" ||
                ! count="$(jq -e '.files | arrays | length' "$RUNNER_TEMP/compare.json")"; then
@@ -82,7 +84,7 @@ jobs:
             case "$f" in
               docs/* | LICENSE | .github/CODEOWNERS | .github/dependabot.yml | tools/hooks/*) ;;
               .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
-              .github/workflows/shellcheck.yml) ;;
+              .github/workflows/shellcheck.yml | .github/workflows/titanic.yml | tools/titanic/*) ;;
               tools/sbom/*) sbom=true ;;
               */*) image=true ;;
               *.md) ;; # Markdown at the top level only (README.md); elsewhere it may be part of the image

@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Lints the shell scripts with the shellcheck preinstalled on the GitHub-hosted Ubuntu runner.
 # The scripts are the tracked files whose first line is a sh/bash/dash shebang.
+# Also checks the workflows with actionlint (syntax, expressions, reusable workflow calls; the shell in
+# them is not linted) and runs the offline self-tests of the test tools, so a workflow that runs only
+# at night (titanic.yml) is checked on every pull request too.
 name: shellcheck
 on:
   push:
@@ -28,3 +31,16 @@ jobs:
           shellcheck -S warning "${scripts[@]}"
       - name: Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)
         run: tools/vm/security-defaults.sh --self-test
+      - name: Self-test of the Titanic results (tools/titanic/results.py)
+        run: python3 -I tools/titanic/results.py --self-test
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          f="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$f"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
