@@ -38,6 +38,10 @@ chat, for example), and the script logs in there as usual.
 itself first. A command written "@reboot CMD" is typed without waiting for its
 result, then the script logs in again at the next login prompt (a soft reboot).
 
+A boot that ends in emergency mode (in the initrd too) prints what udev saw of the disk
+first (a drop-in passed as a credential), and the script fails there without waiting
+for the timeout.
+
 KVM is mandatory: accel=kvm, no fallback to emulation.
 """
 import argparse
@@ -56,6 +60,16 @@ OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 OVMF_CODE_SECBOOT = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
+# A boot that ends in emergency mode prints what the disk looks like to udev first: the root account
+# is locked, so there is no shell to ask afterwards. The initrd gets it too (it imports the
+# credentials), where a missing /dev/gpt-auto-root ends in its emergency mode.
+EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nExecStartPre=-/bin/sh -c '"
+             "echo \"@@ emergency: diagnostics\"; "
+             "for d in /dev/vd*; do echo \"== $$d\"; udevadm info -q property \"$$d\"; done; "
+             "ls -l /dev/gpt-auto-root* /dev/disk/by-partuuid; "
+             "cat /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f; echo; "
+             "journalctl -b -o short-monotonic --no-pager -u systemd-udevd.service; "
+             "echo \"@@ end of diagnostics\"'\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
@@ -145,7 +159,10 @@ def login(con, a, password, start):
             if not con.wait_for(rb"# ", 60, start):
                 raise RuntimeError("no root shell after the chat")
             return
-    m = con.wait_for(rb"login: ", a.timeout, start)
+    m = con.wait_for(rb"login: |@@ emergency: diagnostics", a.timeout, start)
+    if m and m.group() != b"login: ":
+        con.wait_for(rb"@@ end of diagnostics", 300, start)
+        raise RuntimeError("the boot ended in emergency mode (diagnostics in the serial log)")
     if not m:
         if con.proc.poll() is not None:
             raise RuntimeError(f"QEMU exited with code {con.proc.returncode} after "
@@ -251,6 +268,8 @@ def main():
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
            # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
            "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
+    cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.emergency.service="
+            + base64.b64encode(EMERGENCY.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
     if a.autologin:
