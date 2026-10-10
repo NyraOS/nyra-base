@@ -104,8 +104,8 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
 - **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one:
   either a signing service backed by the token or KMS (`sbsign` through PKCS#11, or
   `systemd-sbsign` with a provider), or bootc's external-signing flow (the UKI is signed offline and
-  injected, bootc#1498). Still to decide with a security review, together with image signing:
-  both stay off until `main` is a protected branch (`docs/SIGNING.md`).
+  injected, bootc#1498). Still to decide with a security review; until then it stays off, like
+  image signing (`docs/SIGNING.md`).
 - **Enrollment:** the installer runs `mokutil --import` with that certificate; on the next boot the
   user confirms it once in MokManager (a one-time password shown by the installer). A machine whose
   owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.
@@ -125,7 +125,7 @@ shim trusts everything Debian signs. Anyone who can write the ESP (root on the m
 disk out of the machine) can add a boot entry with a Debian-signed kernel and an initramfs of their
 own: shim accepts the kernel, and nothing checks that initramfs. Secure Boot therefore keeps
 unsigned code out of the boot, but does not by itself prove that the Nyra UKI booted. Two rules
-follow, for the owner to confirm when TPM unlock is built:
+follow, to be confirmed when TPM unlock is built:
 
 - **TPM2 unlock never depends on PCR 7 alone** (PCR 7 says "Secure Boot on, these keys", which a
   Debian-signed boot also satisfies). It binds to a **signed policy on PCR 11** (the UKI's sections
@@ -138,7 +138,7 @@ follow, for the owner to confirm when TPM unlock is built:
     update on every machine; coarse, and a mistake bricks boots;
   - the TPM policy: sign the PCR 11 policy with a key per release line, and stop signing old
     policies (or rotate the policy key), so an old UKI boots but no longer unlocks the disk;
-  - both. Decision points for the owner: which of these, how often the policy key rotates, and
+  - both. Open decisions: which of these, how often the policy key rotates, and
     whether an old version may still boot without unlocking (recovery) or must not boot at all.
 
 ## The kernel command line is fixed

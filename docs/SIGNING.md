@@ -77,7 +77,7 @@ Only `updates.nyraos.com` requires a signature. Every other source keeps the usu
   their content is already on the machine, put there by root or by the user. `bootc install` reads
   the image from local storage this way.
 
-**The trade-off, for the owner:** the guarantee covers the system image, which is what an attacker
+**The trade-off:** the guarantee covers the system image, which is what an attacker
 on the network or on our servers would target. It holds as long as the system image is always
 referenced exactly as `updates.nyraos.com/...`: lowercase, no port, no other host name. The policy
 scope is compared as written, so `UPDATES.NYRAOS.COM/...` or `updates.nyraos.com:443/...` reach the
@@ -117,17 +117,15 @@ and new) must ship **before** the first image signed under the new ones. Otherwi
 missed the transition can no longer verify updates. Watch the Sigstore announcements; update the
 pinned commit in `trust-roots.sh` and run it.
 
-## Setting up the signer (owner, once)
+## Setting up the signer (once)
 
-**Rule: signing stays off until `main` is protected.** Anyone who can push to `main`, or start the
-workflow manually on `main`, gets a signed image (see "Who can sign" below). While this repository
-is private on GitHub's free plan, `main` cannot be protected, so anyone with write access, including
-automated contributors, could push to it directly. The Google Cloud setup
-below can be prepared at any time, but the two repository variables (step 2) are **not** set before
-`main` requires pull requests with no direct pushes: when nyra-base moves to the NyraOS organisation
-as a public repository, or with GitHub Team.
+**Rule: signing needs a protected `main`.** Anyone who can push to `main`, or start the workflow
+manually on `main`, gets a signed image (see "Who can sign" below). `main` is protected: changes
+reach it only through pull requests, and nobody, administrators included, can push to it directly.
+Signing stays off until the two repository variables (step 2) are set; the Google Cloud setup below
+can be prepared at any time. If that protection is ever lifted, remove the variables first.
 
-Google Cloud, with the owner's account (2-step verification on). Everything below is free: IAM,
+Google Cloud, with a maintainer's account (2-step verification on). Everything below is free: IAM,
 Workload Identity Federation and the token service need no paid product.
 
 ```sh
@@ -152,7 +150,7 @@ gcloud iam workload-identity-pools providers create-oidc nyra-base \
 
 # Only identities from that provider may act as the signer.
 gcloud iam service-accounts add-iam-policy-binding "$SIGNER" --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository_id/1409437710"
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository_id/1412332787"
 
 # Check: no user-managed keys.
 gcloud iam service-accounts keys list --iam-account="$SIGNER" --managed-by=user
@@ -167,7 +165,7 @@ Then, in this order:
 
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
-2. Only once `main` is protected (rule above), set the two **repository variables** (Settings › Secrets
+2. With `main` protected (rule above), set the two **repository variables** (Settings › Secrets
    and variables › Actions › Variables; they are not secrets):
    ```sh
    gh variable set GCP_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
@@ -179,18 +177,18 @@ Then, in this order:
 **Who can sign:**
 - **anyone who can push to `main` or start the workflow manually on `main`**: the workflow runs
   whatever is on `main`, and the attribute condition cannot tell a reviewed merge from a direct push
-  by the same account. While `main` is unprotected, that would include anyone with write access,
-  automated contributors too, which is why signing stays off until then (rule above);
+  by the same account. Without the protection on `main`, that would include anyone with write
+  access, automated contributors too, which is why signing needs it (rule above);
 - any Google principal with `iam.serviceAccounts.getOpenIdToken` on the service account: `Owner`,
   `Service Account Token Creator`, `Service Account OpenID Connect Identity Token Creator`,
-  `Workload Identity User`, or a custom role with that permission. Keep the project's members to
-  the owner alone, with no other grants on the service account.
+  `Workload Identity User`, or a custom role with that permission. Keep the Google Cloud project's
+  members to one maintainer account, with no other grants on the service account.
 
 Every signature is public in Rekor under the signer's address, so an unexpected one is visible.
 
-**When the repository moves** (to the NyraOS organisation), update the attribute condition and
-the binding with the new repository and owner IDs. Machines do not change: they trust the service
-account's address, not the repository.
+**If the repository moves** (another organisation, or a re-created repository), update the
+attribute condition and the binding with the new repository and owner IDs. Machines do not change:
+they trust the service account's address, not the repository.
 
 ## Not covered here
 
