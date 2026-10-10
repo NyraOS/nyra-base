@@ -237,6 +237,21 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     at shutdown before a swap, moved to the running version if bootc is about to remove the version
     it points to (the last blessed one, while the running one is still on trial). It therefore
     always points to a version whose composefs image bootc keeps.
+  - That move at shutdown can make a version that is **not blessed yet** the fallback: it happens
+    when another update is staged while the running version is still on trial (`nyra-updated`
+    stages nothing then, so in practice only an update staged by hand). This is acceptable: bootc
+    keeps only the new version and the running one, so the last blessed version is deleted anyway,
+    and a fallback pointing to a deleted image could not boot at all. The running version has at
+    least booted to the point of shutting down cleanly; once a later version is blessed, the
+    fallback moves to it.
+  - **Space on the ESP.** One UKI is about 63 MB (kernel and initramfs). At most these sit on the ESP
+    at once: bootc's UKIs for the booted, the rollback and a staged version, the fallback, and,
+    for a moment, a second fallback (the new copy is written before the old one is removed): five
+    UKIs, about 315 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`
+    creates, that leaves about 700 MB. When the ESP is full anyway, the copy fails before anything
+    is replaced (a new file next to the old one, then a rename), the old fallback stays: at boot
+    `esp-sync repair` fails visibly (the unit fails, the system shows as degraded); at shutdown the
+    move only logs the failure, so the shutdown and bootc's swap go on.
 - **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
   root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
   no execute bit on files); CI checks it.
