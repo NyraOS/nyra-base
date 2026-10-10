@@ -142,7 +142,9 @@ Each line is something that broke or surprised us once.
   detection, garbage collection). An extra entry for a bootc UKI showed up in CI as a second "other
   deployment" in `bootc status --booted`, and one for any other file makes bootc fail (no `version`, or
   no `bootc_composefs-<digest>` in the path). bootc matches `.conf` in lower case, systemd-boot and
-  `bootctl` in any case: an entry named `*.CONF` is in the boot menu and invisible to bootc.
+  `bootctl` in any case: an entry named `*.CONF` is in the boot menu and invisible to bootc. systemd-boot
+  reports its ID in lower case (`LoaderEntrySelected` = `nyra-recovery.conf`); `bootctl set-oneshot`
+  takes either.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with

@@ -65,6 +65,7 @@ vm() {
   python3 -B tools/vm/vm-boot.py --secure-boot "$rc/vars.fd" --keep-vars --disk "$rc/disk.raw" --persist \
     --poweroff --timeout 240 --summary "$summary" "$@"
 }
+# systemd-boot reports entry IDs in lower case (LoaderEntrySelected = nyra-recovery.conf).
 efivar() { # guest command that prints a systemd-boot EFI variable (UTF-16 text after 4 attribute bytes)
   echo "tail -c +5 /sys/firmware/efi/efivars/$1-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tr -d '\\000'"
 }
@@ -86,7 +87,7 @@ vm --log "$logs/serial-recovery-2.log" \
   --chat "$again=>nyra-admin" \
   --chat "Password: =>$pw" \
   --command 'id; test "$(id -u)" = 0' \
-  --command "e=\"\$($(efivar LoaderEntrySelected))\"; p=\"\$($(efivar StubProfile))\"; echo \"entry: \$e, profile: \$p\"; test \"\$e\" = nyra-recovery.CONF && test \"\$p\" = 1" \
+  --command "e=\"\$($(efivar LoaderEntrySelected))\"; p=\"\$($(efivar StubProfile))\"; echo \"entry: \$e, profile: \$p\"; test \"\$e\" = nyra-recovery.conf && test \"\$p\" = 1" \
   --command 'cat /proc/cmdline; grep -q "systemd.unit=rescue.target" /proc/cmdline && grep -Eq "(^| )composefs=[0-9a-f]{128}( |$)" /proc/cmdline' \
   --command 'mokutil --sb-state; mokutil --sb-state | grep -qx "SecureBoot enabled"' \
   --command 'systemctl is-active rescue.target'
