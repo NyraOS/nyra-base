@@ -121,7 +121,7 @@ vm --log "$logs/serial-boot-protection-1.log" \
   --command "$repair" \
   --command '! journalctl -b -u nyra-boot-repair -o cat | grep "updated from /usr" && echo "no boot file on the ESP needed repair at the first boot"' \
   --command "$first" \
-  --command 'o="$(findmnt -no OPTIONS -t vfat /boot | tr , "\n")"; echo "$o" | grep mask; echo "$o" | grep -Eqx "fmask=0[0-7]77" && echo "$o" | grep -Eqx "dmask=0[0-7]77"'
+  --command 'o="$(findmnt -no OPTIONS -t vfat /boot | tr , "\n")"; echo "$o" | grep mask; echo "$o" | grep -Eqx "fmask=0[0-7]77" && echo "$o" | grep -Eqx "dmask=0[0-7]77" && echo "$o" | grep -Ex "dirsync|noexec|nosuid|nodev|nosymfollow" | sort | tr "\n" " " | grep -qx "dirsync nodev noexec nosuid nosymfollow " && echo "ESP mounted dirsync, nodev, noexec, nosuid, nosymfollow"'
 
 vm --log "$logs/serial-boot-protection-2.log" \
   --title "Boot protection 2: through the \"Nyra OS\" entry; another entry put first, as Windows does" \

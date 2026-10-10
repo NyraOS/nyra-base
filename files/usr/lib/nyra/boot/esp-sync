@@ -254,7 +254,7 @@ mount_esp() {
 		return 1
 	fi
 	esp="$(mktemp -d /run/nyra-esp.XXXXXX)"
-	mount -t vfat -o umask=0077 "/dev/disk/by-partuuid/$uuid" "$esp"
+	mount -t vfat -o umask=0077,dirsync "/dev/disk/by-partuuid/$uuid" "$esp"
 	trap 'umount "$esp" && rmdir "$esp"' EXIT
 }
 

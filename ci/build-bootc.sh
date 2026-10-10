@@ -8,6 +8,13 @@ set -euxo pipefail
 git clone -q --depth 1 --branch "$BOOTC_REF" https://github.com/bootc-dev/bootc.git /src
 test "$(git -C /src rev-parse HEAD)" = "$BOOTC_COMMIT"
 cd /src
+# The ESP is FAT: without a dirsync mount, directory changes (a new loader/entries.staged, the swap
+# at shutdown) reach the disk in any order, and a power cut can leave a directory whose own cluster
+# was never written. bootc's ESP mounts get MS_DIRSYNC (patches/upstream/bootc-esp-dirsync.md).
+# When bootc changes these lines, the grep fails the build: check the patch again then.
+grep -qF 'MountFlags::from_bits_retain(MountFlags::NOEXEC.bits() | MountFlags::NOSUID.bits());' crates/lib/src/bootc_composefs/boot.rs
+sed -i 's/MountFlags::from_bits_retain(MountFlags::NOEXEC.bits() | MountFlags::NOSUID.bits())/MountFlags::from_bits_retain(MountFlags::NOEXEC.bits() | MountFlags::NOSUID.bits() | MountFlags::DIRSYNC.bits())/' crates/lib/src/bootc_composefs/boot.rs
+test "$(grep -c 'MountFlags::DIRSYNC' crates/lib/src/bootc_composefs/boot.rs)" = 1
 # zlink-macros 0.7.0 emits the variants of a generated enum (cfsctl's varlink service) in HashMap
 # order, which changes with every compile, so the binary does too; 0.7.1 uses a BTreeMap
 # (docs/LESSONS.md). bootc's Cargo.lock still has 0.7.0. When a newer bootc has 0.7.1 or later,
