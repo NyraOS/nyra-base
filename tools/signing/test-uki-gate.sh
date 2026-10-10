@@ -104,7 +104,8 @@ refused "exactly one UKI" "$t/extra" "$t/gate.crt"
 
 # The PCR policy changed in the UKI, which is then signed with the trusted key: removed (its section
 # renamed), its first signature changed by one character, and moved into the recovery profile (its
-# section header swapped with the one of the recovery profile's .profile, right after it).
+# section header swapped with the one of the recovery profile's .profile, right after it: the stub
+# reads the sections in the order of the table, whatever their addresses).
 python3 -I - "$t/unsigned.efi" "$t" <<'PY'
 import sys
 import pefile

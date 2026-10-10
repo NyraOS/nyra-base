@@ -42,10 +42,11 @@ class Refused(Exception):
 
 
 def sections(path):
-    """[(name, data)] in file order; data is what the stub measures (the section's virtual size)."""
+    """[(name, data)] in the order of the section table, which is the order systemd-stub reads them in
+    (pefile sorts its list by address); data is what the stub measures (the section's virtual size)."""
     pe = pefile.PE(path, fast_load=True)
     return [(s.Name.rstrip(b"\0").decode("ascii"), s.get_data(length=min(s.Misc_VirtualSize, s.SizeOfRawData)))
-            for s in pe.sections]
+            for s in sorted(pe.sections, key=lambda s: s.get_file_offset())]
 
 
 def profiles(secs):
