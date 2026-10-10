@@ -8,6 +8,8 @@
 Description=Nyra: boot files, loader.conf and firmware entry from /usr
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
 RequiresMountsFor=/boot
+# Stale staged entries are removed before nyra-updated can stage anything.
+Before=nyra-updated.service
 
 [Service]
 Type=oneshot

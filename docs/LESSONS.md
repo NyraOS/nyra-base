@@ -237,6 +237,10 @@ Each line is something that broke or surprised us once.
   There is no command that only drops a staged deployment. A staged deployment's entries are only
   swapped in at shutdown (`bootc-finalize-staged`): removing `loader/entries.staged` before that keeps
   it from booting without touching the boot order.
+- With systemd-boot and UKIs, bootc adds a new staging's entries to a `loader/entries.staged` left
+  by an earlier staging that was never finalized (it only clears it for an image already pulled), so
+  a power cut between staging and finalization can bring an old entry back with the next update.
+  Stale staged entries are removed at every full boot (`esp-sync repair`).
 - `bootc status` on composefs with systemd-boot needs bootc's own Type #1 entries on the ESP ("First
   boot entry not found" otherwise).
 - `bootc switch --apply` to an image that is already staged reboots fully even with `--soft-reboot`
