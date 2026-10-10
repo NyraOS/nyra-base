@@ -1,0 +1,13 @@
+/usr/bin/chage
+/usr/bin/chfn
+/usr/bin/chsh
+/usr/bin/fusermount3
+/usr/bin/gpasswd
+/usr/bin/mount
+/usr/bin/newgidmap
+/usr/bin/newuidmap
+/usr/bin/passwd
+/usr/bin/su
+/usr/bin/umount
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/sbin/unix_chkpwd

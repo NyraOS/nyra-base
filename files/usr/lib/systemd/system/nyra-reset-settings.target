@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Reset system settings (docs/BOOT.md): the "Nyra OS Reset settings" profile of the image's UKI boots
+# into this target (systemd.unit=nyra-reset-settings.target), like rescue.target.
+[Unit]
+Description=Nyra: reset system settings
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+Requires=sysinit.target nyra-reset-settings.service
+After=sysinit.target nyra-reset-settings.service
+AllowIsolate=yes

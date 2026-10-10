@@ -6,15 +6,15 @@
 #                          firmware entry)
 #   esp-sync repair        at every boot, on /boot: the same files where missing or damaged, never
 #                          an older version over a newer one, a newer version only from a blessed
-#                          boot; the recovery boot entry; then the "Nyra OS" firmware entry, first
-#                          in BootOrder; and, after a full boot, no stale staged entries, this
-#                          version's boot entry put back if it is missing, and the fallback moved
-#                          to this version once it is blessed
+#                          boot; the recovery and reset boot entries; then the "Nyra OS" firmware
+#                          entry, first in BootOrder; and, after a full boot, no stale staged
+#                          entries, this version's boot entry put back if it is missing, and the
+#                          fallback moved to this version once it is blessed
 #   esp-sync boot-counter  at shutdown, before bootc-finalize-staged moves the staged entries in:
 #                          the new entry gets three tries (systemd boot counting, "+3") and the
-#                          recovery entry goes along, or the staged entries are removed when
-#                          nyra-updated discarded that version; the fallback moved to the running
-#                          version if bootc would remove its own
+#                          recovery and reset entries go along, or the staged entries are removed
+#                          when nyra-updated discarded that version; the fallback moved to the
+#                          running version if bootc would remove its own
 #   esp-sync discard       when nyra-updated discards the staged version: its staged entries are
 #                          removed at once (boot-counter removes them again at shutdown)
 # The boot files are two independent copies, so one damaged copy still leaves a way to boot:
@@ -38,9 +38,9 @@ MOKMANAGER=/usr/lib/shim/mmx64.efi.signed
 SDBOOT=/usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed
 LOADER_CONF=/usr/lib/nyra/boot/loader.conf
 LABEL="Nyra OS"
-# Upper-case suffix: systemd-boot and bootctl read entries ending in ".conf" in any case, bootc only
-# lower-case ones (docs/BOOT.md), so bootc never sees this entry as one of its deployments.
-RECOVERY=loader/entries/nyra-recovery.CONF
+# The entries of the recovery and reset profiles (profile_entry) end in ".CONF": systemd-boot and
+# bootctl read entries ending in ".conf" in any case, bootc only lower-case ones (docs/BOOT.md), so
+# bootc never sees them as its deployments.
 TAB="$(printf '\t')"
 
 # Replaces DST with SRC only when they differ: a new file next to it, then a rename, so an
@@ -118,26 +118,29 @@ files() {
 # The composefs digest of the running system, from the kernel command line.
 booted_digest() { sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline; }
 
-# The recovery boot entry: profile 1 ("Nyra OS Recovery", systemd.unit=rescue.target) of a UKI that
-# bootc installed, next to bootc's own entries. It points at the running system's UKI, once this
-# version is blessed; until then it stays on the version it points at, if that is still on the ESP.
-# Its sort-key puts it after bootc's entries in the menu. If the running system's UKI has no recovery
-# profile (an image without one) and the UKI the entry points at is gone, the entry is removed.
-recovery_entry() {
+# The boot entries for the extra profiles of a UKI that bootc installed, next to bootc's own entries:
+#   loader/entries/nyra-recovery.CONF  profile 1, "Nyra OS Recovery" (systemd.unit=rescue.target)
+#   loader/entries/nyra-reset.CONF     profile 2, "Nyra OS Reset settings" (nyra-reset-settings.target)
+# Each points at the running system's UKI, once this version is blessed; until then it stays on the
+# version it points at, if that is still on the ESP. Its sort-key puts it after bootc's entries in the
+# menu. If the running system's UKI has no such profile (an image without one) and the UKI the entry
+# points at is gone, the entry is removed.
+profile_entry() {
+	file="loader/entries/nyra-$1.CONF" profile="$2" title="$3"
 	digest="$(booted_digest)" uki=""
 	[ -n "$digest" ] && uki="/EFI/Linux/bootc/bootc_composefs-$digest.efi"
-	cur="$(sed -n 's/^uki //p' "/boot/$RECOVERY" 2>/dev/null || true)"
-	if [ -z "$uki" ] || ! grep -aq 'TITLE=Nyra OS Recovery' "/boot$uki" 2>/dev/null; then
+	cur="$(sed -n 's/^uki //p' "/boot/$file" 2>/dev/null || true)"
+	if [ -z "$uki" ] || ! grep -aq "TITLE=$title" "/boot$uki" 2>/dev/null; then
 		if [ -n "$cur" ] && [ ! -f "/boot$cur" ]; then
-			rm -f "/boot/$RECOVERY" && sync || return 1
-			echo "esp-sync: /boot/$RECOVERY removed: its UKI is gone, and this one has no recovery profile"
+			rm -f "/boot/$file" && sync || return 1
+			echo "esp-sync: /boot/$file removed: its UKI is gone, and this one has no such profile"
 		fi
 		return 0
 	fi
 	if [ -n "$cur" ] && [ "$cur" != "$uki" ] && [ -f "/boot$cur" ] && ! blessed; then return 0; fi
-	printf 'title Nyra OS Recovery\nsort-key nyra-recovery\nuki %s\nprofile 1\n' "$uki" \
-		> /run/nyra-recovery.conf || return 1
-	put /run/nyra-recovery.conf "/boot/$RECOVERY"
+	printf 'title %s\nsort-key nyra-%s\nuki %s\nprofile %s\n' "$title" "$1" "$uki" "$profile" \
+		> "/run/nyra-$1.conf" || return 1
+	put "/run/nyra-$1.conf" "/boot/$file"
 }
 
 # Firmware boot entries labelled "Nyra OS" (efibootmgr -v lines).
@@ -284,9 +287,9 @@ boot_counter() {
 		echo "esp-sync: staged version $(head -c 80 /run/nyra-updated/discarded) discarded, not finalized"
 		return 0
 	fi
-	# The recovery entry goes along, still for the running system (it stays installed, as the
-	# rollback), until the new version is blessed. The loop below only counts "*.conf".
-	if [ -f "$esp/$RECOVERY" ]; then cp "$esp/$RECOVERY" "$staged/"; fi
+	# The recovery and reset entries go along, still for the running system (it stays installed, as
+	# the rollback), until the new version is blessed. The loop below only counts "*.conf".
+	for f in "$esp"/loader/entries/nyra-*.CONF; do if [ -f "$f" ]; then cp "$f" "$staged/"; fi; done
 	# The running system's entry is the one with our composefs digest (bootc renames the files):
 	# in its UKI's file name (uki /EFI/Linux/bootc/bootc_composefs-<digest>.efi), or in its options.
 	booted="$(booted_digest)"
@@ -329,7 +332,8 @@ repair)
 	# Both run even if the files fail (ESP full): the firmware entry needs no space on it.
 	rc=0
 	files /boot || rc=1
-	recovery_entry || rc=1
+	profile_entry recovery 1 "Nyra OS Recovery" || rc=1
+	profile_entry reset 2 "Nyra OS Reset settings" || rc=1
 	firmware_entry || rc=1
 	stale_staged || rc=1
 	fallback || rc=1

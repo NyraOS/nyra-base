@@ -162,6 +162,15 @@ Each line is something that broke or surprised us once.
   reports its ID in lower case (`LoaderEntrySelected` = `nyra-recovery.conf`); `bootctl set-oneshot`
   takes either.
 
+- **The image's own `/etc` on a running system:** bootc bind-mounts the version's state directory on
+  `/etc`; a bind mount of `/` alone (not recursive) shows the image's `/etc` under it.
+- **Swapping two directories in one step:** `mv -T --exchange A B` (coreutils 9.5 and later,
+  `renameat2` with `RENAME_EXCHANGE`). Without `-T`, mv moves A into B when B is a directory.
+  util-linux's `exch` does the same, but its package (util-linux-extra) also installs `newgrp` setuid
+  root: CI now fails when the image gains a setuid or setgid file not listed in `ci/setuid.txt`.
+- A service with `StandardOutput=inherit` on the console (a prompt that needs the console at once)
+  writes nothing to the journal: check its effects, not its log, in tests.
+
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
   podman's root API (`podman.socket` and `podman.service` started at boot), `podman-auto-update.timer`,

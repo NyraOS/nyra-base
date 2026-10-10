@@ -226,6 +226,18 @@ jobs:
         if: github.event_name != 'pull_request'
         run: ci/check-reproducible.sh
 
+      # Setuid and setgid files give a local user root's (or a group's) rights: a new one must be a
+      # decision, not a side effect of a package. The list of the ones the image has is ci/setuid.txt.
+      - name: No new setuid or setgid files (ci/setuid.txt)
+        run: |
+          sudo podman run --rm --entrypoint find localhost/nyra-base:ci / -xdev -type f -perm /6000 | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
+          cat "$RUNNER_TEMP/setuid.txt"
+          new="$(LC_ALL=C comm -13 ci/setuid.txt "$RUNNER_TEMP/setuid.txt")"
+          if [ -n "$new" ]; then
+            echo "::error::New setuid or setgid files, not in ci/setuid.txt: $(tr '\n' ' ' <<<"$new")"
+            exit 1
+          fi
+
       - name: Test the signature policy (docs/SIGNING.md)
         run: |
           tools/signing/trust-roots.sh "$RUNNER_TEMP/trust-roots"
@@ -361,7 +373,9 @@ jobs:
   # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,
   # no older boot loader over a newer one, a newer one only after the version is blessed), and
   # tools/vm/recovery.sh (the UKI's signed "Nyra OS Recovery" profile boots under Secure Boot and asks
-  # for an administrator's password; a wrong one gives no shell).
+  # for an administrator's password; a wrong one gives no shell), and tools/vm/reset-settings.sh (the
+  # "Nyra OS Reset settings" profile brings /etc back to the image's, keeps accounts, /home, machine ID
+  # and host name, and leaves /etc whole across power cuts).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
@@ -481,6 +495,14 @@ jobs:
         run: |
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/vm/recovery.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Reset system settings (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/reset-settings.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Boot counting across updates (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
