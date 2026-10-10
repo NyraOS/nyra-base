@@ -37,7 +37,7 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use ed25519_dalek::{Signature, VerifyingKey};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use std::cmp::Ordering;
@@ -379,8 +379,8 @@ pub fn rollout_group(install_code: &[u8], sheet: &Sheet) -> Result<u8, Error> {
     if install_code.len() < MIN_INSTALL_CODE_BYTES {
         return Err(Error::ShortInstallCode);
     }
-    let mut mac =
-        <Hmac<Sha256> as Mac>::new_from_slice(install_code).expect("HMAC takes keys of any length");
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(install_code)
+        .expect("HMAC takes keys of any length");
     mac.update(
         format!(
             "nyra-rollout-group-v1\n{}:{}\n{}",

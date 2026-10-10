@@ -721,3 +721,91 @@ fn other_public_keys_are_refused() {
         Err(Error::InvalidPublicKey)
     );
 }
+
+// --- known answers and strict verification (kept across crate upgrades) -----------------------
+
+fn unhex(h: &str) -> Vec<u8> {
+    (0..h.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Ed25519 (RFC 8032) is deterministic: this is openssl's signature of `payload()`'s PAE with the
+/// seed-1 key, and the rollout groups are Python's `hmac` over the same message.
+const SIG_SEED1: &str = "3fe6e4d07ee339d8428b498c7b52a702d4e811d574a319f8cd8ce0a29cc7372c\
+                         2f6ea0ce3d47020b5f7b8550309f840973a200b9315f71c369fbfef1e79e5908";
+
+#[test]
+fn signatures_and_rollout_groups_match_independent_implementations() {
+    let bytes = serde_json::to_vec(&payload()).unwrap();
+    let sig = key(1).sign(&pae(PAYLOAD_TYPE, &bytes));
+    let expected = unhex(&SIG_SEED1.replace(' ', ""));
+    assert_eq!(sig.to_bytes().to_vec(), expected);
+    assert!(check(&payload()).is_ok());
+    assert_eq!(rollout_group(CODE, &sheet(payload())), Ok(13));
+    let groups: Vec<u8> = (0..8u8)
+        .map(|s| rollout_group(&[s; 16], &sheet(payload())).unwrap())
+        .collect();
+    assert_eq!(groups, [75, 66, 99, 52, 30, 96, 82, 16]);
+}
+
+#[test]
+fn a_malleated_signature_is_refused() {
+    // s + L (the group order) is the same signature for a lax verifier; strict verification
+    // refuses an s that is not reduced.
+    const L: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+    ];
+    let bytes = serde_json::to_vec(&payload()).unwrap();
+    let mut sig = unhex(&SIG_SEED1.replace(' ', ""));
+    let mut carry = 0u16;
+    for (b, l) in sig[32..].iter_mut().zip(L) {
+        let sum = *b as u16 + l as u16 + carry;
+        *b = sum as u8;
+        carry = sum >> 8;
+    }
+    let env = serde_json::to_vec(&json!({
+        "payloadType": PAYLOAD_TYPE,
+        "payload": BASE64.encode(&bytes),
+        "signatures": [{"keyid": "", "sig": BASE64.encode(&sig)}]
+    }))
+    .unwrap();
+    assert_eq!(
+        verify(&env, &trusted(), "nyra", "stable", NOW, None),
+        Err(Error::BadSignature)
+    );
+}
+
+#[test]
+fn a_small_order_key_never_verifies() {
+    // The identity point as public key with R = identity and s = 0 "verifies" any message for a
+    // lax verifier. Such a key is refused when it is read, or every signature with it fails.
+    let mut spki = vec![
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut identity = [0u8; 32];
+    identity[0] = 1;
+    spki.extend_from_slice(&identity);
+    let pem = format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+        BASE64.encode(&spki)
+    );
+    let mut sig = identity.to_vec();
+    sig.extend_from_slice(&[0; 32]);
+    let bytes = serde_json::to_vec(&payload()).unwrap();
+    let env = serde_json::to_vec(&json!({
+        "payloadType": PAYLOAD_TYPE,
+        "payload": BASE64.encode(&bytes),
+        "signatures": [{"keyid": "", "sig": BASE64.encode(&sig)}]
+    }))
+    .unwrap();
+    match parse_public_keys(&pem) {
+        Err(e) => assert_eq!(e, Error::InvalidPublicKey),
+        Ok(keys) => assert_eq!(
+            verify(&env, &keys, "nyra", "stable", NOW, None),
+            Err(Error::BadSignature)
+        ),
+    }
+}
