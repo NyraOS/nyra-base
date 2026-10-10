@@ -98,6 +98,10 @@ units above. Only these stay, all from `/usr`:
 | `systemd-pcrosseparator.service` (initramfs) | a separator into PCR 7, 12 and the other firmware PCRs before the disk is unlocked, so what is measured later does not count as boot state | one-shot in the initramfs, one TPM command; nothing resident |
 | `systemd-tpm2-setup-early.service` (initramfs), `systemd-tpm2-setup.service` | the TPM's storage root key, which salts and encrypts the session that unlocks the disk | one-shot at boot; creates the key once, later boots only read it; nothing resident |
 
+`systemd-pcrphase-factory-reset.service` and `systemd-pcrphase-storage-target-mode.service` stay
+linked too, but only `factory-reset.target` and `storage-target-mode.target` start them, and nothing in
+Nyra starts those targets.
+
 All of them start only on a machine with a TPM that booted a measured UKI (`ConditionSecurity=measured-os`),
 and do nothing on one without (`--graceful`). No socket or service stays running.
 
