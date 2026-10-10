@@ -318,16 +318,21 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
     systemd-boot and `bootctl` match it in any case, so the upper-case suffix keeps the entry out of
     bootc and in the menu. If bootc changes that, the CI check "one booted image in `bootc status`"
     fails.
+  - The fallback UKI (`EFI/Linux/nyra-fallback-<digest>+0.efi`, see "Boot protection") is the same
+    two-profile UKI, and systemd-boot lists every profile of a UKI it finds there: the menu also
+    shows that version's "Nyra OS Recovery", at the end with the fallback. It is just as sealed.
   - bootc swaps `loader/entries` at every update: `esp-sync boot-counter` copies the recovery entry
     into `loader/entries.staged` at shutdown (its boot counting only renames `*.conf`), so it is there
     after the update too.
 - **Authentication: an administrator's password.** Root has no password, and recovery must not be
   a root shell for anyone at the keyboard (no `SYSTEMD_SULOGIN_FORCE`). `rescue.service` runs
   `/usr/lib/nyra/boot/recovery-shell` instead of sulogin (a drop-in in `/usr`): it asks for a user
-  name, accepts only members of the `sudo` group (the administrators), and checks the password with
-  `su` through PAM, run as `nobody` so that it has to ask. Only then a root shell starts; leaving it
-  continues to the normal boot target. A wrong password or a non-administrator gives a message and
-  the prompt again, after 3 s. `emergency.service` (a failed boot) still uses sulogin, which refuses
+  name, accepts only members of the `sudo` group (the administrators) whose account has a usable
+  password (`passwd -S` status `P`: PAM's `nullok` would let an empty password through), and checks
+  the password with `su` through PAM, run as `nobody` so that it has to ask. Only then a root shell
+  starts; leaving it continues to the normal boot target. A wrong password or a non-administrator
+  gives a message and the prompt again, after 3 s. Control-C and Control-Z do nothing at the prompt;
+  Control-D continues the normal boot (as sulogin does). `emergency.service` (a failed boot) still uses sulogin, which refuses
   a locked root: that stays as it is until the installer decides on it.
 - **TPM:** profile 1 is measured differently from profile 0 (PCR 11 covers its `.cmdline` and
   `.profile`), so a PCR 11 policy signed only for profile 0 does not unlock the disk in recovery: the
@@ -339,8 +344,8 @@ bootc installed verifies with this run's certificate and contains the recovery p
 writes the entry, and `bootc status` shows one booted image and no queued rollback; the test adds an administrator
 and a plain user and picks the entry for the next boot only (`bootctl set-oneshot`). That boot runs
 profile 1 (`LoaderEntrySelected`, `StubProfile`, `systemd.unit=rescue.target` on the command line,
-Secure Boot on): the plain user is refused without a password prompt, a wrong password gives no
-shell, the right one gives root in `rescue.target`.
+Secure Boot on): an administrator with an empty password and a plain user are refused without a
+password prompt, a wrong password gives no shell, the right one gives root in `rescue.target`.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

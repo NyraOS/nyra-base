@@ -5,11 +5,12 @@
 # boots. Checks:
 #   0. the image's signed UKI has the "Nyra OS Recovery" profile with systemd.unit=rescue.target;
 #   1. a normal boot writes the recovery entry ("profile 1", after bootc's entries); bootc status does
-#      not see it (one booted image, no queued rollback); the test adds an administrator (group sudo) and a plain user, and picks
-#      the recovery entry for the next boot only (bootctl set-oneshot);
-#   2. the recovery entry boots profile 1 under Secure Boot and asks for an administrator: a plain
-#      user is refused without a password prompt, a wrong password gives no shell, the right one
-#      gives a root shell in rescue.target.
+#      not see it (one booted image, no queued rollback); the test adds an administrator (group sudo),
+#      one with an empty password and a plain user, and picks the recovery entry for the next boot
+#      only (bootctl set-oneshot);
+#   2. the recovery entry boots profile 1 under Secure Boot and asks for an administrator: an
+#      administrator with an empty password and a plain user are refused without a password prompt,
+#      a wrong password gives no shell, the right one gives a root shell in rescue.target.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The passwords are random, for this throwaway disk only.
@@ -75,13 +76,14 @@ vm --autologin --log "$logs/serial-recovery-1.log" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; test "$s" = running' \
   --command 'ls /boot/loader/entries; cat /boot/loader/entries/nyra-recovery.CONF; grep -qx "profile 1" /boot/loader/entries/nyra-recovery.CONF && grep -q "^uki /EFI/Linux/bootc/bootc_composefs-" /boot/loader/entries/nyra-recovery.CONF' \
   --command 'j="$(bootc status --format json)"; echo "$j" | grep -o "\"rollbackQueued\":[a-z]*"; echo "$j" | grep -q "\"rollbackQueued\":false" && test "$(bootc status --booted --format json | grep -o "\"imageDigest\"" | wc -l)" = 1 && echo "bootc sees one booted image and no queued rollback"' \
-  --command "useradd -m -G sudo -s /bin/bash nyra-admin && useradd -m -s /bin/bash nyra-user && printf 'nyra-admin:%s\\nnyra-user:%s\\n' '$pw' '$pw' | chpasswd && id nyra-admin && id nyra-user" \
+  --command "useradd -m -G sudo -s /bin/bash nyra-admin && useradd -m -s /bin/bash nyra-user && useradd -m -G sudo -s /bin/bash nyra-nopw && printf 'nyra-admin:%s\\nnyra-user:%s\\n' '$pw' '$pw' | chpasswd && passwd -d nyra-nopw && passwd -S nyra-admin && passwd -S nyra-user && passwd -S nyra-nopw" \
   --command 'bootctl set-oneshot nyra-recovery.CONF && bootctl list --no-pager | grep -B2 -A8 "Nyra OS Recovery"'
 
 again='Wrong user name or password, or not an administrator\.(.|\n)*Administrator user name: '
 vm --log "$logs/serial-recovery-2.log" \
   --title "Recovery 2: the recovery entry asks for an administrator; a wrong password gives no shell" \
-  --chat 'Administrator user name: =>nyra-user' \
+  --chat 'Administrator user name: =>nyra-nopw' \
+  --chat "$again=>nyra-user" \
   --chat "$again=>nyra-admin" \
   --chat "Password: =>$wrong" \
   --chat "$again=>nyra-admin" \
