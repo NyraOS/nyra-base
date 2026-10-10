@@ -205,5 +205,5 @@ expires = 2027-01-07
 [[mitigation]]
 id = "CVE-2026-94603"
 package = "podman"
-reason = "podman run of a checkpoint image from a registry ignores user sandboxing (GHSA-2cvf-wqm6-wr9g, fixed upstream in 5.8.8). No image is delivered to users yet (signing stays off until main is protected, docs/SIGNING.md); shipping a fixed podman before any user image is tracked by the maintainers."
+reason = "podman run of a checkpoint image from a registry ignores user sandboxing (GHSA-2cvf-wqm6-wr9g, fixed upstream in 5.8.8). No image is delivered to users yet (image signing is still off, docs/SIGNING.md); shipping a fixed podman before any user image is tracked by the maintainers."
 expires = 2026-10-16

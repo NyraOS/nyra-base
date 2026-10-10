@@ -89,8 +89,8 @@ started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements,
 DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
 Outbound and forwarded traffic is not filtered.
 
-- nftables, not firewalld, for now: the plan's firewall is firewalld with per-network zones and a
-  D-Bus API for a future Security app. firewalld would bring `polkitd`
+- nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
+  per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
   (whose setuid agent helper has an open CVE today), Python GObject bindings and the
   NetworkManager introspection data into the base before anything uses its API. When firewalld
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
