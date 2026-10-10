@@ -206,7 +206,7 @@ with_esp check_kept
 older_on_esp_on_trial() {
   sudo cp "$sdboot" "$mnt/EFI/BOOT/grubx64.efi"
   set_version "$mnt/EFI/BOOT/grubx64.efi" 1
-  local entries=("$mnt"/loader/entries/*.conf)
+  local entries=("$mnt"/loader/entries/bootc_*.conf)
   test "${#entries[@]}" = 1
   sudo mv "${entries[0]}" "${entries[0]%.conf}+3.conf"
   ls "$mnt/loader/entries"

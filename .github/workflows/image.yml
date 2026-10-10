@@ -359,7 +359,9 @@ jobs:
   # never gets healthy falls back after 3 tries, a healthy one is blessed), and tools/vm/boot-protection.sh
   # (Secure Boot, one firmware variable store across eleven boots: editor off from the first boot,
   # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,
-  # no older boot loader over a newer one, a newer one only after the version is blessed).
+  # no older boot loader over a newer one, a newer one only after the version is blessed), and
+  # tools/vm/recovery.sh (the UKI's signed "Nyra OS Recovery" profile boots under Secure Boot and asks
+  # for an administrator's password; a wrong one gives no shell).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
@@ -471,6 +473,14 @@ jobs:
         run: |
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/vm/boot-protection.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Recovery boot entry (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/recovery.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Boot counting across updates (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

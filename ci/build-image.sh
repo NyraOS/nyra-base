@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Builds the bootc image from the mkosi root filesystem, with a sealed UKI (docs/BOOT.md):
 #   1. the root filesystem without kernel and initramfs (Containerfile target "sealed"), committed;
-#   2. the UKI from that committed image: bootc container ukify puts its composefs digest on the
-#      command line. It reads the committed layers (podman --mount type=image), so file times are
+#   2. the UKI from that committed image (ci/ukify.sh): bootc container ukify puts its composefs digest
+#      on the command line; a second profile boots the same system into recovery. It reads the committed layers (podman --mount type=image), so file times are
 #      the ones bootc will see after --timestamp, not the build's;
 #   3. the UKI signed outside the image build. Here: with a key made for this run only, deleted
 #      right after signing; its certificate stays in UKI_DIR for the Secure Boot test. The real
@@ -30,8 +30,8 @@ if [ ! -d "$uki/signed" ]; then
   sudo podman rm -f "$cid" >/dev/null
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
     --mount "type=image,source=$tag-sealed,target=/target" \
-    -v "$uki/kernel:/kernel:ro" -v "$uki/unsigned:/out" "$tag-sealed" \
-    sh -c 'k="$(ls /kernel)" && bootc container ukify --rootfs /target --kernel-dir "/kernel/$k" -- --output "/out/$k.efi"'
+    -v "$uki/kernel:/kernel:ro" -v "$uki/unsigned:/out" -v "$PWD/ci/ukify.sh:/ukify.sh:ro" "$tag-sealed" \
+    sh /ukify.sh
   sudo chown -R "$(id -u):$(id -g)" "$uki"
   key="$(mktemp -d)"
   trap 'rm -rf "$key"' EXIT

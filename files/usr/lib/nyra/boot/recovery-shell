@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS recovery (docs/BOOT.md): rescue.target's shell, for an administrator. The "Recovery" profile
+# of the image's UKI boots with systemd.unit=rescue.target; root has no password, so instead of
+# sulogin (root's password) this asks for the user name and password of an administrator (a member
+# of the "sudo" group). The password is checked by su through PAM, run as nobody so that it has to
+# ask; only then does the root shell start. Exiting the shell continues to the normal boot target.
+set -u
+
+while :; do
+	printf '\nNyra OS recovery. Administrator user name: '
+	read -r user || exit 1
+	case "$user" in
+	'' | -* | *[!a-z0-9_.-]*) echo "Not a user name." ;;
+	*)
+		if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx sudo &&
+			setpriv --reuid=nobody --regid=nogroup --clear-groups -- su -c true -- "$user"; then
+			echo "Recovery shell (root). Leave it with exit to continue booting."
+			/bin/bash -l
+			break
+		fi
+		echo "Wrong user name or password, or not an administrator."
+		sleep 3
+		;;
+	esac
+done
+exec systemctl --job-mode=fail --no-block default

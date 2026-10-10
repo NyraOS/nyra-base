@@ -130,6 +130,19 @@ Each line is something that broke or surprised us once.
 - `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition
   UUID and path, so an old "Nyra OS" entry for another disk is replaced, not reused.
 
+- **Multi-profile UKI (systemd 262, from the sources):** a Type #1 entry selects a profile with
+  `profile N`; systemd-boot passes `@N` in front of the options, and systemd-stub takes the profile
+  from it even under Secure Boot, when it ignores the rest of the command line. A profile's
+  `.cmdline` replaces the base one, it does not append. systemd-boot never picks a profile above 0 as
+  the default. With `--join-profile`, ukify ends the base sections with a `.profile` section of its
+  own (`ID=main` if `--profile` is not given), which becomes profile 0: joining a separate "main"
+  profile as well would shift recovery to profile 2. Label the base with `--profile` and join only
+  the extra profiles.
+- **bootc 1.16 reads every `*.conf` in `loader/entries`** (status, rollback detection, garbage
+  collection): an extra entry needs a `version` line or bootc fails to parse it, and a `sort-key` that
+  sorts after bootc's `bootc-<os>-0/1`, because bootc takes the first entry as the default (and as
+  the booted one when it searches by digest).
+
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
   podman's root API (`podman.socket` and `podman.service` started at boot), `podman-auto-update.timer`,
