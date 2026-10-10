@@ -3,6 +3,8 @@
 //!
 //! - `check` (timer): one update check, see the library documentation for the rules;
 //! - `health-failed` (`OnFailure=` of the health checks): a full reboot while on trial;
+//! - `health` (`nyra-health-bootc.service`): bootc reports the booted image, so this version can
+//!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key.
 
 use nyra_updated::system::Real;
@@ -56,6 +58,17 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             let info = sys.boot_info()?;
             on_health_failure(&mut sys).map(|a| (6, true, format!("{a:?} ({info:?})")))
         }
+        "health" => {
+            let booted = Real::default()
+                .status()?
+                .booted
+                .ok_or(Error::NoBootedImage)?;
+            Ok((
+                6,
+                true,
+                format!("bootc reports the booted image {}", booted.digest),
+            ))
+        }
         "check-config" => match config()? {
             Some(cfg) => Ok((
                 6,
@@ -65,7 +78,7 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             None => Ok((4, true, NOT_CONFIGURED.into())),
         },
         _ => Err(Error::Config(
-            "usage: nyra-updated check|health-failed|check-config".into(),
+            "usage: nyra-updated check|health-failed|health|check-config".into(),
         )),
     }
 }

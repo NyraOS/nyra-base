@@ -25,7 +25,7 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 2. **UKI** from that committed image (`ci/ukify.sh`, with a second profile for recovery, see
    "Recovery"): `bootc container ukify` computes the composefs digest of the
    root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today `rw
-   lockdown=integrity systemd.import_credentials=no composefs=…`: no root device,
+   lockdown=integrity panic=10 systemd.import_credentials=no composefs=…`: no root device,
    systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
    covers them. bootc checks the digest again at install and update, and refuses a UKI that does

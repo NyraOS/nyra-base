@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Health check (nyra-health-.service.d): bootc reports the booted image, so this version can still
+# update itself. A version whose bootc is broken must fall back while it can (docs/UPDATES.md).
+[Unit]
+Description=Nyra health check: bootc works
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+# bootc reads its boot entries: after a boot through the fallback UKI (loader/entries lost),
+# esp-sync puts them back first, or this check would fail a healthy version and reboot it.
+After=nyra-boot-repair.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated health
+
+[Install]
+RequiredBy=boot-complete.target

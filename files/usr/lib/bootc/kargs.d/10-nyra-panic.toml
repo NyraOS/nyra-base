@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A kernel panic reboots after 10 seconds instead of halting: a version whose kernel or initramfs is
+# broken then uses up its boot tries and systemd-boot falls back to the previous one (docs/BOOT.md).
+# Part of the command line sealed in the UKI.
+kargs = ["panic=10"]

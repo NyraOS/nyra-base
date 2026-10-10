@@ -12,7 +12,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v13: 2026.10.1-13, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v14: 2026.10.1-14, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -43,7 +43,10 @@
 #  25  v10: v12 staged
 #  26  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
 #      stalls mid-pull refused, nothing staged; v13 staged
-#  27  v13: the shipped signature policy linked again; then the secure defaults check (T15)
+#  27  v13: v14 staged (its initramfs is broken)
+#  28  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
+#      v14 is marked failed and refused
+#  29  v13: the shipped signature policy linked again; then the secure defaults check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -101,15 +104,18 @@ version() { # version NAME VERSION [Containerfile lines]
   mkdir -p "$u/$1-uki"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
     --mount "type=image,source=localhost/nyra-test:$1-rootfs,target=/target" \
-    -v "$u/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$u/$1-uki:/out" "$image" \
+    -v "$u/kernel-from-uki.py:/kernel-from-uki.py:ro" -v "$u/$1-uki:/out" -e BROKEN_INITRD="${BROKEN_INITRD:-}" "$image" \
     sh -c 'u="$(ls /boot/EFI/Linux/*.efi)" && k="$(basename "$u" .efi)" && mkdir -p "/tmp/kernel/$k" &&
       python3 /kernel-from-uki.py "$u" "/tmp/kernel/$k" &&
+      { [ -z "$BROKEN_INITRD" ] || head -c 4096 /dev/zero > "/tmp/kernel/$k/initramfs.img"; } &&
       bootc container ukify --rootfs /target --kernel-dir "/tmp/kernel/$k" -- --output "/out/$k.efi"' >/dev/null
   printf 'FROM localhost/nyra-test:%s-rootfs\nCOPY --from=uki . /boot/EFI/Linux/\n' "$1" |
     sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
       --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
 for n in 0 1 4 5 6 7 8 9 10 11 12 13; do version "v$n" "2026.10.$n"; done
+# v14: its UKI carries an initramfs of zeros, so the kernel panics (and reboots, panic=10).
+BROKEN_INITRD=1 version v14 2026.10.14
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
 # of boot 3 and the power cut lands in the middle of it.
 version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
@@ -131,21 +137,33 @@ sudo mkdir -p /etc/containers/registries.d
 printf 'docker:\n  updates.nyraos.com:\n    use-sigstore-attachments: true\n' |
   sudo tee /etc/containers/registries.d/99-nyra-updates-test.yaml >/dev/null
 push() { # push NAME TAG [SIGSTORE_KEY]
-  sudo podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
-    ${3:+--sign-by-sigstore-private-key "$u/$3.private" --sign-passphrase-file "$u/pass"} \
-    "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2"
+  # A push takes seconds. In CI podman sometimes stops sending a layer in the middle of the upload
+  # (the registry has the upload open and waits; disk and registry are fine): such a push is stopped
+  # after 2 minutes and tried again, at most 3 times, with what is needed to tell why.
+  local try
+  for try in 1 2 3; do
+    sudo timeout 120 podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
+      ${3:+--sign-by-sigstore-private-key "$u/$3.private" --sign-passphrase-file "$u/pass"} \
+      "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2" && break
+    echo "::warning::podman push of $1 failed or took more than 2 minutes (attempt $try of 3)"
+    df -h / /mnt
+    sudo podman logs --tail 10 nyra-test-registry || true
+    curl -sS -m 10 -o /dev/null -w 'registry /v2/: HTTP %{http_code} in %{time_total} s\n' http://updates.nyraos.com/v2/ || true
+    if [ "$try" = 3 ]; then echo "::error::podman push of $1 failed 3 times"; return 1; fi
+  done
   sudo chown "$(id -u):$(id -g)" "$u/$1.digest"
   [[ "$(cat "$u/$1.digest")" =~ ^sha256:[0-9a-f]{64}$ ]]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7 8 9 10 11 12 13; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8 9 10 11 12 13 14; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
 d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")" d7="$(cat "$u/v7.digest")"
 d8="$(cat "$u/v8.digest")" d9="$(cat "$u/v9.digest")" d10="$(cat "$u/v10.digest")"
 d11="$(cat "$u/v11.digest")" d12="$(cat "$u/v12.digest")" d13="$(cat "$u/v13.digest")"
+d14="$(cat "$u/v14.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -178,6 +196,7 @@ sheet s9 sheet 900 "$d9" 2026.10.9 "$d4" "$d6"
 sheet s10 sheet 1000 "$d10" 2026.10.10 "$d4" "$d6"
 sheet s12 sheet 1200 "$d12" 2026.10.12 "$d4" "$d6"
 sheet s13 sheet 1300 "$d13" 2026.10.13 "$d4" "$d6"
+sheet s14 sheet 1400 "$d14" 2026.10.14 "$d4" "$d6"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -449,6 +468,20 @@ vm "v12: another host for the update server, a slow link, a stalled registry; th
   --command "$lib; curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 5 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && curl -fsS https://updates.nyraos.com/_test/stall && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; r=0; grep -q 'timed out and was stopped' /var/lib/nyra-updated/last-check.json || r=1; curl -fsS https://updates.nyraos.com/_test/resume; curl -fsS https://updates.nyraos.com/_test/rate/0; test \$r = 0 && expect staged none; }" \
   --command "$lib; outcome s13 Staged && expect staged $d13"
 
+# A broken kernel or initramfs (T3), on v13's first boot (rule 9 needs the first check of a new
+# version in a counted boot): v14's kernel finds no initramfs, panics and reboots after 10 s
+# (panic=10 on the sealed command line), three times; then systemd-boot falls back to v13.
+vm "v13: v14 staged" --poweroff \
+  --command "$lib; expect booted $d13 && running" \
+  --command 'grep -qw panic=10 /proc/cmdline && systemctl is-active nyra-health-bootc.service && test "$(systemctl show -P RestrictSUIDSGID nyra-health-bootc.service)" = no && test "$(systemctl show -P RestrictSUIDSGID nyra-health-system.service)" = yes && echo "panic=10; bootc health check passed, the only one without RestrictSUIDSGID"' \
+  --command "$lib; outcome s14 Staged && expect staged $d14"
+vm "v14 panics three times, back on v13 by itself" --poweroff --boots 4 --timeout 300 \
+  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3" \
+  --command "$lib; refused s14 'this machine fell back from it' && expect staged none"
+l="$logs/serial-updates-$n.log"
+echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
+[ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
+
 # The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v13, with the
 # shipped signature policy linked again.
 vm "v13: the shipped signature policy again, for the secure defaults check" --poweroff \
@@ -457,3 +490,4 @@ vm "v13: the shipped signature policy again, for the secure defaults check" --po
 mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
+
