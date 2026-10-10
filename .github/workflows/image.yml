@@ -226,17 +226,25 @@ jobs:
         if: github.event_name != 'pull_request'
         run: ci/check-reproducible.sh
 
-      # Setuid and setgid files give a local user root's (or a group's) rights: a new one must be a
-      # decision, not a side effect of a package. The list of the ones the image has is ci/setuid.txt.
-      - name: No new setuid or setgid files (ci/setuid.txt)
+      # Setuid and setgid files, and files with capabilities (security.capability), give a local user
+      # root's (or a group's) rights: a new one must be a decision, not a side effect of a package.
+      # The ones the image has are listed in ci/setuid.txt and ci/capabilities.txt.
+      - name: No new setuid, setgid or file-capability files (ci/setuid.txt, ci/capabilities.txt)
         run: |
           sudo podman run --rm --entrypoint find localhost/nyra-base:ci / -xdev -type f -perm /6000 | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
-          cat "$RUNNER_TEMP/setuid.txt"
-          new="$(LC_ALL=C comm -13 ci/setuid.txt "$RUNNER_TEMP/setuid.txt")"
-          if [ -n "$new" ]; then
-            echo "::error::New setuid or setgid files, not in ci/setuid.txt: $(tr '\n' ' ' <<<"$new")"
-            exit 1
-          fi
+          m="$(sudo podman image mount localhost/nyra-base:ci)"
+          sudo getcap -r "$m/usr" | sed "s|^$m||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
+          sudo podman image umount localhost/nyra-base:ci
+          fail=0
+          for l in setuid capabilities; do
+            echo "== $l"; cat "$RUNNER_TEMP/$l.txt"
+            new="$(LC_ALL=C comm -13 "ci/$l.txt" "$RUNNER_TEMP/$l.txt")"
+            if [ -n "$new" ]; then
+              echo "::error::New files, not in ci/$l.txt: $(tr '\n' ' ' <<<"$new")"
+              fail=1
+            fi
+          done
+          exit "$fail"
 
       - name: Test the signature policy (docs/SIGNING.md)
         run: |
