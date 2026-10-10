@@ -115,6 +115,15 @@ def der(public_key_pem):
     return r.stdout
 
 
+def fingerprint(public_key):
+    """systemd's key fingerprint in the policies: SHA-256 of i2d_PublicKey, for RSA the PKCS#1
+    RSAPublicKey DER (not the SubjectPublicKeyInfo)."""
+    r = openssl("rsa", "-pubin", "-in", public_key, "-RSAPublicKey_out", "-outform", "DER")
+    if r.returncode != 0 or not r.stdout:
+        raise Refused("the policy key is not an RSA public key")
+    return hashlib.sha256(r.stdout).hexdigest()
+
+
 def the_pcrsig(secs):
     found = [data for name, data in secs if name == ".pcrsig"]
     if len(found) != 1:
@@ -149,12 +158,12 @@ def check(uki, public_key):
     pcrsig = the_pcrsig(secs)
     if list(pcrsig) != ["sha256"]:
         raise Refused(f"banks {list(pcrsig)}, expected only sha256")
-    fingerprint = hashlib.sha256(key_der).hexdigest()
+    fp = fingerprint(public_key)
     signed = []
     with tempfile.TemporaryDirectory() as tmp:
         for policy in pcrsig["sha256"]:
-            if policy.get("pcrs") != [11] or "ref" in policy or policy.get("pkfp") != fingerprint:
-                raise Refused(f"policy not for PCR 11 alone with this key: {policy}")
+            if policy.get("pcrs") != [11] or "ref" in policy or policy.get("pkfp") != fp:
+                raise Refused(f"policy not for PCR 11 alone with this key (fingerprint {fp}): {policy}")
             if policy.get("tbs", policy["pol"]) != policy["pol"]:
                 raise Refused(f"the signed data is not the policy digest: {policy}")
             with open(f"{tmp}/sig", "wb") as f:
@@ -172,7 +181,7 @@ def check(uki, public_key):
         if set(policies(base, g)) & set(signed):
             raise Refused(f"a signed policy also matches profile {profile_id(g)}")
     print(f"pcr-policy: {uki}: PCR 11 policy signed for the main profile only ({len(signed)} phases), "
-          f"profiles {[profile_id(g) for g in groups[1:]]} not covered; key {fingerprint[:16]}")
+          f"profiles {[profile_id(g) for g in groups[1:]]} not covered; key {fp[:16]}")
 
 
 def main():
