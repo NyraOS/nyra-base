@@ -61,6 +61,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub mod system;
 
@@ -156,7 +157,15 @@ pub struct Config {
     /// No target older than this, not even a signed retraction.
     pub version_floor: String,
     pub keys: Vec<VerifyingKey>,
+    /// How long pulling a version may take before bootc is stopped (`stage_timeout_seconds`,
+    /// optional): [`STAGE_TIMEOUT`], or shorter. Only the tests' images shorten it.
+    pub stage_timeout: Duration,
 }
+
+/// Pulling a version: generous for slow links, but bounded, because bootc hangs forever when the
+/// server goes away mid-download (`docs/LESSONS.md`). The next timer run retries; layers already
+/// downloaded are kept.
+pub const STAGE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// An OCI repository name under [`HOST`]: `/`-separated components of lowercase letters, digits
 /// and `._-`, each starting and ending with a letter or digit. No `:` (port or tag), no `@`.
@@ -172,7 +181,8 @@ fn is_repository(name: &str) -> bool {
 }
 
 impl Config {
-    /// `conf`: `key = value` lines (`repository`, `channel`, `version_floor`), `#` comments.
+    /// `conf`: `key = value` lines (`repository`, `channel`, `version_floor`, and optionally
+    /// `stage_timeout_seconds`, at most the default), `#` comments.
     /// `pem`: the channel sheet keys. Everything is required: no defaults, no unknown or repeated
     /// keys (a repeated key must not silently win).
     pub fn parse(conf: &str, pem: &str) -> Result<Config, Error> {
@@ -191,6 +201,15 @@ impl Config {
                 return Err(Error::Config(format!("{} is set twice", k.trim())));
             }
         }
+        let stage_timeout = match map.remove("stage_timeout_seconds") {
+            None => STAGE_TIMEOUT,
+            Some(v) => v
+                .parse::<u64>()
+                .ok()
+                .filter(|s| (1..=STAGE_TIMEOUT.as_secs()).contains(s))
+                .map(Duration::from_secs)
+                .ok_or_else(|| Error::Config("invalid stage_timeout_seconds".into()))?,
+        };
         let mut get = |k: &str, valid: &dyn Fn(&str) -> bool| {
             map.remove(k)
                 .filter(|v| valid(v))
@@ -201,6 +220,7 @@ impl Config {
             channel: get("channel", &|v| CHANNELS.contains(&v))?,
             version_floor: get("version_floor", &|v| compare_versions(v, v).is_ok())?,
             keys: load_keys(pem)?,
+            stage_timeout,
         };
         if let Some(k) = map.keys().next() {
             return Err(Error::Config(format!("unknown key {k}")));

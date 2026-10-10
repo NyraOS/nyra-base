@@ -12,7 +12,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v10: 2026.10.1-10, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v13: 2026.10.1-13, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -21,7 +21,8 @@
 #   4  v1: v2 staged again; power cut before the staged version is finalized
 #   5  v1: v2 staged again; clean shutdown
 #   6  power cut when v2's kernel starts (first try)
-#   7  v2, second try, blessed; v4 staged, then retracted: discarded (never finalized)
+#   7  v2, second try, blessed; v4 staged, then retracted: discarded (never finalized); v11
+#      staged by hand afterwards (discarded at shutdown too)
 #   8  v2 again (boot order kept, no staged entries left); v3 staged
 #   9  v3 fails its health check and reboots by itself, three times; systemd-boot falls back to v2;
 #      v3 is marked failed and refused; v8 staged, then retracted: discarded, with the failed v3 as
@@ -38,6 +39,11 @@
 #  17  v7: v9 staged; power cut before it is finalized (its staged entries stay on the ESP)
 #  18  v7: v10, another version, staged: only its entries and v7's are staged (none left from v9)
 #  19  v10 boots; two boot entries (v10 and v7)
+#  20-24  v10: power cuts at random moments while nyra-updated pulls and stages v12 (seed printed)
+#  25  v10: v12 staged
+#  26  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
+#      stalls mid-pull refused, nothing staged; v13 staged
+#  27  v13: the shipped signature policy linked again; then the secure defaults check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -60,6 +66,12 @@ openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=updates
 openssl x509 -req -in "$u/server.csr" -CA "$u/ca.crt" -CAkey "$u/ca.key" -CAcreateserial -days 2 \
   -extfile <(printf 'subjectAltName=DNS:updates.nyraos.com\nextendedKeyUsage=serverAuth\n') \
   -out "$u/server.crt" 2>/dev/null
+# Another host's certificate from the same trusted CA: a DNS answer that points elsewhere.
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=evil.test \
+  -keyout "$u/evil.key" -out "$u/evil.csr" 2>/dev/null
+openssl x509 -req -in "$u/evil.csr" -CA "$u/ca.crt" -CAkey "$u/ca.key" -CAcreateserial -days 2 \
+  -extfile <(printf 'subjectAltName=DNS:evil.test\nextendedKeyUsage=serverAuth\n') \
+  -out "$u/evil.crt" 2>/dev/null
 echo nyra-updates-test >"$u/pass"
 skopeo() { # the image's own skopeo, as in tools/signing/test-policy.sh
   sudo podman run --rm --network host --tmpfs /var/tmp -v "$u:/u:z" "$image" skopeo "$@"
@@ -83,7 +95,7 @@ for s in pe.sections:
             f.write(s.get_data()[:s.Misc_VirtualSize])
 EOF
 version() { # version NAME VERSION [Containerfile lines]
-  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version\n%s\n' \
+  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version && echo "stage_timeout_seconds = 90" >> /usr/lib/nyra/updates/updated.conf\n%s\n' \
     "$image" "$2" "${3:-}" >"$u/Containerfile.$1"
   sudo podman build -q -t "localhost/nyra-test:$1-rootfs" -f "$u/Containerfile.$1" "$u/context" >/dev/null
   mkdir -p "$u/$1-uki"
@@ -97,7 +109,7 @@ version() { # version NAME VERSION [Containerfile lines]
     sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
       --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
-for n in 0 1 4 5 6 7 8 9 10; do version "v$n" "2026.10.$n"; done
+for n in 0 1 4 5 6 7 8 9 10 11 12 13; do version "v$n" "2026.10.$n"; done
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
 # of boot 3 and the power cut lands in the middle of it.
 version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
@@ -127,12 +139,13 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7 8 9 10; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8 9 10 11 12 13; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
 d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")" d7="$(cat "$u/v7.digest")"
 d8="$(cat "$u/v8.digest")" d9="$(cat "$u/v9.digest")" d10="$(cat "$u/v10.digest")"
+d11="$(cat "$u/v11.digest")" d12="$(cat "$u/v12.digest")" d13="$(cat "$u/v13.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -163,34 +176,65 @@ sheet retract6 sheet 700 "$d5" 2026.10.5 "$d4" "$d6"
 sheet s7 sheet 800 "$d7" 2026.10.7 "$d4" "$d6"
 sheet s9 sheet 900 "$d9" 2026.10.9 "$d4" "$d6"
 sheet s10 sheet 1000 "$d10" 2026.10.10 "$d4" "$d6"
+sheet s12 sheet 1200 "$d12" 2026.10.12 "$d4" "$d6"
+sheet s13 sheet 1300 "$d13" 2026.10.13 "$d4" "$d6"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
-import http.server, os, ssl, sys
-sheets, cert, key = sys.argv[1:4]
-current = ["none"]
+import http.server, os, ssl, subprocess, sys
+sheets, cert, key, evil_cert, evil_key = sys.argv[1:6]
+state = {"sheet": "none", "cert": "good"}
+
+def rate(kbit):  # the registry's answers (port 80 on lo) at kbit/s; 0: at full speed
+    subprocess.run(["tc", "qdisc", "del", "dev", "lo", "root"], stderr=subprocess.DEVNULL)
+    if kbit:
+        for cmd in (["qdisc", "add", "dev", "lo", "root", "handle", "1:", "htb", "default", "10"],
+                    ["class", "add", "dev", "lo", "parent", "1:", "classid", "1:10", "htb", "rate", "10gbit"],
+                    ["class", "add", "dev", "lo", "parent", "1:", "classid", "1:20", "htb",
+                     "rate", f"{kbit}kbit", "ceil", f"{kbit}kbit"],
+                    ["filter", "add", "dev", "lo", "parent", "1:", "protocol", "ip", "prio", "1", "u32",
+                     "match", "ip", "sport", "80", "0xffff", "flowid", "1:20"]):
+            subprocess.run(["tc", *cmd], check=True)
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/_test/select/"):
-            current[0] = os.path.basename(self.path)
-            body = b"ok\n"
-        elif self.path == "/channels/nyra-base/stable":
-            body = open(os.path.join(sheets, current[0]), "rb").read()
+        path = self.path
+        if path.startswith("/_test/select/"):
+            state["sheet"] = os.path.basename(path)
+        elif path.startswith("/_test/rate/") and path[len("/_test/rate/"):].isdigit():
+            rate(int(path[len("/_test/rate/"):]))
+        elif path in ("/_test/stall", "/_test/resume"):
+            subprocess.run(["podman", "pause" if path.endswith("stall") else "unpause",
+                            "nyra-test-registry"], check=True, stdout=subprocess.DEVNULL)
+        elif path in ("/_test/cert/evil", "/_test/cert/good"):
+            state["cert"] = os.path.basename(path)
+        elif path == "/channels/nyra-base/stable":
+            body = open(os.path.join(sheets, state["sheet"]), "rb").read()
+            return self.answer(body)
         else:
             return self.send_error(404)
+        self.answer(b"ok\n")
+    def answer(self, body):
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
     def log_message(self, *args):
         pass
+
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 443), Handler)
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(cert, key)
+evil = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+evil.load_cert_chain(evil_cert, evil_key)
+def sni(sock, name, _):  # another host answers in place of the update server
+    if state["cert"] == "evil":
+        sock.context = evil
+ctx.sni_callback = sni
 server.socket = ctx.wrap_socket(server.socket, server_side=True)
 server.serve_forever()
 EOF
-sudo python3 -I "$u/sheet-server.py" "$u/sheets" "$u/server.crt" "$u/server.key" &
+sudo python3 -I "$u/sheet-server.py" "$u/sheets" "$u/server.crt" "$u/server.key" "$u/evil.crt" "$u/evil.key" &
 trap 'sudo pkill -f sheet-server.py || true; sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
 for _ in $(seq 30); do curl -fs --cacert "$u/ca.crt" https://updates.nyraos.com/_test/select/s1 >/dev/null && break; sleep 1; done
 curl -fsS --cacert "$u/ca.crt" https://updates.nyraos.com/channels/nyra-base/stable | jq -e .payloadType >/dev/null
@@ -294,7 +338,8 @@ vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command "$lib; outcome s1 UpToDate" \
   --command "$lib; outcome s2 Staged && expect staged $d4" \
   --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
-  --command 'bootc status --format json'
+  --command 'bootc status --format json' \
+  --command "$lib; bootc switch --quiet other.test/nyra-base:v11 && expect staged $d11 && ls /boot/loader/entries.staged"
 
 vm "v2 again: boot order kept; v3 staged" --poweroff \
   --command "$lib; expect booted $d2 && expect rollback $d1 && expect staged none && ! test -e /boot/loader/entries.staged && running" \
@@ -377,3 +422,38 @@ vm "v7 after the power cut: v10 staged, nothing left from v9" --poweroff \
 
 vm "v10 boots, with only its own entry and v7's" --poweroff \
   --command "$lib; expect booted $d10 && running && entries && test \"\$(entries | grep -c '^bootc_.*\.conf\$')\" = 2 && ! entries | grep -i '^nyra-recovery.*+'"
+
+# Power cuts at random moments while nyra-updated pulls and stages v12 (not during finalization,
+# which bootc does at shutdown): every time the running version comes back, and v12 is staged in the
+# end. The seed is printed, so a failure can be replayed.
+seed="${UPDATES_SEED:-$RANDOM}"
+RANDOM="$seed"
+echo "power cut seed: $seed"
+for r in 1 2 3 4 5; do
+  cut=$((RANDOM % 20))
+  vm "v10: power cut $cut s after nyra-updated starts on v12 (round $r of 5, seed $seed)" --power-cut-at POWERCUT \
+    --command "$lib; expect booted $d10 && running && expect staged none" \
+    --command "$lib; select_sheet s12 && systemctl start --no-block nyra-updated.service && sleep $cut && echo POWER''CUT"
+done
+vm "v10 after the power cuts: v12 staged" --poweroff \
+  --command "$lib; expect booted $d10 && running && expect staged none" \
+  --command "$lib; outcome s12 Staged && expect staged $d12"
+
+# A hostile network, on v12: a DNS answer that points to another host (a valid certificate, but for
+# another name), a 50 kbit/s link, and a registry that stops answering in the middle of a pull. The
+# test versions stop a pull after 90 s (stage_timeout_seconds); production keeps 2 hours.
+vm "v12: another host for the update server, a slow link, a stalled registry; then v13 staged" --poweroff \
+  --command "$lib; expect booted $d12 && running" \
+  --command "$lib; select_sheet s13 && curl -fsS https://updates.nyraos.com/_test/cert/evil && { run_check; r=\$?; curl -kfsS https://updates.nyraos.com/_test/cert/good; test \$r != 0 && grep -q 'subject name matches' /var/lib/nyra-updated/last-check.json; }" \
+  --command "$lib; curl -fsS https://updates.nyraos.com/_test/rate/50 && { refused s13 'timed out and was stopped'; r=\$?; curl -fsS https://updates.nyraos.com/_test/rate/0; test \$r = 0 && expect staged none; }" \
+  --command "$lib; curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 5 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && curl -fsS https://updates.nyraos.com/_test/stall && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; r=0; grep -q 'timed out and was stopped' /var/lib/nyra-updated/last-check.json || r=1; curl -fsS https://updates.nyraos.com/_test/resume; curl -fsS https://updates.nyraos.com/_test/rate/0; test \$r = 0 && expect staged none; }" \
+  --command "$lib; outcome s13 Staged && expect staged $d13"
+
+# The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v13, with the
+# shipped signature policy linked again.
+vm "v13: the shipped signature policy again, for the secure defaults check" --poweroff \
+  --command "$lib; expect booted $d13 && running" \
+  --command 'ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && readlink /etc/containers/policy.json'
+mkdir -p "$u/t15"
+tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
+cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"

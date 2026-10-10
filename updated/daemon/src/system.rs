@@ -15,10 +15,6 @@ use std::time::{Duration, Instant};
 const LOADER_BOOT_COUNT_PATH: &str =
     "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 const SHORT: Duration = Duration::from_secs(60);
-/// Pulling a version: generous for slow links, but bounded, because bootc hangs forever when
-/// the server goes away mid-download (`docs/LESSONS.md`). The next timer run retries;
-/// layers already downloaded are kept.
-const STAGE: Duration = Duration::from_secs(2 * 60 * 60);
 /// Most output read from a command (bootc status is a few KiB); the rest is not read.
 const MAX_OUTPUT: u64 = 1024 * 1024;
 
@@ -179,7 +175,18 @@ fn sync() -> Result<(), Error> {
     run_ok(&mut Command::new("sync"), SHORT).map(drop)
 }
 
-pub struct Real;
+/// The real system. `stage_limit`: how long a pull may take ([`crate::STAGE_TIMEOUT`] by default).
+pub struct Real {
+    pub stage_limit: Duration,
+}
+
+impl Default for Real {
+    fn default() -> Real {
+        Real {
+            stage_limit: crate::STAGE_TIMEOUT,
+        }
+    }
+}
 
 impl System for Real {
     fn status(&mut self) -> Result<Status, Error> {
@@ -230,7 +237,7 @@ impl System for Real {
     fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
         run_ok(
             Command::new("bootc").args(["switch", "--quiet", "--", image_ref]),
-            STAGE,
+            self.stage_limit,
         )?;
         sync()
     }

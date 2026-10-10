@@ -38,7 +38,10 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             let Some(cfg) = config()? else {
                 return Ok((4, false, NOT_CONFIGURED.into()));
             };
-            let outcome = check(&mut Real, &store, &cfg, now)?;
+            let mut sys = Real {
+                stage_limit: cfg.stage_timeout,
+            };
+            let outcome = check(&mut sys, &store, &cfg, now)?;
             // An owner's own image gets no updates from us: say so, every time.
             let priority = if matches!(outcome, Outcome::ForeignImage(_)) {
                 4
@@ -49,8 +52,9 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
         }
         "health-failed" => {
             // The boot state it decided on, for the journal.
-            let info = Real.boot_info()?;
-            on_health_failure(&mut Real).map(|a| (6, true, format!("{a:?} ({info:?})")))
+            let mut sys = Real::default();
+            let info = sys.boot_info()?;
+            on_health_failure(&mut sys).map(|a| (6, true, format!("{a:?} ({info:?})")))
         }
         "check-config" => match config()? {
             Some(cfg) => Ok((

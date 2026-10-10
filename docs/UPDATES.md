@@ -110,7 +110,7 @@ by hand is discarded with it.
 | Path | What |
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
-| `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable |
+| `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running |
@@ -186,6 +186,11 @@ bootc reads it.
 | T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
+| T5 | DNS answer for another host (a certificate from a trusted CA, for another name) | refused (TLS name check), nothing staged |
+| T5 | a 50 kbit/s link | the pull is stopped at the time limit, nothing staged; staged later on a normal link |
+| T5 | the registry stops answering in the middle of a pull | the pull is stopped at the time limit, nothing staged; staged once the registry answers |
+| T2 | power cuts at random moments while `nyra-updated` pulls and stages (5 rounds, seed printed) | the running version comes back every time; the update is staged in the end |
+| T15 | the secure defaults after these updates (`tools/vm/security-defaults.sh` on the updated disk) | as after the installation |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
@@ -196,7 +201,8 @@ image workflow). On the test disks `systemd-networkd` logs at debug level, and w
 not `running` both tests print its journal and the link state.
 
 Power cuts at many random moments, finalization included, run every night with `bootc` directly
-(`docs/TITANIC.md`). Not covered yet: a slow (50 kbit/s) link
-and a server that stalls mid-download (the 2-hour limit is unit-tested only), DNS answers for another
-host, a broken kernel or initramfs (a kernel panic needs `panic=` to reboot at all), and the real
-keyless signature (the `sign` job, `docs/SIGNING.md`).
+(`docs/TITANIC.md`). The time limit of a pull is shortened to 90 s in the test versions only
+(`stage_timeout_seconds`), so the slow link and the stalled registry are tested in minutes; production
+keeps 2 hours. Not covered yet: power cuts during finalization with `nyra-updated`, a broken kernel or
+initramfs (a kernel panic needs `panic=` to reboot at all), and the real keyless signature (the `sign`
+job, `docs/SIGNING.md`).
