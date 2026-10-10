@@ -1,0 +1,7 @@
+# The sealed command lines of the image's UKI, one per profile, in order (ci/ukify.sh, docs/BOOT.md):
+# main, recovery, reset settings. DIGEST stands for the composefs digest (128 hex digits, the same in
+# every profile). tools/signing/uki-check.py refuses to sign or release a UKI with any other command
+# line, so a change to kargs.d or to the profiles must change this file too, in the same review.
+lockdown=integrity panic=10 rw systemd.import_credentials=no composefs=DIGEST
+lockdown=integrity panic=10 rw systemd.import_credentials=no composefs=DIGEST systemd.unit=rescue.target
+lockdown=integrity panic=10 rw systemd.import_credentials=no composefs=DIGEST systemd.unit=nyra-reset-settings.target
