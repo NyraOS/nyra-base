@@ -127,6 +127,22 @@ Each line is something that broke or surprised us once.
   another system version: check `systemctl show -P SoftRebootsCount` before trusting it.
 - systemd mounts the ESP with `fmask=0177,dmask=0077`: only root can read it, and no file on it is
   executable.
+- Linux's FAT driver does not order directory changes, and `fsync` of a directory does not cover
+  them all. `rename(RENAME_EXCHANGE)` only marks the two moved inodes dirty: their entries in the
+  parent are written when *those* inodes are written back, not by `fsync` of the parent. So
+  bootc-finalize-staged's swap, removal of the old set and `fsync(loader)` put on disk the removal
+  and the freed cluster, but not the swap: after a power cut `loader/entries` points at a free
+  cluster (seen in CI: 3 of 5 cuts during the shutdown with the swap; reproduced with a loop
+  device). Likewise a new directory's first cluster (`.` and `..`) is a buffer of the parent, which
+  `fsync` of the new directory does not write. Linux then reports "FAT-fs: corrupted directory
+  (invalid entries)" and sets the ESP read-only; every later update fails.
+- `fsck.fat -a` (dosfstools 4.2) does not repair that: for a directory whose first cluster is free
+  it prints "Contains a free cluster … Assuming EOF" and sets the directory's start cluster to 0,
+  which Linux still refuses as a corrupted directory.
+- Only a `dirsync` mount orders it (each directory change is written before the call returns, a new
+  directory's cluster before its entry in the parent). A remount through `mount(2)` does not change
+  `dirsync` (it is not among the flags a remount applies), and a second mount of the same device
+  keeps the first one's superblock flags: the first mount has to be `dirsync`.
 - `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition
   UUID and path, so an old "Nyra OS" entry for another disk is replaced, not reused.
 
@@ -262,6 +278,8 @@ Each line is something that broke or surprised us once.
   atomic: a power cut there (one random cut in twenty in CI) left no boot entry at all, and systemd-boot
   showed only "Reboot Into Firmware Interface". A fallback UKI in `EFI/Linux/` with `+0` in its name
   (sorted last, booted only when nothing else can) does not depend on that directory (`esp-sync`).
+  The ESP is now mounted `dirsync` everywhere, which orders the swap and the removal (above); the
+  fallback stays for whatever `dirsync` cannot make atomic on FAT.
 - After staging, bootc fsyncs only the ESP's top directory: a power cut right after `bootc switch`
   left orphaned clusters and a corrupted `loader/entries.staged` once in CI. `nyra-updated` runs
   `sync` after every `bootc switch` and `bootc rollback`.

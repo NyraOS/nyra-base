@@ -57,9 +57,11 @@ RUN mkdir -p /etc/containers/registries.d && \
 # Boot (docs/BOOT.md), on the ESP, where bootc does neither: at every boot the boot files (shim,
 # systemd-boot, MokManager; named and fallback copies), loader.conf (no command line editor) and the
 # "Nyra OS" firmware entry first in BootOrder; three boot tries for every newly staged version.
+# The ESP is mounted dirsync and synced after bootc-finalize-staged (drop-ins, docs/BOOT.md).
 RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/systemd/system/multi-user.target.wants && \
     ln -s ../nyra-boot-repair.service ../nyra-boot-counter.service . && \
-    test -f nyra-boot-repair.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync
+    test -f nyra-boot-repair.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync && \
+    test -f ../bootc-finalize-staged.service && test -f ../bootc-finalize-staged.service.d/10-nyra.conf
 
 # Units that Debian packages enable but that have no purpose in the base (docs/DEFAULTS.md, the
 # reasons are there), blocked from /usr; a layer that needs one creates /usr/lib/nyra/allow-<unit>.

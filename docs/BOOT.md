@@ -256,6 +256,19 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
 - **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
   root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
   no execute bit on files); CI checks it.
+- **Directory changes on the ESP reach the disk in order.** The ESP is FAT, and Linux's FAT driver
+  writes directory changes in any order unless the mount is `dirsync`; `fsync` does not cover them
+  all. A power cut during the shutdown with the swap of `loader/entries.staged` could leave
+  `loader/entries` pointing at a freed cluster, and one after staging could leave
+  `loader/entries.staged` without its `.` and `..`: Linux then reports a corrupted directory, sets
+  the ESP read-only and every later update fails; `fsck.fat -a` does not repair it
+  (docs/LESSONS.md). Every ESP mount is therefore `dirsync` (each directory change is written before
+  the call returns): `/boot` (`boot.mount.d/10-nyra.conf`, the generator's options plus `dirsync`;
+  CI checks it), the mounts `esp-sync` makes at shutdown, and bootc's own (patched in
+  `ci/build-bootc.sh`, `patches/upstream/bootc-esp-dirsync.md`). bootc already writes each file to
+  a temporary name, fsyncs it and renames it. After `bootc-finalize-staged`, `sync` runs
+  (`bootc-finalize-staged.service.d/10-nyra.conf`): bootc detaches its mount lazily, so what it
+  wrote (the old files it removed) is not necessarily on the disk when it exits.
 
 CI follows one system through fourteen boots, with Secure Boot on and one firmware variable store kept
 across them (`vm-boot.py --keep-vars`). The image's command line imports no credentials, so the test
@@ -264,7 +277,7 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | Boot | Done before it | Expected |
 |---|---|---|
 | 0 (no boot) | `bootc install`, then `esp-sync install` | `loader.conf` with `editor no`, both copies of the boot files as in the image, the fallback UKI and entry equal to the installed version's |
-| 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root |
+| 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root, mounted `dirsync` |
 | 2 | | boots through `\EFI\nyra`; the test adds another entry, which is put first |
 | 3 | | that entry fails (its file does not exist); "Nyra OS" boots and is first again |
 | 4 | `\EFI\nyra\grubx64.efi` cut in half (an interrupted update) | the firmware falls back to `\EFI\BOOT`; the file is repaired |
