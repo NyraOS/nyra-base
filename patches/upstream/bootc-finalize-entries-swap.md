@@ -60,3 +60,16 @@ the exchange itself is still not atomic on FAT.
 
 No moment without a usable boot entry during finalization, on any file system. Filesystems where
 `RENAME_EXCHANGE` is atomic (ext4 `/boot`) see no change in behaviour.
+
+## Related: staging is not on disk when `bootc switch` returns
+
+`write_systemd_uki_config` ends with an `fsync` of the ESP's top directory only. The new UKI in
+`EFI/Linux/bootc/` and the files in `loader/entries.staged` can still be in memory when
+`bootc switch` reports success. On FAT that fsync does write the allocation table, so a power cut
+in the next seconds can leave clusters allocated with no directory entry pointing to them, and a
+directory with garbage entries. Seen once in CI (nyra-base `tools/vm/updates.sh`, a power cut
+right after staging): `fsck.vfat` recovered orphaned clusters, and the kernel then reported
+`FAT-fs: corrupted directory (invalid entries)` in `loader/entries.staged`. nyra-base works around it
+by running `sync` in `nyra-updated` after every `bootc switch` and `bootc rollback`. A `bootc switch`
+run by hand stays exposed until bootc itself `fsync`s each file and directory it writes on the ESP
+(or calls `syncfs` on it) before returning.
