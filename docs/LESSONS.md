@@ -138,10 +138,11 @@ Each line is something that broke or surprised us once.
   own (`ID=main` if `--profile` is not given), which becomes profile 0: joining a separate "main"
   profile as well would shift recovery to profile 2. Label the base with `--profile` and join only
   the extra profiles.
-- **bootc 1.16 reads every `*.conf` in `loader/entries`** (status, rollback detection, garbage
-  collection): an extra entry needs a `version` line or bootc fails to parse it, and a `sort-key` that
-  sorts after bootc's `bootc-<os>-0/1`, because bootc takes the first entry as the default (and as
-  the booted one when it searches by digest).
+- **bootc 1.16 reads every `*.conf` in `loader/entries`** as one of its deployments (status, rollback
+  detection, garbage collection). An extra entry for a bootc UKI showed up in CI as a second "other
+  deployment" in `bootc status --booted`, and one for any other file makes bootc fail (no `version`, or
+  no `bootc_composefs-<digest>` in the path). bootc matches `.conf` in lower case, systemd-boot and
+  `bootctl` in any case: an entry named `*.CONF` is in the boot menu and invisible to bootc.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with

@@ -119,7 +119,7 @@ vm --log "$logs/serial-boot-protection-1.log" \
   --title "Boot protection 1: no boot entries (variables reset): fallback path, \"Nyra OS\" entry created" \
   --command "$(loader '\EFI\BOOT\grubx64.efi')" \
   --command "$repair" \
-  --command '! journalctl -b -u nyra-boot-repair -o cat | grep "updated from" && echo "nothing on the ESP needed repair at the first boot"' \
+  --command '! journalctl -b -u nyra-boot-repair -o cat | grep "updated from /usr" && echo "no boot file on the ESP needed repair at the first boot"' \
   --command "$first" \
   --command 'o="$(findmnt -no OPTIONS -t vfat /boot | tr , "\n")"; echo "$o" | grep mask; echo "$o" | grep -Eqx "fmask=0[0-7]77" && echo "$o" | grep -Eqx "dmask=0[0-7]77"'
 

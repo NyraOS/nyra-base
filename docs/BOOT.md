@@ -306,14 +306,20 @@ the command line, makes the recovery profile PE file with `ukify build --profile
 the stub ignores any command line from the boot loader, and the only thing a boot entry chooses is
 the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in `StubProfile`).
 
-- **The menu entry** `loader/entries/nyra-recovery.conf` (`title Nyra OS Recovery`, `uki` = a
-  bootc UKI, `profile 1`) is written by `nyra-boot-repair` at every boot, for the running system's
-  UKI once that version is blessed (until then it stays on the version it points at, if that is still
-  on the ESP). bootc reads every entry in `loader/entries`: the file has `version recovery` (bootc
-  requires it) and `sort-key nyra-recovery`, which sorts after bootc's `bootc-<os>-0/1`, so bootc's
-  own entry stays first, for bootc and in the menu, and systemd-boot never picks a profile other than
-  0 by default. bootc swaps `loader/entries` at every update: `esp-sync boot-counter` copies the
-  recovery entry into `loader/entries.staged` at shutdown, so it is there after the update too.
+- **The menu entry** `loader/entries/nyra-recovery.CONF` (`title Nyra OS Recovery`, `uki` = a
+  bootc UKI, `profile 1`, `sort-key nyra-recovery`, after bootc's `bootc-<os>-0/1` in the menu) is
+  written by `nyra-boot-repair` at every boot, for the running system's UKI once that version is
+  blessed (until then it stays on the version it points at, if that is still on the ESP).
+  systemd-boot never picks a profile other than 0 by default.
+  - **Why `.CONF`:** bootc 1.16 reads every `*.conf` in `loader/entries` as one of its deployments.
+    An entry for a bootc UKI shows up as an extra "other deployment" in `bootc status` (seen in CI),
+    and any other entry makes `bootc status` fail. bootc matches the suffix in lower case only, while
+    systemd-boot and `bootctl` match it in any case, so the upper-case suffix keeps the entry out of
+    bootc and in the menu. If bootc changes that, the CI check "one booted image in `bootc status`"
+    fails.
+  - bootc swaps `loader/entries` at every update: `esp-sync boot-counter` copies the recovery entry
+    into `loader/entries.staged` at shutdown (its boot counting only renames `*.conf`), so it is there
+    after the update too.
 - **Authentication: an administrator's password.** Root has no password, and recovery must not be
   a root shell for anyone at the keyboard (no `SYSTEMD_SULOGIN_FORCE`). `rescue.service` runs
   `/usr/lib/nyra/boot/recovery-shell` instead of sulogin (a drop-in in `/usr`): it asks for a user
@@ -329,7 +335,7 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
 
 CI, on a copy of the installed disk, with Secure Boot on and one firmware variable store: the UKI
 bootc installed verifies with this run's certificate and contains the recovery profile; a normal boot
-writes the entry and `bootc status` still reports no queued rollback; the test adds an administrator
+writes the entry, and `bootc status` shows one booted image and no queued rollback; the test adds an administrator
 and a plain user and picks the entry for the next boot only (`bootctl set-oneshot`). That boot runs
 profile 1 (`LoaderEntrySelected`, `StubProfile`, `systemd.unit=rescue.target` on the command line,
 Secure Boot on): the plain user is refused without a password prompt, a wrong password gives no
