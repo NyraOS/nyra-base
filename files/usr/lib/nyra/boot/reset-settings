@@ -16,6 +16,9 @@
 # reset replaces it or bootc removes this version.
 set -eu
 trap '' INT QUIT TSTP
+# Files this script makes are for root only (the marker, the temporary copies of group and gshadow);
+# the new /etc gets the image's modes, and the kept files below get theirs explicitly.
+umask 077
 
 d="$(sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline)"
 state="/sysroot/state/deploy/$d"
@@ -78,8 +81,8 @@ umount "$image"
 line() { awk -F: -v n="$2" '$1 == n { print; exit }' "$1" 2>/dev/null || true; }
 has() { [ -n "$(line "$1" "$2")" ]; }
 uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
-if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then cat "$old/machine-id" > "$new/machine-id"; fi
-if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then cat "$old/hostname" > "$new/hostname"; fi
+if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then install -m 0444 "$old/machine-id" "$new/machine-id"; fi
+if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then install -m 0644 "$old/hostname" "$new/hostname"; fi
 users="$(awk -F: "NF == 7 && \$1 ~ /^[a-z_][a-z0-9_.-]*\$/ && $uid_ok { print \$1 }" "$old/passwd" 2>/dev/null || true)"
 for u in $users; do
 	has "$new/passwd" "$u" && continue

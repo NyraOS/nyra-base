@@ -13,10 +13,13 @@
 #      either all old or all new, never half;
 #   6. the reset, with a power cut as it switches to the new /etc; 7. the same check;
 #   8. the reset, with a power cut right after the switch; 9. the new /etc is in place, the system
-#      runs, and the previous /etc is still there as etc.nyra-new (kept by the next reset);
+#      runs, and the previous /etc is still there as etc.nyra-new (kept by the next reset); the
+#      reset's marker, still in /etc, is 0600: the files the reset makes (its temporary copies of
+#      group and gshadow too) are for root only (umask 077);
 #   10. the reset: /etc is the image's again, the system reboots by itself into the normal boot:
 #      the breakage is gone, the administrator, their password, their groups and /home are kept, and
-#      so are the machine ID and the host name; the previous /etc is kept as etc.nyra-old (0700);
+#      so are the machine ID (0444) and the host name (0644); the previous /etc is kept as
+#      etc.nyra-old (0700);
 #   11. the reset, with a power cut right after it makes the new /etc's directory; 12. no
 #      etc.nyra-new without its marker (which the next reset would keep instead of etc.nyra-old), and
 #      etc.nyra-old as it was.
@@ -120,6 +123,7 @@ vm --poweroff --log "$logs/serial-reset-settings-9.log" \
   --command "$running" \
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test ! -L /etc/systemd/system/systemd-resolved.service && echo "old: 0, reset: 4"' \
   --command "$state; ls -a \$s; test -e \$s/etc.nyra-new/nyra-test-junk && test ! -e \$s/etc.nyra-new/.nyra-reset-new && echo 'etc.nyra-new holds the previous /etc (no marker)'" \
+  --command 'stat -c "%a %n" /etc/.nyra-reset-new && test "$(stat -c %a /etc/.nyra-reset-new)" = 600 && echo "the files the reset makes are for root only"' \
   --command "$oneshot"
 
 vm --poweroff --log "$logs/serial-reset-settings-10.log" --chat-then-login --chat "$answer=>RESET" \
@@ -127,7 +131,7 @@ vm --poweroff --log "$logs/serial-reset-settings-10.log" --chat-then-login --cha
   --command "$running" \
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
   --command "id nyra-admin && id -nG nyra-admin | grep -qw sudo && passwd -S nyra-admin | grep -q ' P ' && grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow && echo 'the administrator and their password are kept'" \
-  --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && cmp /etc/machine-id $before/machine-id && test \"\$(cat /etc/hostname)\" = nyra-test-host && echo '/home, the machine ID and the host name are kept'" \
+  --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && cmp /etc/machine-id $before/machine-id && test \"\$(cat /etc/hostname)\" = nyra-test-host && test \"\$(stat -c %a /etc/machine-id) \$(stat -c %a /etc/hostname)\" = '444 644' && echo '/home, the machine ID (0444) and the host name (0644) are kept'" \
   --command "$state; ls -a \$s; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test ! -e \$s/etc.nyra-new && echo 'the previous /etc is kept as etc.nyra-old (0700)'" \
   --command "$oneshot"
 
