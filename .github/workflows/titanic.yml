@@ -4,12 +4,13 @@
 #               install-boot job, on that image, with 20 rounds of the soft reboot network test
 #   power-cuts  power cuts at random moments of an update, on the same image (tools/titanic/power-cuts.sh);
 #               the seed is printed and kept in the results
-#   full-disk   a full disk during an update and at boot, and the space the system takes across 8
-#               updates in a row, on the same image (tools/titanic/full-disk.sh)
+#   stress      on the same image: a full disk during an update and at boot, and the space the system
+#               takes across 8 updates in a row (tools/titanic/full-disk.sh); an update under extreme
+#               load (tools/titanic/extreme-load.sh)
 #   results     titanic-results.json: one result per test T1-T15 (tools/titanic/results.py), read
 #               from this run's steps through the API with the run's own read-only token
 # Artifacts: titanic-results, the serial logs (install-boot-serial-log, titanic-power-cuts-serial-log,
-# titanic-full-disk-serial-log) and those of image.yml.
+# titanic-stress-serial-log) and those of image.yml.
 name: titanic
 on:
   schedule:
@@ -122,7 +123,7 @@ jobs:
           retention-days: 14
 
   # As power-cuts, in parallel with it.
-  full-disk:
+  stress:
     needs: image
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -182,17 +183,23 @@ jobs:
           tools/titanic/full-disk.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY" "$UPDATES"
 
+      - name: An update under extreme load (Titanic T13)
+        if: ${{ !cancelled() }}
+        run: |
+          tools/titanic/extreme-load.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
+            "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the serial logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: titanic-full-disk-serial-log
+          name: titanic-stress-serial-log
           path: ${{ runner.temp }}/serial*.log
           if-no-files-found: ignore
           retention-days: 14
 
   results:
-    needs: [image, power-cuts, full-disk]
+    needs: [image, power-cuts, stress]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

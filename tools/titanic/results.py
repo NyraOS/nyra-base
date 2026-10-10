@@ -26,7 +26,8 @@ COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
 UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)")
 SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATES.md)")
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
-FULL_DISK = ("full-disk", "Full disk and the space across updates (Titanic T6)")
+FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
+EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
 TESTS = {
@@ -66,7 +67,10 @@ TESTS = {
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
     "T12": ("Hostile root", None, [],
             "Not written yet (a read-only /usr is checked under T1)."),
-    "T13": ("Extreme load", None, [], "Not written yet."),
+    "T13": ("Extreme load", "full", [EXTREME_LOAD],
+            "An update while 8 busy loops run on 2 vCPUs, less than 200 MiB of memory is free and the "
+            "disk is written without a pause: staged exactly or failed with nothing staged; the next "
+            "boot runs, the update completes."),
     "T14": ("Media removed", None, [], "Needs removable media support, which does not exist yet."),
     "T15": ("Secure defaults", "full", [DEFAULTS, SECURE_BOOT, UPDATES],
             "Secure Boot with a MOK, lockdown, AppArmor, firewall, listening sockets, running units and "
@@ -95,12 +99,12 @@ def evaluate(jobs, run_url):
 
 
 def self_test():
-    every = [{"name": f"image / {j}" if j not in ("power-cuts", "full-disk") else j, "steps": [{"name": s, "conclusion": "success"}]}
+    every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
-                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK}]
+                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "not-implemented", "pass"], r
+    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T13", "T15")] == \
+        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "not-implemented", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]

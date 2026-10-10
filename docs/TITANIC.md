@@ -15,8 +15,8 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
   builds with the caches; a manual run on `main` builds without caches, like a release, but is never signed, and it never
   delays or replaces a release build of `image.yml` (its own concurrency group).
 - Then the `power-cuts` job installs the same image again and cuts the power at random moments of an
-  update (below); in parallel the `full-disk` job installs it too and fills its disk (below). The
-  `results` job writes `titanic-results.json`.
+  update (below); in parallel the `stress` job installs it too, fills its disk and updates it under
+  extreme load (below). The `results` job writes `titanic-results.json`.
 
 ## The tests
 
@@ -34,7 +34,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | none (a read-only `/usr` is checked under T1) | not implemented |
-| T13 | Extreme load during an update | none | not implemented |
+| T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
 
@@ -85,6 +85,15 @@ UKI):
 
 The table of the sizes is in the step summary. A system that keeps old versions grows by a version at
 every update; one that stays the same from the third update on stays the same after any number.
+
+## Extreme load
+
+[`tools/titanic/extreme-load.sh`](../tools/titanic/extreme-load.sh): in a VM with 2 vCPUs and 2 GiB,
+8 busy loops, memory taken until less than 200 MiB is available (the out-of-memory killer may stop
+anything, bootc too) and 256 MiB written and flushed again and again; the load is checked (load
+average 3 or more, less than 300 MiB available). Then an update with `bootc switch`: it must either
+stage exactly the test version or fail with nothing staged. The next boot must run the old or the new
+version; the update then completes without load, and the new version boots and runs.
 
 ## Results
 
