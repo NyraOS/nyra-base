@@ -22,10 +22,10 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | # | What we try to break | Covered by | Result today |
 |---|---|---|---|
 | T1 | Immutability | `/usr` read-only (first boot of `install-boot`), signature policy (`tools/signing/test-policy.sh`), refused UKIs (`tools/vm/secure-boot.sh`) | partial: a modified composefs object on disk is not tested yet |
-| T2 | Power cuts | `tools/titanic/power-cuts.sh` (random moments), `tools/vm/updates.sh` (`nyra-updated` after cuts at fixed moments) | full |
+| T2 | Power cuts | `tools/titanic/power-cuts.sh` (random moments), `tools/vm/updates.sh` (`nyra-updated` after cuts at fixed and at random moments) | full |
 | T3 | Broken version | `tools/vm/boot-counting.sh`, `tools/vm/updates.sh` (failed health check: back within 3 boots, not offered again), `tools/vm/soft-reboot-network.sh` (the network after every soft reboot and full boot of an update, 20 rounds a night) | partial: kernel panic, initramfs without the disk driver, no graphical session, dead network not tested yet |
 | T4 | Signatures and versions | `tools/signing/test-policy.sh`, `tools/vm/secure-boot.sh`, `tools/vm/updates.sh` | full |
-| T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server) | partial: a 50 kbit/s link, a server that stalls mid-download, spoofed DNS answers not tested yet |
+| T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
 | T6 | Full disk | none | not implemented |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh` | full |
 | T8 | Configuration broken by the user | none: needs the system settings reset | not implemented |
@@ -35,7 +35,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | none (a read-only `/usr` is checked under T1) | not implemented |
 | T13 | Extreme load during an update | none | not implemented |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
-| T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation) | partial: not checked again after an update yet |
+| T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
 
 A test passes only if every step that runs it succeeded; a test that covers only part of its
 scenarios gives `partial` at best. A step that failed, was skipped or no longer exists fails the

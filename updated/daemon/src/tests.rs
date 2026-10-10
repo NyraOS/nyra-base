@@ -88,6 +88,7 @@ fn config() -> Config {
         channel: "stable".into(),
         version_floor: "2026.10.1".into(),
         keys: vec![signer().verifying_key()],
+        stage_timeout: STAGE_TIMEOUT,
     }
 }
 
@@ -937,6 +938,29 @@ fn an_incomplete_or_unknown_config_is_refused() {
     assert!(Config::parse(&bad_floor, &key).is_err());
     let extra = format!("{CONF}tag = latest\n");
     assert!(matches!(Config::parse(&extra, &key), Err(Error::Config(_))));
+}
+
+#[test]
+fn the_stage_timeout_can_only_be_shortened() {
+    let base = "repository = nyra\nchannel = stable\nversion_floor = 2026.10.1\n";
+    let key = pem(&signer());
+    assert_eq!(
+        Config::parse(base, &key).unwrap().stage_timeout,
+        STAGE_TIMEOUT
+    );
+    let short = format!("{base}stage_timeout_seconds = 60\n");
+    assert_eq!(
+        Config::parse(&short, &key).unwrap().stage_timeout,
+        Duration::from_secs(60)
+    );
+    for bad in ["0", "7201", "-1", "1h", ""] {
+        let conf = format!("{base}stage_timeout_seconds = {bad}\n");
+        assert_eq!(
+            Config::parse(&conf, &key).unwrap_err(),
+            Error::Config("invalid stage_timeout_seconds".into()),
+            "{bad:?}"
+        );
+    }
 }
 
 #[test]

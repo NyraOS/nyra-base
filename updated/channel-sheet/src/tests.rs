@@ -752,8 +752,9 @@ fn signatures_and_rollout_groups_match_independent_implementations() {
 
 #[test]
 fn a_malleated_signature_is_refused() {
-    // s + L (the group order) is the same signature for a lax verifier; strict verification
-    // refuses an s that is not reduced.
+    // s + L (the group order) is the same signature mathematically; a verifier that accepts an s
+    // that is not reduced (some other libraries, legacy compatibility modes) would take it. Ours
+    // must refuse it.
     const L: [u8; 32] = [
         0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
         0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
