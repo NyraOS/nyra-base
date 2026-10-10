@@ -53,11 +53,12 @@ the image served on the runner, and kills QEMU a random time after the start of 
 | Phase | The cut comes | Window |
 |---|---|---|
 | download | during the pull, with the registry throttled to 2 Mbit/s | 0-60 s |
-| staging | during the switch at full speed (pull, deployment, staged boot entries) | 0-20 s |
-| finalize | after `systemctl reboot`, while the staged entries are swapped in | 0-15 s |
+| staging | during the switch at full speed (pull, deployment, staged boot entries) | 0-4 s |
+| finalize | after `systemctl reboot`, while the staged entries are swapped in | 0-3 s |
 | firstboot | after QEMU starts the first boot of the new version | 0-30 s |
 
-A cut that lands after its phase (the switch already done, the next boot already started) is a
+The windows follow what the phases take on the CI runner (the switch at full speed about 4 s, the
+shutdown with the swap about 3 s); wider ones put almost every cut after the phase. A cut that lands after its phase (the switch already done, the next boot already started) is a
 moment too, and the log says where it landed. After the cut the machine must boot to a running
 system on the old or the new version, and the update must then complete: switched again if the old
 version booted, one reboot, the new version running. The phases take turns; the moments come from a

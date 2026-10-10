@@ -24,7 +24,8 @@ trap 'sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
 
 # --- the plan ---------------------------------------------------------------------------------------
 phases=(download staging finalize firstboot)
-windows=(600 200 150 300) # tenths of a second after the start of the phase
+windows=(600 40 30 300) # tenths of a second after the start of the phase (measured in CI: the switch at
+# full speed takes about 4 s, the shutdown with the swap about 3 s)
 RANDOM="$seed"
 plan=()
 for ((i = 0; i < cuts; i++)); do
