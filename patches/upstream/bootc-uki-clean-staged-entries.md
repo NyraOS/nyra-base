@@ -1,6 +1,6 @@
 # bootc: clean stale staged entries before staging a UKI deployment (systemd-boot)
 
-Status: kept here, not sent upstream yet (an upstream change needs the owner's approval and a check
+Status: kept here, not sent upstream yet (an upstream change needs the project's approval and a check
 that it does not break other distributions). Worked around in nyra-base by `esp-sync repair`
 (stale staged entries removed at every full boot, docs/UPDATES.md).
 

@@ -1,7 +1,7 @@
 # bootc: mount the ESP with MS_DIRSYNC
 
 Status: applied in nyra-base's bootc build (`ci/build-bootc.sh`), not sent upstream yet (an
-upstream change needs the owner's approval and a check that it does not break other
+upstream change needs the project's approval and a check that it does not break other
 distributions).
 
 Upstream: bootc-dev/bootc, checked at v1.16.13 (`fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60`).
