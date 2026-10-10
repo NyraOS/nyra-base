@@ -32,7 +32,11 @@ running() {
 	s="$(systemctl is-system-running --wait)"
 	echo "system: $s"
 	systemctl --no-pager --failed
-	[ "$s" = running ]
+	[ "$s" = running ] && return 0
+	# If it is the network: systemd-networkd's own account (debug level on the test disk).
+	networkctl status --all --no-pager
+	journalctl -b -u systemd-networkd -u systemd-networkd-wait-online -o short-monotonic --no-pager | tail -150
+	return 1
 }
 
 entries() { ls /boot/loader/entries; }

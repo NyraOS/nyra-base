@@ -22,8 +22,17 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      soft-reboot-rounds:
+        description: Rounds of tools/vm/soft-reboot-network.sh (1-99)
+        default: "2"
   # titanic.yml runs this workflow every night and reads the names of its steps (tools/titanic/results.py).
   workflow_call:
+    inputs:
+      soft-reboot-rounds:
+        description: Rounds of tools/vm/soft-reboot-network.sh (1-99)
+        type: string
+        default: "2"
 permissions:
   contents: read
 # A new push to a pull request cancels its older run; on main a running release is never cancelled.
@@ -360,7 +369,7 @@ jobs:
   install-boot:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -473,6 +482,15 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 40
         run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Network across soft reboots (docs/UPDATES.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 45
+        env:
+          ROUNDS: ${{ inputs.soft-reboot-rounds || '2' }}
+        run: |
+          tools/vm/soft-reboot-network.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY" "$ROUNDS"
 
       - name: Upload the serial logs
         if: always()

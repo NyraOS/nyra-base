@@ -186,6 +186,13 @@ bootc reads it.
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 
+**Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
+disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft
+reboot into another test version, each needing a running system and the network up. CI runs 2
+rounds, the nightly Titanic run 20 (`soft-reboot-rounds`, up to 99, also for a manual run of the
+image workflow). On the test disks `systemd-networkd` logs at debug level, and when the system is
+not `running` both tests print its journal and the link state.
+
 Power cuts at many random moments, finalization included, run every night with `bootc` directly
 (`docs/TITANIC.md`). Not covered yet: a slow (50 kbit/s) link
 and a server that stalls mid-download (the 2-hour limit is unit-tested only), DNS answers for another

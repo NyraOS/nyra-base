@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The Titanic battery, every night and by hand (docs/TITANIC.md): not on pull requests.
-#   image       image.yml, called as is: the image built once, then every boot, update and security
-#               test of its install-boot job, on that image
+#   image       image.yml: the image built once, then every boot, update and security test of its
+#               install-boot job, on that image, with 20 rounds of the soft reboot network test
 #   power-cuts  power cuts at random moments of an update, on the same image (tools/titanic/power-cuts.sh);
 #               the seed is printed and kept in the results
 #   results     titanic-results.json: one result per test T1-T15 (tools/titanic/results.py), read
@@ -27,6 +27,9 @@ env:
 jobs:
   image:
     uses: ./.github/workflows/image.yml
+    # The network across soft reboots, repeated (tools/vm/soft-reboot-network.sh, ~35 s a round).
+    with:
+      soft-reboot-rounds: "20"
     # What image.yml's jobs declare (GitHub checks them all). id-token is only for its sign job, which
     # never runs when this workflow calls image.yml (docs/SIGNING.md).
     permissions:
