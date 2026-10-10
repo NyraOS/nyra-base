@@ -32,6 +32,8 @@ then a root shell prompt must follow (for a boot that asks for something else th
 a login, like recovery).
 With --chat-then-login a login prompt follows instead (the guest reboots after the
 chat, for example), and the script logs in there as usual.
+--rtc BASE starts the guest's hardware clock at BASE (QEMU -rtc base=, for example
+2099-01-01T00:00:00) instead of the host's time.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
 itself first. A command written "@reboot CMD" is typed without waiting for its
 result, then the script logs in again at the next login prompt (a soft reboot).
@@ -222,6 +224,7 @@ def main():
     p.add_argument("--credential", action="append", default=[], metavar="NAME=TEXT",
                    help="one more systemd credential over SMBIOS")
     p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
+    p.add_argument("--rtc", metavar="BASE", help="the guest's hardware clock starts at BASE (QEMU -rtc base=)")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     p.add_argument("--chat", action="append", default=[], metavar="EXPECT=>SEND",
                    help="instead of the login: wait for EXPECT, type SEND (repeatable)")
@@ -248,6 +251,8 @@ def main():
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
            # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
            "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
+    if a.rtc:
+        cmd += ["-rtc", f"base={a.rtc}"]
     if a.autologin:
         cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]

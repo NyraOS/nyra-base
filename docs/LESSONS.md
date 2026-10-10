@@ -322,3 +322,22 @@ Each line is something that broke or surprised us once.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.
+
+## Titanic (docs/TITANIC.md)
+- composefs objects carry fs-verity: bytes changed on the block device under a mounted ext4 (root
+  may write there) make every read of that block fail with `Input/output error`, through `/usr` and
+  on the object itself. Drop the page cache first (`sync`, `blockdev --flushbufs`, `drop_caches`),
+  or the old pages are served. The same write on a plain file in `/var` is the control.
+- systemd sets the clock to its build time at boot when the hardware clock is before it **or more
+  than about 15 years after it**: an RTC in 1970 and one in 2099 both start at the image's build
+  time (the snapshot date), still before the real time. A clock that is wrong but within that range
+  (2035) stays wrong. The image has no time synchronization, so nothing corrects it.
+- curl reports a wrong clock as `SSL certificate OpenSSL verify result: certificate is not yet valid
+  or the system clock is incorrect (9)` or `... certificate has expired (10)`, which is what
+  `nyra-updated` passes on.
+- ext4 keeps a few clusters that even root cannot take, so `stat -f -c %f` stays above zero on a
+  full disk: prove "full" with a write that fails. bootc on a full root file system fails early
+  (`Creating imgstorage: Creating tmpdir: No space left on device`), on a full ESP when it writes the
+  UKI (`Writing UKI: No space left on device`); nothing is staged in either case.
+- `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
+  killed, so a version staged in that boot is never finalized. Stage in a boot of its own.

@@ -378,7 +378,9 @@ jobs:
   # is set up by vm-boot.py, with a test add-on on the test disk's ESP (tools/vm/test-console.sh);
   # nothing changes in the image.
   # The digest check reads only the booted entry (--booted drops staged and rollback)
-  # and needs exactly one imageDigest there, equal to the loaded image's.
+  # and needs exactly one imageDigest there, equal to the loaded image's. Then one more boot changes a
+  # composefs object on the disk under the file system, which must give a read error
+  # (tools/vm/tampered-object.sh, Titanic T1).
   # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
   # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> the image's UKI, signed with this
   # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
@@ -483,6 +485,11 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
 
+      # Titanic T1: a composefs object changed on the disk gives a read error (tools/vm/tampered-object.sh).
+      - name: Tampered composefs object (Titanic T1)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: tools/vm/tampered-object.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Secure defaults (docs/DEFAULTS.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/vm/security-defaults.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
@@ -525,7 +532,7 @@ jobs:
           tools/vm/boot-counting.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
-      - name: Updates across real versions, Titanic T2-T5 (docs/UPDATES.md)
+      - name: Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 40
         run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"

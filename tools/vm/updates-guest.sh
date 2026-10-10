@@ -47,7 +47,8 @@ blessed() { # no boot counter left: every entry is good
 }
 
 select_sheet() { # what the test sheet server answers at /channels/nyra-base/stable
-	curl -fsS "https://updates.nyraos.com/_test/select/$1" >/dev/null
+	# -k: this is the test's own control request, which must work with a wrong clock too (T9).
+	curl -kfsS "https://updates.nyraos.com/_test/select/$1" >/dev/null
 }
 
 run_check() { # nyra-updated check, as the timer starts it; prints last-check.json

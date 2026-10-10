@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: nyra-updated across real updates, on a copy of the installed test disk (docs/UPDATES.md).
 # Titanic T2 (power cuts), T3 (a broken version), T4 (signatures and versions), T5 (a hostile
-# network), the discard of a staged deployment (bootc rollback twice) and blessing after a soft reboot.
+# network), T9 (a wrong clock), the discard of a staged deployment (bootc rollback twice) and
+# blessing after a soft reboot.
 #
 # Everything the guest trusts is made for this run and deleted with the runner: an image signing key
 # (sigstore, the stand-in for our keyless signer: the guest's /etc/containers/policy.json is replaced
@@ -12,7 +13,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v14: 2026.10.1-14, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v16: 2026.10.1-16, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -46,7 +47,12 @@
 #  27  v13: v14 staged (its initramfs is broken)
 #  28  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
 #      v14 is marked failed and refused
-#  29  v13: the shipped signature policy linked again; then the secure defaults check (T15)
+#  29  v13, the hardware clock in 2099 (T9): the sheet server refused, unsigned images refused;
+#      the clock set right: v15 staged
+#  30  v15, the hardware clock in 1970: the same; v16 staged
+#  31  v16, the hardware clock in 2035: the same; with the clock set right, up to date
+#  32  v16, the clock right: the shipped signature policy linked again; then the secure defaults
+#      check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -113,7 +119,7 @@ version() { # version NAME VERSION [Containerfile lines]
     sudo podman build -q --annotation "org.opencontainers.image.version=$2" -t "localhost/nyra-test:$1" \
       --build-context uki="$u/$1-uki" -f - "$u/context" >/dev/null
 }
-for n in 0 1 4 5 6 7 8 9 10 11 12 13; do version "v$n" "2026.10.$n"; done
+for n in 0 1 4 5 6 7 8 9 10 11 12 13 15 16; do version "v$n" "2026.10.$n"; done
 # v14: its UKI carries an initramfs of zeros, so the kernel panics (and reboots, panic=10).
 BROKEN_INITRD=1 version v14 2026.10.14
 # v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
@@ -158,14 +164,14 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7 8 9 10 11 12 13 14; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
 d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")" d7="$(cat "$u/v7.digest")"
 d8="$(cat "$u/v8.digest")" d9="$(cat "$u/v9.digest")" d10="$(cat "$u/v10.digest")"
 d11="$(cat "$u/v11.digest")" d12="$(cat "$u/v12.digest")" d13="$(cat "$u/v13.digest")"
-d14="$(cat "$u/v14.digest")"
+d14="$(cat "$u/v14.digest")" d15="$(cat "$u/v15.digest")" d16="$(cat "$u/v16.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -199,6 +205,8 @@ sheet s10 sheet 1000 "$d10" 2026.10.10 "$d4" "$d6"
 sheet s12 sheet 1200 "$d12" 2026.10.12 "$d4" "$d6"
 sheet s13 sheet 1300 "$d13" 2026.10.13 "$d4" "$d6"
 sheet s14 sheet 1400 "$d14" 2026.10.14 "$d4" "$d6"
+sheet s15 sheet 1500 "$d15" 2026.10.15 "$d4" "$d6"
+sheet s16 sheet 1600 "$d16" 2026.10.16 "$d4" "$d6"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -484,10 +492,39 @@ l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
 
-# The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v13, with the
+# A wrong clock (T9). The image has no time synchronization, so the test sets the clock right
+# itself, as a user would. The hardware clock in 2099 and in 1970: systemd sets the clock to its build
+# time at boot (a clock more than about 15 years after it counts as wrong too), still before the real
+# time; in 2035 the clock stays wrong, ahead. Each time: the system boots; the sheet server's
+# certificate is refused (not yet valid, expired) and nothing is staged; unsigned and wrongly signed
+# images are still refused (image signatures do not depend on the clock); with the clock set right
+# the next check succeeds: the wrong clock left nothing behind. Each boot comes from a file system
+# last mounted at another time.
+tls_time='SSL certificate .*certificate (has expired|is not yet valid)'
+unsigned="refused_switch updates.nyraos.com/nyra-base:v0 'A signature was required, but no signature exists' && refused_switch updates.nyraos.com/nyra-base:attacker 'cryptographic signature verification failed'"
+vm "v13, the hardware clock in 2099: certificate refused, unsigned refused; clock set right: v15 staged" --poweroff \
+  --rtc 2099-06-01T00:00:00 \
+  --command "$lib; expect booted $d13 && running && date -u && test \"\$(date +%s)\" -lt $(date +%s)" \
+  --command "$lib; refused s15 '$tls_time' && expect staged none" \
+  --command "$lib; $unsigned" \
+  --command "date -u -s @$(date +%s) && $lib && outcome s15 Staged && expect staged $d15"
+vm "v15, the hardware clock in 1970: certificate refused, unsigned refused; clock set right: v16 staged" --poweroff \
+  --rtc 1970-01-01T00:00:00 \
+  --command "$lib; expect booted $d15 && running && blessed && date -u && test \"\$(date +%s)\" -lt $(date +%s)" \
+  --command "$lib; refused s16 '$tls_time' && expect staged none" \
+  --command "$lib; $unsigned" \
+  --command "date -u -s @$(date +%s) && $lib && outcome s16 Staged && expect staged $d16"
+vm "v16, the hardware clock in 2035: certificate refused, unsigned refused; clock set right: up to date" --poweroff \
+  --rtc 2035-06-01T00:00:00 \
+  --command "$lib; expect booted $d16 && running && blessed && date -u && test \"\$(date +%Y)\" = 2035" \
+  --command "$lib; refused s16 '$tls_time' && expect staged none" \
+  --command "$lib; $unsigned" \
+  --command "date -u -s @$(date +%s) && $lib && outcome s16 UpToDate && expect staged none"
+
+# The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v16, with the
 # shipped signature policy linked again.
-vm "v13: the shipped signature policy again, for the secure defaults check" --poweroff \
-  --command "$lib; expect booted $d13 && running" \
+vm "v16, the clock right again; the shipped signature policy again, for the secure defaults check" --poweroff \
+  --command "$lib; expect booted $d16 && running" \
   --command 'ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && readlink /etc/containers/policy.json'
 mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
