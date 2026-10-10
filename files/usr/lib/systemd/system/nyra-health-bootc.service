@@ -4,6 +4,9 @@
 [Unit]
 Description=Nyra health check: bootc works
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+# bootc reads its boot entries: after a boot through the fallback UKI (loader/entries lost),
+# esp-sync puts them back first, or this check would fail a healthy version and reboot it.
+After=nyra-boot-repair.service
 
 [Service]
 Type=oneshot

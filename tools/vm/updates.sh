@@ -43,10 +43,10 @@
 #  25  v10: v12 staged
 #  26  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
 #      stalls mid-pull refused, nothing staged; v13 staged
-#  27  v13: the shipped signature policy linked again; then the secure defaults check (T15)
-#  28  v13: v14 staged (its initramfs is broken)
-#  29  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
+#  27  v13: v14 staged (its initramfs is broken)
+#  28  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
 #      v14 is marked failed and refused
+#  29  v13: the shipped signature policy linked again; then the secure defaults check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -137,9 +137,20 @@ sudo mkdir -p /etc/containers/registries.d
 printf 'docker:\n  updates.nyraos.com:\n    use-sigstore-attachments: true\n' |
   sudo tee /etc/containers/registries.d/99-nyra-updates-test.yaml >/dev/null
 push() { # push NAME TAG [SIGSTORE_KEY]
-  sudo podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
-    ${3:+--sign-by-sigstore-private-key "$u/$3.private" --sign-passphrase-file "$u/pass"} \
-    "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2"
+  # A push takes seconds. In CI podman sometimes stops sending a layer in the middle of the upload
+  # (the registry has the upload open and waits; disk and registry are fine): such a push is stopped
+  # after 2 minutes and tried again, at most 3 times, with what is needed to tell why.
+  local try
+  for try in 1 2 3; do
+    sudo timeout 120 podman push -q --tls-verify=false --format oci --digestfile "$u/$1.digest" \
+      ${3:+--sign-by-sigstore-private-key "$u/$3.private" --sign-passphrase-file "$u/pass"} \
+      "localhost/nyra-test:$1" "docker://updates.nyraos.com/nyra-base:$2" && break
+    echo "::warning::podman push of $1 failed or took more than 2 minutes (attempt $try of 3)"
+    df -h / /mnt
+    sudo podman logs --tail 10 nyra-test-registry || true
+    curl -sS -m 10 -o /dev/null -w 'registry /v2/: HTTP %{http_code} in %{time_total} s\n' http://updates.nyraos.com/v2/ || true
+    if [ "$try" = 3 ]; then echo "::error::podman push of $1 failed 3 times"; return 1; fi
+  done
   sudo chown "$(id -u):$(id -g)" "$u/$1.digest"
   [[ "$(cat "$u/$1.digest")" =~ ^sha256:[0-9a-f]{64}$ ]]
 }
@@ -457,6 +468,20 @@ vm "v12: another host for the update server, a slow link, a stalled registry; th
   --command "$lib; curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 5 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && curl -fsS https://updates.nyraos.com/_test/stall && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; r=0; grep -q 'timed out and was stopped' /var/lib/nyra-updated/last-check.json || r=1; curl -fsS https://updates.nyraos.com/_test/resume; curl -fsS https://updates.nyraos.com/_test/rate/0; test \$r = 0 && expect staged none; }" \
   --command "$lib; outcome s13 Staged && expect staged $d13"
 
+# A broken kernel or initramfs (T3), on v13's first boot (rule 9 needs the first check of a new
+# version in a counted boot): v14's kernel finds no initramfs, panics and reboots after 10 s
+# (panic=10 on the sealed command line), three times; then systemd-boot falls back to v13.
+vm "v13: v14 staged" --poweroff \
+  --command "$lib; expect booted $d13 && running" \
+  --command 'grep -qw panic=10 /proc/cmdline && systemctl is-active nyra-health-bootc.service && test "$(systemctl show -P RestrictSUIDSGID nyra-health-bootc.service)" = no && test "$(systemctl show -P RestrictSUIDSGID nyra-health-system.service)" = yes && echo "panic=10; bootc health check passed, the only one without RestrictSUIDSGID"' \
+  --command "$lib; outcome s14 Staged && expect staged $d14"
+vm "v14 panics three times, back on v13 by itself" --poweroff --boots 4 --timeout 300 \
+  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3" \
+  --command "$lib; refused s14 'this machine fell back from it' && expect staged none"
+l="$logs/serial-updates-$n.log"
+echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
+[ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
+
 # The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v13, with the
 # shipped signature policy linked again.
 vm "v13: the shipped signature policy again, for the secure defaults check" --poweroff \
@@ -466,14 +491,3 @@ mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
 
-# A broken kernel or initramfs (T3): v14's kernel finds no initramfs, panics and reboots after 10 s
-# (panic=10 on the sealed command line), three times; then systemd-boot falls back to v13.
-vm "v13: v14 staged" --poweroff \
-  --command "$lib; expect booted $d13 && running" \
-  --command "$lib; outcome s14 Staged && expect staged $d14"
-vm "v14 panics three times, back on v13 by itself" --poweroff --boots 4 --timeout 300 \
-  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3" \
-  --command "$lib; refused s14 'this machine fell back from it' && expect staged none"
-l="$logs/serial-updates-$n.log"
-echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
-[ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
