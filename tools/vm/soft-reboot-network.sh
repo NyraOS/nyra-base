@@ -5,7 +5,8 @@
 #   full boot (the version the last round soft-rebooted into, first counted boot): network up
 #   bootc switch --soft-reboot=required --apply to a new test version: network up again
 #   clean shutdown
-# The test versions differ only in a marker file; a throwaway registry on the runner serves them as
+# Three test versions, used in turn, differ only in a marker file (bootc refuses to switch to the
+# rollback deployment, and keeps no older one); a throwaway registry on the runner serves them as
 # 10.0.2.2 (QEMU user networking). On a failure the guest prints systemd-networkd's journal (debug
 # level, set on the test disk) and the link state.
 #   tools/vm/soft-reboot-network.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY [ROUNDS]
@@ -27,8 +28,9 @@ for s in pe.sections:
         with open(f"{sys.argv[2]}/{name}", "wb") as f:
             f.write(s.get_data()[:s.Misc_VirtualSize])
 EOF
-for i in $(seq "$rounds"); do
-  printf 'FROM %s\nRUN rm -rf /boot/EFI && echo round-%s > /usr/lib/nyra-test-version\n' "$image" "$i" |
+versions=$((rounds < 3 ? rounds : 3))
+for i in $(seq "$versions"); do
+  printf 'FROM %s\nRUN rm -rf /boot/EFI && echo version-%s > /usr/lib/nyra-test-version\n' "$image" "$i" |
     sudo podman build -q -t "localhost/nyra-test:r$i-rootfs" -f - "$s/context" >/dev/null
   mkdir -p "$s/r$i-uki"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
@@ -43,7 +45,7 @@ done
 
 sudo podman rm -f nyra-test-registry >/dev/null 2>&1 || true
 tools/signing/local-registry.sh "$s"
-for i in $(seq "$rounds"); do
+for i in $(seq "$versions"); do
   sudo podman push -q --tls-verify=false "localhost/nyra-test:r$i" "docker://other.test/nyra-test:r$i"
 done
 
@@ -59,11 +61,12 @@ net='s="$(systemctl is-system-running --wait)"; echo "system: $s"; if test "$s" 
 setup='mkdir -p /etc/containers/registries.conf.d /etc/systemd/system/systemd-networkd.service.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf && printf "[Service]\nEnvironment=SYSTEMD_LOG_LEVEL=debug\n" > /etc/systemd/system/systemd-networkd.service.d/50-ci-debug.conf'
 
 for i in $(seq "$rounds"); do
+  v=$(((i - 1) % versions + 1))
   extra=()
   [ "$i" != 1 ] || extra=(--command "$setup")
-  vm "$i" "full boot, then a soft reboot into r$i" \
+  vm "$i" "full boot, then a soft reboot into version $v" \
     "${extra[@]}" \
     --command "$net" \
-    --command "@reboot bootc switch --quiet --soft-reboot=required --apply 10.0.2.2/nyra-test:r$i" \
-    --command "grep -x round-$i /usr/lib/nyra-test-version && $net"
+    --command "@reboot bootc switch --quiet --soft-reboot=required --apply 10.0.2.2/nyra-test:r$v" \
+    --command "grep -x version-$v /usr/lib/nyra-test-version && $net"
 done
