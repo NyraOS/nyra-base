@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: dpkg (docs/DEFAULTS.md, "apt and dpkg"). Installing a package (-i, --install, --unpack)
+# says what to use instead and fails, as apt does; /usr is read-only anyway. Everything else, the
+# queries (-l, -L, -S, -s) among them, runs Debian's dpkg, which the image build moved to
+# /usr/lib/nyra/dpkg.
+for a do
+	case "$a" in
+	--) break ;;
+	--install | --unpack) exec /usr/lib/nyra/no-apt ;;
+	--*) ;;
+	# -i alone or among other short options without a value (-Ri, -GEi).
+	-*i*) case "${a#-}" in *[!iRGEBO]*) ;; *) exec /usr/lib/nyra/no-apt ;; esac ;;
+	esac
+done
+exec /usr/lib/nyra/dpkg "$@"

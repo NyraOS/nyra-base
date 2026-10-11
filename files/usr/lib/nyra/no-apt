@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: apt, apt-get (links to this script) and an install with dpkg (docs/DEFAULTS.md, "apt and
+# dpkg"). The system in /usr comes from the image, read-only, and is updated as a whole, so nothing
+# can be installed into it: say what to use instead, and fail.
+cat >&2 <<'MSG'
+apt and dpkg can’t install apps on Nyra OS: the system is read-only and updated as a whole.
+Install apps from the Store (Flatpak).
+For developer tools, use apt in a Distrobox container: distrobox create, then distrobox enter.
+MSG
+exit 1

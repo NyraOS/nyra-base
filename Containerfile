@@ -41,9 +41,17 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
     printf '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n' > /usr/lib/systemd/network/80-nyra-wired.network && \
     systemctl is-enabled systemd-networkd.service && systemctl is-enabled systemd-resolved.service
 
+# apt and dpkg (docs/DEFAULTS.md, "apt and dpkg"): apt is not in the image, and Debian's dpkg moves
+# to /usr/lib/nyra/dpkg; files/ puts apt, apt-get and a dpkg wrapper in their place, which refuse to
+# install with a message that says what to use instead (the queries still go to dpkg).
+RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/nyra && \
+    mv /usr/bin/dpkg /usr/lib/nyra/dpkg
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 COPY files/usr/ /usr/
+RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
+    apt-get install hello 2>&1 | grep -q Distrobox
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
