@@ -17,7 +17,10 @@ if [ "${NYRA_ESP_WRITABLE:-}" != 1 ]; then
 fi
 
 if findmnt -n -t vfat /boot > /dev/null; then
-	mount -o remount,rw /boot
+	# The classic mount(2) remount, with only these flags, as bootc does. Through the new mount API,
+	# mount(8) would pass the mount's options on to the superblock, and the kernel refuses dirsync
+	# there (EINVAL); dirsync stays as the first mount set it.
+	LIBMOUNT_FORCE_MOUNT2=always mount --options-source=disable -o remount,rw,nosuid,nodev,noexec,nosymfollow /boot
 else
 	uuid="$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f |
 		tr -d '\000' | tr 'A-F' 'a-f')"

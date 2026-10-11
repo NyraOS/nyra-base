@@ -128,6 +128,11 @@ Each line is something that broke or surprised us once.
   other mount of it. A second, fresh mount of the device with the other read-only state fails with
   `EBUSY` ("Can't mount, would change RO state"): remount what is mounted, mount the device only when
   it is not. bootc does the same for the ESP (`mount_esp_writable`).
+- `mount -o remount,rw /boot` (util-linux 2.41, new mount API) failed on the ESP with "mount point not
+  mounted or bad option": it takes the mount's current options (`dirsync` among them) to the
+  superblock reconfiguration, which accepts only the flags a remount may change. The classic
+  `mount(2)` remount ignores `dirsync` instead: `LIBMOUNT_FORCE_MOUNT2=always mount
+  --options-source=disable -o remount,rw,…`.
 - efivarfs lets root delete the standard firmware variables (`Boot####`, `BootOrder`); the others
   (systemd-boot's `LoaderEntryOneShot`, for example) are created immutable and survive `rm -rf /`.
   Without `BootOrder`, OVMF boots the disk's fallback path (`\EFI\BOOT\BOOTX64.EFI`).
