@@ -82,6 +82,13 @@ Our rule is 48 hours for critical and 7 days for high vulnerabilities once a fix
 mitigation entry for a fixable vulnerability should only bridge that time (a snapshot bump that is
 waiting for a Debian transition, for example), so its expiry should be just as short.
 
+An exception that rests on nothing in the image reaching the vulnerable code holds only while that
+stays true. A change that brings a thumbnail consumer (a thumbnail service or anything that asks for
+thumbnails), a file manager, xdg-desktop-portal or a desktop shell into the image must first remove
+the libheif and glycin exceptions, or bring a fixed libheif with it: those exceptions assume that
+no image from outside is ever decoded. glycin's sandbox limits the damage, but it does not replace
+the fix.
+
 ## Running it locally
 
 ```bash

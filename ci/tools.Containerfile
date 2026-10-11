@@ -10,7 +10,10 @@
 # at or before it), and unless its Suite is testing (apt only warns when another
 # suite's InRelease, e.g. unstable from the same hours, is served instead).
 # Codename is not pinned: it changes at every Debian release, Suite does not.
-FROM docker.io/library/debian:testing-20261005@sha256:f35963177a0584848d5222b3d2b4f4ebcc6434d39db0a709c3088237ef619cbf
+# The base image comes from Amazon ECR Public's copy of Docker Hub's official images (the same
+# index digest as docker.io/library/debian:testing-20261005): Docker Hub limits unauthenticated pulls
+# per runner IP.
+FROM public.ecr.aws/docker/library/debian:testing-20261005@sha256:f35963177a0584848d5222b3d2b4f4ebcc6434d39db0a709c3088237ef619cbf
 ARG SNAPSHOT
 RUN { echo "$SNAPSHOT" | grep -Eqx '[0-9]{8}T[0-9]{6}Z' || \
       { echo "SNAPSHOT '$SNAPSHOT' is not in YYYYMMDDTHHMMSSZ form" >&2; exit 1; }; } && \
