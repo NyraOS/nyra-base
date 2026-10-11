@@ -34,7 +34,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
-| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | fail: `rm -rf /` empties the ESP (mounted at `/boot` on access) and deletes the firmware boot entries, so nothing boots afterwards, not even recovery; partial at best, apt and dpkg do not tell the user what to use instead |
+| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | partial: everything passes (the ESP is read-only at `/boot` and survives, the firmware boots its fallback path, Reset settings brings `/etc` back), but apt and dpkg do not tell the user what to use instead, and `systemd-firstboot` asks for a root password before the reset |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
@@ -116,16 +116,17 @@ only if the action fails for another reason:
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file. The ESP as `rm` left it is listed in the step summary.
 
-**What happens today:** everything up to the power cut passes, and `/usr` is unchanged. But `rm`
-also empties the ESP (systemd's automount at `/boot` mounts it as soon as `rm` walks into it) and
-deletes the `Boot####` and `BootOrder` firmware variables (efivarfs lets those be removed; the
-others are immutable). The next boot finds no boot loader at all: the firmware tries the network
-and stops. The boot menu with "Reset settings" is gone with the rest of the ESP.
+**What happens:** `/usr` is unchanged, and so is the ESP: it is read-only at `/boot` (docs/BOOT.md,
+"The ESP is read-only"), so `rm` only gets "Read-only file system" there. `rm` does delete the
+`Boot####` and `BootOrder` firmware variables (efivarfs lets those be removed; the others, such as
+systemd-boot's one-time entry, are immutable). The next boot therefore goes through the firmware's
+fallback path, `\EFI\BOOT\BOOTX64.EFI`, into the "Reset settings" entry picked before `rm`; the
+normal boot after the reset creates the "Nyra OS" firmware entry again. The reset itself must not
+depend on `/etc`: `/usr/bin/awk` is a link through `/etc/alternatives`, so it calls `mawk`.
 
-With `/etc` gone, `systemd-firstboot` is expected to ask for a root password before the reset
-question (systemd-sysusers creates root again with an "unprovisioned" password, which firstboot
-treats as not set up); the test skips it with Enter, as the question allows. That part has not run
-in CI yet, since nothing boots after `rm` today. Not covered: a friendly
+With `/etc` gone, `systemd-firstboot` asks for a root password before the reset question
+(systemd-sysusers creates root again with an "unprovisioned" password, which firstboot treats as
+not set up); the test skips it with Enter, as the question allows. Not covered: a friendly
 message from apt and dpkg that says what to use instead (there is none yet), and what `rm` takes with
 `/var`, including `/home`: the files of the users are gone, which no reset can bring back.
 

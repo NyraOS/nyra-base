@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# CI only, on request (image.yml, boot-rounds): boots a copy of the installed test disk ROUNDS times,
-# each from the same state, under Secure Boot (the image's UKI certificate enrolled as a MOK, as in
-# tools/vm/boot-protection.sh), to find boots that fail only now and then. A boot that ends in
+# CI only (image.yml): boots a copy of the installed test disk ROUNDS times, each from the same state,
+# under Secure Boot (the image's UKI certificate enrolled as a MOK, as in tools/vm/boot-protection.sh),
+# to find boots that fail only now and then (on request, boot-rounds). A boot that ends in
 # emergency mode prints what udev saw (vm-boot.py), and its serial log is kept. udev logs at its usual
 # level, as in the other boot tests: the boots that failed now and then in CI did so without debug
 # logging, never with it. The test add-on also turns the image's rd.emergency=reboot into a halt, so
@@ -14,7 +14,9 @@
 #   without the image's rule that probes the disk again (masked): the initrd waits for its root in
 #   vain, as in the boots that failed in CI;
 # - the same boot with that rule: the root partition is found and the system starts.
-#   tools/vm/boot-repeat.sh IMAGE DISK.raw UKI_CERT WORKDIR LOGDIR SUMMARY ROUNDS
+# install-boot runs these checks on every image (ROUNDS 0), so that a systemd or dracut update that
+# changes the order of the udev rules or what the initrd holds is caught.
+#   tools/vm/boot-repeat.sh IMAGE DISK UKI_CERT WORKDIR LOGDIR SUMMARY ROUNDS   (DISK: raw or qcow2)
 set -euo pipefail
 
 image="$1" disk="$2" uki_cert="$3" work="$4" logs="$5" summary="$6" rounds="$7"
@@ -31,7 +33,7 @@ tools/vm/test-addon.sh "$image" "$br/console.addon.efi" "systemd.import_credenti
 virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$br/vars.fd" \
   --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$uki_cert" \
   --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$br/local.crt"
-cp "$disk" "$br/disk.raw"
+qemu-img convert -O raw "$disk" "$br/disk.raw"
 loop="$(sudo losetup -P --show -f "$br/disk.raw")"
 esp=""
 for p in "$loop"p*; do
@@ -47,7 +49,7 @@ loop=""
 
 boot() {
   python3 tools/vm/vm-boot.py --secure-boot "$br/vars.fd" --autologin --disk "$br/disk.raw" --timeout 240 \
-    --summary "$br/summary.md" "$@"
+    --summary "$summary" "$@"
 }
 
 boot --log "$logs/serial-boot-repeat-diagnostics.log" --refused '@@ end of diagnostics' \
@@ -81,10 +83,12 @@ boot --log "$logs/serial-boot-repeat-efivar-unread-probed-again.log" --credentia
   --title "Repeated boots: the first probe of the boot disk cannot read LoaderDevicePartUUID, the second one can" \
   --command 'test -d /run/nyra-test-efivar-failed-once && echo "the first probe of the boot disk could not read LoaderDevicePartUUID; the system started"'
 
+if [ "$rounds" = 0 ]; then exit 0; fi
 failed=()
 start=$SECONDS
 for i in $(seq "$rounds"); do
-  if ! boot --log "$br/serial.log" --title "Boot $i" --command true > "$br/out.txt"; then
+  # Only the result of all the rounds goes into the summary (below): the last --summary counts.
+  if ! boot --summary "$br/summary.md" --log "$br/serial.log" --title "Boot $i" --command true > "$br/out.txt"; then
     failed+=("$i")
     cp "$br/serial.log" "$logs/serial-boot-repeat-$i.log"
     cat "$br/out.txt"

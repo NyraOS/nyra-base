@@ -31,6 +31,8 @@
 #   loader/nyra-fallback/<entry>.conf        a copy of that version's boot entry, put back in
 #                          loader/entries when a boot finds its own entry missing (bootc needs it)
 # It always points to a version bootc keeps: the running one, or one in the entries it swaps in.
+# On the running system the ESP is read-only at /boot; repair, boot-counter and discard run in
+# esp-writable's mount namespace, where /boot is writable (docs/BOOT.md).
 set -eu
 
 SHIM=/usr/lib/shim/shimx64.efi.signed
@@ -42,6 +44,9 @@ LABEL="Nyra OS"
 # bootctl read entries ending in ".conf" in any case, bootc only lower-case ones (docs/BOOT.md), so
 # bootc never sees them as its deployments.
 TAB="$(printf '\t')"
+# /usr/bin/awk is a Debian alternatives link through /etc/alternatives: the boot files must be kept
+# even when /etc is broken, so mawk itself, from /usr.
+awk() { mawk "$@"; }
 
 # Replaces DST with SRC only when they differ: a new file next to it, then a rename, so an
 # interrupted or failed write (ESP full) leaves the old file in place.
@@ -246,21 +251,6 @@ fallback() {
 	if blessed; then fallback_set /boot "$d"; fi
 }
 
-# Mounts the ESP privately on $esp, as bootc does, by the partition systemd-boot reported: /boot is
-# an automount that expires when idle, and it cannot be mounted again during shutdown.
-mount_esp() {
-	uuid="$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f |
-		tr -d '\000' | tr 'A-F' 'a-f')"
-	# 36 characters that form one UUID-shaped line: nothing else (no "/", no newline) reaches the path.
-	if [ "${#uuid}" != 36 ] || ! printf '%s\n' "$uuid" | grep -Eqx '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'; then
-		echo "esp-sync: LoaderDevicePartUUID is not a partition UUID" >&2
-		return 1
-	fi
-	esp="$(mktemp -d /run/nyra-esp.XXXXXX)"
-	mount -t vfat -o umask=0077,dirsync "/dev/disk/by-partuuid/$uuid" "$esp"
-	trap 'umount "$esp" && rmdir "$esp"' EXIT
-}
-
 # nyra-updated discarded the staged version (docs/UPDATES.md): it must not boot. Without its staged
 # entries bootc-finalize-staged has nothing to swap in, the boot entries stay as they are, and no
 # entry of that version is left behind for a later update.
@@ -269,14 +259,14 @@ discard() {
 		echo "esp-sync: nyra-updated discarded nothing" >&2
 		return 1
 	fi
-	mount_esp
+	esp=/boot
 	rm -rf "$esp/loader/entries.staged"
 	sync
 	echo "esp-sync: staged version $(head -c 80 /run/nyra-updated/discarded) discarded, its entries removed"
 }
 
 boot_counter() {
-	mount_esp
+	esp=/boot
 	staged="$esp/loader/entries.staged"
 	[ -d "$staged" ] || return 0
 	# Removed already when nyra-updated discarded the staged version (discard); again here, in case
@@ -319,6 +309,13 @@ boot_counter() {
 }
 
 MODE="${1:-}"
+# The running system's ESP is read-only at /boot: these modes run again in a mount namespace where
+# it is writable (esp-writable, which marks that with NYRA_ESP_WRITABLE=1).
+case "$MODE" in
+repair | boot-counter | discard)
+	[ "${NYRA_ESP_WRITABLE:-}" = 1 ] || exec /usr/lib/nyra/boot/esp-writable "$0" "$@"
+	;;
+esac
 case "$MODE" in
 install)
 	[ -d "${2:-}/EFI" ] || { echo "usage: esp-sync install ESP (the mounted ESP, with its EFI directory)" >&2; exit 2; }
