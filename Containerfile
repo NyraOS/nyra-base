@@ -47,6 +47,17 @@ COPY files/usr/ /usr/
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
+# Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
+# configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
+# presets enabled; systemd applies it again at the first boot. No systemd-timesyncd (chrony
+# conflicts with it). The build fails if the configuration does not parse.
+RUN systemctl preset chronyd-restricted.service chrony.service chrony-wait.service && \
+    test "$(systemctl is-enabled chronyd-restricted.service)" = enabled && \
+    test "$(systemctl is-enabled chrony.service)" = disabled && \
+    test "$(systemctl is-enabled chrony-wait.service)" = disabled && \
+    ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && \
+    chronyd -p -f /usr/lib/nyra/chrony/chrony.conf | grep -c ' nts$' | grep -qx 2
+
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
 # signature; the policy and the Sigstore trust roots live in /usr. containers/image only reads
 # /etc/containers, so /etc gets symlinks and nothing else: the content still updates with the image.
@@ -98,7 +109,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
-      systemd-bless-boot.service apparmor.service && \
+      systemd-bless-boot.service apparmor.service chronyd-restricted.service && \
     /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
