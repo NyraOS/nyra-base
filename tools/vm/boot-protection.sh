@@ -7,7 +7,8 @@
 #   0. before the first boot: loader.conf with "editor no", both copies of the boot files in place;
 #   1. empty boot entries (firmware variables reset): boots through the fallback path; nothing on
 #      the ESP needed repair; the "Nyra OS" entry is created, first in BootOrder; only root can
-#      read the ESP (no permission bits for group and others);
+#      read the ESP (no permission bits for group and others); it is mounted read-only at /boot at
+#      boot, not on access (later boots prove that the repair still writes it);
 #   2. boots through the "Nyra OS" entry; another entry is put first, as Windows does;
 #   3. that entry fails (its file does not exist), the "Nyra OS" entry boots and is first again;
 #   4. interrupted boot loader update (EFI/nyra/grubx64.efi cut in half): the firmware falls back
@@ -121,7 +122,8 @@ vm --log "$logs/serial-boot-protection-1.log" \
   --command "$repair" \
   --command '! journalctl -b -u nyra-boot-repair -o cat | grep "updated from /usr" && echo "no boot file on the ESP needed repair at the first boot"' \
   --command "$first" \
-  --command 'o="$(findmnt -no OPTIONS -t vfat /boot | tr , "\n")"; echo "$o" | grep mask; echo "$o" | grep -Eqx "fmask=0[0-7]77" && echo "$o" | grep -Eqx "dmask=0[0-7]77" && echo "$o" | grep -Ex "dirsync|noexec|nosuid|nodev|nosymfollow" | sort | tr "\n" " " | grep -qx "dirsync nodev noexec nosuid nosymfollow " && echo "ESP mounted dirsync, nodev, noexec, nosuid, nosymfollow"'
+  --command 'o="$(findmnt -no OPTIONS -t vfat /boot | tr , "\n")"; echo "$o" | grep mask; echo "$o" | grep -Eqx "fmask=0[0-7]77" && echo "$o" | grep -Eqx "dmask=0[0-7]77" && echo "$o" | grep -Ex "ro|dirsync|noexec|nosuid|nodev|nosymfollow" | sort | tr "\n" " " | grep -qx "dirsync nodev noexec nosuid nosymfollow ro " && echo "ESP mounted read-only, dirsync, nodev, noexec, nosuid, nosymfollow"' \
+  --command 'systemctl is-active boot.mount && test "$(systemctl is-active boot.automount)" = inactive && echo "the ESP is mounted at boot, not on access"'
 
 vm --log "$logs/serial-boot-protection-2.log" \
   --title "Boot protection 2: through the \"Nyra OS\" entry; another entry put first, as Windows does" \

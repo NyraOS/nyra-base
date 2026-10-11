@@ -6,7 +6,7 @@
 # (default deny, proven with a connection from a network namespace), only declared listening
 # sockets, only declared running services, timers and sockets (the units blocked in the
 # Containerfile stay inactive), the signature policy in place and owned by root, unused
-# filesystems not autoloaded.
+# filesystems not autoloaded, the ESP read-only at /boot.
 # Each guest command must end with the status of its whole check: vm-boot.py reads only the last
 # status and the guest shell has no set -e or pipefail, so checks are joined with && and loops set
 # a flag. --self-test runs the parsing-heavy commands against stubs, without a VM (shellcheck job).
@@ -41,12 +41,12 @@ EOF
 units='s="$(systemctl list-units --type=service,timer,socket --state=running,waiting,listening --no-legend --plain)" && test -n "$s" && u="$(echo "$s" | awk "{print \$1}")" && echo "$u" && x="$(echo "$u" | grep -vxE "'"${units_allowed//$'\n'/|}"'" || true)" && { test -z "$x" || { echo "undeclared units: $x"; false; }; }'
 # The units blocked in the Containerfile ("no purpose in the base") are all exactly "inactive"
 # (an error from systemctl, "active" or "failed" all count against it).
-blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 31 && test -z "$a"'
+blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 32 && test -z "$a"'
 
 if [ "${1:-}" = --self-test ]; then
   t="$(mktemp -d)"
   trap 'rm -rf "$t"' EXIT
-  for i in $(seq -w 1 31); do
+  for i in $(seq -w 1 32); do
     mkdir -p "$t/u$i.service.d" && echo "# Nyra: no purpose in the base image" > "$t/u$i.service.d/10-nyra.conf"
   done
   ss() { [ -z "${FAIL:-}" ] || return 1
@@ -74,10 +74,10 @@ if [ "${1:-}" = --self-test ]; then
   check 0 "blocked: all inactive" "$blocked"
   check 1 "blocked: the first one active" "$blocked" ACTIVE=u01.service
   check 1 "blocked: one in the middle active" "$blocked" ACTIVE=u16.service
-  check 1 "blocked: the last one active" "$blocked" ACTIVE=u31.service
+  check 1 "blocked: the last one active" "$blocked" ACTIVE=u32.service
   check 1 "blocked: systemctl fails" "$blocked" FAIL=1
-  rm -r "$t/u31.service.d"
-  check 1 "blocked: only 30 units blocked" "$blocked"
+  rm -r "$t/u32.service.d"
+  check 1 "blocked: only 31 units blocked" "$blocked"
   exit "$fail"
 fi
 disk="$1" logs="$2" summary="$3"
@@ -98,6 +98,10 @@ firewall_probe='ip netns add probe && ip link add v0 type veth peer name v1 netn
 # Unused filesystems are blacklisted (no autoload on mount); what people plug in still mounts.
 filesystems='modprobe --showconfig | grep -x "blacklist f2fs" && ! modprobe --showconfig | grep -xE "blacklist (vfat|exfat|ntfs3|ext4|btrfs|xfs|udf|isofs|hfsplus|squashfs|erofs|overlay)" && truncate -s 64M /tmp/fs.img && ! mount -o loop -t f2fs /tmp/fs.img /mnt && ! grep -qw f2fs /proc/filesystems && echo "f2fs: not autoloaded" && mkfs.vfat /tmp/fs.img >/dev/null && mount -o loop /tmp/fs.img /mnt && findmnt /mnt && umount /mnt'
 
+# The ESP: the only FAT mount, read-only at /boot, and a write there fails (only esp-writable makes
+# it writable, in a mount namespace of its own).
+esp='m="$(findmnt -rn -t vfat -o TARGET,OPTIONS)"; echo "$m"; e="$(touch /boot/nyra-probe 2>&1)"; echo "touch: $e"; test "$(echo "$m" | wc -l)" = 1 && test "${m%% *}" = /boot && echo "${m#* }" | tr , "\n" | grep -qx ro && test -f /boot/EFI/BOOT/BOOTX64.EFI && echo "$e" | grep -q "Read-only file system" && test ! -e /boot/nyra-probe && echo "the ESP is read-only at /boot"'
+
 python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
@@ -111,4 +115,5 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \
   --command "$filesystems" \
   --command "$time_client" \
-  --command "$time_switch"
+  --command "$time_switch" \
+  --command "$esp"

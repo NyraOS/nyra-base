@@ -16,7 +16,8 @@ StateDirectory=nyra-updated
 StateDirectoryMode=0700
 UMask=0077
 # Sandboxing, as far as bootc allows: it runs as root in its own mount namespace (it remounts
-# /sysroot and mounts the ESP privately), pulls over the network and writes /sysroot and /var.
+# /sysroot and the read-only ESP read-write there, as esp-sync discard does through esp-writable),
+# pulls over the network and writes /sysroot and /var.
 # No RestrictSUIDSGID=: it makes openat2() fail with ENOSYS, and bootc has no fallback ("Opening
 # runtime auth file: Function not implemented").
 NoNewPrivileges=yes
