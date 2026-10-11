@@ -414,6 +414,9 @@ jobs:
   # for an administrator's password; a wrong one gives no shell), and tools/vm/reset-settings.sh (the
   # "Nyra OS Reset settings" profile brings /etc back to the image's, keeps accounts, /home, machine ID
   # and host name, and leaves /etc whole across power cuts).
+  # Finding the root partition (docs/BOOT.md): tools/vm/boot-repeat.sh's checks, without its repeated
+  # boots (the first probe of the boot disk cannot read LoaderDevicePartUUID: with the image's rule
+  # that probes it again masked the initrd ends in emergency mode, with the rule the system starts).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
@@ -495,6 +498,15 @@ jobs:
             --log "$RUNNER_TEMP/serial.log" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
+
+      - name: Root partition found when the first probe fails (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/boot-repeat.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY" 0
 
       # Titanic T1: a composefs object changed on the disk gives a read error (tools/vm/tampered-object.sh).
       - name: Tampered composefs object (Titanic T1)
