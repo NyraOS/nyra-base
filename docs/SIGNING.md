@@ -54,10 +54,12 @@ unless:
   no add-on (`<uki>.efi.extra.d/`), since `bootc install` installs what it finds there;
 - that file is the sealed UKI (`tools/signing/uki-check.py`), its sections read as systemd-stub reads
   them (see "Reading the UKI as systemd-stub does" below): exactly one `.linux` section (a kernel, so
-  not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits,
-  and exactly one in each further profile, with as many profiles as lines in `ci/uki-cmdline.txt`; and
-  each command line exactly its line, byte for byte, with one composefs digest in all of them; and
-  one `.sbat` section with the Nyra component line (docs/BOOT.md, "SBAT");
+  not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits;
+  exactly these sections in each profile, in this order: `.profile` and `.pcrsig` (its PCR policy) in
+  profile 0, `.profile` and its own `.cmdline` in each further one (so no `.initrd` or anything else
+  of their own), with as many profiles as lines in `ci/uki-cmdline.txt`; each command line exactly
+  its line, byte for byte, with one composefs digest in all of them; and one `.sbat` section with the
+  Nyra component line (docs/BOOT.md, "SBAT");
 - it carries the PCR 11 policy for TPM2 unlock signed for its main profile's initrd alone, with that
   policy key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
 - it is signed with that certificate (`sbverify --cert`), and carries no other signature: exactly one
@@ -83,20 +85,30 @@ this image.
 ### Reading the UKI as systemd-stub does
 
 The checks are only as good as their reading of the file, and pefile, which they use, reads a PE file
-differently from systemd-stub in places. Both `uki-check.py` and `pcr-policy.py` therefore read the
-sections through `tools/signing/pe_sections.py`, which reads them the way the stub does and refuses
+differently from systemd-stub in places. The stub, in turn, reads the sections in memory, as the
+loader put them there: shim's loader (shim replaces the firmware's), or the firmware's for a key in
+`db`. Both `uki-check.py` and `pcr-policy.py` therefore read the sections through
+`tools/signing/pe_sections.py`, which reads them the way the stub does after the loader, and refuses
 any file where the two readings could differ:
 
 - sections in the order of the section table, the order the stub reads them in and groups them into
   profiles by (pefile's own list is sorted by address);
 - a section name ends at its first NUL, as the stub compares it (`.linux\0x` is a `.linux`);
-- a section's data is what the loader puts in memory: VirtualSize bytes;
+- a section's data is what the loader puts in memory: VirtualSize bytes, the file's data up to
+  SizeOfRawData, then zeros;
 - refused: any pefile warning, and a section header pefile did not read (it stops at some malformed
-  headers with only a warning, while the stub reads on); a section empty in memory, overlapping the
-  headers or another section in memory, or reaching beyond SizeOfImage (the stub ignores it); section
-  data that is not in the file before the certificate table (the signature does not cover it); two
-  sections of one name in the base sections or in one profile (the stub takes the first); a
-  certificate table other than none (before signing) or one PKCS#7 entry at the end of the file.
+  headers with only a warning, while the stub reads on); a section the loader does not copy as it is
+  in the file: one without `IMAGE_SCN_MEM_READ` or with `IMAGE_SCN_MEM_DISCARDABLE` (shim does not
+  copy it; only `.reloc` may be discardable, and shim reads it from the file) or with
+  `IMAGE_SCN_CNT_UNINITIALIZED_DATA` (shim fills it with zeros); a section empty in memory,
+  overlapping the headers or another section in memory, or reaching beyond SizeOfImage (the stub
+  ignores it); section data that is not in the file before the certificate table (the signature does
+  not cover it); a base relocation that changes anything but the stub's own code and data (`.text`,
+  `.rodata`, `.data`: the loader applies them in memory, after the signature check), and a relocation
+  table anywhere but at the start of the `.reloc` section (where shim reads it); two sections of one
+  name in the base sections or in one profile (the stub takes the first); a certificate table other
+  than none (before signing) or one PKCS#7 entry at the end of the file, DER with one-byte tags, with
+  one signer, no unsigned attributes (a nested signature is one) and nothing after it in the entry.
 
 A command line is compared byte for byte, without trimming whitespace; only trailing NULs are cut,
 since the stub stops at the first NUL, and every byte must be printable ASCII (0x20 to 0x7e). Under
@@ -180,14 +192,22 @@ built, whose UKI is signed with that run's throwaway key:
 - refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
   `systemd.import_credentials=on` in its main command line, a second UKI next to it, an add-on in
   `<uki>.efi.extra.d/`, the UKI without its Nyra SBAT component, without its PCR policy, with a
-  policy signature changed by one character, and with the policy moved into the recovery profile;
+  policy signature changed by one character, and with the policy moved into the recovery profile (the
+  layout check refuses the second and the last; `pcr-policy.py check` alone refuses them too);
 - refused even when signed with the trusted key, each for its own reason, for every rule of "Reading
-  the UKI as systemd-stub does", on variants of the image's UKI: a zeroed section header followed by
-  one more `.profile`, a section misaligned in the file (a pefile warning), a section named
-  `.linux\0s`, a fourth profile without a command line, a profile with two, the recovery and reset
-  command lines swapped in the section table, a `\x1c` or a space in front of a command line, two
-  command lines at the same address, the base command line beyond SizeOfImage, an empty `.profile`,
-  a second signature, and command line data inside the certificate table.
+  the UKI as systemd-stub does" and of the exact layout, on variants of the image's UKI: a zeroed
+  section header followed by one more `.profile`, a section misaligned in the file (a pefile warning),
+  a section named `.linux\0s`, a fourth profile without a command line, a profile with two, an
+  `.initrd` of its own in the reset profile, the recovery and reset command lines swapped in the
+  section table, a `\x1c` or a space in front of a command line, two command lines at the same
+  address, the base command line beyond SizeOfImage, an empty `.profile`, a command line without
+  `IMAGE_SCN_MEM_READ`, one with `IMAGE_SCN_MEM_DISCARDABLE`, one with
+  `IMAGE_SCN_CNT_UNINITIALIZED_DATA`, a base relocation moved onto the base command line, a second
+  signature, and a nested one (made with `osslsigncode -nest`; the trusted signature still verifies),
+  also with its tag written in the high tag number form, and two bytes after the signature in its
+  certificate entry;
+- refused, signed with the trusted key and then changed (so its signature no longer holds, but the
+  reading refuses it first): command line data inside the certificate table.
 
 The PCR policy signing is tested on every build too (`tools/signing/test-pcr-policy.sh`), on a UKI
 that `ci/ukify.sh` builds from the image just built, with a policy key made by the test:

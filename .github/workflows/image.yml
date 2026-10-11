@@ -296,10 +296,12 @@ jobs:
       # with this run's certificate and policy key, refused as the sign job runs it (the committed Nyra
       # certificate and policy key), and refused for an add-on, another command line, a second UKI, an
       # add-on next to it, no Nyra SBAT component, a PCR policy missing, not verifying or outside the
-      # main profile, and a UKI whose sections pefile could read differently from systemd-stub
-      # (tools/signing/pe_sections.py).
+      # main profile, a UKI whose sections pefile could read differently from systemd-stub after shim
+      # loaded it (tools/signing/pe_sections.py) or are not exactly the sealed UKI's, and a nested
+      # signature (made with osslsigncode).
       - name: Test the UKI release gate (docs/SIGNING.md)
         run: |
+          sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
             "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK"
 
@@ -433,7 +435,8 @@ jobs:
   # Boot chain (docs/BOOT.md), each on its own copy of the installed disk, both run even if the
   # other fails: tools/vm/secure-boot.sh (shim -> systemd-boot -> the image's UKI, signed with this
   # run's key enrolled as MOK; tampered, unsigned and wrongly signed UKIs refused, unsigned add-ons
-  # refused, credentials on the ESP or over SMBIOS ignored) and tools/vm/boot-counting.sh (an update that
+  # refused, credentials on the ESP or over SMBIOS ignored, a command line over SMBIOS appended by
+  # systemd-stub only) and tools/vm/boot-counting.sh (an update that
   # never gets healthy falls back after 3 tries, a healthy one is blessed), and tools/vm/boot-protection.sh
   # (Secure Boot, one firmware variable store across eleven boots: editor off from the first boot,
   # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,

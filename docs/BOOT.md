@@ -76,6 +76,7 @@ The `install-boot` job takes the disk that `bootc install` produced and, on a co
 | bootc's entry + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
 | the image's command line (only a signed add-on with `systemd.firstboot=no`) + a credential over SMBIOS that adds a drop-in printing a marker | no effect | the marker never shows on the console after `multi-user.target` |
 | the same with the test console add-on (`systemd.import_credentials=yes`) | the credential applies (control) | the marker shows; in the first boot, the drop-in's file exists |
+| the image's command line (only a signed add-on with `systemd.firstboot=no`) + the same credential + over SMBIOS `io.systemd.stub.kernel-cmdline-extra=systemd.import_credentials=yes …` (for systemd-stub) and `io.systemd.boot.kernel-cmdline-extra=…` (for systemd-boot) | the stub appends its string (the platform is trusted, see "The kernel command line is fixed"), so the credential applies; systemd-boot's is ignored | the stub's string last on `/proc/cmdline`, systemd-boot's absent; the drop-in's file exists |
 
 The keys are not in the firmware's `db`, so only shim (through the MOK list) can have accepted the
 signed UKI: systemd-boot loads images through shim's verification protocol, and systemd-stub does
@@ -92,8 +93,9 @@ the command line, and add-ons come after the UKI's own. It is unsigned on the di
 Secure Boot; the Secure Boot test replaces it with one signed by a key enrolled only there.
 Kernel messages still reach the serial log in the VM:
 systemd-stub itself appended `console=uart,io,0x3f8` to the command line (observed in CI; it does so
-when the firmware's only console is a serial port). That is the one thing the stub adds to the
-sealed command line; on a machine with a screen it adds nothing.
+when the firmware's only console is a serial port). Apart from what the firmware passes over SMBIOS
+(see "The kernel command line is fixed"), that is the one thing the stub adds to the sealed command
+line; on a machine with a screen it adds nothing.
 
 Not covered yet: the real installer, MokManager enrollment on a real machine, a kernel built and
 signed by Nyra (today it is Debian's), and revocation: what happens when SBAT or `dbx` updates
@@ -213,7 +215,8 @@ and every refusal above is checked with its reason.
 - PCR 7 as enrolled (Secure Boot on, the same keys): never PCR 7 alone;
 - **PCR 12 at its value without add-ons**: systemd-stub measures add-ons and credentials from the
   ESP into PCR 12, and a Nyra machine has none (the Nyra key never signs an add-on, the release
-  gate refuses any next to the UKI), so anything placed there stops the unlock.
+  gate refuses any next to the UKI), so anything placed there stops the unlock. The same holds for a
+  command line the firmware passes over SMBIOS, which the stub also measures into PCR 12.
 
 The sealed command line has `rd.shell=0 rd.emergency=reboot`
 (`/usr/lib/bootc/kargs.d/15-nyra-initrd.toml`): a failure in the initrd reboots instead of opening a
@@ -276,8 +279,19 @@ The sealed command line also imports no systemd credentials at all (`systemd.imp
 the kernel command line or systemd-stub. Nothing outside the signed image configures the system at
 boot; settings for a machine come from the installer and from `/etc`. Only an add-on signed with an
 enrolled key could turn import back on, which is why the Nyra key never signs a generic
-command-line add-on. Without credentials, `systemd-firstboot` asks for its settings at the first
-boot, so the installer must provide them.
+command-line add-on, or the platform itself (below). Without credentials, `systemd-firstboot` asks
+for its settings at the first boot, so the installer must provide them.
+
+**The platform is trusted.** systemd-stub appends the SMBIOS OEM string
+`io.systemd.stub.kernel-cmdline-extra` to the command line even under Secure Boot (upstream treats
+SMBIOS as set by the firmware or a VM's host, and ignores it only in a confidential VM), after the
+UKI's own `.cmdline` and the add-ons. Whoever sets SMBIOS can therefore add kernel arguments, and the
+last occurrence wins: `systemd.import_credentials=yes` turns credential import back on (CI shows it,
+table above). That is the firmware, or a VM's host, which can already run whatever it wants below the
+system; the command line under Secure Boot is no boundary against it. What it cannot do is unlock
+the disk: the stub measures the string into PCR 12, which the TPM2 enrollment will bind ("TPM2 unlock" above).
+systemd-boot's own SMBIOS string (`io.systemd.boot.kernel-cmdline-extra`) only reaches the boot
+loader's command line, which the stub ignores under Secure Boot.
 
 ## Finding the root partition
 

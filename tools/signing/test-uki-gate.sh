@@ -12,13 +12,20 @@
 #   - refused, even when signed with the trusted key: an add-on in place of the UKI, the UKI with
 #     another command line, a second UKI, an add-on next to the UKI, the UKI without its Nyra SBAT
 #     component, without its PCR policy, with a policy signature that does not verify, and with the
-#     policy moved to the recovery profile;
+#     policy moved to the recovery profile (without the policy and with it moved: also by
+#     pcr-policy.py alone);
 #   - refused, even when signed with the trusted key, wherever pefile's reading of the UKI could
-#     differ from systemd-stub's (tools/signing/pe_sections.py): a section header pefile does not
-#     read, a pefile warning, a section name with a NUL inside, a profile without a command line, a
-#     profile with two, two profiles' command lines swapped in the section table, a control character
-#     or a space in a command line, overlapping sections, a section beyond the image or empty in
-#     memory, a second Authenticode signature, and section data in the certificate table.
+#     differ from systemd-stub's after shim loaded it (tools/signing/pe_sections.py), and wherever the
+#     sections are not exactly the sealed UKI's: a section header pefile does not read, a pefile
+#     warning, a section name with a NUL inside, a profile without a command line, a profile with two,
+#     an .initrd in a profile, two profiles' command lines swapped in the section table, a control
+#     character or a space in a command line, overlapping sections, a section beyond the image or
+#     empty in memory, a command line that is not readable, discardable or uninitialized data (shim
+#     does not copy it), a base relocation that changes a command line, a second Authenticode
+#     signature, a nested one, also with its tag in the high tag number form, and bytes after the
+#     signature in its certificate entry;
+#   - refused, signed with the trusted key and then changed (so its signature no longer holds; it is
+#     refused before that check): section data in the certificate table.
 # The "gate" and "other" keys are made here, live only in WORKDIR on the ephemeral runner and are
 # deleted at the end: never commit or upload them, never use a real key here.
 #   tools/signing/test-uki-gate.sh IMAGE RUN_CERT RUN_PCR_KEY WORKDIR
@@ -153,14 +160,27 @@ for v in nopolicy badsig recovery; do
   copy "$v"
   sign "$t/$v.efi" "$t/$v/$uki"
 done
-refused "not in the main profile alone" "$t/nopolicy" "$t/gate.crt"
+# Without a policy, or with it in the recovery profile, the sections are not the sealed UKI's
+# (uki-check.py refuses first); pcr-policy.py alone refuses them as well.
+layout="found: +[0-9]+ \\.cmdline in the base sections, profiles \\["
+refused "$layout'\\.profile', '\\.pcrsix', " "$t/nopolicy" "$t/gate.crt"
 refused "does not verify" "$t/badsig" "$t/gate.crt"
-refused "not in the main profile alone: .*'recovery'" "$t/recovery" "$t/gate.crt"
+refused "$layout'\\.profile', '\\.profile', '\\.pcrsig', " "$t/recovery" "$t/gate.crt"
+policy_refused() {
+  local reason="$1" out
+  if out="$(python3 -I tools/signing/pcr-policy.py check "$2" "$run_pcr" 2>&1)"; then
+    echo "$out"; echo "::error::pcr-policy.py accepted $2 (expected: refused, $reason)"; exit 1
+  fi
+  echo "$out"
+  grep -Eq "$reason" <<<"$out" || { echo "::error::pcr-policy.py refused $2, but not for: $reason"; exit 1; }
+}
+policy_refused "not in the main profile alone" "$t/nopolicy/$uki"
+policy_refused "not in the main profile alone: .*'recovery'" "$t/recovery/$uki"
 
 # The UKI read as systemd-stub reads it (tools/signing/pe_sections.py, uki-check.py), each variant made
 # from the image's UKI by changing its section headers or command lines, then signed with the trusted
 # key. Section headers are 40 bytes: Name, VirtualSize (+8), VirtualAddress (+12), SizeOfRawData
-# (+16), PointerToRawData (+20).
+# (+16), PointerToRawData (+20), Characteristics (+36).
 python3 -I - "$t/unsigned.efi" "$t" <<'PY'
 import struct
 import sys
@@ -234,6 +254,40 @@ write("outside", p)
 p = bytearray(data)
 field(p, p2, 8, 0)
 write("empty", p)
+# An .initrd of its own in the reset profile (a section added after the last one, with the first
+# 512 bytes of the base initramfs): the reset profile would boot another initramfs, and the main
+# profile, the only one the PCR policy covers, is unchanged.
+fa, sa = pe.OPTIONAL_HEADER.FileAlignment, pe.OPTIONAL_HEADER.SectionAlignment
+end, va = at[-1] + 40, pe.OPTIONAL_HEADER.SizeOfImage
+assert data[end:end + 40] == bytes(40) and end + 40 <= pe.OPTIONAL_HEADER.SizeOfHeaders and va % sa == 0
+p = bytearray(data) + bytes(-len(data) % fa)
+initrd = table[names.index(b".initrd")]
+p[end:end + 40] = struct.pack("<8s6I2HI", b".initrd", 0x200, va, 0x200, len(p), 0, 0, 0, 0, 0x40000040)
+struct.pack_into("<H", p, pe.FILE_HEADER.get_file_offset() + 2, len(names) + 1)
+struct.pack_into("<I", p, pe.OPTIONAL_HEADER.get_file_offset() + 56, va + sa)  # SizeOfImage
+p += data[initrd.PointerToRawData:initrd.PointerToRawData + 0x200]
+write("initrd", p)
+# Command lines that shim does not copy as they are: the recovery one not readable (without
+# IMAGE_SCN_MEM_READ), the base one discardable (IMAGE_SCN_MEM_DISCARDABLE) or uninitialized data
+# (IMAGE_SCN_CNT_UNINITIALIZED_DATA). The stub would read zeros or whatever memory held.
+assert table[p1 + 1].Characteristics == table[cmd].Characteristics == 0x40000040, hex(table[cmd].Characteristics)
+p = bytearray(data)
+field(p, p1 + 1, 36, 0x00000040)
+write("noread", p)
+p = bytearray(data)
+field(p, cmd, 36, 0x42000040)
+write("discardable", p)
+p = bytearray(data)
+field(p, cmd, 36, 0x400000C0)
+write("uninitialized", p)
+# The first base relocation (DIR64) moved to the start of the base command line: shim adds the load
+# offset to those 8 bytes in memory.
+reloc = table[names.index(b".reloc")]
+page, size = struct.unpack_from("<II", data, reloc.PointerToRawData)
+assert size > 8 and pe.OPTIONAL_HEADER.DATA_DIRECTORY[5].VirtualAddress == reloc.VirtualAddress, (page, size)
+p = bytearray(data)
+struct.pack_into("<IIH", p, reloc.PointerToRawData, table[cmd].VirtualAddress, size, 0xA000)
+write("reloc", p)
 PY
 # variant NAME REASON: $t/NAME.efi signed with the trusted key as the image's UKI, refused for REASON.
 variant() {
@@ -245,7 +299,8 @@ variant() {
 variant count "pefile read [0-9]+ of the [0-9]+ section headers"
 variant warning "pefile warnings: .*PointerToRawData should normally be a multiple of FileAlignment"
 variant nulname "two \\.linux sections"
-variant nocmdline "\\.cmdline and \\.profile sections not one command line per profile"
+variant nocmdline "found: +0 \\.cmdline in the base sections"
+variant initrd "$layout.*'\\.profile', '\\.cmdline', '\\.initrd'\\]"
 variant twocmdlines "two \\.cmdline sections"
 variant order "profile 1: lockdown=.*systemd\\.unit=nyra-reset-settings\\.target"
 variant ctrl "command line of profile 1 has bytes outside 0x20-0x7e: \\['0x1c'\\]"
@@ -253,11 +308,87 @@ variant space "profile 1:  lockdown="
 variant overlap "overlaps the headers or another section in memory"
 variant outside "reaches beyond the image in memory"
 variant empty "is empty in memory"
+variant noread "section \\.cmdline is not readable \\(no IMAGE_SCN_MEM_READ\\)"
+variant discardable "section \\.cmdline is discardable \\(IMAGE_SCN_MEM_DISCARDABLE\\)"
+variant uninitialized "section \\.cmdline is uninitialized data \\(IMAGE_SCN_CNT_UNINITIALIZED_DATA\\)"
+variant reloc "a base relocation at 0x[0-9a-f]+ changes \\.cmdline, not only systemd-stub's code and data"
 
 # Two Authenticode signatures, the trusted key's and another (sbverify --cert accepts either), and a
 # section whose data is in the certificate table (not covered by the signature).
 sbsign --key "$t/other.key" --cert "$t/other.crt" --output "$t/twosigs.efi" "$t/unsigned.efi"
 variant twosigs "not exactly one Authenticode signature"
+# A nested signature: another key's, in the unsigned attributes of the trusted key's signature, which
+# still verifies (the control: sbverify passes); Windows would take the nested one as well.
+copy nested
+sign "$t/unsigned.efi" "$t/nested.efi"
+rm "$t/nested/$uki"
+osslsigncode sign -nest -h sha256 -certs "$t/other.crt" -key "$t/other.key" -in "$t/nested.efi" -out "$t/nested/$uki" >/dev/null
+sbverify --cert "$t/gate.crt" "$t/nested/$uki"
+refused "not exactly one Authenticode signature: unsigned attributes in the PKCS#7 signature" "$t/nested" "$t/gate.crt"
+# The same, with the unsigned attributes' tag [1] (A1) written in the high tag number form (BF 01),
+# which OpenSSL also reads as [1], and the lengths around it made to match.
+copy hightag
+python3 -I - "$t/nested/$uki" "$t/hightag/$uki" <<'PY'
+import struct
+import sys
+import pefile
+data = open(sys.argv[1], "rb").read()
+pe = pefile.PE(data=data, fast_load=True)
+at = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress
+pkcs7 = data[at + 8:at + struct.unpack_from("<I", data, at)[0]]
+def node(b, i):
+    """tag, start of the contents and end of the DER element at i (one-byte tags)."""
+    n, j = b[i + 1], i + 2
+    if n & 0x80:
+        n, j = int.from_bytes(b[j:j + (n & 0x7F)], "big"), j + (n & 0x7F)
+    return b[i], j, j + n
+def length(n):
+    return bytes([n]) if n < 0x80 else bytes([0x80 | (n.bit_length() + 7) // 8]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+def rewrite(b, i, path):
+    """The element at i, its descendant along path (child indexes) re-tagged BF 01."""
+    tag, start, end = node(b, i)
+    if not path:
+        assert tag == 0xA1, hex(tag)
+        return b"\xbf\x01" + length(end - start) + b[start:end]
+    kids, k = [], start
+    while k < end:
+        kids.append(k)
+        k = node(b, k)[2]
+    parts = [b[k:node(b, k)[2]] for k in kids]
+    parts[path[0]] = rewrite(b, kids[path[0]], path[1:])
+    return bytes([tag]) + length(sum(map(len, parts))) + b"".join(parts)
+# ContentInfo > [0] > SignedData > signerInfos (last) > SignerInfo > unsigned attributes (last).
+new = rewrite(pkcs7, 0, [1, 0, -1, 0, -1])
+entry = struct.pack("<IHH", 8 + len(new), 0x0200, 0x0002) + new
+entry += bytes(-len(entry) % 8)
+p = bytearray(data[:at] + entry)
+struct.pack_into("<I", p, pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].get_file_offset() + 4, len(entry))
+open(sys.argv[2], "wb").write(p)
+PY
+sbverify --cert "$t/gate.crt" "$t/hightag/$uki"
+refused "the PKCS#7 signature does not parse \\(not DER: a high tag number\\)" "$t/hightag" "$t/gate.crt"
+rm -rf "${t:?}/nested" "$t/nested.efi" "${t:?}/hightag"
+# Two bytes after the trusted key's PKCS#7 signature, inside its certificate entry (osslsigncode leaves
+# such bytes, sbsign none): the signature still verifies.
+copy trailing
+sign "$t/unsigned.efi" "$t/trailing.efi"
+python3 -I - "$t/trailing.efi" "$t/trailing/$uki" <<'PY'
+import struct
+import sys
+import pefile
+data = open(sys.argv[1], "rb").read()
+pe = pefile.PE(data=data, fast_load=True)
+at = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress
+n = struct.unpack_from("<I", data, at)[0]
+entry = struct.pack("<I", n + 2) + data[at + 4:at + n] + b"\0\0"
+entry += bytes(-len(entry) % 8)
+p = bytearray(data[:at] + entry)
+struct.pack_into("<I", p, pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].get_file_offset() + 4, len(entry))
+open(sys.argv[2], "wb").write(p)
+PY
+sbverify --cert "$t/gate.crt" "$t/trailing/$uki"
+refused "not exactly one Authenticode signature: 2 bytes after the PKCS#7 signature in its certificate entry" "$t/trailing" "$t/gate.crt"
+rm -rf "${t:?}/trailing" "$t/trailing.efi"
 copy certdata
 sign "$t/unsigned.efi" "$t/certdata/$uki"
 python3 -I - "$t/certdata/$uki" <<'PY'

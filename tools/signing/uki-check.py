@@ -3,14 +3,14 @@
 """Refuses any PE file that is not the image's sealed UKI (docs/SIGNING.md, "The UKI gate").
 
 The sections are read as systemd-stub reads them (pe_sections.py: in the order of the section table,
-names up to the first NUL, refused on any pefile warning, on overlapping sections or on more than
-one Authenticode signature). Accepted only:
+names up to the first NUL, as the loader puts them in memory; refused wherever that reading could
+differ from the stub's, and on more than one Authenticode signature). Accepted only:
   - exactly one .linux section (a kernel, so not an add-on or another PE file);
-  - the .cmdline and .profile sections, in table order, exactly: the base .cmdline (inherited by
-    profile 0), then profile 0's .profile, then .profile and its own .cmdline for each further
-    profile, with as many profiles as lines in EXPECTED (ci/uki-cmdline.txt). So no profile is
-    without a command line (the stub would take the boot loader's), none has a second one, none is
-    extra;
+  - exactly one .cmdline in the base sections (inherited by profile 0), and each profile's sections
+    exactly, in table order: profile 0 .profile and .pcrsig (its PCR policy, pcr-policy.py), each
+    further profile .profile and its own .cmdline, with as many profiles as lines in EXPECTED
+    (ci/uki-cmdline.txt). So no profile is without a command line (the stub would take the boot
+    loader's), none has a second one or any other section (an .initrd of its own), none is extra;
   - each command line exactly its line of EXPECTED, in order: compared as bytes, only trailing NULs
     cut (the stub stops at the first NUL), every byte in 0x20-0x7e; DIGEST is the composefs digest,
     128 hex digits, the same in every profile;
@@ -36,11 +36,13 @@ def check(uki, expected_path):
     names = [name for name, _ in secs]
     if names.count(".linux") != 1:
         return f"{names.count('.linux')} .linux sections, not 1: not a UKI (an add-on or another PE file)"
-    structure = [name for name in names if name in (".cmdline", ".profile")]
-    want = [".cmdline", ".profile"] + [".profile", ".cmdline"] * (len(expected) - 1)
-    if structure != want:
-        return (f".cmdline and .profile sections not one command line per profile, {len(expected)} profiles:\n"
-                f"  found:    {structure}\n  expected: {want}")
+    first = names.index(".profile") if ".profile" in names else len(names)
+    base, profiles = names[:first], names[first:]
+    want = [".profile", ".pcrsig"] + [".profile", ".cmdline"] * (len(expected) - 1)
+    if base.count(".cmdline") != 1 or profiles != want:
+        return (f"not one .cmdline in the base sections and exactly these sections in {len(expected)} profiles:\n"
+                f"  found:    {base.count('.cmdline')} .cmdline in the base sections, profiles {profiles}\n"
+                f"  expected: 1 .cmdline in the base sections, profiles {want}")
     found = [data.rstrip(b"\0") for name, data in secs if name == ".cmdline"]
     digests = set()
     for profile, (line, got) in enumerate(zip(expected, found)):
