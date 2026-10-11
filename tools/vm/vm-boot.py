@@ -93,7 +93,8 @@ class Console:
         self.cut = None  # seconds after start when QEMU was killed by --power-cut-at
         self.t0 = time.monotonic()
         self.lock = threading.Lock()
-        threading.Thread(target=self._read, daemon=True).start()
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
 
     def _read(self):
         while chunk := self.proc.stdout.read1(65536):
@@ -109,14 +110,16 @@ class Console:
         """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
         differ); None on timeout or if QEMU exits."""
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and self.proc.poll() is None:
+        while True:
+            exited = self.proc.poll() is not None
+            if exited:  # one last look, at everything QEMU printed before it exited
+                self.reader.join(5)
             with self.lock:
                 buf = self.buf
             m = re.search(pattern, clean(buf[start:]) if cleaned else buf[start:])
-            if m:
+            if m or exited or time.monotonic() >= deadline:
                 return m
             time.sleep(0.2)
-        return None
 
     def type(self, text):
         self.proc.stdin.write(text.encode())
