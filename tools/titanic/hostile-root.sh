@@ -15,11 +15,12 @@
 #      reach is gone (markers in /etc and /var). The "Nyra OS Reset settings" entry is picked for
 #      the next boot first (bootctl set-oneshot, as a user would in the boot menu); then sync and a
 #      power cut (rm leaves no working shutdown). The ESP as rm left it goes into the summary.
-#   3  the next boot: the Reset settings entry. /etc is empty, so systemd-firstboot asks for a root
-#      password first (systemd-sysusers made root again, "unprovisioned"); it is skipped with Enter,
-#      as the question allows. Then RESET; the system restarts by itself into the normal boot:
-#      running, /usr the same as before rm, /etc the image's (root, the signature policy link),
-#      Secure Boot and the lockdown on, the "Nyra OS" firmware entry back.
+#   3  the next boot: the Reset settings entry. /etc is empty, so the boot counts as a first boot,
+#      but systemd-firstboot asks nothing (it does not run on the reset entry): the first question is
+#      the reset's. RESET; the system restarts by itself into the normal boot: running, /usr the same
+#      as before rm, /etc the image's (root, locked, and the signature policy link), Secure Boot and
+#      the lockdown on, the "Nyra OS" firmware entry back. The console of both boots shows no
+#      first-boot question.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). Every boot runs even if one before it failed; the step fails if any did.
@@ -106,7 +107,6 @@ signed='insmod /var/tmp/dummy-signed.ko && grep "^dummy " /proc/modules && rmmod
 lockdown='echo none > /sys/kernel/security/lockdown; r=$?; cat /sys/kernel/security/lockdown; test $r != 0 && grep -q "\[integrity\]" /sys/kernel/security/lockdown && echo confidentiality > /sys/kernel/security/lockdown && grep -q "\[confidentiality\]" /sys/kernel/security/lockdown && echo "lowering refused, raising works (control)"'
 
 answer='Type RESET to reset, anything else or Control-D to boot normally: '
-rootpw='new root password \(empty to skip\)'
 fail=0
 
 vm --poweroff --log "$logs/serial-hostile-root-1.log" \
@@ -150,12 +150,21 @@ unesp
 u0="$(grep -ao 'nyra-usr: [0-9a-f]*-[0-9a-f]*' "$logs/serial-hostile-root-2.log" | head -1 | cut -d' ' -f2 || true)"
 echo "/usr before rm: ${u0:-not found}"
 
-vm --poweroff --log "$logs/serial-hostile-root-3.log" --chat "$rootpw=>" --chat "$answer=>RESET" \
+vm --poweroff --log "$logs/serial-hostile-root-3.log" --chat "$answer=>RESET" \
   --chat-then-login --title "Hostile root 3: Reset settings from the boot menu, then the normal boot" \
   --command "$running" \
   --command "$usrsum && test \"\$u\" = '$u0' && echo '/usr unchanged'" \
   --command 'grep "^root:" /etc/passwd && readlink /etc/containers/policy.json && test "$(readlink /etc/containers/policy.json)" = /usr/lib/nyra/containers/policy.json && echo "/etc is the image'"'"'s"' \
+  --command "grep '^root:' /etc/shadow | cut -d: -f1,2 && grep -q '^root:[!*]' /etc/shadow && ! grep -q '^root:!unprovisioned:' /etc/shadow && echo 'root is locked'" \
   --command "$secure" \
   --command 'efibootmgr; efibootmgr | grep -q "Nyra OS"' || fail=1
+# A first-boot question would stop the boot before the reset's (the chat above then times out);
+# this names it. When systemd-firstboot runs, the console shows "Initial Setup..." (starting) and
+# "Initial Setup." (finished), and "Please enter the new ..." for each question (systemd 262); a
+# skipped unit is at most "Initial Setup skipped, ...".
+if grep -aE 'Initial Setup\.|Please enter the new' "$logs/serial-hostile-root-3.log"; then
+  echo "hostile root 3: systemd-firstboot ran or asked a question"
+  fail=1
+fi
 
 exit "$fail"
