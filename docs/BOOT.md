@@ -231,7 +231,7 @@ for the partition marked `ID_PART_GPT_AUTO_ROOT=1`. That mark comes from the pro
 partition's UUID on the disk (`ID_PART_GPT_AUTO_ROOT_DISK=1`, `ID_PART_GPT_AUTO_ROOT_UUID`); the
 partitions, probed after the disk, compare their UUID with it. systemd (262) reads the variable
 once: when that read fails the disk is never marked, nothing probes it again, and the initrd waits
-90 s for its root, then stops in emergency mode.
+90 s for its root, then gives up (emergency mode, which reboots: `rd.emergency=reboot`).
 
 In CI that happened in two boots out of thousands (install and boot test: once in "Boot protection",
 once in "Secure Boot"). The emergency diagnostics of the second one show the whole disk without

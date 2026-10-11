@@ -5,7 +5,8 @@
 # tools/vm/boot-protection.sh), to find boots that fail only now and then. A boot that ends in
 # emergency mode prints what udev saw (vm-boot.py), and its serial log is kept. udev logs at its usual
 # level, as in the other boot tests: the boots that failed now and then in CI did so without debug
-# logging, never with it.
+# logging, never with it. The test add-on also turns the image's rd.emergency=reboot into a power-off,
+# so that a boot that ends in the initrd's emergency mode does not start again (after its diagnostics).
 # First, three checks:
 # - a boot whose root mount is made to fail in the initrd shows those diagnostics;
 # - a boot whose first probe of the boot disk cannot read LoaderDevicePartUUID (a test-only udev rule
@@ -25,7 +26,7 @@ trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup 
 
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI add-on test key" \
   -keyout "$br/local.key" -out "$br/local.crt" 2>/dev/null
-tools/vm/test-addon.sh "$image" "$br/console.addon.efi" systemd.import_credentials=yes \
+tools/vm/test-addon.sh "$image" "$br/console.addon.efi" "systemd.import_credentials=yes rd.emergency=poweroff" \
   "$br/local.key" "$br/local.crt"
 virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$br/vars.fd" \
   --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$uki_cert" \
