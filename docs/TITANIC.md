@@ -34,7 +34,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
-| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | partial: everything passes (the ESP is read-only at `/boot` and survives, the firmware boots its fallback path, Reset settings brings `/etc` back), but apt and dpkg do not tell the user what to use instead, and `systemd-firstboot` asks for a root password before the reset |
+| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | partial: everything passes (the ESP is read-only at `/boot` and survives, the firmware boots its fallback path, Reset settings brings `/etc` back), but apt and dpkg do not tell the user what to use instead |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
@@ -111,7 +111,7 @@ only if the action fails for another reason:
 | 1 | `insmod` of an in-tree module (`dummy`) with its signature cut off | refused by the kernel's signature check ("Loading of unsigned module is rejected": with Secure Boot the kernel enforces module signatures) | the same module with its signature loads from the same place |
 | 1 | `echo none > /sys/kernel/security/lockdown` | refused, still `integrity` | raising it to `confidentiality` works |
 | 2 | `rm -rf --no-preserve-root /`, then a power cut | `/usr` has the same checksum as before | the markers the test put in `/etc` and `/var` are gone |
-| 3 | the "Nyra OS Reset settings" entry, picked before `rm` | `/etc` is the image's again, the system restarts into the normal boot and runs; `/usr` unchanged, Secure Boot and the lockdown on, the "Nyra OS" firmware entry back | |
+| 3 | the "Nyra OS Reset settings" entry, picked before `rm` | no first-boot question before the reset's; `/etc` is the image's again, root locked, the system restarts into the normal boot and runs; `/usr` unchanged, Secure Boot and the lockdown on, the "Nyra OS" firmware entry back | |
 
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file. The ESP as `rm` left it is listed in the step summary.
@@ -124,11 +124,14 @@ fallback path, `\EFI\BOOT\BOOTX64.EFI`, into the "Reset settings" entry picked b
 normal boot after the reset creates the "Nyra OS" firmware entry again. The reset itself must not
 depend on `/etc`: `/usr/bin/awk` is a link through `/etc/alternatives`, so it calls `mawk`.
 
-With `/etc` gone, `systemd-firstboot` asks for a root password before the reset question
-(systemd-sysusers creates root again with an "unprovisioned" password, which firstboot treats as
-not set up); the test skips it with Enter, as the question allows. Not covered: a friendly
-message from apt and dpkg that says what to use instead (there is none yet), and what `rm` takes with
-`/var`, including `/home`: the files of the users are gone, which no reset can bring back.
+With `/etc` gone, the boot counts as a first boot, but `systemd-firstboot` does not run on the reset
+entry (docs/BOOT.md, "No first-boot questions"): the first question on the console is the reset's.
+Any other question would stop the boot before it, so the test fails there; it also fails if the
+console shows `systemd-firstboot` starting.
+
+Not covered: a friendly message from apt and dpkg that says what to use instead (there is none yet),
+and what `rm` takes with `/var`, including `/home`: the files of the users are gone, which no reset
+can bring back.
 
 ## Results
 

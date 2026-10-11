@@ -31,13 +31,14 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
    covers them. bootc checks the digest again at install and update, and refuses a UKI that does
    not match.
-3. **Signing outside the image build.** First the PCR 11 policy of the main profile (see "TPM2
-   unlock" below), then the whole UKI for Secure Boot. In CI both keys are made for that run only:
-   generated, used once, deleted; only the UKI certificate (a job output, for the Secure Boot test)
-   and the policy's public key leave the step. Nothing persists, nothing is cached or uploaded. The
-   step signs exactly one file, and only the sealed UKI: a kernel and exactly the command lines of
-   `ci/uki-cmdline.txt` (`tools/signing/uki-check.py`, docs/SIGNING.md), with the policy signed for
-   the main profile alone (`tools/signing/pcr-policy.py check`).
+3. **Signing outside the image build.** First the PCR 11 policy of the main profile, for the
+   initrd only (see "TPM2 unlock" below), then the whole UKI for Secure Boot. In CI both keys are
+   made for that run only: generated, used once, deleted; only the UKI certificate (a job output,
+   for the Secure Boot test) and the policy's public key leave the step. Nothing persists, nothing
+   is cached or uploaded. The step signs exactly one file, and only the sealed UKI: a kernel and
+   exactly the command lines of `ci/uki-cmdline.txt` and the Nyra SBAT component
+   (`tools/signing/uki-check.py`, docs/SIGNING.md), with the policy signed for the main profile's
+   initrd alone (`tools/signing/pcr-policy.py check`).
 4. **Final image:** the committed root filesystem plus the signed UKI in `/boot/EFI/Linux/<kver>.efi`.
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
@@ -75,6 +76,7 @@ The `install-boot` job takes the disk that `bootc install` produced and, on a co
 | bootc's entry + `options … nyra.injected=1` | boots, argument ignored | `nyra.injected` absent from `/proc/cmdline` |
 | the image's command line (only a signed add-on with `systemd.firstboot=no`) + a credential over SMBIOS that adds a drop-in printing a marker | no effect | the marker never shows on the console after `multi-user.target` |
 | the same with the test console add-on (`systemd.import_credentials=yes`) | the credential applies (control) | the marker shows; in the first boot, the drop-in's file exists |
+| the image's command line (only a signed add-on with `systemd.firstboot=no`) + the same credential + over SMBIOS `io.systemd.stub.kernel-cmdline-extra=systemd.import_credentials=yes …` (for systemd-stub) and `io.systemd.boot.kernel-cmdline-extra=…` (for systemd-boot) | the stub appends its string (the platform is trusted, see "The kernel command line is fixed"), so the credential applies; systemd-boot's is ignored | the stub's string last on `/proc/cmdline`, systemd-boot's absent; the drop-in's file exists |
 
 The keys are not in the firmware's `db`, so only shim (through the MOK list) can have accepted the
 signed UKI: systemd-boot loads images through shim's verification protocol, and systemd-stub does
@@ -91,8 +93,9 @@ the command line, and add-ons come after the UKI's own. It is unsigned on the di
 Secure Boot; the Secure Boot test replaces it with one signed by a key enrolled only there.
 Kernel messages still reach the serial log in the VM:
 systemd-stub itself appended `console=uart,io,0x3f8` to the command line (observed in CI; it does so
-when the firmware's only console is a serial port). That is the one thing the stub adds to the
-sealed command line; on a machine with a screen it adds nothing.
+when the firmware's only console is a serial port). Apart from what the firmware passes over SMBIOS
+(see "The kernel command line is fixed"), that is the one thing the stub adds to the sealed command
+line; on a machine with a screen it adds nothing.
 
 Not covered yet: the real installer, MokManager enrollment on a real machine, a kernel built and
 signed by Nyra (today it is Debian's), and revocation: what happens when SBAT or `dbx` updates
@@ -138,7 +141,8 @@ too. Disk unlock therefore depends on what the TPM measured, not on Secure Boot 
 - **An old Nyra UKI, still validly signed, can boot an old image version** if someone puts it on
   the ESP (bootc has no downgrade protection either, LESSONS). Both answers are used:
   - **SBAT generations** in the UKI (`.sbat` section) for versions that must not boot at all
-    (revoked through shim's SBAT policy; coarse, so for serious cases only);
+    (coarse, so for serious cases only). The component is in every UKI, but a revocation reaches
+    machines only through a shim that carries it ("SBAT" below);
   - **rotating the PCR policy key**: an old UKI carries a policy signed with an old key, so once
     machines are enrolled with the new key it may still boot, but it no longer unlocks the disk
     (it asks for the password or the recovery key). How the rotation works is in "TPM2 unlock".
@@ -151,35 +155,68 @@ it; no disk is enrolled yet (that comes with the encryption work, in the install
 with a software TPM is still to come.
 
 **What is measured.** systemd-stub measures the UKI's sections into PCR 11 before it starts the
-kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`, each
-as its name and the SHA-256 of its content. A profile's own sections replace the base ones, so each
-profile gives another PCR 11: the recovery and reset profiles differ in `.cmdline` and `.profile`.
-systemd then adds the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`): that is
-systemd-pcrphase, from the `systemd-tpm` package in the image and dracut's `systemd-pcrextend` module
-in the initramfs. Without it PCR 11 would never match a signed policy. The other units that package enables
-(systemd-pcrlock among them) are blocked; which stay and what they cost is in docs/DEFAULTS.md.
+kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`,
+each as its name and the SHA-256 of its content. A profile's own sections replace the base ones, so
+each profile gives another PCR 11: the recovery and reset profiles differ in `.cmdline` and
+`.profile`. systemd then adds the boot phases: `enter-initrd` when the initrd starts, `leave-initrd`
+when it ends, then `sysinit` and `ready` in the system. That is systemd-pcrphase, from the
+`systemd-tpm` package in the image and dracut's `systemd-pcrextend` module in the initramfs. Without
+it PCR 11 would never match the signed policy. The other units that package enables (systemd-pcrlock
+among them) are blocked; which stay and what they cost is in docs/DEFAULTS.md.
 
-**What is signed.** `ci/ukify.sh` (no key there) builds the UKI with the policy's public key as
-`.pcrpkey` and, for the main profile only (`--sign-profile main`), a `.pcrsig` section with the
-TPM2 PolicyPCR digests to sign: PCR 11, SHA-256 bank, one per phase. Step 3 of `ci/build-image.sh`
-signs each digest with the policy key (`tools/signing/pcr-policy.py sign`), puts the signatures into
-`.pcrsig` with the image's `ukify --join-pcrsig`, and only then signs the whole UKI for Secure Boot.
+**What is signed: the initrd only.** One policy is signed: the main profile's PCR 11 in the
+`enter-initrd` phase, with the policy reference `initrd`. The disk therefore unlocks only while the
+initrd runs. Once `leave-initrd` is measured, PCR 11 matches no signed policy, so a program that
+becomes root on the running system cannot get the disk's key out of the TPM. The reference keeps
+this signature from serving any other purpose of the same key: the TPM accepts it only for an
+enrollment that names `initrd`.
+
+`ci/ukify.sh` (no key there) builds the UKI with the policy's public key as `.pcrpkey` and, for the
+main profile only (`--sign-profile main`), a `.pcrsig` section with the TPM2 PolicyPCR digest to sign
+(`--sign-initrd-pcrs`: PCR 11, SHA-256 bank, `enter-initrd`, reference `initrd`). Without a key, ukify
+cannot leave out the digests of the four phases without a reference, so they are there too. They are
+never signed, and an unsigned entry authorizes nothing: systemd looks for a signature by the
+enrolled key, with the enrolled reference.
+
+Step 3 of `ci/build-image.sh` signs with the policy key (`tools/signing/pcr-policy.py sign`), puts
+the signature into `.pcrsig` with the image's `ukify --join-pcrsig`, and only then signs the whole
+UKI for Secure Boot. **The signer checks before it signs:**
+- it computes the main profile's `enter-initrd` policy itself, from the UKI's sections as the stub
+  measures them;
+- it signs that computed data, never a digest read from `.pcrsig`;
+- it refuses the UKI unless `.pcrsig` asks for exactly that policy, in the main profile alone, for
+  the key's own `.pcrpkey`, with no signature yet.
+
+With the real key a signature is a credential: it unlocks every boot whose PCR 11 has that value,
+until the key is rotated, whatever happens to the file afterwards. So whatever signs with the real key
+(a KMS or a hardware token) must run this check first.
+
 The recovery and reset profiles get no `.pcrsig`: nothing signs their PCR 11, so they can never
 unlock the disk through the TPM.
 
 **What is checked** (`pcr-policy.py check`, in the signing step and in the release gate,
-docs/SIGNING.md): `.pcrpkey` is the expected key; exactly one `.pcrsig`, in the profile with `ID=main`
-(profile 0); every policy in it is SHA-256, PCR 11 only, for that key, with a signature that verifies;
-and the signed digests are exactly the main profile's, computed again from the UKI's sections by the
-script itself (not by systemd-measure), none of them another profile's.
+docs/SIGNING.md):
+- `.pcrpkey` is the expected key;
+- exactly one `.pcrsig`, in the profile with `ID=main` (profile 0);
+- every policy in it is SHA-256, PCR 11 only, for that key, with no reference other than `initrd`;
+- exactly one policy is signed: the main profile's `enter-initrd` policy with the reference `initrd`.
+  The script computes it again from the UKI's sections (not with systemd-measure) and checks that it
+  is no other profile's. Its signature must verify over that computed data.
+- A signature for a later phase, for another profile or without the reference is refused.
+
+CI tests both verbs on a UKI built by `ci/ukify.sh` with a policy key of the test
+(`tools/signing/test-pcr-policy.sh`). systemd-measure signs the same policy with the same signature,
+and every refusal above is checked with its reason.
 
 **What the enrollment must bind** (encryption work, not here): `systemd-cryptenroll
---tpm2-public-key=<.pcrpkey> --tpm2-public-key-pcrs=11 --tpm2-pcrs=7+12`, so that unlock needs:
-- the signed PCR 11 policy (the Nyra UKI's main profile);
+--tpm2-public-key=<.pcrpkey> --tpm2-public-key-pcrs=11 --tpm2-public-key-policyref=initrd
+--tpm2-pcrs=7+12`, so that unlock needs:
+- the signed PCR 11 policy (the Nyra UKI's main profile, in the initrd);
 - PCR 7 as enrolled (Secure Boot on, the same keys): never PCR 7 alone;
 - **PCR 12 at its value without add-ons**: systemd-stub measures add-ons and credentials from the
   ESP into PCR 12, and a Nyra machine has none (the Nyra key never signs an add-on, the release
-  gate refuses any next to the UKI), so anything placed there stops the unlock.
+  gate refuses any next to the UKI), so anything placed there stops the unlock. The same holds for a
+  command line the firmware passes over SMBIOS, which the stub also measures into PCR 12.
 
 The sealed command line has `rd.shell=0 rd.emergency=reboot`
 (`/usr/lib/bootc/kargs.d/15-nyra-initrd.toml`): a failure in the initrd reboots instead of opening a
@@ -189,7 +226,31 @@ by itself; the VM test will check that it is in use.
 
 **The policy key.** In CI it is made for each run, like the UKI key, and deleted after signing. The
 real one is described in docs/SIGNING.md ("The PCR policy key"): kept like the UKI key, outside CI,
-with only its public half committed, and rotated.
+with only its public half committed, and rotated, with the next key enrolled in advance.
+
+## SBAT
+
+Every UKI's `.sbat` section carries, after the stub's and ukify's own lines, the Nyra component
+(`ci/ukify.sh`):
+
+```
+nyra,1,Nyra OS,nyra-base,1,https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+```
+
+The second field is the generation. The signing step and the release gate refuse a UKI without
+exactly one such line (`tools/signing/uki-check.py`).
+
+**Revoking every older Nyra UKI** (a flaw serious enough that no older version may boot, for
+example in the initramfs or the command line):
+1. raise the generation in `ci/ukify.sh` (`nyra,2,…`) in the release that fixes it;
+2. deliver the revocation `nyra,2` to the machines in shim's SBAT policy (the `SbatLevel` variable).
+   shim verifies every UKI that systemd-boot starts, and then refuses one with `nyra,1`, wherever it
+   comes from (to be proven in a VM test when the revocation exists).
+
+Step 2 is not possible yet: only shim writes `SbatLevel`, from the policy built into it, and the shim
+in the image is Debian's, which will not carry a Nyra revocation. So it needs a shim signed for
+Nyra, a separate step with its own review. Until then, the answer to an old UKI that still boots is
+the rotation of the PCR policy key: it may boot, but it no longer unlocks the disk.
 
 ## The kernel command line is fixed
 
@@ -218,8 +279,19 @@ The sealed command line also imports no systemd credentials at all (`systemd.imp
 the kernel command line or systemd-stub. Nothing outside the signed image configures the system at
 boot; settings for a machine come from the installer and from `/etc`. Only an add-on signed with an
 enrolled key could turn import back on, which is why the Nyra key never signs a generic
-command-line add-on. Without credentials, `systemd-firstboot` asks for its settings at the first
-boot, so the installer must provide them.
+command-line add-on, or the platform itself (below). Without credentials, `systemd-firstboot` asks
+for its settings at the first boot, so the installer must provide them.
+
+**The platform is trusted.** systemd-stub appends the SMBIOS OEM string
+`io.systemd.stub.kernel-cmdline-extra` to the command line even under Secure Boot (upstream treats
+SMBIOS as set by the firmware or a VM's host, and ignores it only in a confidential VM), after the
+UKI's own `.cmdline` and the add-ons. Whoever sets SMBIOS can therefore add kernel arguments, and the
+last occurrence wins: `systemd.import_credentials=yes` turns credential import back on (CI shows it,
+table above). That is the firmware, or a VM's host, which can already run whatever it wants below the
+system; the command line under Secure Boot is no boundary against it. What it cannot do is unlock
+the disk: the stub measures the string into PCR 12, which the TPM2 enrollment will bind ("TPM2 unlock" above).
+systemd-boot's own SMBIOS string (`io.systemd.boot.kernel-cmdline-extra`) only reaches the boot
+loader's command line, which the stub ignores under Secure Boot.
 
 ## Finding the root partition
 
@@ -531,6 +603,15 @@ be kept too.
 everything that changes goes back to the image's (secure) defaults. Asking for an administrator's
 password would make it useless in exactly the case it is for, a broken `/etc/passwd` or
 `/etc/shadow`. It does undo an administrator's own settings, which is what it is for.
+
+**No first-boot questions.** With `/etc` emptied (or without a machine ID), systemd counts the boot as
+the first one: systemd-sysusers creates root again with the password `!unprovisioned`, and
+`systemd-firstboot` would ask for a root password and, without credentials, a time zone before the
+reset's question. A drop-in in `/usr` (`systemd-firstboot.service.d/10-nyra.conf`) skips
+`systemd-firstboot` when the command line has `systemd.unit=nyra-reset-settings.target`, which only
+the sealed reset profile has under Secure Boot: the first question is the reset's. Root stays locked:
+the reset brings back the image's root account (`*`), and it never copies root's lines from the old
+`/etc`.
 
 CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
 then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,

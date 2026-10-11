@@ -2,21 +2,31 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The signed PCR 11 policy of the image's UKI (docs/BOOT.md, "TPM2 unlock").
 
-ci/ukify.sh builds the UKI with the policy's public key (.pcrpkey) and, for the main profile only,
-the PCR 11 policy digests to sign (.pcrsig, without signatures). Step 3 of ci/build-image.sh signs
-them with the policy key and checks the result before the UKI is signed for Secure Boot. The sections
-are read as systemd-stub reads and measures them (pe_sections.py).
+The disk unlocks in the initrd only: the one policy signed is the main profile's PCR 11 in the
+enter-initrd phase, with the policy reference "initrd" (the enrollment requires it). ci/ukify.sh builds
+the UKI with the policy's public key (.pcrpkey) and, for the main profile only, the digests to sign
+(.pcrsig, without signatures): that policy (ukify --sign-initrd-pcrs), and the four boot phases
+without a reference, which ukify always adds and which are never signed. Step 3 of
+ci/build-image.sh signs it with the policy key and checks the result before the UKI is signed for
+Secure Boot. The sections are read as systemd-stub reads and measures them (pe_sections.py).
 
-    pcr-policy.py sign UKI PRIVATE_KEY        prints the .pcrsig JSON with the signatures added
-                                              (for ukify build --join-pcrsig --pcrsig)
-    pcr-policy.py check UKI PUBLIC_KEY        refuses the UKI unless:
+    pcr-policy.py sign UKI PRIVATE_KEY   computes the policy from the UKI's sections (independently
+                                         of systemd-measure) and signs that, never data read from
+                                         .pcrsig; refuses unless the UKI passes the checks below that
+                                         come before signing, carries no signature yet, and its
+                                         .pcrsig asks for exactly that policy (no other with a
+                                         reference). Prints the signature as .pcrsig JSON, for
+                                         ukify build --join-pcrsig --pcrsig.
+    pcr-policy.py check UKI PUBLIC_KEY   refuses the UKI unless:
       - .pcrpkey is PUBLIC_KEY;
       - exactly one .pcrsig, in the profile with ID=main (profile 0), none in another profile;
-      - every policy in it: SHA-256 bank, PCR 11 only, no policy reference, the fingerprint of
-        PUBLIC_KEY, a signature that verifies with PUBLIC_KEY;
-      - the signed policies are exactly the PCR 11 policies of the main profile for systemd's four
-        boot phases, computed here from the UKI's sections (independently of systemd-measure), and
-        none of them is a policy of another profile.
+      - only the SHA-256 bank; every policy in it for PCR 11 alone, with the fingerprint of
+        PUBLIC_KEY, no policy reference other than "initrd", and its data to sign (tbs) what the TPM
+        checks for its digest and reference;
+      - the main profile's enter-initrd policy, computed here, is no other profile's;
+      - exactly one policy signed: that one, with the reference "initrd", and its signature verifies
+        with PUBLIC_KEY over the data computed here. A signature for any other phase or profile, or
+        without the reference, is refused.
 """
 import base64
 import hashlib
@@ -37,9 +47,11 @@ MEASURED = [".linux", ".osrel", ".cmdline", ".initrd", ".ucode", ".splash", ".dt
             ".pcrpkey", ".profile"]
 # Sections the stub would also measure, which this UKI must not have (not modelled here).
 UNEXPECTED = {".dtbauto", ".hwids", ".efifw"}
-# systemd-measure's default phases (systemd-pcrphase): each starts again from the UKI's measurement.
-PHASES = ["enter-initrd", "enter-initrd:leave-initrd", "enter-initrd:leave-initrd:sysinit",
-          "enter-initrd:leave-initrd:sysinit:ready"]
+# The one phase signed (systemd-pcrphase measures it into PCR 11 when the initrd starts, and
+# leave-initrd when it ends), and the policy reference the enrollment requires
+# (systemd-cryptenroll --tpm2-public-key-policyref=initrd).
+PHASE = "enter-initrd"
+REF = "initrd"
 
 
 def profiles(secs):
@@ -67,7 +79,7 @@ def extend(pcr, digest):
 
 
 def pcr11(base, group):
-    """PCR 11 (SHA-256) after booting one profile, for each boot phase."""
+    """PCR 11 (SHA-256) in the enter-initrd phase after booting one profile."""
     effective = dict(base)
     effective.update(group)  # a profile's section replaces the base section of the same name
     if UNEXPECTED & effective.keys():
@@ -78,21 +90,21 @@ def pcr11(base, group):
         if data:  # the stub skips empty sections
             pcr = extend(pcr, sha256(name.encode() + b"\0"))
             pcr = extend(pcr, sha256(data))
-    values = []
-    for phase in PHASES:
-        value = pcr
-        for word in phase.split(":"):
-            value = extend(value, sha256(word.encode()))
-        values.append(value)
-    return values
+    return extend(pcr, sha256(PHASE.encode()))
 
 
-def policies(base, group):
-    """The TPM2_PolicyPCR digests of one profile, for each boot phase: H(previous policy (zeros) ||
-    TPM_CC_PolicyPCR || TPML_PCR_SELECTION (one SHA-256 bank, 0x000b, PCR 11 in a 3-byte bitmap) ||
-    H(PCR 11))."""
+def policy_digest(base, group):
+    """The TPM2_PolicyPCR digest of one profile in the enter-initrd phase: H(previous policy (zeros)
+    || TPM_CC_PolicyPCR || TPML_PCR_SELECTION (one SHA-256 bank, 0x000b, PCR 11 in a 3-byte bitmap)
+    || H(PCR 11))."""
     selection = struct.pack(">IHB3B", 1, 0x000B, 3, 0x00, 0x08, 0x00)
-    return [sha256(bytes(32) + struct.pack(">I", 0x17F) + selection + sha256(v)).hex() for v in pcr11(base, group)]
+    return sha256(bytes(32) + struct.pack(">I", 0x17F) + selection + sha256(pcr11(base, group))).hex()
+
+
+def to_sign(pol, ref):
+    """The data the key signs for TPM2_PolicyAuthorize (hex): the policy digest, then the policy
+    reference as systemd passes it to the TPM, its SHA-256 (nothing without a reference)."""
+    return pol + (sha256(ref.encode()).hex() if ref else "")
 
 
 def openssl(*args, data=None):
@@ -125,23 +137,15 @@ def the_pcrsig(secs):
     return json.loads(found[0].rstrip(b"\0 ").decode("utf-8"))
 
 
-def sign(uki, private_key):
-    pcrsig = the_pcrsig(sections(uki))
-    for policy in pcrsig.get("sha256", []):
-        r = openssl("dgst", "-sha256", "-sign", private_key, data=bytes.fromhex(policy["tbs"]))
-        if r.returncode != 0:
-            raise Refused(f"openssl could not sign: {r.stderr.decode(errors='replace')}")
-        policy["sig"] = base64.b64encode(r.stdout).decode()
-    print(json.dumps(pcrsig))
-
-
-def check(uki, public_key):
+def verified(uki, public_key, key_name=None):
+    """The checks of both verbs that need no signature. Returns the .pcrsig JSON, the key's
+    fingerprint and the main profile's enter-initrd policy digest, computed from the sections."""
     secs = sections(uki)
     with open(public_key, "rb") as f:
         key_der = der(f.read())
     keys = [data for name, data in secs if name == ".pcrpkey"]
     if len(keys) != 1 or der(keys[0]) != key_der:
-        raise Refused(f".pcrpkey is not {public_key}")
+        raise Refused(f".pcrpkey is not {key_name or public_key}")
     base, groups = profiles(secs)
     if not groups or profile_id(groups[0]) != "main":
         raise Refused("profile 0 is not the main profile (ID=main)")
@@ -153,36 +157,62 @@ def check(uki, public_key):
     if list(pcrsig) != ["sha256"]:
         raise Refused(f"banks {list(pcrsig)}, expected only sha256")
     fp = fingerprint(public_key)
-    signed = []
-    with tempfile.TemporaryDirectory() as tmp:
-        for policy in pcrsig["sha256"]:
-            if policy.get("pcrs") != [11] or "ref" in policy or policy.get("pkfp") != fp:
-                raise Refused(f"policy not for PCR 11 alone with this key (fingerprint {fp}): {policy}")
-            if policy.get("tbs", policy["pol"]) != policy["pol"]:
-                raise Refused(f"the signed data is not the policy digest: {policy}")
-            with open(f"{tmp}/sig", "wb") as f:
-                f.write(base64.b64decode(policy.get("sig", ""), validate=True))
-            r = openssl("dgst", "-sha256", "-verify", public_key, "-signature", f"{tmp}/sig",
-                        data=bytes.fromhex(policy["pol"]))
-            if r.returncode != 0:
-                raise Refused(f"the signature of policy {policy['pol']} does not verify with {public_key}")
-            signed.append(policy["pol"])
-    main = policies(base, groups[0])
-    if sorted(signed) != sorted(main):
-        raise Refused(f"the signed policies are not the main profile's PCR 11 policies:\n"
-                      f"  signed:   {sorted(signed)}\n  computed: {sorted(main)}")
+    for policy in pcrsig["sha256"]:
+        if policy.get("pcrs") != [11] or policy.get("pkfp") != fp or policy.get("ref", REF) != REF:
+            raise Refused(f"policy not for PCR 11 alone with this key (fingerprint {fp}) and the reference "
+                          f"{REF!r} or none: {policy}")
+        data = to_sign(policy["pol"], policy.get("ref"))
+        if policy.get("tbs", data) != data:
+            raise Refused(f"the data to sign is not the policy digest and its reference: {policy}")
+    main = policy_digest(base, groups[0])
     for g in groups[1:]:
-        if set(policies(base, g)) & set(signed):
-            raise Refused(f"a signed policy also matches profile {profile_id(g)}")
-    print(f"pcr-policy: {uki}: PCR 11 policy signed for the main profile only ({len(signed)} phases), "
-          f"profiles {[profile_id(g) for g in groups[1:]]} not covered; key {fp[:16]}")
+        if policy_digest(base, g) == main:
+            raise Refused(f"the main profile's policy is also the policy of profile {profile_id(g)}")
+    return pcrsig, fp, main
+
+
+def sign(uki, private_key):
+    with tempfile.NamedTemporaryFile() as public_key:
+        if openssl("pkey", "-in", private_key, "-pubout", "-out", public_key.name).returncode != 0:
+            raise Refused(f"cannot read the private key {private_key}")
+        pcrsig, fp, main = verified(uki, public_key.name, f"the public half of {private_key}")
+    if any("sig" in policy for policy in pcrsig["sha256"]):
+        raise Refused("the UKI already carries PCR policy signatures")
+    want = {"pcrs": [11], "pkfp": fp, "pol": main, "ref": REF, "tbs": to_sign(main, REF)}
+    asked = [policy for policy in pcrsig["sha256"] if "ref" in policy]
+    if asked != [want]:
+        raise Refused(f"the UKI does not ask for exactly the main profile's {PHASE} policy computed here; "
+                      f"nothing signed:\n  asked:    {asked}\n  computed: {want}")
+    # The data computed here is signed, never the file's.
+    r = openssl("dgst", "-sha256", "-sign", private_key, data=bytes.fromhex(to_sign(main, REF)))
+    if r.returncode != 0:
+        raise Refused(f"openssl could not sign: {r.stderr.decode(errors='replace')}")
+    print(json.dumps({"sha256": [dict(want, sig=base64.b64encode(r.stdout).decode())]}))
+
+
+def check(uki, public_key):
+    pcrsig, fp, main = verified(uki, public_key)
+    signed = [policy for policy in pcrsig["sha256"] if "sig" in policy]
+    if [(policy["pol"], policy.get("ref")) for policy in signed] != [(main, REF)]:
+        raise Refused(f"the signed policies are not exactly the main profile's {PHASE} policy with the "
+                      f"reference {REF!r}:\n  signed:   {[(p['pol'], p.get('ref')) for p in signed]}\n"
+                      f"  computed: {[(main, REF)]}")
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(f"{tmp}/sig", "wb") as f:
+            f.write(base64.b64decode(signed[0]["sig"], validate=True))
+        r = openssl("dgst", "-sha256", "-verify", public_key, "-signature", f"{tmp}/sig",
+                    data=bytes.fromhex(to_sign(main, REF)))
+    if r.returncode != 0:
+        raise Refused(f"the signature of policy {main} does not verify with {public_key}")
+    print(f"pcr-policy: {uki}: PCR 11 policy signed for the main profile's {PHASE} phase only "
+          f"(reference {REF!r}); key {fp[:16]}")
 
 
 def main():
     verb, uki, key = sys.argv[1:]
     try:
         {"sign": sign, "check": check}[verb](uki, key)
-    except (Refused, OSError, ValueError, KeyError, pefile.PEFormatError) as e:
+    except (Refused, OSError, ValueError, KeyError, TypeError, pefile.PEFormatError) as e:
         print(f"pcr-policy: refused {uki}: {e}", file=sys.stderr)
         sys.exit(1)
 

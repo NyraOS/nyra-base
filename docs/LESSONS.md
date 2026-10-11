@@ -309,6 +309,8 @@ Each line is something that broke or surprised us once.
   line, systemd-stub), in the initrd and on the host. For a repeated kernel argument systemd uses
   the last occurrence, and systemd-stub puts add-ons after the UKI's own command line: a signed
   add-on can turn it back on, so tests do exactly that and the Nyra key never signs such add-ons.
+  The stub also appends the SMBIOS string `io.systemd.stub.kernel-cmdline-extra`, under Secure Boot
+  too (measured into PCR 12): the platform can turn import back on the same way.
 - Without credentials `systemd-firstboot` prompts on the console at the first boot and the boot
   waits: a test boot without them needs `systemd.firstboot=no` (a signed add-on here).
 - A check that something did not happen at boot needs a control: the same boot with the effect
@@ -326,8 +328,27 @@ Each line is something that broke or surprised us once.
   --policy-digest --pcr-public-key … --sign-profile main` puts the digests to sign (`tbs`) in `.pcrsig`
   without any key, a plain SHA-256 signature over each (`openssl dgst -sha256 -sign`) is the whole
   signing, and `ukify --join-pcrsig … --pcrsig @…` writes them back into the same space. With
-  `--policy-digest`, ukify refuses `--phases` (it must match `--pcr-private-key`), so the policy covers
-  systemd's four default phases.
+  `--policy-digest`, ukify refuses `--phases` (it must match `--pcr-private-key`) and always adds
+  systemd's four default phases. For a policy that unlocks in the initrd only, add
+  `--sign-initrd-pcrs` (systemd 262): it adds the `enter-initrd` digest with the policy reference
+  `initrd`, and only that one gets signed. Its data to sign is the digest followed by SHA-256 of the
+  reference, and the enrollment must name it (`systemd-cryptenroll
+  --tpm2-public-key-policyref=initrd`). `--join-pcrsig` only adds signatures to the entries already
+  there (matched by `tbs`), so the unsigned ones stay; systemd skips an entry without a signature.
+- **Sign only what you computed.** A signer that signs the `tbs` it finds in a file signs whatever a
+  broken or tampered build put there, and with the real key a PCR 11 signature is a credential that
+  cannot be taken back. `pcr-policy.py sign` computes the digest from the UKI and signs that.
+  PKCS#1 v1.5 is deterministic, so CI compares the signature byte for byte with systemd-measure's own.
+- `ukify --sbat` replaces ukify's default SBAT text, including its `uki` line: pass the `sbat` and
+  `uki` lines with the Nyra one. The stub's and the kernel's lines are merged in either way. An SBAT
+  revocation reaches a machine only through shim's built-in policy, so a component of our own is
+  revocable only with a shim of our own.
+- **NvPCRs in systemd 262 are all or nothing** (from the sources). `systemd-tpm2-setup-early` reads
+  `/usr/lib/nvpcr/*.nvpcr` (dracut copies them into the initramfs) and allocates each NV index
+  before it looks for the signed `initrd` policy that authorizes its first write. Without that
+  policy the unit fails and the index stays in the TPM. `systemd-pcrlogin@` fails at every login
+  when the `login` NvPCR is missing. Ship the definitions with the signed `initrd` policy and the
+  separator, or neither (Nyra: neither).
 - Debian ships `systemd-measure` (and `systemd-pcrphase`) in **`systemd-tpm`**, not in `systemd` or
   `systemd-ukify`; ukify fails with `FileNotFoundError` without it. The initramfs needs dracut's
   `systemd-pcrextend` module, or the boot phases the policy covers are never measured.
@@ -355,6 +376,11 @@ Each line is something that broke or surprised us once.
 - Variants for a PE check are cheapest made from the real UKI: change its section headers (name,
   addresses, place in the table) or a command line in its file alignment slack, then sign. A variant
   proves the new rule only if the old check accepted it: run the variants against the old code once.
+- systemd-stub reads its sections in memory, where the loader put them, and shim 16 replaces the
+  firmware's loader: it does not copy a section without `IMAGE_SCN_MEM_READ` or with
+  `IMAGE_SCN_MEM_DISCARDABLE`, fills one with `IMAGE_SCN_CNT_UNINITIALIZED_DATA` with zeros, and
+  applies the `.reloc` relocations anywhere in the image. A check that reads the file must refuse all
+  of these, or it reads bytes the stub never sees.
 - `python3 -I` does not put the script's directory on `sys.path`; a script that imports a module next
   to it adds that directory itself (and sets `sys.dont_write_bytecode`, so nothing is written into the
   checkout).
@@ -536,3 +562,11 @@ Each line is something that broke or surprised us once.
 - apt is not in the image; dpkg is (it is essential) without a database. dpkg 1.23 makes an empty
   database in `/var/lib/dpkg` by itself and gets as far as unpacking into `/usr`, where it fails with
   "Read-only file system"; with `--root` into an empty writable directory the same package installs.
+- With `/etc` emptied, the next boot is a first boot (no machine ID): systemd-sysusers creates root
+  again with the password `!unprovisioned`, which systemd-firstboot (262) treats as not set up, so
+  it asks for a root password, and without credentials a time zone, before any later unit (the
+  reset's question) gets the console; seen in CI. A `ConditionKernelCommandLine=!…` drop-in in `/usr`
+  skips it for one boot entry only. Its other wanted units still run: `first-boot-complete.target`
+  is reached and the machine ID is committed. In early boot, systemd may print a skipped unit's
+  condition on the console ("… skipped, unmet condition check"), so a check that a unit did not run
+  looks for what it prints when it runs ("Initial Setup...", "Initial Setup."), not for its name.

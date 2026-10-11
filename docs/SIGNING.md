@@ -54,11 +54,14 @@ unless:
   no add-on (`<uki>.efi.extra.d/`), since `bootc install` installs what it finds there;
 - that file is the sealed UKI (`tools/signing/uki-check.py`), its sections read as systemd-stub reads
   them (see "Reading the UKI as systemd-stub does" below): exactly one `.linux` section (a kernel, so
-  not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits,
-  and exactly one in each further profile, with as many profiles as lines in `ci/uki-cmdline.txt`; and
-  each command line exactly its line, byte for byte, with one composefs digest in all of them;
-- it carries the PCR 11 policy for TPM2 unlock signed for its main profile alone, with that policy
-  key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
+  not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits;
+  exactly these sections in each profile, in this order: `.profile` and `.pcrsig` (its PCR policy) in
+  profile 0, `.profile` and its own `.cmdline` in each further one (so no `.initrd` or anything else
+  of their own), with as many profiles as lines in `ci/uki-cmdline.txt`; each command line exactly
+  its line, byte for byte, with one composefs digest in all of them; and one `.sbat` section with the
+  Nyra component line (docs/BOOT.md, "SBAT");
+- it carries the PCR 11 policy for TPM2 unlock signed for its main profile's initrd alone, with that
+  policy key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
 - it is signed with that certificate (`sbverify --cert`), and carries no other signature: exactly one
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
@@ -82,20 +85,30 @@ this image.
 ### Reading the UKI as systemd-stub does
 
 The checks are only as good as their reading of the file, and pefile, which they use, reads a PE file
-differently from systemd-stub in places. Both `uki-check.py` and `pcr-policy.py` therefore read the
-sections through `tools/signing/pe_sections.py`, which reads them the way the stub does and refuses
+differently from systemd-stub in places. The stub, in turn, reads the sections in memory, as the
+loader put them there: shim's loader (shim replaces the firmware's), or the firmware's for a key in
+`db`. Both `uki-check.py` and `pcr-policy.py` therefore read the sections through
+`tools/signing/pe_sections.py`, which reads them the way the stub does after the loader, and refuses
 any file where the two readings could differ:
 
 - sections in the order of the section table, the order the stub reads them in and groups them into
   profiles by (pefile's own list is sorted by address);
 - a section name ends at its first NUL, as the stub compares it (`.linux\0x` is a `.linux`);
-- a section's data is what the loader puts in memory: VirtualSize bytes;
+- a section's data is what the loader puts in memory: VirtualSize bytes, the file's data up to
+  SizeOfRawData, then zeros;
 - refused: any pefile warning, and a section header pefile did not read (it stops at some malformed
-  headers with only a warning, while the stub reads on); a section empty in memory, overlapping the
-  headers or another section in memory, or reaching beyond SizeOfImage (the stub ignores it); section
-  data that is not in the file before the certificate table (the signature does not cover it); two
-  sections of one name in the base sections or in one profile (the stub takes the first); a
-  certificate table other than none (before signing) or one PKCS#7 entry at the end of the file.
+  headers with only a warning, while the stub reads on); a section the loader does not copy as it is
+  in the file: one without `IMAGE_SCN_MEM_READ` or with `IMAGE_SCN_MEM_DISCARDABLE` (shim does not
+  copy it; only `.reloc` may be discardable, and shim reads it from the file) or with
+  `IMAGE_SCN_CNT_UNINITIALIZED_DATA` (shim fills it with zeros); a section empty in memory,
+  overlapping the headers or another section in memory, or reaching beyond SizeOfImage (the stub
+  ignores it); section data that is not in the file before the certificate table (the signature does
+  not cover it); a base relocation that changes anything but the stub's own code and data (`.text`,
+  `.rodata`, `.data`: the loader applies them in memory, after the signature check), and a relocation
+  table anywhere but at the start of the `.reloc` section (where shim reads it); two sections of one
+  name in the base sections or in one profile (the stub takes the first); a certificate table other
+  than none (before signing) or one PKCS#7 entry at the end of the file, DER with one-byte tags, with
+  one signer, no unsigned attributes (a nested signature is one) and nothing after it in the entry.
 
 A command line is compared byte for byte, without trimming whitespace; only trailing NULs are cut,
 since the stub stops at the first NUL, and every byte must be printable ASCII (0x20 to 0x7e). Under
@@ -178,35 +191,74 @@ built, whose UKI is signed with that run's throwaway key:
 - refused with a certificate that did not sign it, and with a policy key that is not the UKI's;
 - refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
   `systemd.import_credentials=on` in its main command line, a second UKI next to it, an add-on in
-  `<uki>.efi.extra.d/`, the UKI without its PCR policy, with a policy signature changed by one
-  character, and with the policy moved into the recovery profile;
+  `<uki>.efi.extra.d/`, the UKI without its Nyra SBAT component, without its PCR policy, with a
+  policy signature changed by one character, and with the policy moved into the recovery profile (the
+  layout check refuses the second and the last; `pcr-policy.py check` alone refuses them too);
 - refused even when signed with the trusted key, each for its own reason, for every rule of "Reading
-  the UKI as systemd-stub does", on variants of the image's UKI: a zeroed section header followed by
-  one more `.profile`, a section misaligned in the file (a pefile warning), a section named
-  `.linux\0s`, a fourth profile without a command line, a profile with two, the recovery and reset
-  command lines swapped in the section table, a `\x1c` or a space in front of a command line, two
-  command lines at the same address, the base command line beyond SizeOfImage, an empty `.profile`,
-  a second signature, and command line data inside the certificate table.
+  the UKI as systemd-stub does" and of the exact layout, on variants of the image's UKI: a zeroed
+  section header followed by one more `.profile`, a section misaligned in the file (a pefile warning),
+  a section named `.linux\0s`, a fourth profile without a command line, a profile with two, an
+  `.initrd` of its own in the reset profile, the recovery and reset command lines swapped in the
+  section table, a `\x1c` or a space in front of a command line, two command lines at the same
+  address, the base command line beyond SizeOfImage, an empty `.profile`, a command line without
+  `IMAGE_SCN_MEM_READ`, one with `IMAGE_SCN_MEM_DISCARDABLE`, one with
+  `IMAGE_SCN_CNT_UNINITIALIZED_DATA`, a base relocation moved onto the base command line, a second
+  signature, and a nested one (made with `osslsigncode -nest`; the trusted signature still verifies),
+  also with its tag written in the high tag number form, and two bytes after the signature in its
+  certificate entry;
+- refused, signed with the trusted key and then changed (so its signature no longer holds, but the
+  reading refuses it first): command line data inside the certificate table.
+
+The PCR policy signing is tested on every build too (`tools/signing/test-pcr-policy.sh`), on a UKI
+that `ci/ukify.sh` builds from the image just built, with a policy key made by the test:
+
+- signed, joined and checked as in the signing step (the control), and systemd-measure, given the
+  main profile's sections, makes the same signature byte for byte;
+- `sign` refuses, and prints no signature, for a key that is not the UKI's `.pcrpkey`, a `.pcrsig`
+  that asks for a later phase, a measured section changed after ukify wrote the digest, and a UKI
+  already signed;
+- `check` refuses a later phase signed as well as `enter-initrd`, a later phase alone,
+  `enter-initrd` without the reference, the policy twice, PCRs 7 and 11, a SHA-1 bank, another
+  reference, data to sign that is not the policy and its reference, another key's fingerprint, and
+  a signature by another key.
 
 ## The PCR policy key
 
-TPM2 unlock binds to a PCR 11 policy signed with a Nyra key (docs/BOOT.md, "TPM2 unlock"). Its
-signature is part of the UKI, under the Secure Boot signature, so it is made in the same signing step.
+TPM2 unlock binds to a PCR 11 policy signed with a Nyra key (docs/BOOT.md, "TPM2 unlock"): the main
+profile's, for the `enter-initrd` phase only, with the policy reference `initrd`, so the disk unlocks
+in the initrd and nowhere later. Its signature is part of the UKI, under the Secure Boot signature, so
+it is made in the same signing step.
 
 - **In CI:** an RSA key made for the run in step 3 of `ci/build-image.sh`, deleted after signing, like
   the UKI key. Only its public half leaves the step (into the UKI as `.pcrpkey`, and for the tests).
 - **The real key** is kept like the UKI key, never in CI or on a developer machine: a working key in a
   KMS/HSM, certified by the hardware root that also stands behind the UKI key. Signing a policy is a
-  plain signature over a SHA-256 digest (`pcr-policy.py sign` runs `openssl dgst -sha256 -sign` over
-  each policy digest), which a KMS or a PKCS#11 provider can do instead. Only its public key is
-  committed, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`, next to `nyra.crt`; the
-  release gate refuses any other. Nothing is created yet.
+  plain signature over a SHA-256 digest: `pcr-policy.py sign` runs `openssl dgst -sha256 -sign` over
+  the policy digest and its reference, which a KMS or a PKCS#11 provider can do instead. **The signer
+  never signs a digest it has not computed.** Whatever holds the real key runs `pcr-policy.py sign`'s
+  check first: it computes the main profile's `enter-initrd` policy from the UKI and refuses a UKI
+  that asks for anything else (docs/BOOT.md). A signature over PCR 11 is a credential that unlocks
+  every boot with that PCR value until the key is rotated, so a wrong one cannot be taken back.
+- **Only the public half is committed**, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`
+  next to `nyra.crt`; the release gate refuses any other. Nothing is created yet.
 - **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md): a new key per release line,
-  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key, so a
-  rotation has two steps: an update first enrolls the new key next to the old one (while the disk is
-  unlocked), then, once machines have it, images are signed with the new key only and the old
-  enrollment is removed. Versions signed with the old key still boot, but ask for the disk password
-  or the recovery key. The schedule and the enrollment on update come with the encryption work.
+  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key. Since the
+  policy unlocks only in the initrd, the running system cannot open the TPM enrollment to add a key.
+  So **the next key is enrolled in advance**, next to the current one, so that a rotation never needs
+  the recovery key:
+  1. **At install,** the disk gets two TPM2 enrollments: the current key and the next one (two
+     key pairs exist at any time; the next one has signed nothing yet). The image carries the public
+     halves of both.
+  2. **A rotation** is a release signed with the next key only. It unlocks through the enrollment
+     that was waiting for it. While that release's initrd still runs (the `enter-initrd` phase, the
+     disk open), it enrolls the key after it as the new "next" and removes the enrollment of the old
+     key.
+  3. Versions signed with the old key still boot, but ask for the disk password or the recovery
+     key.
+
+  A machine that never booted a release of one rotation before the next rotation came has neither
+  enrollment and asks for the recovery key once. The schedule, and the enrollment in the initrd,
+  come with the encryption work.
 
 ## Trust roots
 

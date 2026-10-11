@@ -22,6 +22,8 @@ and checks whether PATTERN was printed (by a unit, for example).
 --credential NAME=TEXT passes one more systemd credential over SMBIOS. The
 sealed command line does not import them (docs/BOOT.md); the test disks carry an
 add-on that does (tools/vm/test-addon.sh).
+--smbios STRING passes one more SMBIOS OEM string (type 11) as it is, for example
+io.systemd.stub.kernel-cmdline-extra=..., which systemd-stub reads itself.
 --persist writes to the disk (otherwise QEMU snapshot mode), --poweroff ends
 with a clean shutdown, so several runs can follow one system across reboots.
 The shutdown must take less than 60 s (a unit that ignores its stop signal is
@@ -348,6 +350,8 @@ def main():
     p.add_argument("--marker-expected", choices=["yes", "no"], default="yes")
     p.add_argument("--credential", action="append", default=[], metavar="NAME=TEXT",
                    help="one more systemd credential over SMBIOS")
+    p.add_argument("--smbios", action="append", default=[], metavar="STRING",
+                   help="one more SMBIOS OEM string (type 11), as it is")
     p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
     p.add_argument("--rtc", metavar="BASE", help="the guest's hardware clock starts at BASE (QEMU -rtc base=)")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
@@ -387,6 +391,8 @@ def main():
         name, _, text = c.partition("=")
         cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:{name}="
                 + base64.b64encode(text.encode()).decode()]
+    for string in a.smbios:
+        cmd += ["-smbios", "type=11,value=" + string.replace(",", ",,")]
     print("+ " + " ".join(cmd), flush=True)
     if not a.autologin:
         cmd += ["-smbios", f"type=11,value=io.systemd.credential:passwd.plaintext-password.root={password}"]
