@@ -524,3 +524,11 @@ Each line is something that broke or surprised us once.
 - apt is not in the image; dpkg is (it is essential) without a database. dpkg 1.23 makes an empty
   database in `/var/lib/dpkg` by itself and gets as far as unpacking into `/usr`, where it fails with
   "Read-only file system"; with `--root` into an empty writable directory the same package installs.
+- With `/etc` emptied, the next boot is a first boot (no machine ID): systemd-sysusers creates root
+  again with the password `!unprovisioned`, which systemd-firstboot (262) treats as not set up, so
+  it asks for a root password, and without credentials a time zone, before any later unit (the
+  reset's question) gets the console; seen in CI. A `ConditionKernelCommandLine=!…` drop-in in `/usr`
+  skips it for one boot entry only. Its other wanted units still run: `first-boot-complete.target`
+  is reached and the machine ID is committed. In early boot, systemd may print a skipped unit's
+  condition on the console ("… skipped, unmet condition check"), so a check that a unit did not run
+  looks for what it prints when it runs ("Initial Setup...", "Initial Setup."), not for its name.
