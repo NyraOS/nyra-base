@@ -45,6 +45,7 @@ file.
 | `systemd-pcrextend.socket` | a Varlink API to extend PCRs; nothing in the base calls it (the phase units run the tool directly) |
 | `systemd-pcrmachine.service`, `systemd-pcrproduct.service`, `systemd-pcrnvdone.service`, `systemd-pcrfs-root.service` | measure the machine ID, the product ID and the root file system into PCR 15 and NvPCRs, which the Nyra policy does not use |
 | `tpm-udev.path` | TPM device permissions inside containers only |
+| `systemd-boot-update.service` | `bootctl update` at every boot: it would write a newer systemd-boot over `EFI/BOOT/grubx64.efi` from a version still on trial, and to `EFI/systemd/`, which nothing starts. `esp-sync` keeps the boot files instead (docs/BOOT.md, "Boot protection"), and the ESP is read-only outside it |
 
 On an installed machine `/usr` is read-only, so an administrator turns a blocked unit back on with
 a drop-in in `/etc` whose empty `ConditionPathExists=` resets the unit's conditions. **Unblock the
