@@ -8,8 +8,8 @@
 #      dpkg -i of a package with a file in /usr/bin fails with "Read-only file system" and the file
 #      is not there. Control: the same package installs under a writable --root.
 #      An unsigned kernel module: the signature of an in-tree module (dummy) is cut off, and insmod
-#      of that copy is refused with "Operation not permitted" (kernel lockdown). Control: the same
-#      copy with its signature loads. Root cannot lower the lockdown ("none" refused); raising it
+#      of that copy is refused by the kernel's signature check. Control: the same copy with its
+#      signature loads. Root cannot lower the lockdown ("none" refused); raising it
 #      works (control).
 #   2  rm -rf --no-preserve-root /: /usr has the same checksum after it; control: what rm could
 #      reach is gone (markers in /etc and /var). The "Nyra OS Reset settings" entry is picked for
@@ -99,7 +99,10 @@ print(f"{src}: {len(data)} bytes, signature of {n} bytes cut off")
 EOF
 )"
 module="m=\"\$(modinfo -n dummy)\" && echo \"\$m\" && ! grep -q '^dummy ' /proc/modules && echo $strip | base64 -d > /var/tmp/strip-sig.py && python3 /var/tmp/strip-sig.py \"\$m\" /var/tmp/dummy-signed.ko /var/tmp/dummy-unsigned.ko"
-unsigned='o="$(insmod /var/tmp/dummy-unsigned.ko 2>&1)"; r=$?; echo "insmod of the unsigned copy: exit $r: $o"; dmesg | grep -i "lockdown: insmod" | tail -1; test $r != 0 && echo "$o" | grep -q "Operation not permitted" && ! grep -q "^dummy " /proc/modules'
+# Refused by the kernel's signature check: with Secure Boot it enforces module signatures ("Key was
+# rejected by service"); with the lockdown alone it would be "Operation not permitted". Either way the
+# kernel says why; a broken file would give "Invalid module format" instead.
+unsigned='o="$(insmod /var/tmp/dummy-unsigned.ko 2>&1)"; r=$?; echo "insmod of the unsigned copy: exit $r: $o"; k="$(dmesg | grep -E "Loading of unsigned module is rejected|unsigned module loading is restricted" | tail -1)"; echo "kernel: $k"; test $r != 0 && test -n "$k" && echo "$o" | grep -Eq "Key was rejected by service|Operation not permitted" && ! grep -q "^dummy " /proc/modules'
 signed='insmod /var/tmp/dummy-signed.ko && grep "^dummy " /proc/modules && rmmod dummy && echo "the signed copy loads (control)"'
 lockdown='echo none > /sys/kernel/security/lockdown; r=$?; cat /sys/kernel/security/lockdown; test $r != 0 && grep -q "\[integrity\]" /sys/kernel/security/lockdown && echo confidentiality > /sys/kernel/security/lockdown && grep -q "\[confidentiality\]" /sys/kernel/security/lockdown && echo "lowering refused, raising works (control)"'
 

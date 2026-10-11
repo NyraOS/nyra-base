@@ -69,7 +69,7 @@ TESTS = {
     "T12": ("Hostile root", "partial", [HOSTILE_ROOT],
             "As root with Secure Boot on: apt and dpkg cannot change /usr (dpkg fails with a "
             "read-only file system; the same package installs under a writable root); "
-            "an unsigned copy of an in-tree module is refused by the lockdown (the signed copy loads), "
+            "an unsigned copy of an in-tree module is refused (the signed copy loads), "
             "and the lockdown cannot be lowered; after rm -rf --no-preserve-root / and a power cut, "
             "/usr is unchanged and the Reset settings entry brings the system back. Not yet: apt and "
             "dpkg do not tell the user what to use instead."),

@@ -362,3 +362,18 @@ Each line is something that broke or surprised us once.
   UKI (`Writing UKI: No space left on device`); nothing is staged in either case.
 - `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
   killed, so a version staged in that boot is never finalized. Stage in a boot of its own.
+- `rm -rf --no-preserve-root /` takes under 2 s in the VM and reaches more than `/etc` and `/var`:
+  it walks into `/boot`, which systemd's automount mounts on access, and empties the ESP; in
+  `/sys/firmware/efi/efivars` it removes `Boot####` and `BootOrder` (efivarfs marks every other
+  variable immutable, which `rm` does not undo). `/` (composefs) and `/sysroot` are read-only, so
+  `/usr` and the composefs store stay as they were. Afterwards `/dev/null` is gone too: `xargs`
+  complains, but the commands still work.
+- Under Secure Boot, Debian's kernel enforces module signatures itself: an unsigned module fails with
+  "Key was rejected by service" and the kernel logs "Loading of unsigned module is rejected", not the
+  lockdown's "Operation not permitted". Debian's modules are `.ko.xz`, signed before compression; the
+  signature is appended (signature, a 12-byte `struct module_signature` ending with its length, then
+  `~Module signature appended~\n`), so cutting it off gives the unsigned module.
+- apt is not in the image; dpkg is (it is essential) without a database. dpkg 1.23 makes an empty
+  database in `/var/lib/dpkg` by itself and gets as far as unpacking into `/usr`, where it fails with
+  "Read-only file system". With `--root` into an empty directory it looks for `ldconfig` and its other
+  helpers there and refuses, unless `--force-bad-path`.
