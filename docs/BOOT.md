@@ -221,6 +221,42 @@ enrolled key could turn import back on, which is why the Nyra key never signs a 
 command-line add-on. Without credentials, `systemd-firstboot` asks for its settings at the first
 boot, so the installer must provide them.
 
+## Finding the root partition
+
+The command line names no root device. In the initrd, systemd-gpt-auto-generator makes
+`sysroot.mount` wait for `/dev/gpt-auto-root`, a symlink that udev creates (`90-image-dissect.rules`)
+for the partition marked `ID_PART_GPT_AUTO_ROOT=1`. That mark comes from the probe of the whole disk
+(blkid builtin, `60-persistent-storage.rules`): it reads the EFI variable `LoaderDevicePartUUID`
+(the ESP that systemd-boot started from) and, if that ESP is on the disk, records the root
+partition's UUID on the disk (`ID_PART_GPT_AUTO_ROOT_DISK=1`, `ID_PART_GPT_AUTO_ROOT_UUID`); the
+partitions, probed after the disk, compare their UUID with it. systemd (262) reads the variable
+once: when that read fails the disk is never marked, nothing probes it again, and the initrd waits
+90 s for its root, then stops in emergency mode.
+
+In CI that happened in two boots out of thousands (install and boot test: once in "Boot protection",
+once in "Secure Boot"). The emergency diagnostics of the second one show the whole disk without
+`ID_PART_GPT_AUTO_ROOT_DISK` and `ID_PART_GPT_AUTO_ROOT_UUID`, so its root partition without the
+mark, while the variable named the ESP on that disk. The generator had read the same variable a
+moment earlier (it reads the whole value) and it read fine at the end: only the disk probe went
+without it. In both boots, and in none of the other 182 in those runs, one CPU stopped answering
+for one second exactly then (`clocksource: Watchdog remote CPU 1 read timed out`, and everything
+that waited for that CPU one second late), most likely a firmware (SMM) variable access that hung
+and failed. The firmware or the kernel may fail that read now and then (systemd already retries
+it when it is interrupted); systemd giving up after one failed read is what turns it into a
+machine that does not start.
+
+`/usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules`, in the initrd (`install_items`), probes once
+more a GPT disk that the first probe did not mark, only in the initrd and only when systemd-boot set
+`LoaderDevicePartUUID`: the blkid builtin runs once per event, so the rule sends a "change" event to
+the disk and its partitions (`udevadm trigger --parent-match`). "add" only, so there is one more
+try at most; on a disk that is not the boot disk the second probe finds nothing, as the first. The
+upstream change is in `patches/upstream/systemd-gpt-auto-root-efivar-read.md`.
+
+`tools/vm/boot-repeat.sh` (image.yml, `boot-rounds`) proves it: a test-only udev rule puts a 1-byte
+file over the variable for the first probe of the boot disk, inside systemd-udevd's own mount
+namespace. With the image's rule masked the initrd waits in vain, as in the boots that failed; with
+it the system starts. Then the same boot, without the test rule, many times on six runners.
+
 ## Boot protection (`tools/vm/boot-protection.sh`)
 
 The firmware has to find a boot loader even when its boot entries are gone (a firmware reset or
