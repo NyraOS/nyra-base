@@ -252,6 +252,8 @@ jobs:
       - name: No new setuid, setgid or file-capability files (ci/setuid.txt, ci/capabilities.txt)
         run: |
           check() { # check ROOT: the image's root filesystem, mounted
+            # An empty or unmounted directory would pass: the root filesystem must look like the image.
+            sudo test -x "$1/usr/bin/bootc" || { echo "::error::$1 is not the image's root filesystem"; return 1; }
             sudo find "$1" -xdev -type f -perm /6000 | sed "s|^$1||" | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
             sudo getcap -r "$1" | sed "s|^$1||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
             local l new fail=0
