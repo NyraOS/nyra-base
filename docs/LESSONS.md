@@ -375,5 +375,4 @@ Each line is something that broke or surprised us once.
   `~Module signature appended~\n`), so cutting it off gives the unsigned module.
 - apt is not in the image; dpkg is (it is essential) without a database. dpkg 1.23 makes an empty
   database in `/var/lib/dpkg` by itself and gets as far as unpacking into `/usr`, where it fails with
-  "Read-only file system". With `--root` into an empty directory it looks for `ldconfig` and its other
-  helpers there and refuses, unless `--force-bad-path`.
+  "Read-only file system"; with `--root` into an empty writable directory the same package installs.

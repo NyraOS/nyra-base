@@ -75,9 +75,8 @@ apt='f=0; for c in apt apt-get; do o="$($c install -y hello 2>&1)"; r=$?; echo "
 # A package with one file in /usr/bin.
 deb='p=/var/tmp/nyra-t12-pkg && rm -rf $p && mkdir -p $p/DEBIAN $p/usr/bin && printf "Package: nyra-t12-test\nVersion: 1\nArchitecture: all\nMaintainer: Nyra OS CI\nDescription: Titanic T12 test package\n" > $p/DEBIAN/control && echo installed > $p/usr/bin/nyra-t12-test && dpkg-deb --root-owner-group -b $p /var/tmp/nyra-t12.deb && dpkg-deb -c /var/tmp/nyra-t12.deb'
 # The image has no dpkg database; dpkg makes an empty one in /var/lib/dpkg and gets as far as /usr.
-# It looks for ldconfig and its other helpers under --root too: --force-bad-path for both runs.
-dpkg='o="$(dpkg --force-bad-path -i /var/tmp/nyra-t12.deb 2>&1)"; r=$?; echo "dpkg -i: exit $r: $o"; test $r != 0 && echo "$o" | grep -q "Read-only file system" && test ! -e /usr/bin/nyra-t12-test'
-dpkg_control='d=/var/tmp/nyra-t12-root && mkdir -p $d/var/lib/dpkg && dpkg --force-bad-path --root=$d -i /var/tmp/nyra-t12.deb && test -f $d/usr/bin/nyra-t12-test && echo "the same package installs under $d (control)"'
+dpkg='o="$(dpkg -i /var/tmp/nyra-t12.deb 2>&1)"; r=$?; echo "dpkg -i: exit $r: $o"; test $r != 0 && echo "$o" | grep -q "Read-only file system" && test ! -e /usr/bin/nyra-t12-test'
+dpkg_control='d=/var/tmp/nyra-t12-root && mkdir -p $d/var/lib/dpkg && dpkg --root=$d -i /var/tmp/nyra-t12.deb && test -f $d/usr/bin/nyra-t12-test && echo "the same package installs under $d (control)"'
 
 # The module's signature (appended: the signature, struct module_signature of 12 bytes ending with
 # the signature's length, the marker) cut off; both copies uncompressed.
