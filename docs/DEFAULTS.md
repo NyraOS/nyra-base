@@ -180,11 +180,12 @@ at all and runs on the hardware clock until both answer again.
 after ours and override them (`minsources 1`, for example). To replace the whole configuration, set
 `DAEMON_OPTS="-F 1 -f /etc/chrony/my.conf"` in `/etc/default/chrony`: the later `-f` wins.
 
-**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM: the `chrony`
-package (about 0.7 MB installed) and the small `ucf` with its helpers; one resident process, started
-at boot because the clock has to be right before the first update check. Synchronized and idle:
-about 10.5 MB resident (most of it shared libraries, GnuTLS among them) and 6.6 MB charged to its
-cgroup; 1 context switch in 60 s; 83 ms of CPU time from its start, key exchanges included. It polls
+**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM, two runs: about
+1.0 MB installed (the `chrony` package, 727 KB, plus `ucf`, `sensible-utils` and two small Perl
+libraries); one resident process, started at boot because the clock has to be right before the
+first update check. Synchronized and idle: about 10.8 MB resident (most of it shared libraries,
+GnuTLS among them) and about 6.3 MB charged to its cgroup; at most 5 context switches in 60 s
+(about 0.08 per second); 82 to 87 ms of CPU time from its start, key exchanges included. It polls
 each of the two sources every 64 to 1024 s and has no listening socket.
 
 ## Filesystems
