@@ -11,7 +11,10 @@
 # command line (a control boot with credential import on shows that they are read); kernel
 # arguments added in the boot entry are ignored (what the boot menu editor would do); the image's
 # command line imports no systemd credentials: one passed over SMBIOS has no effect, unless the
-# test add-on turns import back on (the last occurrence on the command line wins).
+# test add-on turns import back on (the last occurrence on the command line wins), or the platform
+# does, with a command line over SMBIOS: systemd-stub appends io.systemd.stub.kernel-cmdline-extra
+# even under Secure Boot (and measures it into PCR 12); systemd-boot's
+# io.systemd.boot.kernel-cmdline-extra is ignored, as any boot loader command line.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by a signed one.
 # The keys "local" (enrolled, signs the control add-on) and "other" (not enrolled) are made here,
 # live only in WORKDIR on the ephemeral runner and are deleted at the end: never commit or upload
@@ -160,6 +163,17 @@ sudo umount "$mnt"
 vm --log "$logs/serial-secure-boot-credential.log" --credential "$dropin" \
   --title "Secure Boot: with the image's command line, a credential over SMBIOS has no effect" \
   --marker 'NYRA-CRED-DROPIN-42' --marker-expected no || fail=1
+# The same with a command line over SMBIOS for systemd-stub, and one for systemd-boot: the platform
+# is trusted, so the stub appends its string after the sealed command line, and credential import
+# turned on there applies (the console login comes from credentials too); systemd-boot's string is a
+# boot loader command line, which the stub ignores under Secure Boot.
+vm --autologin --log "$logs/serial-secure-boot-smbios-cmdline.log" --credential "$dropin" \
+  --smbios "io.systemd.stub.kernel-cmdline-extra=systemd.import_credentials=yes nyra.smbios.stub=1" \
+  --smbios "io.systemd.boot.kernel-cmdline-extra=nyra.smbios.boot=1" \
+  --title "Secure Boot: systemd-stub appends a command line over SMBIOS; systemd-boot's is ignored" \
+  --command 'cat /proc/cmdline; grep -Eq "systemd.import_credentials=no .*systemd.import_credentials=yes nyra.smbios.stub=1" /proc/cmdline && ! grep -q nyra.smbios.boot /proc/cmdline' \
+  --command 'ls -l /run/nyra-cred-dropin' \
+  || fail=1
 sudo mount "$esp" "$mnt"
 sudo rm "$mnt/loader/addons/nyra-test-firstboot.addon.efi"
 sudo cp "$sb/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"

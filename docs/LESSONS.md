@@ -278,6 +278,8 @@ Each line is something that broke or surprised us once.
   line, systemd-stub), in the initrd and on the host. For a repeated kernel argument systemd uses
   the last occurrence, and systemd-stub puts add-ons after the UKI's own command line: a signed
   add-on can turn it back on, so tests do exactly that and the Nyra key never signs such add-ons.
+  The stub also appends the SMBIOS string `io.systemd.stub.kernel-cmdline-extra`, under Secure Boot
+  too (measured into PCR 12): the platform can turn import back on the same way.
 - Without credentials `systemd-firstboot` prompts on the console at the first boot and the boot
   waits: a test boot without them needs `systemd.firstboot=no` (a signed add-on here).
 - A check that something did not happen at boot needs a control: the same boot with the effect
