@@ -9,8 +9,12 @@ for a do
 	--) break ;;
 	--install | --unpack) exec /usr/lib/nyra/no-apt ;;
 	--*) ;;
-	# -i alone or among other short options without a value (-Ri, -GEi).
-	-*i*) case "${a#-}" in *[!iRGEBO]*) ;; *) exec /usr/lib/nyra/no-apt ;; esac ;;
+	# -i alone, among other short options without a value (-Ri, -GEi), or before the value of -D
+	# (-iD1): everything after D is its value.
+	-*i*)
+		o="${a#-}" && o="${o%%D*}"
+		case "$o" in *i*) case "$o" in *[!iRGEBO]*) ;; *) exec /usr/lib/nyra/no-apt ;; esac ;; esac
+		;;
 	esac
 done
 exec /usr/lib/nyra/dpkg "$@"

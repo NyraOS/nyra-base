@@ -234,7 +234,7 @@ For developer tools, use apt in a Distrobox container: distrobox create, then di
   that message.
 - `dpkg` is essential in Debian and stays, without a package database. The image build moves it to
   `/usr/lib/nyra/dpkg`; `/usr/bin/dpkg` is a wrapper that prints the message for an install (`-i`,
-  `--install`, `--unpack`, also `-i` among other short options such as `-Ri`) and runs dpkg for
+  `--install`, `--unpack`, also `-i` among other short options such as `-Ri` or `-iD1`) and runs dpkg for
   everything else: the queries (`-l`, `-L`, `-S`, `--status`), `dpkg-deb`'s actions, a
   `--compare-versions` from a script.
 

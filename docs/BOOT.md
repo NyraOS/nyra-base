@@ -608,8 +608,10 @@ password would make it useless in exactly the case it is for, a broken `/etc/pas
 the first one: systemd-sysusers creates root again with the password `!unprovisioned`, and
 `systemd-firstboot` would ask for a root password and, without credentials, a time zone before the
 reset's question. A drop-in in `/usr` (`systemd-firstboot.service.d/10-nyra.conf`) skips
-`systemd-firstboot` when the command line has `systemd.unit=nyra-reset-settings.target`, which only
-the sealed reset profile has under Secure Boot: the first question is the reset's. Root stays locked:
+`systemd-firstboot` when the command line has `systemd.unit=nyra-reset-settings.target`, which under
+Secure Boot only the sealed reset profile has, or an SMBIOS string from the firmware or a VM's host
+(see "The platform is trusted"; that only skips the questions): the first question is the reset's.
+Root stays locked:
 the reset brings back the image's root account (`*`), and it never copies root's lines from the old
 `/etc`.
 
