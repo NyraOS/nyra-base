@@ -82,10 +82,13 @@ if [ "${1:-}" = --self-test ]; then
 fi
 disk="$1" logs="$2" summary="$3"
 
-# Authenticated time: no systemd-timesyncd; chronyd runs as _chrony with CAP_SYS_TIME only (bit 25)
-# and has exactly the two NTS sources of /usr/lib/nyra/chrony/chrony.conf (synchronization itself
-# is checked in tools/vm/updates.sh, T9).
-time_client='! systemctl cat systemd-timesyncd.service >/dev/null 2>&1 && systemctl is-active chronyd-restricted.service && p="$(systemctl show -P MainPID chronyd-restricted.service)" && ps -o user=,args= -p "$p" && test "$(ps -o user= -p "$p")" = _chrony && grep "^Cap" "/proc/$p/status" && test "$(awk "/^CapEff/ {print \$2}" "/proc/$p/status")" = 0000000002000000 && a="$(chronyc -c -N authdata)" && echo "$a" && test "$(echo "$a" | cut -d, -f1,2 | sort | tr "\n" " ")" = "nts.netnod.se,NTS time.cloudflare.com,NTS " && systemd-analyze security --no-pager chronyd-restricted.service | tail -1'
+# Authenticated time: no systemd-timesyncd; chronyd runs as _chrony with CAP_SYS_TIME only (bit 25),
+# under its seccomp filter and its AppArmor profile in enforce mode, and has exactly the two NTS
+# sources of /usr/lib/nyra/chrony/chrony.conf (synchronization itself is checked in
+# tools/vm/updates.sh, T9). systemd-timedated reports that service as the NTP service, and turning
+# automatic time on (timedatectl set-ntp true, the desktop's switch) keeps exactly that one.
+time_client='! systemctl cat systemd-timesyncd.service >/dev/null 2>&1 && systemctl is-active chronyd-restricted.service && p="$(systemctl show -P MainPID chronyd-restricted.service)" && ps -o user=,args= -p "$p" && test "$(ps -o user= -p "$p")" = _chrony && grep "^Cap" "/proc/$p/status" && test "$(awk "/^CapEff/ {print \$2}" "/proc/$p/status")" = 0000000002000000 && grep "^Seccomp:" "/proc/$p/status" && grep -q "^Seccomp:[[:space:]]*2$" "/proc/$p/status" && cat "/proc/$p/attr/apparmor/current" && test "$(cat "/proc/$p/attr/apparmor/current")" = "/usr/sbin/chronyd (enforce)" && a="$(chronyc -c -N authdata)" && echo "$a" && test "$(echo "$a" | cut -d, -f1,2 | sort | tr "\n" " ")" = "nts.netnod.se,NTS time.cloudflare.com,NTS " && systemd-analyze security --no-pager chronyd-restricted.service | tail -1'
+time_switch='timedatectl show -p NTP && test "$(timedatectl show -p NTP --value)" = yes && timedatectl set-ntp true && sleep 3 && systemctl is-active chronyd-restricted.service && test "$(systemctl is-enabled chronyd-restricted.service)" = enabled && test "$(systemctl is-enabled chrony.service)" = disabled && ! systemctl is-active --quiet chrony.service && test "$(ps -o user= -p "$(systemctl show -P MainPID chronyd-restricted.service)")" = _chrony && echo "set-ntp true: chronyd-restricted only"'
 
 # Inbound default deny, proven from outside the host's own addresses: a veth pair into a network
 # namespace, a listener on the host side, a TCP connection from the namespace must time out; with
@@ -107,4 +110,5 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$firewall_probe" \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \
   --command "$filesystems" \
-  --command "$time_client"
+  --command "$time_client" \
+  --command "$time_switch"

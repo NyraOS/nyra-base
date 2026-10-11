@@ -501,8 +501,9 @@ echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 
 # without anyone setting the clock. Then, with the clock in 2035 again, a hostile network: the NTS
 # servers' names point to the runner (as a spoofed DNS answer would), where a TLS server with a
 # certificate the guest does not trust answers on the NTS-KE port and an NTP server answers every
-# request, unauthenticated, with a time in 2001. The clock stays in 2035 and not one NTP request is
-# sent (no unauthenticated fallback); the sheet server's certificate is refused (expired) and nothing
+# request, unauthenticated, with a time in 2001. The clock stays in 2035 and chronyd sends not one NTP
+# request (no unauthenticated fallback): the server counts exactly one, a probe the test sends itself
+# to show that UDP 123 reaches it from the guest and its answer comes back; the sheet server's certificate is refused (expired) and nothing
 # is staged; unsigned and wrongly signed images are still refused (image signatures do not depend on
 # the clock). With the real servers back (once name resolution no longer answers with the runner:
 # resolved can answer from its old copy of /etc/hosts right after the edit), chronyd is restarted,
@@ -564,14 +565,15 @@ vm "v16, the hardware clock in 2035: corrected through NTS; up to date" --powero
 vm "v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong, certificate refused, unsigned refused; the real servers back: corrected, up to date" --poweroff \
   --rtc 2035-06-01T00:00:00 \
   --command "$lib; expect booted $d16 && running && not_synced && date -u && test \"\$(date +%Y)\" = 2035" \
+  --command "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(bytes([0x23]) + bytes(47), (\"10.0.2.2\", 123)); print(\"NTP probe: answer of\", len(s.recv(512)), \"bytes\")'" \
   --command "$lib; refused s16 '$tls_time' && expect staged none" \
   --command "$lib; $unsigned" \
   --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se && ! getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " && systemctl restart chronyd-restricted.service' \
   --command "$lib; synced $(date +%s) && outcome s16 UpToDate && expect staged none"
 ke="$(grep -c '^nts-ke$' "$u/fake-time.log" || true)" ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
-echo "spoofed time servers: $ke NTS-KE connections (refused by the guest), $ntp NTP requests"
-if [ "$ke" -lt 1 ] || [ "$ntp" != 0 ]; then
-  echo "::error::chronyd must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request"
+echo "spoofed time servers: $ke NTS-KE connections (refused by the guest), $ntp NTP requests (1 expected: the test's own probe)"
+if [ "$ke" -lt 1 ] || [ "$ntp" != 1 ]; then
+  echo "::error::chronyd must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request; the probe must reach the NTP server"
   exit 1
 fi
 

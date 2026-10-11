@@ -212,6 +212,11 @@ Each line is something that broke or surprised us once.
   could be undone.
   A `ConditionPathExists=` block does not help against `Conflicts=`: the start jobs of both units
   are already in the same transaction.
+- `systemd-timedated` takes the time service from `ntp-units.d/*.list` (the first loadable unit of
+  the lists in name order), not from what is enabled: with only chrony's `50-chrony.list` it reported
+  NTP off next to a running `chronyd-restricted`, and `timedatectl set-ntp true` enabled
+  `chrony.service`, whose alias then made `chronyd-restricted` stop. A list of our own that sorts
+  first (`10-nyra.list`) points it at the unit we ship.
 - Debian's AppArmor profile for `chronyd` allows reading `/etc/chrony/**` and, through
   `abstractions/base`, everything under `/usr/lib`: a configuration in `/usr/lib/nyra/chrony/` is
   readable, one in `/usr/share/` would not be.
