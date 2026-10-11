@@ -579,3 +579,7 @@ Each line is something that broke or surprised us once.
   only our check that some profile is loaded failed `apparmor.service`, in the Reset settings boot
   (seen in the T12 logs). `apparmor_parser --base DIR -- DIR` loads a copy from elsewhere, with its
   includes (`tunables/`, `abstractions/`) resolved there instead of in `/etc`.
+- The image's `login.defs` gives every new user 65536 subordinate UIDs and GIDs from 100000 up
+  (`SUB_UID_MIN`, `SUB_GID_MIN`; `/etc/subuid` and `/etc/subgid` exist, empty). Lower IDs are the
+  system's, the users' and systemd's own (dynamic users, `nobody`): what Reset settings keeps from an
+  old `/etc` must start at 100000 or above.

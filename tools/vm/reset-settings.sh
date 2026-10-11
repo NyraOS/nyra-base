@@ -6,9 +6,11 @@
 #   1. normal boot: an administrator with a password and a file in /home, a host name; then the
 #      configuration broken as a user could (garbage in /etc/fstab and /etc/passwd, systemd-resolved
 #      masked, /etc/resolv.conf deleted, a stray file), and accounts written by root: a name twice in
-#      passwd and shadow, first with UID 0, then with a regular UID, and a group name twice, first
-#      with GID 0, then with a regular GID; the reset entry (profile 2) is there; it is picked for
-#      the next boot only (bootctl set-oneshot);
+#      passwd and shadow, first with UID 0, then with a regular UID, a group name twice, first
+#      with GID 0, then with a regular GID, a user with the primary GID 0, a user whose subordinate
+#      UIDs start at 0 (and whose subordinate GIDs are valid), and a user with two subordinate UID
+#      ranges; the reset entry (profile 2) is there; it is picked for the next boot only (bootctl
+#      set-oneshot);
 #   2-3. the reset entry, answered with something else than RESET, then with Control-D: nothing
 #      changes, the normal boot continues;
 #   4. the reset, with a power cut as it starts building the new /etc; 5. a normal boot: /etc is
@@ -21,7 +23,10 @@
 #   10. the reset: /etc is the image's again, the system reboots by itself into the normal boot:
 #      the breakage is gone, the administrator, their password, their groups and /home are kept, and
 #      so are the machine ID (0444) and the host name (0644); nothing of the duplicated names is kept
-#      (root is the only UID 0); the previous /etc is kept as etc.nyra-old (0700);
+#      (root is the only UID 0), nor the user with GID 0, nor the subordinate UIDs from 0 or of the
+#      name found twice (those users and the valid subordinate GIDs are kept), while the
+#      administrator keeps their groups and their own ranges; the previous /etc is kept as
+#      etc.nyra-old (0700);
 #   11. the reset, with a power cut right after it makes the new /etc's directory; 12. no
 #      etc.nyra-new without its marker (which the next reset would keep instead of etc.nyra-old), and
 #      etc.nyra-old as it was.
@@ -84,9 +89,10 @@ state='s="/sysroot/state/deploy/$(sed -En "s/^(.* )?composefs=([0-9a-f]+)( .*)?$
 vm --poweroff --log "$logs/serial-reset-settings-1.log" \
   --title "Reset settings 1: an administrator and a host name, then broken settings; the reset entry is there" \
   --command "$running" \
-  --command "useradd -m -G sudo -s /bin/bash nyra-admin && printf 'nyra-admin:%s\\n' '$pw' | chpasswd && echo kept > /home/nyra-admin/keep.txt && echo nyra-test-host > /etc/hostname && mkdir -p $before && cp /etc/machine-id $before/ && grep '^nyra-admin:' /etc/shadow > $before/shadow && id nyra-admin" \
+  --command "useradd -m -G sudo -s /bin/bash nyra-admin && printf 'nyra-admin:%s\\n' '$pw' | chpasswd && echo kept > /home/nyra-admin/keep.txt && echo nyra-test-host > /etc/hostname && mkdir -p $before && cp /etc/machine-id $before/ && grep '^nyra-admin:' /etc/shadow > $before/shadow && id nyra-admin && id -nG nyra-admin > $before/groups && grep '^nyra-admin:' /etc/subuid /etc/subgid > $before/subids && cat $before/subids && test \"\$(wc -l < $before/subids)\" = 2" \
   --command 'echo "garbage line, not a mount" >> /etc/fstab && echo broken-line >> /etc/passwd && systemctl mask systemd-resolved.service && rm -f /etc/resolv.conf && echo junk > /etc/nyra-test-junk' \
   --command 'printf "nyra-dup:x:0:0::/root:/bin/bash\nnyra-dup:x:1001:1001::/home/nyra-dup:/bin/bash\n" >> /etc/passwd && printf "nyra-dup:*:1::::::\nnyra-dup:*:1::::::\n" >> /etc/shadow && printf "nyra-dupg:x:0:nyra-admin\nnyra-dupg:x:1002:nyra-admin\n" >> /etc/group && grep "^nyra-dup" /etc/passwd /etc/group' \
+  --command "printf 'nyra-gid0:x:1004:0::/home/nyra-gid0:/bin/bash\\nnyra-sub:x:1005:1005::/home/nyra-sub:/bin/bash\\nnyra-sub2:x:1006:1006::/home/nyra-sub2:/bin/bash\\n' >> /etc/passwd && printf 'nyra-gid0:*:1::::::\\nnyra-sub:*:1::::::\\nnyra-sub2:*:1::::::\\n' >> /etc/shadow && printf 'nyra-sub:x:1005:\\nnyra-sub2:x:1006:\\n' >> /etc/group && printf 'nyra-sub:!::\\nnyra-sub2:!::\\n' >> /etc/gshadow && printf 'nyra-gid0:296608:65536\\nnyra-sub:0:65536\\nnyra-sub2:427680:65536\\nnyra-sub2:493216:65536\\n' >> /etc/subuid && printf 'nyra-sub:362144:65536\\n' >> /etc/subgid && grep -h '^nyra-gid0:\\|^nyra-sub' /etc/passwd /etc/subuid /etc/subgid" \
   --command 'cat /boot/loader/entries/nyra-reset.CONF; grep -qx "profile 2" /boot/loader/entries/nyra-reset.CONF' \
   --command "$oneshot"
 
@@ -135,6 +141,7 @@ vm --poweroff --log "$logs/serial-reset-settings-10.log" --chat-then-login --cha
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
   --command "id nyra-admin && id -nG nyra-admin | grep -qw sudo && passwd -S nyra-admin | grep -q ' P ' && grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow && echo 'the administrator and their password are kept'" \
   --command 'awk -F: "\$3 == 0" /etc/passwd; test "$(awk -F: "\$3 == 0 { print \$1 }" /etc/passwd)" = root && ! grep -q "^nyra-dup" /etc/passwd /etc/shadow /etc/group /etc/gshadow && ! id -nG nyra-admin | grep -qw nyra-dupg && echo "nothing of the duplicated names is kept; root is the only UID 0"' \
+  --command "grep '^nyra-admin:' /etc/subuid /etc/subgid | cmp - $before/subids && id -nG nyra-admin | cmp - $before/groups && grep '^nyra-sub' /etc/passwd /etc/subuid /etc/subgid && ! grep '^nyra-gid0:' /etc/passwd /etc/shadow /etc/subuid /etc/subgid && grep -q '^nyra-sub:x:1005:1005:' /etc/passwd && grep -q '^nyra-sub2:x:1006:1006:' /etc/passwd && ! grep -q '^nyra-sub:' /etc/subuid && grep -qx 'nyra-sub:362144:65536' /etc/subgid && ! grep -q '^nyra-sub2:' /etc/subuid && echo 'no user with GID 0, no subordinate range from 0 or of a name found twice (those users kept, a valid range kept); the administrator keeps their groups and ranges'" \
   --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && cmp /etc/machine-id $before/machine-id && test \"\$(cat /etc/hostname)\" = nyra-test-host && test \"\$(stat -c %a /etc/machine-id) \$(stat -c %a /etc/hostname)\" = '444 644' && echo '/home, the machine ID (0444) and the host name (0644) are kept'" \
   --command "$state; ls -a \$s; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test ! -e \$s/etc.nyra-new && echo 'the previous /etc is kept as etc.nyra-old (0700)'" \
   --command "$oneshot"

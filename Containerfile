@@ -173,4 +173,6 @@ RUN rm -rf /kernel
 FROM ${SEALED}
 COPY --from=uki . /boot/EFI/Linux/
 LABEL containers.bootc=1
-RUN bootc container lint --fatal-warnings
+# The copy of the AppArmor profiles in /usr (apparmor.service drop-in) is the image's /etc/apparmor.d,
+# file for file and link for link, also when a step after the copy changed one of them.
+RUN diff -r --no-dereference /etc/apparmor.d /usr/lib/nyra/apparmor.d && bootc container lint --fatal-warnings

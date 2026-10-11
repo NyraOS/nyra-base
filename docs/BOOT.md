@@ -573,11 +573,16 @@ bootc). A third profile needs no new key and keeps the command line sealed; it b
 2. **What is kept**, copied from the current `/etc` when it is valid:
    - `/etc/machine-id`: the machine's identity (the journal, the DHCP client identifier);
    - `/etc/hostname`: its name on the network;
-   - **regular users** (UID 1000–59999): their lines in `passwd`, `shadow`, `subuid` and `subgid`,
-     their own groups, and their membership in the image's groups (`sudo`: the administrators). Without
-     them the files in `/home` would have no owner and nobody could log in, or open recovery. A line
-     is kept only if both its name and its ID (UID or GID) qualify, and a name that appears twice in
-     `passwd`, `shadow`, `group` or `gshadow` is not kept at all: which line would be the account?
+   - **regular users** (UID and primary GID 1000–59999): their lines in `passwd`, `shadow`, `subuid`
+     and `subgid`, their own groups, and their membership in the image's groups (`sudo`: the
+     administrators). Without them the files in `/home` would have no owner and nobody could log in,
+     or open recovery. A line is kept only if both its name and its IDs (UID and primary GID, or
+     GID) qualify, and a name that appears twice in `passwd`, `shadow`, `group` or `gshadow` is not
+     kept at all: which line would be the account? A user's range of subordinate IDs (`subuid`,
+     `subgid`, for containers) is kept only if it is that name's only line in the file, numeric, and
+     starts at 100000 or above, as `useradd` assigns them (`SUB_UID_MIN`): lower IDs belong to the
+     system and to the users themselves, which no user's containers may map. The account itself is
+     kept either way.
 
    Everything else comes back from the image: mounts, network settings, enabled or masked services,
    time zone, firewall changes. `/home` and `/var` are not touched.
