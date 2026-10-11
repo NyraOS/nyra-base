@@ -54,42 +54,6 @@ reason = "Heap overflow while handling replies from a malicious X server. The ba
 expires = 2026-11-08
 
 [[mitigation]]
-id = "TEMP-0000000-0F03E5"
-package = "libheif"
-reason = "libheif parser/encoder issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded (or an image encoded) through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-18A2CE"
-package = "libheif"
-reason = "libheif parser/encoder issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded (or an image encoded) through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-21F713"
-package = "libheif"
-reason = "libheif parser issue (no CVE yet). Needs a crafted HEIF/AVIF file decoded through libheif; nothing in the base image decodes untrusted images (libheif comes in as a glycin/gdk-pixbuf loader through flatpak's dependencies)."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-956D99"
-package = "libheif"
-reason = "GHSA-9c75-9g8r-4728: allocation amplification from a crafted JPEG 2000 image. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-DB3DE2"
-package = "libheif"
-reason = "GHSA-qwpf-5wf7-r996: use-after-free in the encoder path (ImageItem::encode_to_bitstream_and_boxes). Needs a program encoding HEIF images; nothing in the base image does."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-F2B97A"
-package = "libheif"
-reason = "GHSA-v8qw-hwjv-44hw: allocation before dimension checks on the AV1 path. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images."
-expires = 2026-11-08
-
-[[mitigation]]
 id = "CVE-2026-102010"
 package = "gcc-16"
 reason = "libstdc++ reallocation bug in erase_if on a binary-heap priority queue. Needs a program using that API on attacker-influenced data; no known component of the base image does. Waiting for a gcc-16 upload."
@@ -107,86 +71,19 @@ package = "zlib"
 reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no known component of the base image does. Waiting for the Debian zlib upload."
 expires = 2026-11-08
 
-# libheif 1.23.4: advisories published upstream on 2026-10-05; Debian fixed all but one in
-# 1.23.6-1 (2026-10-11). In the image libheif (with only the dav1d and libde265 decoder plugins, no
-# encoder plugin) has one user: glycin's HEIF/AVIF loader, pulled in by flatpak through gdk-pixbuf.
-# In the base image that loader is reached only by glycin-thumbnailer, which runs only when a file
-# manager or thumbnail service asks for a thumbnail (none is in the image), and by
-# flatpak-validate-icon, which only `flatpak build-export` runs, on the builder's own files.
-# Nothing in the base image decodes or encodes images from outside. End: a snapshot with libheif
-# 1.23.6-1; until then a short expiry for the fixed issues (docs/SBOM.md).
+# libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with
+# only the dav1d and libde265 decoder plugins, no encoder plugin) has one user: glycin's HEIF/AVIF
+# loader, pulled in by flatpak through gdk-pixbuf. In the base image that loader is reached only by
+# glycin-thumbnailer, which runs only when a file manager or thumbnail service asks for a thumbnail
+# (none is in the image), and by flatpak-validate-icon, which only `flatpak build-export` runs, on
+# the builder's own files. Nothing in the base image decodes images from outside. A change that adds
+# such a consumer must first end this exception (docs/SBOM.md). End: a fixed libheif.
 
 [[mitigation]]
 id = "TEMP-0000000-153207"
 package = "libheif"
 reason = "GHSA-vr5j-9r89-725x: excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. No fix upstream or in Debian yet."
 expires = 2026-11-08
-
-[[mitigation]]
-id = "TEMP-0000000-1B5D39"
-package = "libheif"
-reason = "GHSA-h4h8-qgvc-m7r2: multi-gigabyte allocations from a crafted JPEG 2000 codestream in the OpenJPEG decoder plugin. That plugin (libheif-plugin-j2kdec) is not in the image. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-301DE5"
-package = "libheif"
-reason = "GHSA-q7mw-2fmm-5q94: out-of-bounds read in libsharpyuv when libheif converts 10/12-bit RGB to YCbCr 4:2:0 with sharp-YUV downsampling (the encoding side). The image's only libheif user decodes to RGB, and nothing in the base image encodes images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-415AE1"
-package = "libheif"
-reason = "GHSA-6fqc-p7r8-2g36: excessive CPU time because a generically compressed unci (uncompressed codec) item is decompressed once per tile (denial of service). Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-5124DE"
-package = "libheif"
-reason = "GHSA-hvwh-xpj6-ph5x: use after free of an error message in the input loaders of the heif-enc command-line tool, not in the library. heif-enc is in libheif-examples, which is not in the image. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-57F868"
-package = "libheif"
-reason = "GHSA-8p2c-9wv4-rx4p: NULL pointer dereference (crash) when decoding a crafted image sequence that references a non-visual sample entry. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-6C5194"
-package = "libheif"
-reason = "GHSA-v5rj-g4wv-j5w3: the unci decoder can return chroma samples above the declared bit depth; not a memory-safety bug in libheif itself, a risk for code that trusts the bit depth. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-809756"
-package = "libheif"
-reason = "GHSA-3gwx-cjv4-jr74: reachable assertion (crash of the decoding process) for a crafted grid image with an alpha plane deeper than 16 bits. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-8A4B18"
-package = "libheif"
-reason = "GHSA-fcmw-5764-7rq8: decompressed unci tile data escapes libheif's memory limit (memory exhaustion). Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-9253BB"
-package = "libheif"
-reason = "GHSA-hqpw-h8p6-22q9: heap out-of-bounds read in the FFmpeg decoder plugin (unpadded parser input). That plugin (libheif-plugin-ffmpegdec) is not in the image; HEVC goes through libheif-plugin-libde265. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-D2EEB5"
-package = "libheif"
-reason = "GHSA-86ch-j429-fpr2: HEVC size limits are not applied before decoding with the FFmpeg decoder plugin. That plugin (libheif-plugin-ffmpegdec) is not in the image. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
-
-[[mitigation]]
-id = "TEMP-0000000-FDE8B2"
-package = "libheif"
-reason = "GHSA-vv35-6hxg-95x8: a decoded image can have another bit depth than its image handle reports, so a caller that trusts the handle can read out of bounds. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Fixed in Debian 1.23.6-1."
-expires = 2026-10-18
 
 # GnuTLS 3.8.13: certificate validation issues published 2026-10-09, no fix in Debian yet. Reachable
 # only by the few programs that link GnuTLS, none of which runs by itself. End: a fixed gnutls28.
