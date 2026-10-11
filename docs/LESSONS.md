@@ -257,6 +257,15 @@ Each line is something that broke or surprised us once.
 - The install + boot job runs images built from pull requests, as root in a `--privileged` container
   and in a VM with KVM. It must stay on ephemeral GitHub-hosted runners: never run `pull_request`
   jobs on self-hosted runners.
+- The GitHub-hosted Ubuntu 24.04 image enables root's `podman-auto-update.timer` (daily,
+  `Persistent=true`, `RandomizedDelaySec=900`), so on a fresh runner it fires once within 15 min of boot,
+  and its service ends with `podman image prune -f`, which deletes untagged images. `podman pull -q
+  oci:<dir>` stores mkosi's image untagged until the next command tags it; a prune started while the pull
+  writes the layer waits for the layer lock and then lists the images just as the pull creates its image.
+  That failed about one build in 40, with `locating pulled image "sha256:…" name in containers storage:
+  …: image not known` from the pull or `<id>: image not known` from `podman tag` (podman 4.9.3; running
+  `podman image prune -f` during the pull reproduces both). Every job that uses podman stops the timer
+  and its service first.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
