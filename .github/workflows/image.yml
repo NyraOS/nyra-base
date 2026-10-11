@@ -40,6 +40,10 @@ on:
         description: Boots per runner of tools/vm/boot-repeat.sh, on 6 runners (0 = not run)
         type: string
         default: "0"
+    outputs:
+      uki_cert:
+        description: The certificate of this run's UKI key (base64), for Secure Boot tests in the caller
+        value: ${{ jobs.build.outputs.uki_cert }}
 permissions:
   contents: read
 # A new push to a pull request cancels its older run; on main a running release is never cancelled.

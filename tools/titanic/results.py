@@ -28,6 +28,7 @@ SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATE
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
 FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
 EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
+HOSTILE_ROOT = ("stress", "Hostile root (Titanic T12)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
 TESTS = {
@@ -65,8 +66,13 @@ TESTS = {
            "the image has no time synchronization, so only a person can set the clock right."),
     "T10": ("Disk encryption", None, [], "Disk encryption does not exist yet."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
-    "T12": ("Hostile root", None, [],
-            "Not written yet (a read-only /usr is checked under T1)."),
+    "T12": ("Hostile root", "partial", [HOSTILE_ROOT],
+            "As root with Secure Boot on: apt and dpkg cannot change /usr (dpkg fails with a "
+            "read-only file system; the same package installs under a writable root); "
+            "an unsigned copy of an in-tree module is refused by the lockdown (the signed copy loads), "
+            "and the lockdown cannot be lowered; after rm -rf --no-preserve-root / and a power cut, "
+            "/usr is unchanged and the Reset settings entry brings the system back. Not yet: apt and "
+            "dpkg do not tell the user what to use instead."),
     "T13": ("Extreme load", "full", [EXTREME_LOAD],
             "An update while 8 busy loops run on 2 vCPUs, less than 200 MiB of memory is free and the "
             "disk is written without a pause: staged exactly or failed with nothing staged; the next "
@@ -101,10 +107,10 @@ def evaluate(jobs, run_url):
 def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
-                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD}]
+                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "not-implemented", "pass", "pass"], r
+        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "partial", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
