@@ -127,6 +127,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # The runner image enables podman-auto-update.timer, which runs `podman image prune -f` once within
+      # 15 min of boot: it deletes untagged images, including one a step has just pulled (`podman pull
+      # oci:...` before its `podman tag`) or a build stage, and that step fails with "image not known"
+      # (docs/LESSONS.md).
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       - name: Read the snapshot date from mkosi.conf
         run: |
           snapshot="$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)"
@@ -415,6 +422,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       - name: Enable KVM for the runner user
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -565,6 +576,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       - name: Enable KVM for the runner user
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -633,6 +648,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
 
       - name: Check that the shipped policy trusts this signer
         env:
