@@ -27,10 +27,11 @@ listening='s="$(ss -Htulnp)" && test -n "$s" && l="$(echo "$s" | awk '"'"'{p=$7;
 # Every running service, waiting timer and listening socket unit must match this list. Network
 # sockets are checked above; systemd's own sockets are local (AF_UNIX, varlink), and userdbd and
 # hostnamed are started through them on demand (user lookups at login, hostname queries). getty and
-# user@ come from the console login. Anything new needs a reason and a line here, or a block in
-# the Containerfile.
+# user@ come from the console login. chronyd-restricted keeps the clock right (NTS, outbound only).
+# Anything new needs a reason and a line here, or a block in the Containerfile.
 read -r -d '' units_allowed <<'EOF' || true
 dbus\.(service|socket)
+chronyd-restricted\.service
 systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed)\.service
 systemd-[a-z0-9-]+\.socket
 (serial-)?getty@[a-zA-Z0-9]+\.service
@@ -81,6 +82,11 @@ if [ "${1:-}" = --self-test ]; then
 fi
 disk="$1" logs="$2" summary="$3"
 
+# Authenticated time: no systemd-timesyncd; chronyd runs as _chrony with CAP_SYS_TIME only (bit 25)
+# and has exactly the two NTS sources of /usr/lib/nyra/chrony/chrony.conf (synchronization itself
+# is checked in tools/vm/updates.sh, T9).
+time_client='! systemctl cat systemd-timesyncd.service >/dev/null 2>&1 && systemctl is-active chronyd-restricted.service && p="$(systemctl show -P MainPID chronyd-restricted.service)" && ps -o user=,args= -p "$p" && test "$(ps -o user= -p "$p")" = _chrony && grep "^Cap" "/proc/$p/status" && test "$(awk "/^CapEff/ {print \$2}" "/proc/$p/status")" = 0000000002000000 && a="$(chronyc -c -N authdata)" && echo "$a" && test "$(echo "$a" | cut -d, -f1,2 | sort | tr "\n" " ")" = "nts.netnod.se,NTS time.cloudflare.com,NTS " && systemd-analyze security --no-pager chronyd-restricted.service | tail -1'
+
 # Inbound default deny, proven from outside the host's own addresses: a veth pair into a network
 # namespace, a listener on the host side, a TCP connection from the namespace must time out; with
 # an explicit accept rule the same connection works (so the drop was the firewall, not routing).
@@ -100,4 +106,5 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$blocked" \
   --command "$firewall_probe" \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \
-  --command "$filesystems"
+  --command "$filesystems" \
+  --command "$time_client"

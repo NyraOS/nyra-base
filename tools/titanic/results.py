@@ -60,10 +60,10 @@ TESTS = {
            "boots through the fallback path and repairs itself."),
     "T8": ("Configuration broken by the user", None, [],
            "Needs the system settings reset, which does not exist yet."),
-    "T9": ("Wrong clock", "partial", [UPDATES],
-           "Hardware clock in 2099, 1970 and 2035: boots; the update server's certificate refused, "
-           "nothing staged; unsigned images refused; with the clock set right updates work. Not yet: "
-           "the image has no time synchronization, so only a person can set the clock right."),
+    "T9": ("Wrong clock", "full", [UPDATES],
+           "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
+           "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
+           "request is sent, the update server's certificate and unsigned images are refused."),
     "T10": ("Disk encryption", None, [], "Disk encryption does not exist yet."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
     "T12": ("Hostile root", "partial", [HOSTILE_ROOT],
@@ -110,7 +110,7 @@ def self_test():
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "partial", "partial", "pass", "pass"], r
+        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "partial", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
