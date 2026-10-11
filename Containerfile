@@ -68,7 +68,13 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
 RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       podman.socket podman.service podman-auto-update.timer podman-auto-update.service \
       netavark-dhcp-proxy.socket netavark-dhcp-proxy.service \
-      e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service; do \
+      e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service \
+      systemd-pcrlock-file-system.service systemd-pcrlock-firmware-code.service \
+      systemd-pcrlock-firmware-config.service systemd-pcrlock-machine-id.service \
+      systemd-pcrlock-make-policy.service systemd-pcrlock-secureboot-authority.service \
+      systemd-pcrlock-secureboot-policy.service systemd-pcrlock.socket systemd-sysupdate-notify-pcrlock.socket \
+      systemd-tpm2-clear.service systemd-pcrextend.socket systemd-pcrmachine.service systemd-pcrproduct.service \
+      systemd-pcrnvdone.service systemd-pcrfs-root.service tpm-udev.path; do \
       test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
@@ -94,11 +100,12 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
       systemd-bless-boot.service && \
     /usr/libexec/nyra-updated check-config
 
-# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock.
+# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, and the measurement of
+# the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md).
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss "\n' \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver"
 

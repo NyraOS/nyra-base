@@ -37,6 +37,11 @@ file.
 | `netavark-dhcp-proxy.socket`, `.service` | a root daemon for DHCP on macvlan container networks, which the base does not set up |
 | `e2scrub_all.timer`, `e2scrub_all.service`, `e2scrub_reap.service` | online ext4 checks through LVM snapshots; the base has no LVM |
 | `xfs_healer_start.service` | XFS self-healing; the root is ext4 (`xfs_healer@` is blocked too) |
+| `systemd-pcrlock-*.service` (7), `systemd-pcrlock.socket`, `systemd-sysupdate-notify-pcrlock.socket` | systemd-pcrlock writes a TPM policy (an NV index) at every boot; Nyra unlocks with the signed PCR policy instead (docs/BOOT.md, "TPM2 unlock") |
+| `systemd-tpm2-clear.service` | asks the firmware to clear the TPM on `factory-reset.target`, which Nyra does not use |
+| `systemd-pcrextend.socket` | a Varlink API to extend PCRs; nothing in the base calls it (the phase units run the tool directly) |
+| `systemd-pcrmachine.service`, `systemd-pcrproduct.service`, `systemd-pcrnvdone.service`, `systemd-pcrfs-root.service` | measure the machine ID, the product ID and the root file system into PCR 15 and NvPCRs, which the Nyra policy does not use |
+| `tpm-udev.path` | TPM device permissions inside containers only |
 
 On an installed machine `/usr` is read-only, so an administrator turns a blocked unit back on with
 a drop-in in `/etc` whose empty `ConditionPathExists=` resets the unit's conditions. **Unblock the
@@ -81,6 +86,32 @@ Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `ny
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.
+
+### TPM measurement units that stay
+
+`systemd-tpm` (for `systemd-measure` and the boot phases, docs/BOOT.md "TPM2 unlock") also enables the
+units above. Only these stay, all from `/usr`:
+
+| Unit | Why | Cost |
+|---|---|---|
+| `systemd-pcrphase-initrd.service` (initramfs), `systemd-pcrphase-sysinit.service`, `systemd-pcrphase.service` | measure the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`) into PCR 11, which the signed policy covers | one-shot at boot, one TPM command each (milliseconds); nothing resident, no wake-ups |
+| `systemd-pcrosseparator.service` (initramfs) | a separator into PCR 7, 12 and the other firmware PCRs before the disk is unlocked, so what is measured later does not count as boot state | one-shot in the initramfs, one TPM command; nothing resident |
+| `systemd-tpm2-setup-early.service` (initramfs), `systemd-tpm2-setup.service` | the TPM's storage root key, which salts and encrypts the session that unlocks the disk | one-shot at boot; creates the key once, later boots only read it; nothing resident |
+
+`systemd-pcrphase-factory-reset.service` and `systemd-pcrphase-storage-target-mode.service` stay
+linked too, but only `factory-reset.target` and `storage-target-mode.target` start them, and nothing in
+Nyra starts those targets.
+
+All of them start only on a machine with a TPM that booted a measured UKI (`ConditionSecurity=measured-os`),
+and do nothing on one without (`--graceful`). No socket or service stays running.
+
+The phase and separator units have `FailureAction=reboot-force` upstream, and it stays: if a
+measurement fails, PCR 11 (or PCR 7 and 12) would keep the value of an earlier phase, so the running
+system would still satisfy a policy meant for the boot. A TPM that is present but fails every command
+therefore makes the machine restart again and again (boot counting cannot help, every version does
+the same); the way out is to turn the TPM off in the firmware, after which the units do nothing and
+the disk asks for its password or the recovery key. The VM test with a software TPM checks a clean
+boot with none of these units failed.
 
 ## Firewall
 
