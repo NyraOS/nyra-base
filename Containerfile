@@ -49,13 +49,15 @@ COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
 # Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
 # configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
-# presets enabled; systemd applies it again at the first boot. No systemd-timesyncd (chrony
-# conflicts with it). The build fails if the configuration does not parse.
+# presets enabled; systemd applies it again at the first boot. systemd-timedated manages the same
+# unit (ntp-units.d/10-nyra.list). No systemd-timesyncd (chrony conflicts with it). The build fails
+# if the configuration does not parse.
 RUN systemctl preset chronyd-restricted.service chrony.service chrony-wait.service && \
     test "$(systemctl is-enabled chronyd-restricted.service)" = enabled && \
     test "$(systemctl is-enabled chrony.service)" = disabled && \
     test "$(systemctl is-enabled chrony-wait.service)" = disabled && \
     ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && \
+    test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = chronyd-restricted.service && \
     chronyd -p -f /usr/lib/nyra/chrony/chrony.conf | grep -c ' nts$' | grep -qx 2
 
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless

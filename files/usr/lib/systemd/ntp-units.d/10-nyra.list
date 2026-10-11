@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra: the time service that systemd-timedated reports and turns on and off ("timedatectl set-ntp",
+# the desktop's automatic time switch) is the restricted NTS client (docs/DEFAULTS.md, "Time").
+# It sorts before chrony's own 50-chrony.list, so chrony.service is never started in its place.
+chronyd-restricted.service
