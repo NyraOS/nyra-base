@@ -295,8 +295,27 @@ Each line is something that broke or surprised us once.
   --policy-digest --pcr-public-key … --sign-profile main` puts the digests to sign (`tbs`) in `.pcrsig`
   without any key, a plain SHA-256 signature over each (`openssl dgst -sha256 -sign`) is the whole
   signing, and `ukify --join-pcrsig … --pcrsig @…` writes them back into the same space. With
-  `--policy-digest`, ukify refuses `--phases` (it must match `--pcr-private-key`), so the policy covers
-  systemd's four default phases.
+  `--policy-digest`, ukify refuses `--phases` (it must match `--pcr-private-key`) and always adds
+  systemd's four default phases. For a policy that unlocks in the initrd only, add
+  `--sign-initrd-pcrs` (systemd 262): it adds the `enter-initrd` digest with the policy reference
+  `initrd`, and only that one gets signed. Its data to sign is the digest followed by SHA-256 of the
+  reference, and the enrollment must name it (`systemd-cryptenroll
+  --tpm2-public-key-policyref=initrd`). `--join-pcrsig` only adds signatures to the entries already
+  there (matched by `tbs`), so the unsigned ones stay; systemd skips an entry without a signature.
+- **Sign only what you computed.** A signer that signs the `tbs` it finds in a file signs whatever a
+  broken or tampered build put there, and with the real key a PCR 11 signature is a credential that
+  cannot be taken back. `pcr-policy.py sign` computes the digest from the UKI and signs that.
+  PKCS#1 v1.5 is deterministic, so CI compares the signature byte for byte with systemd-measure's own.
+- `ukify --sbat` replaces ukify's default SBAT text, including its `uki` line: pass the `sbat` and
+  `uki` lines with the Nyra one. The stub's and the kernel's lines are merged in either way. An SBAT
+  revocation reaches a machine only through shim's built-in policy, so a component of our own is
+  revocable only with a shim of our own.
+- **NvPCRs in systemd 262 are all or nothing** (from the sources). `systemd-tpm2-setup-early` reads
+  `/usr/lib/nvpcr/*.nvpcr` (dracut copies them into the initramfs) and allocates each NV index
+  before it looks for the signed `initrd` policy that authorizes its first write. Without that
+  policy the unit fails and the index stays in the TPM. `systemd-pcrlogin@` fails at every login
+  when the `login` NvPCR is missing. Ship the definitions with the signed `initrd` policy and the
+  separator, or neither (Nyra: neither).
 - Debian ships `systemd-measure` (and `systemd-pcrphase`) in **`systemd-tpm`**, not in `systemd` or
   `systemd-ukify`; ukify fails with `FileNotFoundError` without it. The initramfs needs dracut's
   `systemd-pcrextend` module, or the boot phases the policy covers are never measured.

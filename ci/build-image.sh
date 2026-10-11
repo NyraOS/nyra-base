@@ -5,8 +5,8 @@
 #   2. the UKI from that committed image (ci/ukify.sh): bootc container ukify puts its composefs digest
 #      on the command line; a second profile boots the same system into recovery. It reads the committed layers (podman --mount type=image), so file times are
 #      the ones bootc will see after --timestamp, not the build's;
-#   3. the UKI signed outside the image build: first its PCR 11 policy (main profile only,
-#      tools/signing/pcr-policy.py), then the whole file for Secure Boot. Here: with two keys made for
+#   3. the UKI signed outside the image build: first its PCR 11 policy (the main profile's enter-initrd
+#      phase only, tools/signing/pcr-policy.py), then the whole file for Secure Boot. Here: with two keys made for
 #      this run only, deleted right after signing; the UKI certificate and the policy's public key stay
 #      in UKI_DIR for the tests. The real Nyra keys will sign at this point, without CI ever holding
 #      them. Only one file is signed, and only if it is the sealed UKI (tools/signing/uki-check.py,
@@ -51,8 +51,9 @@ if [ ! -d "$uki/signed" ]; then
   fi
   f="${files[0]}"
   python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
-  # The PCR 11 policy digests that step 2 put in the main profile, signed and joined into the UKI with
-  # the image's own ukify (no key in that container), then checked.
+  # The PCR 11 policy: pcr-policy.py computes the main profile's enter-initrd policy from the UKI and
+  # signs only that, after checking that step 2 asked for exactly it; the signature is joined into the
+  # UKI with the image's own ukify (no key in that container), then checked.
   python3 -I tools/signing/pcr-policy.py sign "$f" "$key/pcr.key" > "$uki/pcr/pcrsig.json"
   mkdir -p "$uki/policy"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$uki/unsigned:/in:ro" \

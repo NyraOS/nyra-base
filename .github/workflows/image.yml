@@ -295,12 +295,19 @@ jobs:
       # The sign job's UKI release gate, on this image (its UKI signed with this run's key): accepted
       # with this run's certificate and policy key, refused as the sign job runs it (the committed Nyra
       # certificate and policy key), and refused for an add-on, another command line, a second UKI, an
-      # add-on next to it, a PCR policy missing, not verifying or outside the main profile, and a UKI
-      # whose sections pefile could read differently from systemd-stub (tools/signing/pe_sections.py).
+      # add-on next to it, no Nyra SBAT component, a PCR policy missing, not verifying or outside the
+      # main profile, and a UKI whose sections pefile could read differently from systemd-stub
+      # (tools/signing/pe_sections.py).
       - name: Test the UKI release gate (docs/SIGNING.md)
         run: |
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
             "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK"
+
+      # The PCR policy signing and its check on a UKI that ci/ukify.sh builds with a policy key of the
+      # test: only the main profile's enter-initrd policy is signed, computed independently (systemd-
+      # measure signs the same), and anything else is refused before signing and in the check.
+      - name: Test the PCR policy signing (docs/BOOT.md)
+        run: tools/signing/test-pcr-policy.sh localhost/nyra-base:ci-sealed "$WORK/uki/kernel" "$WORK"
 
       # The Containerfile runs `nyra-updated check-config` on the image; here it must refuse the key of
       # the test fixtures (its private key is public), so a build that ships it fails.

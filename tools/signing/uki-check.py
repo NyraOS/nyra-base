@@ -13,7 +13,9 @@ one Authenticode signature). Accepted only:
     extra;
   - each command line exactly its line of EXPECTED, in order: compared as bytes, only trailing NULs
     cut (the stub stops at the first NUL), every byte in 0x20-0x7e; DIGEST is the composefs digest,
-    128 hex digits, the same in every profile.
+    128 hex digits, the same in every profile;
+  - exactly one .sbat section, with exactly one Nyra component line (nyra,<generation>,...), so that
+    the UKI can be revoked with older Nyra UKIs (docs/BOOT.md, "SBAT").
 Runs before the UKI is signed (ci/build-image.sh) and in the release gate (tools/signing/uki-gate.sh).
     python3 -I tools/signing/uki-check.py UKI EXPECTED
 """
@@ -52,6 +54,10 @@ def check(uki, expected_path):
         digests.update(m.groups())
     if len(digests) != 1:
         return f"the profiles do not carry one and the same composefs digest: {sorted(digests)}"
+    sbat = [data for name, data in secs if name == ".sbat"]
+    nyra = [line for line in b"".join(sbat).split(b"\n") if line.startswith(b"nyra,")]
+    if len(sbat) != 1 or len(nyra) != 1 or not re.fullmatch(rb"nyra,[1-9][0-9]*,.*", nyra[0]):
+        return f"not one .sbat section with one Nyra component line (nyra,<generation>,...): {nyra}"
     return None
 
 
