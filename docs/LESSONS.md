@@ -343,6 +343,11 @@ Each line is something that broke or surprised us once.
 - Variants for a PE check are cheapest made from the real UKI: change its section headers (name,
   addresses, place in the table) or a command line in its file alignment slack, then sign. A variant
   proves the new rule only if the old check accepted it: run the variants against the old code once.
+- systemd-stub reads its sections in memory, where the loader put them, and shim 16 replaces the
+  firmware's loader: it does not copy a section without `IMAGE_SCN_MEM_READ` or with
+  `IMAGE_SCN_MEM_DISCARDABLE`, fills one with `IMAGE_SCN_CNT_UNINITIALIZED_DATA` with zeros, and
+  applies the `.reloc` relocations anywhere in the image. A check that reads the file must refuse all
+  of these, or it reads bytes the stub never sees.
 - `python3 -I` does not put the script's directory on `sys.path`; a script that imports a module next
   to it adds that directory itself (and sets `sys.dont_write_bytecode`, so nothing is written into the
   checkout).
