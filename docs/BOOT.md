@@ -385,8 +385,10 @@ does not matter.
 ### The ESP is read-only
 
 Root can delete anything it can reach, and `rm -rf --no-preserve-root /` reaches every mounted file
-system. With the ESP mounted on access (systemd-gpt-auto-generator's automount at `/boot`), the
-Titanic hostile root test saw it remove shim, systemd-boot, the UKIs and the fallback path, so the
+system. The ESP used to be mounted read-write on access (systemd-gpt-auto-generator's automount at
+`/boot`, which `systemd-boot-update`, `bootctl` and `systemd-bless-boot` trigger), so whether it was
+mounted at a given moment was a matter of chance. In the Titanic hostile root test it was, and the
+delete removed shim, systemd-boot, the UKIs and the fallback path, so the
 machine no longer booted at all, not even into recovery. It also removes the `Boot####` and
 `BootOrder` firmware variables: efivarfs lets root delete those standard variables (others are
 immutable). That alone does not stop the boot: the firmware then starts the fallback path,

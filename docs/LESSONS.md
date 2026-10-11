@@ -115,10 +115,12 @@ Each line is something that broke or surprised us once.
   swaps the directory in at shutdown. Adding the boot counter there, before the swap, makes it atomic
   with the entry. bootc reads entries by content and sort key, so the `+N-M` suffix does not confuse it.
 - systemd-gpt-auto-generator mounts the ESP at `/boot` on access (an automount that unmounts after
-  two idle minutes, and cannot be triggered once the shutdown transaction is queued). A recursive
-  delete as root triggers it like any other access: `rm -rf --no-preserve-root /` removed every boot
-  file (Titanic T12). Nyra blocks the automount and mounts the ESP read-only at every boot instead
-  (docs/BOOT.md, "The ESP is read-only").
+  two idle minutes, and cannot be triggered once the shutdown transaction is queued). It is mounted
+  far more often than it looks: `systemd-boot-update.service` at every boot, any `bootctl` call
+  (`set-oneshot` too), `systemd-bless-boot`. In Titanic T12 it was already mounted read-write when
+  `rm -rf --no-preserve-root /` ran, and the delete removed every boot file. Whether the ESP happens
+  to be mounted at that moment must not matter: Nyra blocks the automount and keeps the ESP mounted
+  read-only from the start of the boot (docs/BOOT.md, "The ESP is read-only").
 - The generator writes its units to `/run/systemd/generator.late`, below `/usr/lib/systemd/system`:
   drop-ins in `/usr` apply to them (`Options=`, a `ConditionPathExists=` that blocks the automount),
   and `Wants=boot.mount` from `local-fs.target` mounts the ESP without the automount.
