@@ -93,6 +93,15 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
 
+# No NvPCRs (docs/DEFAULTS.md, "TPM measurement units that stay"): without their definitions
+# systemd-tpm2-setup-early allocates no NV index in the TPM, and dracut copies none into the initramfs;
+# the measurement of each login into the NvPCR "login" is blocked with them (it would fail).
+RUN rm /usr/lib/nvpcr/*.nvpcr && rmdir /usr/lib/nvpcr && \
+    test -f /usr/lib/systemd/system/systemd-pcrlogin@.service && \
+    mkdir -p /usr/lib/systemd/system/systemd-pcrlogin@.service.d && \
+    printf '# Nyra: no NvPCRs in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-pcrlogin\n' \
+      > /usr/lib/systemd/system/systemd-pcrlogin@.service.d/10-nyra.conf
+
 # Secure defaults (docs/DEFAULTS.md): AppArmor profiles and the inbound firewall at every boot,
 # enabled from /usr; systemd-networkd does not start without the firewall.
 RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
