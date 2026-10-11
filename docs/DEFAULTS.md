@@ -217,3 +217,27 @@ each of the two sources every 64 to 1024 s and has no listening socket.
 type; `modprobe <name>` by an administrator still works. The list holds rare and legacy formats
 whose parsers face crafted disks and images (f2fs had CVE-2019-19449 and CVE-2019-19814, still
 unfixed upstream). Formats that people plug in stay loadable.
+
+## apt and dpkg
+
+The system in `/usr` comes from the image, read-only, and is updated as a whole, so a package
+manager cannot install anything into it. Instead of failing with "command not found" or "Read-only
+file system", the commands people try say what to use instead, on standard error, and exit with 1:
+
+```
+apt and dpkg can’t install apps on Nyra OS: the system is read-only and updated as a whole.
+Install apps from the Store (Flatpak).
+For developer tools, use apt in a Distrobox container: distrobox create, then distrobox enter.
+```
+
+- `apt` and `apt-get` (not in the image otherwise) are links to `/usr/lib/nyra/no-apt`, which prints
+  that message.
+- `dpkg` is essential in Debian and stays, without a package database. The image build moves it to
+  `/usr/lib/nyra/dpkg`; `/usr/bin/dpkg` is a wrapper that prints the message for an install (`-i`,
+  `--install`, `--unpack`, also `-i` among other short options such as `-Ri` or `-iD1`) and runs dpkg for
+  everything else: the queries (`-l`, `-L`, `-S`, `--status`), `dpkg-deb`'s actions, a
+  `--compare-versions` from a script.
+
+The message is help, not the protection: `/usr` stays read-only for dpkg itself too. Titanic T12
+(docs/TITANIC.md) checks both: the message from all three commands, and "Read-only file system" from
+`/usr/lib/nyra/dpkg -i`, with `/usr` unchanged.

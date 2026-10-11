@@ -66,13 +66,14 @@ TESTS = {
            "request is sent, the update server's certificate and unsigned images are refused."),
     "T10": ("Disk encryption", None, [], "Disk encryption does not exist yet."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
-    "T12": ("Hostile root", "partial", [HOSTILE_ROOT],
-            "As root with Secure Boot on: apt and dpkg cannot change /usr (dpkg fails with a "
-            "read-only file system; the same package installs under a writable root); "
+    "T12": ("Hostile root", "full", [HOSTILE_ROOT],
+            "As root with Secure Boot on: apt, apt-get and dpkg -i cannot change /usr and say what to "
+            "use instead (the Store, Distrobox); dpkg itself fails with a read-only file system (the "
+            "same package installs under a writable root, where dpkg's queries find it); "
             "an unsigned copy of an in-tree module is refused (the signed copy loads), "
             "and the lockdown cannot be lowered; after rm -rf --no-preserve-root / and a power cut, "
-            "/usr is unchanged and the Reset settings entry brings the system back. Not yet: apt and "
-            "dpkg do not tell the user what to use instead."),
+            "/usr and the ESP are unchanged, and the Reset settings entry brings the system back "
+            "without a first-boot question, root locked."),
     "T13": ("Extreme load", "full", [EXTREME_LOAD],
             "An update while 8 busy loops run on 2 vCPUs, less than 200 MiB of memory is free and the "
             "disk is written without a pause: staged exactly or failed with nothing staged; the next "
@@ -110,7 +111,7 @@ def self_test():
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "partial", "pass", "pass"], r
+        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]

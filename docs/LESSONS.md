@@ -570,3 +570,7 @@ Each line is something that broke or surprised us once.
   is reached and the machine ID is committed. In early boot, systemd may print a skipped unit's
   condition on the console ("… skipped, unmet condition check"), so a check that a unit did not run
   looks for what it prints when it runs ("Initial Setup...", "Initial Setup."), not for its name.
+- dpkg combines short options (`dpkg -Ri DIR` installs every package under `DIR`), so a wrapper that
+  refuses `-i` looks inside such groups too, up to an option that takes the rest as its value
+  (`-iD1` installs with debug level 1; in `-Di` the `i` is the value of `-D`). A `COPY` of
+  `files/usr/` over `/usr/bin/dpkg` replaces the binary: move it away in a step before the `COPY`.
