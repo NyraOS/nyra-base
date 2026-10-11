@@ -339,9 +339,8 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     is replaced (a new file next to the old one, then a rename), the old fallback stays: at boot
     `esp-sync repair` fails visibly (the unit fails, the system shows as degraded); at shutdown the
     move only logs the failure, so the shutdown and bootc's swap go on.
-- **The ESP is mounted only on access** (systemd's automount at `/boot`, unmounted when idle) and only
-  root can read it: systemd mounts it with `fmask=0177,dmask=0077` (no bits for group and others,
-  no execute bit on files); CI checks it.
+- **The ESP is read-only at `/boot`** (see "The ESP is read-only" below) and only root can read it:
+  `fmask=0177,dmask=0077` (no bits for group and others, no execute bit on files); CI checks it.
 - **Directory changes on the ESP reach the disk in order.** The ESP is FAT, and Linux's FAT driver
   writes directory changes in any order unless the mount is `dirsync`; `fsync` does not cover them
   all. A power cut during the shutdown with the swap of `loader/entries.staged` could leave
@@ -349,9 +348,10 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   `loader/entries.staged` without its `.` and `..`: Linux then reports a corrupted directory, sets
   the ESP read-only and every later update fails; `fsck.fat -a` does not repair it
   (docs/LESSONS.md). Every ESP mount is therefore `dirsync` (each directory change is written before
-  the call returns): `/boot` (`boot.mount.d/10-nyra.conf`, the generator's options plus `dirsync`;
-  CI checks it), the mounts `esp-sync` makes at shutdown, and bootc's own (patched in
-  `ci/build-bootc.sh`, `patches/upstream/bootc-esp-dirsync.md`). bootc already writes each file to
+  the call returns): `/boot` (`boot.mount.d/10-nyra.conf`, the generator's options with `ro` and
+  `dirsync`; CI checks it; a remount keeps the flag), the mount `esp-writable` makes when `/boot`
+  is not mounted, and bootc's own (patched in `ci/build-bootc.sh`,
+  `patches/upstream/bootc-esp-dirsync.md`). bootc already writes each file to
   a temporary name, fsyncs it and renames it. After `bootc-finalize-staged`, `sync` runs
   (`bootc-finalize-staged.service.d/10-nyra.conf`): bootc detaches its mount lazily, so what it
   wrote (the old files it removed) is not necessarily on the disk when it exits.
@@ -363,7 +363,7 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | Boot | Done before it | Expected |
 |---|---|---|
 | 0 (no boot) | `bootc install`, then `esp-sync install` | `loader.conf` with `editor no`, both copies of the boot files as in the image, the fallback UKI and entry equal to the installed version's |
-| 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root, mounted `dirsync` |
+| 1 | no boot entries (fresh variable store) | boots through `\EFI\BOOT`; nothing needed repair; "Nyra OS" created, first in `BootOrder`; ESP readable only by root, mounted read-only and `dirsync` at boot (not on access) |
 | 2 | | boots through `\EFI\nyra`; the test adds another entry, which is put first |
 | 3 | | that entry fails (its file does not exist); "Nyra OS" boots and is first again |
 | 4 | `\EFI\nyra\grubx64.efi` cut in half (an interrupted update) | the firmware falls back to `\EFI\BOOT`; the file is repaired |
@@ -381,6 +381,38 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
 section; the copy is never started (those boots go through `\EFI\nyra`), so its broken signature
 does not matter.
+
+### The ESP is read-only
+
+Root can delete anything it can reach, and `rm -rf --no-preserve-root /` reaches every mounted file
+system. With the ESP mounted on access (systemd-gpt-auto-generator's automount at `/boot`), the
+Titanic hostile root test saw it remove shim, systemd-boot, the UKIs and the fallback path, so the
+machine no longer booted at all, not even into recovery. It also removes the `Boot####` and
+`BootOrder` firmware variables: efivarfs lets root delete those standard variables (others are
+immutable). That alone does not stop the boot: the firmware then starts the fallback path,
+`\EFI\BOOT\BOOTX64.EFI`, and `esp-sync repair` creates the "Nyra OS" entry again (boot 1 above).
+So the ESP must stay intact:
+
+- **`/boot` is read-only for every process.** `boot.mount` (the generator's mount unit) mounts the
+  ESP read-only from the start of the boot (`local-fs.target.d/10-nyra.conf` wants it); the automount
+  is blocked (`boot.automount.d/10-nyra.conf`). A write through `/boot` fails with "Read-only file
+  system", whoever makes it. Reading needs nothing special (`bootctl`, `systemd-bless-boot status`,
+  `bootc status`).
+- **Writers use `/usr/lib/nyra/boot/esp-writable COMMAND`**: it runs the command in a mount namespace
+  of its own, where `/boot` is remounted read-write (or, if `/boot` is not mounted, the partition in
+  `LoaderDevicePartUUID` is mounted there, with the same options). That makes the file system itself
+  writable, but read-only is also a flag of each mount, and every other process's `/boot` keeps it.
+  bootc does exactly this for its own writes (a remount of the existing mount in its namespace).
+  Through it: `esp-sync` (`repair`, `boot-counter`, `discard`; it runs itself again under
+  `esp-writable`), `systemd-bless-boot good` and `bootctl random-seed` (drop-ins that replace their
+  `ExecStart=`). `systemd-boot-update.service` is blocked instead (docs/DEFAULTS.md): it would write
+  a newer systemd-boot over `EFI/BOOT/grubx64.efi` from a version still on trial; `esp-sync` keeps
+  the boot files.
+- Once something has written, the FAT file system stays mounted read-write underneath until the
+  shutdown, as on a system that keeps its ESP mounted: a power cut leaves the FAT "dirty" flag set,
+  which nothing depends on. The directory changes themselves are ordered by `dirsync` (above).
+- Root can still remount `/boot` read-write on purpose, or write the disk directly: this stops a
+  delete that walks the file system, not an administrator who means it.
 
 What the installer must still do (not part of this repository's tests): put the ESP on its own
 partition for Nyra (not shared with Windows), with the GPT attributes that hide it from Windows, and
@@ -523,8 +555,8 @@ A new version must prove itself, or the machine goes back to the previous one by
 - **`nyra-boot-counter.service`** (stopped at shutdown just before `bootc-finalize-staged`) renames
   the new entry in `entries.staged` to `…+3.conf`. The counter therefore lands in the same atomic swap
   as the entry itself; the running system's entry, found by its composefs digest, gets none. It
-  mounts the ESP itself (by the partition systemd-boot reports), like bootc: `/boot` is an automount
-  that expires after two idle minutes and cannot be mounted again once shutdown has begun. When
+  writes through `esp-writable` (see "The ESP is read-only") and stops before `boot.mount` is
+  unmounted. When
   `nyra-updated` discarded the staged version (`/run/nyra-updated/discarded`, docs/UPDATES.md), it
   removes `entries.staged` instead, so that version is never swapped in (`nyra-updated` has removed it
   already, with `esp-sync discard`; this is the second time).

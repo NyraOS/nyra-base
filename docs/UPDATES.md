@@ -143,7 +143,8 @@ after a soft reboot makes `nyra-updated health-failed` reboot fully, and the new
 which still has its `+3`, is counted from then on.
 
 **Sandboxing.** `nyra-updated.service` runs bootc, which needs root, its own mount namespace (it
-remounts `/sysroot` and mounts the ESP privately), the network, `/sysroot` and `/var`: it gets
+remounts `/sysroot` and the read-only ESP read-write there; `esp-sync discard` does the same through
+`esp-writable`), the network, `/sysroot` and `/var`: it gets
 `ProtectSystem=full`, `ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup
 protections and a list of address families (`systemd-analyze security`: 6.5). The health checks and
 `health-failed` only read state and ask systemd for a reboot: no network, no capabilities where

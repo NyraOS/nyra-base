@@ -114,9 +114,23 @@ Each line is something that broke or surprised us once.
 - bootc (composefs) writes a staged version's entries to `loader/entries.staged` when it stages it and
   swaps the directory in at shutdown. Adding the boot counter there, before the swap, makes it atomic
   with the entry. bootc reads entries by content and sort key, so the `+N-M` suffix does not confuse it.
-- The ESP at `/boot` is an automount (systemd-gpt-auto-generator) that unmounts after two idle
-  minutes, and an automount cannot be triggered once the shutdown transaction is queued. Anything that
-  writes the ESP at shutdown mounts the partition itself (`LoaderDevicePartUUID`), as bootc does.
+- systemd-gpt-auto-generator mounts the ESP at `/boot` on access (an automount that unmounts after
+  two idle minutes, and cannot be triggered once the shutdown transaction is queued). A recursive
+  delete as root triggers it like any other access: `rm -rf --no-preserve-root /` removed every boot
+  file (Titanic T12). Nyra blocks the automount and mounts the ESP read-only at every boot instead
+  (docs/BOOT.md, "The ESP is read-only").
+- The generator writes its units to `/run/systemd/generator.late`, below `/usr/lib/systemd/system`:
+  drop-ins in `/usr` apply to them (`Options=`, a `ConditionPathExists=` that blocks the automount),
+  and `Wants=boot.mount` from `local-fs.target` mounts the ESP without the automount.
+- Read-only is a flag of the superblock and of each mount. A remount of an existing mount
+  (`mount -o remount,rw`, not a bind remount) inside a mount namespace of its own makes the
+  superblock writable and that one mount, while the same file system stays read-only through every
+  other mount of it. A second, fresh mount of the device with the other read-only state fails with
+  `EBUSY` ("Can't mount, would change RO state"): remount what is mounted, mount the device only when
+  it is not. bootc does the same for the ESP (`mount_esp_writable`).
+- efivarfs lets root delete the standard firmware variables (`Boot####`, `BootOrder`); the others
+  (systemd-boot's `LoaderEntryOneShot`, for example) are created immutable and survive `rm -rf /`.
+  Without `BootOrder`, OVMF boots the disk's fallback path (`\EFI\BOOT\BOOTX64.EFI`).
 - `systemctl is-enabled` reports `disabled` for units enabled only through `/usr/lib/systemd/system/*.wants/`
   links, although systemd starts them: do not use it to check vendor enablement.
 - Debian's kernel packages now put `vmlinuz` in `/usr/lib/modules/<kver>/`; the signed image is in
