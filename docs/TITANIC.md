@@ -112,7 +112,7 @@ only if the action fails for another reason:
 | 1 | `insmod` of an in-tree module (`dummy`) with its signature cut off | refused by the kernel's signature check ("Loading of unsigned module is rejected": with Secure Boot the kernel enforces module signatures) | the same module with its signature loads from the same place |
 | 1 | `echo none > /sys/kernel/security/lockdown` | refused, still `integrity` | raising it to `confidentiality` works |
 | 2 | `rm -rf --no-preserve-root /`, then a power cut | `/usr` and the ESP have the same checksums as before; `EFI/BOOT/BOOTX64.EFI` is still the image's shim | the markers the test put in `/etc` and `/var` are gone |
-| 3 | the "Nyra OS Reset settings" entry, picked before `rm` | no first-boot question before the reset's; `/etc` is the image's again, root locked, the system restarts into the normal boot and runs; `/usr` unchanged, Secure Boot and the lockdown on, the "Nyra OS" firmware entry back | |
+| 3 | the "Nyra OS Reset settings" entry, picked before `rm` | no first-boot question before the reset's, and AppArmor loaded in that boot (the image's profiles from `/usr`); `/etc` is the image's again, root locked, the system restarts into the normal boot and runs; `/usr` unchanged, Secure Boot and the lockdown on, the "Nyra OS" firmware entry back | |
 
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file; the ESP's (at `/boot`) covers the same, taken right before and after `rm`, so

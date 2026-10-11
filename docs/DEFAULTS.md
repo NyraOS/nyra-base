@@ -7,7 +7,7 @@ it is something the user switches on, not off), and how CI proves it.
 
 | Default | How | Checked in the VM |
 |---|---|---|
-| AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
+| AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it, and without `/etc/apparmor.d` (an emptied `/etc`) the image's profiles load from a copy in `/usr/lib/nyra/apparmor.d` (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
 | Kernel lockdown `integrity` | `lockdown=integrity` in `/usr/lib/bootc/kargs.d/10-nyra-lockdown.toml`; Debian's kernel also turns it on under Secure Boot | `/sys/kernel/security/lockdown` shows `[integrity]` |
 | Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |

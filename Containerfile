@@ -116,8 +116,10 @@ RUN rm /usr/lib/nvpcr/*.nvpcr && rmdir /usr/lib/nvpcr && \
       > /usr/lib/systemd/system/systemd-pcrlogin@.service.d/10-nyra.conf
 
 # Secure defaults (docs/DEFAULTS.md): AppArmor profiles and the inbound firewall at every boot,
-# enabled from /usr; systemd-networkd does not start without the firewall.
-RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
+# enabled from /usr; systemd-networkd does not start without the firewall. A copy of the profiles in
+# /usr loads when /etc/apparmor.d is gone (apparmor.service drop-in).
+RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
+    mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
     cd /usr/lib/systemd/system/sysinit.target.wants && ln -sf ../apparmor.service ../nyra-firewall.service . && \
     test -f apparmor.service && test -f nyra-firewall.service && test -x /usr/sbin/nft && \
     printf '# Nyra: no network without the inbound firewall\n[Unit]\nRequires=nyra-firewall.service\nAfter=nyra-firewall.service\n' \
