@@ -418,6 +418,13 @@ Each line is something that broke or surprised us once.
   cache exists depends on a race at the first boot: `apparmor.service` runs next to
   `systemd-tmpfiles-setup.service`, and without `/var/cache` yet the parser loads without writing a
   cache. So one T6 run passed and the next had AppArmor failing on the full disk.
+- With chronyd in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
+  2035) were corrected within seconds of reaching the network, so a check that needs the clock
+  wrong must keep chronyd from its servers (the T9 hostile boot points their names at the runner).
+- Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
+  answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
+  replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)
+  and stayed on it for minutes: a source it replaces can land on an address of the other family.
 - `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
   killed, so a version staged in that boot is never finalized. Stage in a boot of its own.
 - `rm -rf --no-preserve-root /` takes under 2 s in the VM and reaches more than `/etc` and `/var`:

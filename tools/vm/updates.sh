@@ -504,7 +504,9 @@ echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 
 # request, unauthenticated, with a time in 2001. The clock stays in 2035 and not one NTP request is
 # sent (no unauthenticated fallback); the sheet server's certificate is refused (expired) and nothing
 # is staged; unsigned and wrongly signed images are still refused (image signatures do not depend on
-# the clock). With the real servers back, chronyd corrects the clock and the system is up to date.
+# the clock). With the real servers back (once name resolution no longer answers with the runner:
+# resolved can answer from its old copy of /etc/hosts right after the edit), chronyd is restarted,
+# corrects the clock and the system is up to date.
 # Each boot comes from a file system last mounted at another time.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=time.cloudflare.com \
   -addext subjectAltName=DNS:time.cloudflare.com,DNS:nts.netnod.se -keyout "$u/time.key" -out "$u/time.crt" 2>/dev/null
@@ -564,7 +566,7 @@ vm "v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wr
   --command "$lib; expect booted $d16 && running && not_synced && date -u && test \"\$(date +%Y)\" = 2035" \
   --command "$lib; refused s16 '$tls_time' && expect staged none" \
   --command "$lib; $unsigned" \
-  --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && systemctl restart chronyd-restricted.service' \
+  --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se && ! getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " && systemctl restart chronyd-restricted.service' \
   --command "$lib; synced $(date +%s) && outcome s16 UpToDate && expect staged none"
 ke="$(grep -c '^nts-ke$' "$u/fake-time.log" || true)" ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
 echo "spoofed time servers: $ke NTS-KE connections (refused by the guest), $ntp NTP requests"

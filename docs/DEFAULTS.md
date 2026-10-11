@@ -150,7 +150,7 @@ Security, RFC 8915): a TLS key exchange with the server (NTS-KE, TCP 4460), then
 | Client | `chrony`, which conflicts with `systemd-timesyncd` (not installed) |
 | Sources | `time.cloudflare.com` and `nts.netnod.se`, both with `nts`; no pool, no servers from DHCP, no unauthenticated fallback. `minsources 2`: the clock is updated only when both operators are reachable and agree, so one compromised or impersonated server cannot move it |
 | Configuration | `/usr/lib/nyra/chrony/chrony.conf`, passed with `-f` by a drop-in of `chronyd-restricted.service`. Debian's `/etc/chrony/chrony.conf` (an unauthenticated pool and servers from DHCP) stays as the package left it and is not read |
-| Service | Debian's `chronyd-restricted.service`: started as `_chrony`, with `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state, runtime and log directories only, Debian's seccomp filter (`-F 1` from `/etc/default/chrony`) and AppArmor profile. Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it and disables `chrony.service` (chronyd started as root; the two units conflict) and `chrony-wait.service` (it asks chronyd over UDP 323, which the restricted client does not open, and would delay the boot). systemd applies presets again at the first boot, so the preset is what keeps them that way |
+| Service | Debian's `chronyd-restricted.service`: started as `_chrony`, with `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state, runtime and log directories only, Debian's seccomp filter (`-F 1` from `/etc/default/chrony`) and AppArmor profile (`systemd-analyze security`: exposure 1.9, "OK"). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it and disables `chrony.service` (chronyd started as root; the two units conflict) and `chrony-wait.service` (it asks chronyd over UDP 323, which the restricted client does not open, and would delay the boot). systemd applies presets again at the first boot, so the preset is what keeps them that way |
 | State | NTS cookies (`ntsdumpdir`) and the drift file in `/var/lib/chrony` |
 | Control | `chronyc` as root, over the Unix socket in `/run/chrony`; `cmdport 0`, so no UDP 323 |
 | Bootstrap | `nocerttimecheck 1`, see below |
@@ -180,10 +180,12 @@ at all and runs on the hardware clock until both answer again.
 after ours and override them (`minsources 1`, for example). To replace the whole configuration, set
 `DAEMON_OPTS="-F 1 -f /etc/chrony/my.conf"` in `/etc/default/chrony`: the later `-f` wins.
 
-**Cost** (measured in the update tests, docs/UPDATES.md): the `chrony` package and its new
-dependencies (see the image's SBOM); one small resident process, started at boot because the
-clock has to be right before the first update check; idle, chronyd wakes only to poll the two
-sources (every 64 to 1024 s) and keeps no listening socket.
+**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM: the `chrony`
+package (about 0.7 MB installed) and the small `ucf` with its helpers; one resident process, started
+at boot because the clock has to be right before the first update check. Synchronized and idle:
+about 10.5 MB resident (most of it shared libraries, GnuTLS among them) and 6.6 MB charged to its
+cgroup; 1 context switch in 60 s; 83 ms of CPU time from its start, key exchanges included. It polls
+each of the two sources every 64 to 1024 s and has no listening socket.
 
 ## Filesystems
 
