@@ -362,6 +362,13 @@ Each line is something that broke or surprised us once.
 - The sealed command line has `rd.emergency=reboot`: a boot that ends in the initrd's emergency mode
   starts again after its diagnostics. A check that expects such a boot and no new kernel start
   needs `rd.emergency=halt` in its test add-on (`tools/vm/boot-repeat.sh`).
+- With `rd.emergency=reboot`, a boot without the test console's credentials (no emergency
+  diagnostics) that fails in the initrd reboots silently, and the next boot can pass the check.
+  `vm-boot.py` therefore fails at once on a kernel start ("Linux version" on the console) that the
+  run did not announce: `--boots N` expects N, a `--chat-then-login` chat and `@reboot` one more each.
+- `subprocess.Popen` with the default buffering keeps typed text in a buffer: a write to a QEMU that
+  has exited fails only at `flush()`, and the buffer fails again when Python exits ("Exception
+  ignored ... BrokenPipeError"). `vm-boot.py` uses unbuffered pipes (`bufsize=0`) and reports the exit.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.

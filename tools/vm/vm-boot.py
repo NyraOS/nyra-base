@@ -37,6 +37,10 @@ chat, for example), and the script logs in there as usual.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
 itself first. A command written "@reboot CMD" is typed without waiting for its
 result, then the script logs in again at the next login prompt (a soft reboot).
+Every kernel start ("Linux version" on the console) must be expected: one for the boot (N with
+--boots N), at most one more after a --chat-then-login chat and for each "@reboot" command (a
+soft reboot starts none). Any other fails the run at once: with the image's rd.emergency=reboot,
+an emergency in the initrd reboots silently, and the next boot could pass the check.
 
 A boot that ends in emergency mode (in the initrd too) prints what udev saw of the disk
 first (a drop-in passed as a credential), the size of LoaderDevicePartUUID and what a new
@@ -77,6 +81,7 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+KERNEL_START = re.compile(rb"Linux version \d")
 
 
 def clean(buf):
@@ -87,8 +92,9 @@ def clean(buf):
 class Console:
     """Guest serial console: everything QEMU prints, plus a way to type."""
 
-    def __init__(self, proc, log, cut_at=None):
+    def __init__(self, proc, log, cut_at=None, kernels=1):
         self.proc, self.log, self.cut_at = proc, log, cut_at
+        self.kernels = kernels  # kernel starts expected so far; one more is an unexpected reboot
         self.buf = b""
         self.cut = None  # seconds after start when QEMU was killed by --power-cut-at
         self.t0 = time.monotonic()
@@ -97,7 +103,7 @@ class Console:
         self.reader.start()
 
     def _read(self):
-        while chunk := self.proc.stdout.read1(65536):
+        while chunk := self.proc.stdout.read(65536):  # unbuffered: one read, whatever is there
             with self.lock:
                 self.buf += chunk
             self.log.write(chunk)
@@ -108,7 +114,7 @@ class Console:
 
     def wait_for(self, pattern, timeout, start=0, cleaned=False):
         """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
-        differ); None on timeout or if QEMU exits."""
+        differ); None on timeout or if QEMU exits. An unexpected kernel start before it raises."""
         deadline = time.monotonic() + timeout
         while True:
             exited = self.proc.poll() is not None
@@ -117,13 +123,25 @@ class Console:
             with self.lock:
                 buf = self.buf
             m = re.search(pattern, clean(buf[start:]) if cleaned else buf[start:])
+            self.check_kernels(buf, start + m.start() if m and not cleaned else len(buf))
             if m or exited or time.monotonic() >= deadline:
                 return m
             time.sleep(0.2)
 
+    def check_kernels(self, buf, end):
+        """No more kernel starts in buf[:end] than expected."""
+        n = len(KERNEL_START.findall(buf, 0, end))
+        if n > self.kernels:
+            raise RuntimeError(f"unexpected reboot: kernel start {n} on the console, {self.kernels} expected")
+
     def type(self, text):
-        self.proc.stdin.write(text.encode())
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(text.encode())
+            self.proc.stdin.flush()
+        except BrokenPipeError:
+            self.proc.wait()
+            raise RuntimeError(f"QEMU exited with code {self.proc.returncode} after "
+                               f"{time.monotonic() - self.t0:.1f} s, before the input could be typed") from None
 
 
 def refused(con, pattern, timeout):
@@ -148,6 +166,7 @@ def marker(con, pattern, expected, timeout):
     time.sleep(20)
     with con.lock:
         buf = con.buf
+    con.check_kernels(buf, len(buf))
     seen = any(re.search(pattern.encode(), b) for b in (buf, clean(buf)))
     if seen != expected:
         raise RuntimeError(f"{pattern!r} {'not ' if expected else ''}on the console")
@@ -169,6 +188,7 @@ def login(con, a, password, start):
             if not con.wait_for(rb"# ", 60, start):
                 raise RuntimeError("no root shell after the chat")
             return
+        con.kernels += 1  # the guest may reboot after the chat
     m = con.wait_for(rb"login: |@@ emergency: diagnostics", a.timeout, start)
     if m and m.group() != b"login: ":
         con.wait_for(rb"@@ end of diagnostics", 300, start)
@@ -178,6 +198,9 @@ def login(con, a, password, start):
             raise RuntimeError(f"QEMU exited with code {con.proc.returncode} after "
                                f"{time.monotonic() - con.t0:.1f} s, before the login prompt")
         raise RuntimeError(f"no login prompt within {a.timeout} s")
+    # A reboot that was allowed but did not happen (a soft reboot, a chat without one) is not
+    # allowed any more.
+    con.kernels = len(KERNEL_START.findall(con.buf, 0, start + m.start()))
     # From the end of the prompt, not the end of the buffer: with autologin the
     # shell prompt can already be there.
     start += m.end()
@@ -194,7 +217,7 @@ def login_and_run(con, a, password, rows, outputs):
     """Log in as root (after the --boots-th kernel start) and run the commands."""
     start = 0
     for n in range(a.boots if a.boots > 1 else 0):
-        m = con.wait_for(rb"Linux version", a.timeout, start)
+        m = con.wait_for(KERNEL_START, a.timeout, start)
         if not m:
             raise RuntimeError(f"kernel start {n + 1} of {a.boots} not seen within {a.timeout} s")
         start += m.end()
@@ -203,6 +226,7 @@ def login_and_run(con, a, password, rows, outputs):
     for i, c in enumerate(a.command):
         start = len(con.buf)
         if c.startswith("@reboot "):
+            con.kernels += 1
             con.type(c[len("@reboot "):] + "\r")
             login(con, a, password, start)
             outputs.append((c, 0, f"logged in again {time.monotonic() - con.t0:.1f} s after QEMU start"))
@@ -227,6 +251,40 @@ def self_test():
     assert re.search(target, clean(split)) and re.search(target, clean(whole))
     assert not re.search(target, clean(b"Created symlink /etc/systemd/system/multi-user.target.wants/x.service\r\n"))
     assert clean(b"[  OK  ] Started x.\r\n[    2.61] systemd[1]: y\r\n") == b"[  OK  ] Started x.\r\n"
+
+    def run(console, alive=True, **opts):
+        """login_and_run on a console that a process prints in place of QEMU, then waits for input
+        (alive) or exits; "passed" or the error."""
+        a = argparse.Namespace(chat=[], chat_then_login=False, autologin=True, timeout=5, boots=1, command=[])
+        vars(a).update(opts)
+        sh = 'printf %s "$1"' + ("; exec cat >/dev/null" if alive else "")
+        proc = subprocess.Popen(["sh", "-c", sh, "sh", console], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                bufsize=0)
+        try:
+            login_and_run(Console(proc, open(os.devnull, "wb"), kernels=max(a.boots, 1)), a, "", [], [])
+            return "passed"
+        except RuntimeError as e:
+            return str(e)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    # Expected kernel starts pass, one more fails: a reboot before the login prompt, after the
+    # --boots N expected ones, or after a chat that should not reboot (or a second one after it).
+    boot = "[    0.000000] Linux version 6.16.9+deb14-amd64 (debian-kernel@lists.debian.org)\r\n"
+    shell = "localhost login: root (automatic login)\r\n\r\nroot@localhost:~# "
+    ask = "Type RESET to reset: "
+    reset = {"chat": [ask + "=>RESET"], "chat_then_login": True}
+    assert run(boot + shell) == "passed"
+    assert run(boot + boot + shell).startswith("unexpected reboot: kernel start 2 on the console, 1 expected")
+    assert run(boot * 4 + shell, boots=4) == "passed"
+    assert run(boot * 5 + shell, boots=4).startswith("unexpected reboot: kernel start 5")
+    assert run(boot + ask + boot + shell, **reset) == "passed"
+    assert run(boot + ask + shell, **reset) == "passed"
+    assert run(boot + ask + boot + boot + shell, **reset).startswith("unexpected reboot: kernel start 3")
+    assert run(boot + ask + boot + shell, chat=[ask + "=>no"]).startswith("unexpected reboot: kernel start 2")
+    # A login prompt that QEMU printed just before it exited: a clear error, not a BrokenPipeError.
+    assert run(boot + shell, alive=False, command=["true"]).startswith("QEMU exited with code 0")
     print("vm-boot.py: self-test passed")
 
 
@@ -295,8 +353,8 @@ def main():
 
     ok, rows, outputs = True, [], []
     with open(a.log, "wb") as log:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode())
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode(), max(a.boots, 1))
         try:
             if a.refused:
                 rows.append(("Boot refused", refused(con, a.refused, a.timeout)))
