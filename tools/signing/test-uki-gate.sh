@@ -11,7 +11,13 @@
 #     policy;
 #   - refused, even when signed with the trusted key: an add-on in place of the UKI, the UKI with
 #     another command line, a second UKI, an add-on next to the UKI, the UKI without its PCR policy,
-#     with a policy signature that does not verify, and with the policy moved to the recovery profile.
+#     with a policy signature that does not verify, and with the policy moved to the recovery profile;
+#   - refused, even when signed with the trusted key, wherever pefile's reading of the UKI could
+#     differ from systemd-stub's (tools/signing/pe_sections.py): a section header pefile does not
+#     read, a pefile warning, a section name with a NUL inside, a profile without a command line, a
+#     profile with two, two profiles' command lines swapped in the section table, a control character
+#     or a space in a command line, overlapping sections, a section beyond the image or empty in
+#     memory, a second Authenticode signature, and section data in the certificate table.
 # The "gate" and "other" keys are made here, live only in WORKDIR on the ephemeral runner and are
 # deleted at the end: never commit or upload them, never use a real key here.
 #   tools/signing/test-uki-gate.sh IMAGE RUN_CERT RUN_PCR_KEY WORKDIR
@@ -138,5 +144,122 @@ done
 refused "not in the main profile alone" "$t/nopolicy" "$t/gate.crt"
 refused "does not verify" "$t/badsig" "$t/gate.crt"
 refused "not in the main profile alone: .*'recovery'" "$t/recovery" "$t/gate.crt"
+
+# The UKI read as systemd-stub reads it (tools/signing/pe_sections.py, uki-check.py), each variant made
+# from the image's UKI by changing its section headers or command lines, then signed with the trusted
+# key. Section headers are 40 bytes: Name, VirtualSize (+8), VirtualAddress (+12), SizeOfRawData
+# (+16), PointerToRawData (+20).
+python3 -I - "$t/unsigned.efi" "$t" <<'PY'
+import struct
+import sys
+import pefile
+src, out = sys.argv[1:]
+data = bytes(open(src, "rb").read())
+pe = pefile.PE(data=data, fast_load=True)
+table = sorted(pe.sections, key=lambda s: s.get_file_offset())
+names = [s.Name.rstrip(b"\0") for s in table]
+at = [s.get_file_offset() for s in table]
+p0, p1, p2 = [i for i, n in enumerate(names) if n == b".profile"]
+cmd = names.index(b".cmdline")
+assert names[p1 + 1] == names[p2 + 1] == b".cmdline" and p2 + 2 == len(names) and cmd < p0, names
+def write(name, p):
+    open(f"{out}/{name}.efi", "wb").write(p)
+def field(p, i, offset, value):
+    struct.pack_into("<I", p, at[i] + offset, value)
+def prefix(i, byte):
+    """Section i's command line with BYTE in front of it (one byte more in VirtualSize)."""
+    s, p = table[i], bytearray(data)
+    assert s.Misc_VirtualSize < s.SizeOfRawData
+    p[s.PointerToRawData:s.PointerToRawData + s.Misc_VirtualSize + 1] = byte + data[s.PointerToRawData:s.PointerToRawData + s.Misc_VirtualSize]
+    field(p, i, 8, s.Misc_VirtualSize + 1)
+    return p
+# Two more section headers: one of zeros, where pefile stops with only a warning, then a copy of
+# profile 0's .profile, which the stub reads on to: a fourth profile, without a command line.
+p = bytearray(data)
+end = at[-1] + 40
+assert p[end:end + 80] == bytes(80)
+p[end + 40:end + 80] = data[at[p0]:at[p0] + 40]
+struct.pack_into("<H", p, pe.FILE_HEADER.get_file_offset() + 2, len(names) + 2)
+write("count", p)
+# The recovery command line one byte into its file alignment: pefile warns (and reads it elsewhere).
+p = bytearray(data)
+field(p, p1 + 1, 20, table[p1 + 1].PointerToRawData + 1)
+write("warning", p)
+# .sdmagic renamed ".linux\0s": the stub compares names up to the first NUL, so it is a .linux, the
+# first one in the table.
+p = bytearray(data)
+p[at[names.index(b".sdmagic")]:at[names.index(b".sdmagic")] + 8] = b".linux\0s"
+write("nulname", p)
+# The base command line moved into profile 0 and a fourth profile without a command line (.sdmagic
+# renamed .profile, moved last): the stub boots that profile with the boot loader's command line.
+order = [i for i in range(len(names)) if i not in (cmd, names.index(b".sdmagic"))]
+order.insert(order.index(p0) + 1, cmd)
+order.append(names.index(b".sdmagic"))
+p = bytearray(data)
+p[at[0]:at[-1] + 40] = b"".join(data[at[i]:at[i] + 40] for i in order)
+p[at[-1]:at[-1] + 8] = b".profile"
+write("nocmdline", p)
+# The reset profile's .profile renamed: the recovery profile has two command lines.
+p = bytearray(data)
+p[at[p2]:at[p2] + 8] = b".profilX"
+write("twocmdlines", p)
+# The recovery and reset command lines swapped in the section table (their addresses keep their order).
+p = bytearray(data)
+p[at[p1 + 1]:at[p1 + 1] + 40], p[at[p2 + 1]:at[p2 + 1] + 40] = data[at[p2 + 1]:at[p2 + 1] + 40], data[at[p1 + 1]:at[p1 + 1] + 40]
+write("order", p)
+# The recovery command line with \x1c (which Python's strip() takes for whitespace), or a space, in front.
+write("ctrl", prefix(p1 + 1, b"\x1c"))
+write("space", prefix(p1 + 1, b" "))
+# The reset command line at the recovery one's address: loaded over it.
+p = bytearray(data)
+field(p, p2 + 1, 12, table[p1 + 1].VirtualAddress)
+write("overlap", p)
+# The base command line beyond SizeOfImage: the stub ignores it and takes the boot loader's.
+p = bytearray(data)
+field(p, cmd, 12, pe.OPTIONAL_HEADER.SizeOfImage)
+write("outside", p)
+# The reset profile's .profile empty in memory.
+p = bytearray(data)
+field(p, p2, 8, 0)
+write("empty", p)
+PY
+# variant NAME REASON: $t/NAME.efi signed with the trusted key as the image's UKI, refused for REASON.
+variant() {
+  copy "$1"
+  sign "$t/$1.efi" "$t/$1/$uki"
+  refused "$2" "$t/$1" "$t/gate.crt"
+  rm -rf "${t:?}/$1" "$t/$1.efi"
+}
+variant count "pefile read [0-9]+ of the [0-9]+ section headers"
+variant warning "pefile warnings: .*PointerToRawData should normally be a multiple of FileAlignment"
+variant nulname "two \\.linux sections"
+variant nocmdline "\\.cmdline and \\.profile sections not one command line per profile"
+variant twocmdlines "two \\.cmdline sections"
+variant order "profile 1: lockdown=.*systemd\\.unit=nyra-reset-settings\\.target"
+variant ctrl "command line of profile 1 has bytes outside 0x20-0x7e: \\['0x1c'\\]"
+variant space "profile 1:  lockdown="
+variant overlap "overlaps the headers or another section in memory"
+variant outside "reaches beyond the image in memory"
+variant empty "is empty in memory"
+
+# Two Authenticode signatures, the trusted key's and another (sbverify --cert accepts either), and a
+# section whose data is in the certificate table (not covered by the signature).
+sbsign --key "$t/other.key" --cert "$t/other.crt" --output "$t/twosigs.efi" "$t/unsigned.efi"
+variant twosigs "not exactly one Authenticode signature"
+copy certdata
+sign "$t/unsigned.efi" "$t/certdata/$uki"
+python3 -I - "$t/certdata/$uki" <<'PY'
+import struct
+import sys
+import pefile
+path = sys.argv[1]
+p = bytearray(open(path, "rb").read())
+pe = pefile.PE(data=bytes(p), fast_load=True)
+last = max(pe.sections, key=lambda s: s.get_file_offset())
+struct.pack_into("<I", p, last.get_file_offset() + 20, pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress)
+open(path, "wb").write(p)
+PY
+refused "data of section .* is not in the file before the certificate table" "$t/certdata" "$t/gate.crt"
+rm -rf "${t:?}/certdata"
 
 echo "The UKI release gate passed all checks."
