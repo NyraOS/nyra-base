@@ -24,6 +24,8 @@ sealed command line does not import them (docs/BOOT.md); the test disks carry an
 add-on that does (tools/vm/test-addon.sh).
 --persist writes to the disk (otherwise QEMU snapshot mode), --poweroff ends
 with a clean shutdown, so several runs can follow one system across reboots.
+The shutdown must take less than 60 s (a unit that ignores its stop signal is
+killed only after systemd's 90 s stop timeout) and unmount every file system.
 --power-cut-at REGEX kills QEMU (a power cut) as soon as REGEX shows up on the
 console, during the boot or during a command; the commands before it must pass.
 --chat 'EXPECT=>SEND' (repeatable) replaces the login: wait for the regular
@@ -216,6 +218,16 @@ def login(con, a, password, start):
         raise RuntimeError("no root shell after logging in on the console")
 
 
+def poweroff_problem(console, seconds):
+    """What was wrong with a clean shutdown, from its console output and duration; None if nothing."""
+    if seconds > 60:
+        return f"power-off took {seconds:.0f} s: a unit waited for its stop timeout (90 s)"
+    m = re.search(rb"Failed unmounting [^\r\n]*", clean(console))
+    if m:
+        return f"the shutdown failed to unmount a file system: {m.group().decode(errors='replace')}"
+    return None
+
+
 def login_and_run(con, a, password, rows, outputs):
     """Log in as root (after the --boots-th kernel start) and run the commands."""
     start = 0
@@ -305,6 +317,14 @@ def self_test():
     assert run(boot + shell, result(0, version), result(1), command=["cat /proc/version", "true"]) == "passed"
     # A login prompt that QEMU printed just before it exited: a clear error, not a BrokenPipeError.
     assert run(boot + shell, alive=False, command=["true"]).startswith("QEMU exited with code 0")
+
+    # A shutdown that left a file system mounted, or waited for a stop timeout.
+    failed = (b"[\x1b[0;1;31mFAILED\x1b[0m] Failed unmounting \x1b[0;1;39mvar.mount\x1b[0m - /var.\r\r\n"
+              b"[  OK  ] Reached target \x1b[0;1;39mumount.target\x1b[0m - Unmount All Filesystems.\r\r\n")
+    assert poweroff_problem(failed, 3) == ("the shutdown failed to unmount a file system: "
+                                           "Failed unmounting var.mount - /var.")
+    assert poweroff_problem(b"[  OK  ] Unmounted var.mount - /var.\r\r\n", 3) is None
+    assert poweroff_problem(b"", 92).startswith("power-off took 92 s")
     print("vm-boot.py: self-test passed")
 
 
@@ -392,12 +412,18 @@ def main():
                         raise RuntimeError(f"no {a.power_cut_at!r} on the console: no power cut")
                     rows.append(("Power cut", f"QEMU killed at {a.power_cut_at!r}, {con.cut:.1f} s after start"))
                 elif ok and a.poweroff:
+                    start, t = len(con.buf), time.monotonic()
                     con.type("systemctl poweroff\r")
                     try:
                         proc.wait(timeout=180)
                     except subprocess.TimeoutExpired:
                         raise RuntimeError("no power-off within 180 s") from None
-                    rows.append(("Power-off", f"clean, QEMU exited with code {proc.returncode}"))
+                    took = time.monotonic() - t
+                    con.reader.join(5)
+                    problem = poweroff_problem(con.buf[start:], took)
+                    if problem:
+                        raise RuntimeError(problem)
+                    rows.append(("Power-off", f"clean, in {took:.1f} s, QEMU exited with code {proc.returncode}"))
         except RuntimeError as e:
             if con.cut is not None and a.power_cut_at:
                 ok = all(rc == 0 for _, rc, _ in outputs)
