@@ -356,6 +356,12 @@ Each line is something that broke or surprised us once.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
+- `vm-boot.py`'s `wait_for` used to stop as soon as QEMU had exited, before it read the last lines:
+  a guest that printed the awaited line and powered off at once looked like it never printed it.
+  It now looks once more after the console reader has finished.
+- The sealed command line has `rd.emergency=reboot`: a boot that ends in the initrd's emergency mode
+  starts again after its diagnostics. A check that expects such a boot and no new kernel start
+  needs `rd.emergency=halt` in its test add-on (`tools/vm/boot-repeat.sh`).
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.
