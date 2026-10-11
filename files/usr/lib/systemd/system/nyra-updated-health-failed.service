@@ -10,7 +10,7 @@ DefaultDependencies=no
 Type=oneshot
 ExecStart=/usr/libexec/nyra-updated health-failed
 # It only reads the boot state (systemctl, systemd-bless-boot, EFI variables) and asks for a reboot.
-# systemd-bless-boot status must find the ESP (the /boot automount) and the entry on it: no
+# systemd-bless-boot status must find the ESP (read-only at /boot) and the entry on it: no
 # ProtectSystem=, no empty CapabilityBoundingSet= and no RestrictSUIDSGID= (openat2) here.
 NoNewPrivileges=yes
 ProtectHome=tmpfs

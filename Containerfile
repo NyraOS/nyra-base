@@ -70,10 +70,15 @@ RUN mkdir -p /etc/containers/registries.d && \
 # Boot (docs/BOOT.md), on the ESP, where bootc does neither: at every boot the boot files (shim,
 # systemd-boot, MokManager; named and fallback copies), loader.conf (no command line editor) and the
 # "Nyra OS" firmware entry first in BootOrder; three boot tries for every newly staged version.
-# The ESP is mounted dirsync and synced after bootc-finalize-staged (drop-ins, docs/BOOT.md).
+# The ESP is read-only at /boot, mounted dirsync at every boot instead of on access, and writable
+# only through esp-writable; it is synced after bootc-finalize-staged (drop-ins, docs/BOOT.md).
 RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/systemd/system/multi-user.target.wants && \
     ln -s ../nyra-boot-repair.service ../nyra-boot-counter.service . && \
     test -f nyra-boot-repair.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync && \
+    test -x /usr/lib/nyra/boot/esp-writable && test -f ../boot.mount.d/10-nyra.conf && \
+    test -f ../boot.automount.d/10-nyra.conf && test -f ../local-fs.target.d/10-nyra.conf && \
+    test -f ../systemd-bless-boot.service && test -f ../systemd-bless-boot.service.d/20-esp.conf && \
+    test -f ../systemd-boot-random-seed.service && test -f ../systemd-boot-random-seed.service.d/10-nyra.conf && \
     test -f ../bootc-finalize-staged.service && test -f ../bootc-finalize-staged.service.d/10-nyra.conf
 
 # Units that Debian packages enable but that have no purpose in the base (docs/DEFAULTS.md, the
@@ -111,7 +116,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
-      systemd-bless-boot.service apparmor.service chronyd-restricted.service && \
+      systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service && \
     /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of

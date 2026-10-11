@@ -1,0 +1,36 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: esp-writable COMMAND [ARG...] runs COMMAND with the ESP writable at /boot, in a mount
+# namespace of its own (docs/BOOT.md). Everywhere else the ESP is read-only at /boot, so nothing that
+# walks the file system as root (rm -rf /, a stray script) can change the boot files.
+#   - /boot mounted (boot.mount, read-only): remounted read-write in this namespace only. That makes
+#     the file system writable, as bootc does for its own writes, while /boot stays read-only for
+#     every other process: read-only is also a flag of each mount, and theirs keep it.
+#   - /boot not mounted (boot.mount failed): the partition systemd-boot started from
+#     (LoaderDevicePartUUID) is mounted here, with boot.mount's options.
+# Used by esp-sync and by the drop-ins of systemd-bless-boot and systemd-boot-random-seed.
+set -eu
+
+[ "$#" -gt 0 ] || { echo "usage: esp-writable COMMAND [ARG...]" >&2; exit 2; }
+if [ "${NYRA_ESP_WRITABLE:-}" != 1 ]; then
+	NYRA_ESP_WRITABLE=1 exec unshare --mount --propagation private -- "$0" "$@"
+fi
+
+if findmnt -n -t vfat /boot > /dev/null; then
+	mount -o remount,rw /boot
+else
+	uuid="$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f |
+		tr -d '\000' | tr 'A-F' 'a-f')"
+	# 36 characters that form one UUID-shaped line: nothing else (no "/", no newline) reaches the path.
+	if [ "${#uuid}" != 36 ] || ! printf '%s\n' "$uuid" | grep -Eqx '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'; then
+		echo "esp-writable: LoaderDevicePartUUID is not a partition UUID" >&2
+		exit 1
+	fi
+	mount -t vfat -o fmask=0177,dmask=0077,nodev,nosuid,noexec,nosymfollow,dirsync \
+		"/dev/disk/by-partuuid/$uuid" /boot
+fi
+
+rc=0
+"$@" || rc=$?
+sync
+exit "$rc"
