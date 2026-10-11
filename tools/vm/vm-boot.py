@@ -83,7 +83,8 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
-KERNEL_START = re.compile(rb"Linux version \d")
+# The kernel's own line, after its timestamp: not `cat /proc/version` or a typed command.
+KERNEL_START = re.compile(rb"\] Linux version \d")
 
 
 def clean(buf):
@@ -254,13 +255,15 @@ def self_test():
     assert not re.search(target, clean(b"Created symlink /etc/systemd/system/multi-user.target.wants/x.service\r\n"))
     assert clean(b"[  OK  ] Started x.\r\n[    2.61] systemd[1]: y\r\n") == b"[  OK  ] Started x.\r\n"
 
-    def run(console, alive=True, **opts):
-        """login_and_run on a console that a process prints in place of QEMU, then waits for input
-        (alive) or exits; "passed" or the error."""
+    def run(*console, alive=True, **opts):
+        """login_and_run on a console that a process prints in place of QEMU: the first part at once,
+        each next one after a line is typed (ended by Enter, \\r); then it waits for input (alive)
+        or exits. "passed" or the error."""
         a = argparse.Namespace(chat=[], chat_then_login=False, autologin=True, timeout=5, boots=1, command=[])
         vars(a).update(opts)
-        sh = 'printf %s "$1"' + ("; exec cat >/dev/null" if alive else "")
-        proc = subprocess.Popen(["sh", "-c", sh, "sh", console], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        sh = ('printf %s "$1"; shift; for s; do IFS= read -r -d "$(printf "\\r")" _; printf %s "$s"; done'
+              + ("; exec cat >/dev/null" if alive else ""))
+        proc = subprocess.Popen(["bash", "-c", sh, "bash", *console], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 bufsize=0)
         try:
             login_and_run(Console(proc, open(os.devnull, "wb"), kernels=max(a.boots, 1)), a, "", [], [])
@@ -285,6 +288,21 @@ def self_test():
     assert run(boot + ask + shell, **reset) == "passed"
     assert run(boot + ask + boot + boot + shell, **reset).startswith("unexpected reboot: kernel start 3")
     assert run(boot + ask + boot + shell, chat=[ask + "=>no"]).startswith("unexpected reboot: kernel start 2")
+    # The kernel starts allowed but not used (a soft @reboot, a chat without a reboot) end at the
+    # next login prompt: a reboot during the next command fails. A full @reboot passes.
+    def result(i, out=""):
+        return f"@@START{i}@@\r\n{out}@@EXIT{i}=0@@\r\n# "
+
+    soft = {"command": ["@reboot soft", "true"]}
+    assert run(boot + shell, shell, result(1), **soft) == "passed"
+    assert run(boot + shell, shell, boot + result(1), **soft).startswith("unexpected reboot: kernel start 2")
+    assert run(boot + shell, boot + shell, result(1), **soft) == "passed"
+    assert run(boot + shell, boot + boot + shell, result(1), **soft).startswith("unexpected reboot: kernel start 3")
+    no = {"chat": [ask + "=>no"], "chat_then_login": True, "command": ["true"]}
+    assert run(boot + ask, shell, boot + result(0), **no).startswith("unexpected reboot: kernel start 2")
+    # The kernel's banner printed by a command is not a kernel start.
+    version = "Linux version 6.16.9+deb14-amd64 (debian-kernel@lists.debian.org)\r\n"
+    assert run(boot + shell, result(0, version), result(1), command=["cat /proc/version", "true"]) == "passed"
     # A login prompt that QEMU printed just before it exited: a clear error, not a BrokenPipeError.
     assert run(boot + shell, alive=False, command=["true"]).startswith("QEMU exited with code 0")
     print("vm-boot.py: self-test passed")
