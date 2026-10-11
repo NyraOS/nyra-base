@@ -75,7 +75,7 @@ RUN mkdir -p /etc/containers/registries.d && \
 RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/systemd/system/multi-user.target.wants && \
     ln -s ../nyra-boot-repair.service ../nyra-boot-counter.service . && \
     test -f nyra-boot-repair.service && test -f nyra-boot-counter.service && test -x /usr/lib/nyra/boot/esp-sync && \
-    test -x /usr/lib/nyra/boot/esp-writable && test -f ../boot.mount.d/10-nyra.conf && \
+    test -x /usr/lib/nyra/boot/esp-writable && test -x /usr/bin/mawk && test -f ../boot.mount.d/10-nyra.conf && \
     test -f ../boot.automount.d/10-nyra.conf && test -f ../local-fs.target.d/10-nyra.conf && \
     test -f ../systemd-bless-boot.service && test -f ../systemd-bless-boot.service.d/20-esp.conf && \
     test -f ../systemd-boot-random-seed.service && test -f ../systemd-boot-random-seed.service.d/10-nyra.conf && \

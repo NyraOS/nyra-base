@@ -19,6 +19,9 @@ trap '' INT QUIT TSTP
 # Files this script makes are for root only (the marker, the temporary copies of group and gshadow);
 # the new /etc gets the image's modes, and the kept files below get theirs explicitly.
 umask 077
+# /usr/bin/awk is a Debian alternatives link through /etc/alternatives, which the broken (or empty)
+# /etc this reset is for may not have: mawk itself, from /usr.
+awk() { mawk "$@"; }
 
 d="$(sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline)"
 state="/sysroot/state/deploy/$d"

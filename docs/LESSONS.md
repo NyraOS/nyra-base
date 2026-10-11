@@ -135,6 +135,9 @@ Each line is something that broke or surprised us once.
   superblock reconfiguration, which accepts only the flags a remount may change. The classic
   `mount(2)` remount ignores `dirsync` instead: `LIBMOUNT_FORCE_MOUNT2=always mount
   --options-source=disable -o remount,rw,…`.
+- `/usr/bin/awk` is a Debian alternatives link (`/usr/bin/awk` -> `/etc/alternatives/awk` ->
+  `/usr/bin/mawk`): with `/etc` emptied (Titanic T12) or broken, `awk` is "not found" although `/usr`
+  is intact. What must work with a broken `/etc` (`reset-settings`, `esp-sync`) calls `mawk`.
 - efivarfs lets root delete the standard firmware variables (`Boot####`, `BootOrder`); the others
   (systemd-boot's `LoaderEntryOneShot`, for example) are created immutable and survive `rm -rf /`.
   Without `BootOrder`, OVMF boots the disk's fallback path (`\EFI\BOOT\BOOTX64.EFI`).

@@ -44,6 +44,9 @@ LABEL="Nyra OS"
 # bootctl read entries ending in ".conf" in any case, bootc only lower-case ones (docs/BOOT.md), so
 # bootc never sees them as its deployments.
 TAB="$(printf '\t')"
+# /usr/bin/awk is a Debian alternatives link through /etc/alternatives: the boot files must be kept
+# even when /etc is broken, so mawk itself, from /usr.
+awk() { mawk "$@"; }
 
 # Replaces DST with SRC only when they differ: a new file next to it, then a rename, so an
 # interrupted or failed write (ESP full) leaves the old file in place.
