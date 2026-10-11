@@ -54,6 +54,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       - id: seed
         name: Pick the seed
         run: |
@@ -132,6 +136,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
 
       # As in image.yml's install-boot job.
       - name: Enable KVM for the runner user

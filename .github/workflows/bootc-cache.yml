@@ -33,6 +33,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       - name: Read the cache key inputs (as image.yml does)
         run: |
           ref="$(sed -n 's/^  BOOTC_REF: //p' .github/workflows/image.yml)"
