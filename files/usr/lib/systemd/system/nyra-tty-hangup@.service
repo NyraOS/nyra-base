@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Hangs up /dev/%I when the login prompt on it is stopped (at shutdown, for example), before that
+# unit sends its kill signal. An interactive bash that gets its SIGHUP while readline sets up the
+# terminal (tcsetattr waits for the console output to drain, which takes long while the shutdown
+# messages go to the same console) records the signal and then waits for input anyway; systemd
+# killed it only after the stop timeout, 90 s later (docs/LESSONS.md). A hangup is a state, not an
+# event: once the TTY is hung up, every read returns end of file and the shell exits.
+#
+# systemd hangs up a unit's TTY (TTYVHangup=) before it runs any of the unit's commands, so the
+# no-op ExecStop= does it. This is a unit of its own because the getty units are Type=idle: their
+# commands wait up to 5 s while other jobs run, which is always the case during a shutdown.
+# Ordered after the getty units, so it is stopped before them. TERM=dumb: no terminal queries.
+[Unit]
+Description=Hang up %I when its login prompt is stopped
+After=getty@%i.service serial-getty@%i.service
+PartOf=getty@%i.service serial-getty@%i.service
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStop=-/usr/bin/true
+TTYPath=/dev/%I
+TTYVHangup=yes
+Environment=TERM=dumb

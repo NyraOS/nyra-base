@@ -62,6 +62,37 @@ Each line is something that broke or surprised us once.
   It is blocked with a `/usr` drop-in. `xfs_healer@` (from `xfsprogs`) fails on a non-XFS root and is
   blocked the same way.
 
+## Shutdown
+- **A console login could hold the shutdown for 90 s** (about one power-off in ten in CI). After
+  `systemctl poweroff` typed on the console, bash (5.3, readline 8.3) prints its next prompt while
+  systemd stops the getty unit and sends SIGTERM and SIGHUP. When the SIGHUP lands while readline
+  sets up the terminal (`tcsetattr(TCSADRAIN)` waits for the console output to drain, which takes
+  long while the shutdown messages go to the same serial console), bash only records it and then
+  waits for input in `pselect` with no signal pending; `login` waits for bash. systemd kills both at
+  the stop timeout. A lost signal cannot be sent again from a unit setting, but a hung-up TTY stays
+  hung up: every later read returns end of file. systemd hangs up a unit's TTY (`TTYVHangup=yes`)
+  before it runs any of the unit's commands, so a no-op `ExecStop=` in `nyra-tty-hangup@<tty>`
+  (wanted by `getty@` and `serial-getty@`, ordered after them, so stopped first) hangs the console
+  up before the getty's kill signal. It hits anyone who shuts down from a text console, not only the
+  tests (a shell in a terminal window gets end of file when the window closes).
+- **Every command of a `Type=idle` unit waits for the job queue**, `ExecStop=` too, for up to 5 s
+  (`IDLE_TIMEOUT_USEC`), and during a shutdown the queue is never empty. The getty units are
+  `Type=idle` (their prompt should not mix with boot messages), so the first version of the hangup,
+  an `ExecStop=` in the getty units themselves, made every power-off about 5.5 s longer.
+- **`RequiresMountsFor=` adds `Requires=` only when the mount has a unit file**; otherwise only
+  `After=`. bootc's `/var` is a bind mount set up in the initrd, with no unit file, so nothing stopped
+  `systemd-journal-flush.service` at shutdown: journald was never told to leave `/var`
+  (`journalctl --smart-relinquish-var`), kept its files there open, and every power-off printed
+  `Failed unmounting var.mount` (systemd-shutdown then killed journald and unmounted it). A drop-in adds
+  `Requires=var.mount`; `vm-boot.py --poweroff` now fails on any `Failed unmounting` and on a shutdown
+  longer than 60 s.
+- To see a shutdown from the inside: `systemd-analyze log-target kmsg` before `systemctl poweroff`
+  puts systemd's own messages (`State 'stop-sigterm' timed out`, `Killing process N (bash)`) on the
+  serial console with timestamps, and a transient unit started with `systemd-run -p
+  DefaultDependencies=no` is not stopped by the shutdown, so it can write `/proc/<pid>/status`
+  (pending, blocked, caught signals), `wchan`, `stack` and open files of the remaining processes to
+  `/dev/kmsg` while the stop job waits.
+
 ## Installing and booting
 - `bootc install to-disk --composefs-backend --bootloader systemd` works on Debian: ESP + ext4 root with
   `verity`, systemd-boot, BLS entries, initramfs from dracut with the `bootc` module.
