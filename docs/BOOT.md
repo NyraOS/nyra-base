@@ -590,6 +590,15 @@ everything that changes goes back to the image's (secure) defaults. Asking for a
 password would make it useless in exactly the case it is for, a broken `/etc/passwd` or
 `/etc/shadow`. It does undo an administrator's own settings, which is what it is for.
 
+**No first-boot questions.** With `/etc` emptied (or without a machine ID), systemd counts the boot as
+the first one: systemd-sysusers creates root again with the password `!unprovisioned`, and
+`systemd-firstboot` would ask for a root password and, without credentials, a time zone before the
+reset's question. A drop-in in `/usr` (`systemd-firstboot.service.d/10-nyra.conf`) skips
+`systemd-firstboot` when the command line has `systemd.unit=nyra-reset-settings.target`, which only
+the sealed reset profile has under Secure Boot: the first question is the reset's. Root stays locked:
+the reset brings back the image's root account (`*`), and it never copies root's lines from the old
+`/etc`.
+
 CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
 then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,
 `/etc/resolv.conf` deleted, a stray file); the reset entry answered with something else, and with
