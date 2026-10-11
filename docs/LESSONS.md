@@ -82,6 +82,15 @@ Each line is something that broke or surprised us once.
   `--new-bundle-format=false --use-signing-config=false`.
 - The bootc image has an empty `/var` (tmpfiles fills it at boot): running the image's own tools
   in a container (skopeo unpacking an oci-archive) needs `--tmpfs /var/tmp`.
+- In the initrd, `/dev/gpt-auto-root` hangs on one read of `LoaderDevicePartUUID`, made by udev's
+  probe of the whole boot disk. If it fails, systemd 262 never probes again and the initrd waits 90 s,
+  then emergency mode. Recognize it in the diagnostics: the disk without `ID_PART_GPT_AUTO_ROOT_DISK`,
+  the root partition without `ID_PART_GPT_AUTO_ROOT=1`. The image probes such a disk once more
+  (docs/BOOT.md, "Finding the root partition").
+- udev's `blkid` builtin runs once per event: a second `IMPORT{builtin}="blkid"` in the same event
+  returns the first result. Probing again needs a new event (`udevadm trigger --action=change`).
+- systemd-udevd has its own mount namespace and a system call filter without `@mount`: a test rule
+  that mounts needs a drop-in with `SystemCallFilter=`, and what it mounts only udev sees.
 
 ## Boot chain (docs/BOOT.md)
 - Debian ships the signed boot binaries as packages: `shim-signed` (signed by both the Microsoft UEFI
@@ -340,6 +349,19 @@ Each line is something that broke or surprised us once.
 - Boot tests that follow one system across reboots write to the disk (`vm-boot.py --persist`) and shut
   down cleanly (`--poweroff`), so `bootc-finalize-staged` runs. The VM reaches a registry on the runner
   as `10.0.2.2` (QEMU user networking), declared `insecure` in the guest's `/etc` on the test disk.
+- A boot that fails now and then: compare the kernel timestamps of the failed boot's serial log
+  with all the passing boots of the same run (the serial log artifact). The flaky root partition
+  showed up only that way: a one-second stall of one CPU right when the boot disk was probed, in
+  the two failed boots and in none of the 182 others.
+- The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
+  serial log file in the job's serial log artifact that has all of it.
+- `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
+- `vm-boot.py`'s `wait_for` used to stop as soon as QEMU had exited, before it read the last lines:
+  a guest that printed the awaited line and powered off at once looked like it never printed it.
+  It now looks once more after the console reader has finished.
+- The sealed command line has `rd.emergency=reboot`: a boot that ends in the initrd's emergency mode
+  starts again after its diagnostics. A check that expects such a boot and no new kernel start
+  needs `rd.emergency=halt` in its test add-on (`tools/vm/boot-repeat.sh`).
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.

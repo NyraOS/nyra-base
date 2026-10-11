@@ -101,12 +101,15 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
       systemd-bless-boot.service apparmor.service && \
     /usr/libexec/nyra-updated check-config
 
-# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, and the measurement of
-# the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md).
+# Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
+# the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
+# and the udev rule that probes the boot disk once more when its first probe could not read
+# LoaderDevicePartUUID (docs/BOOT.md, "Finding the root partition").
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
+    test -f /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules && \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\ninstall_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver"
 

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# In the initrd, systemd-udevd marks the root partition (/dev/gpt-auto-root) while it probes the boot
+# disk (blkid, 60-persistent-storage.rules): the probe reads the EFI variable LoaderDevicePartUUID
+# once, and when that read fails the disk is never marked and the boot waits for its root in vain
+# (docs/BOOT.md, "Finding the root partition"). A GPT disk that the first probe did not mark is probed
+# once more, with a change event for it and its partitions. The builtin runs only once per event,
+# hence the new event; "add" only, so there is one more try at most.
+ACTION!="add", GOTO="nyra_gpt_auto_root_end"
+SUBSYSTEM!="block", GOTO="nyra_gpt_auto_root_end"
+ENV{DEVTYPE}!="disk", GOTO="nyra_gpt_auto_root_end"
+ENV{ID_PART_TABLE_TYPE}!="gpt", GOTO="nyra_gpt_auto_root_end"
+ENV{ID_PART_GPT_AUTO_ROOT_DISK}=="1", GOTO="nyra_gpt_auto_root_end"
+TEST!="/etc/initrd-release", GOTO="nyra_gpt_auto_root_end"
+TEST!="/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", GOTO="nyra_gpt_auto_root_end"
+RUN+="/usr/bin/udevadm trigger --action=change --parent-match=$sys$devpath"
+LABEL="nyra_gpt_auto_root_end"
