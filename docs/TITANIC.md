@@ -78,8 +78,8 @@ UKI):
 
 | Boot | What | Expected |
 |---|---|---|
-| 1 | the root file system (`/var` and the composefs store share it) filled to the last block, then an update | the update fails with "No space left on device", nothing staged, the system still `running` |
-| 2 | a boot with the disk still full | `running`, the health checks pass |
+| 1 | AppArmor's cache removed, the root file system (`/var` and the composefs store share it) filled to the last block, then an update | the update fails with "No space left on device", nothing staged, the system still `running` |
+| 2 | a boot with the disk still full | `running`, the health checks pass; AppArmor loaded again without its cache (the journal says so), as many profiles as in boot 1 |
 | 3 | the root file system freed, the ESP full, an update | the update fails the same way, nothing staged; with space again it is staged |
 | 4-11 | 8 updates in a row, one per boot | each version boots; the space the system takes (`/sysroot/composefs`, `/sysroot/state/deploy`, the ESP) does not grow from the third update on, within 1 MiB (one version is 16 MiB) |
 
