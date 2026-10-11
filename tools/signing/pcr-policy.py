@@ -4,7 +4,8 @@
 
 ci/ukify.sh builds the UKI with the policy's public key (.pcrpkey) and, for the main profile only,
 the PCR 11 policy digests to sign (.pcrsig, without signatures). Step 3 of ci/build-image.sh signs
-them with the policy key and checks the result before the UKI is signed for Secure Boot.
+them with the policy key and checks the result before the UKI is signed for Secure Boot. The sections
+are read as systemd-stub reads and measures them (pe_sections.py).
 
     pcr-policy.py sign UKI PRIVATE_KEY        prints the .pcrsig JSON with the signatures added
                                               (for ukify build --join-pcrsig --pcrsig)
@@ -20,12 +21,16 @@ them with the policy key and checks the result before the UKI is signed for Secu
 import base64
 import hashlib
 import json
+import os
 import struct
 import subprocess
 import sys
 import tempfile
 
-import pefile
+sys.dont_write_bytecode = True  # nothing written into the checkout
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pefile  # noqa: E402
+from pe_sections import Refused, sections  # noqa: E402
 
 # The sections systemd-stub measures into PCR 11, in its order (.pcrsig is never measured).
 MEASURED = [".linux", ".osrel", ".cmdline", ".initrd", ".ucode", ".splash", ".dtb", ".uname", ".sbat",
@@ -35,18 +40,6 @@ UNEXPECTED = {".dtbauto", ".hwids", ".efifw"}
 # systemd-measure's default phases (systemd-pcrphase): each starts again from the UKI's measurement.
 PHASES = ["enter-initrd", "enter-initrd:leave-initrd", "enter-initrd:leave-initrd:sysinit",
           "enter-initrd:leave-initrd:sysinit:ready"]
-
-
-class Refused(Exception):
-    pass
-
-
-def sections(path):
-    """[(name, data)] in the order of the section table, which is the order systemd-stub reads them in
-    (pefile sorts its list by address); data is what the stub measures (the section's virtual size)."""
-    pe = pefile.PE(path, fast_load=True)
-    return [(s.Name.rstrip(b"\0").decode("ascii"), s.get_data(length=min(s.Misc_VirtualSize, s.SizeOfRawData)))
-            for s in sorted(pe.sections, key=lambda s: s.get_file_offset())]
 
 
 def profiles(secs):

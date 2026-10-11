@@ -52,12 +52,16 @@ unless:
 
 - `/boot` holds exactly one file, `EFI/Linux/<kernel version>.efi`, and nothing else: no second UKI,
   no add-on (`<uki>.efi.extra.d/`), since `bootc install` installs what it finds there;
-- that file is the sealed UKI (`tools/signing/uki-check.py`): exactly one `.linux` section (a kernel,
-  so not an add-on or another PE file), and `.cmdline` sections that are exactly the lines of
-  `ci/uki-cmdline.txt`, in order, one per profile, with one composefs digest in all of them;
+- that file is the sealed UKI (`tools/signing/uki-check.py`), its sections read as systemd-stub reads
+  them (see "Reading the UKI as systemd-stub does" below): exactly one `.linux` section (a kernel, so
+  not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits,
+  and exactly one in each further profile, with as many profiles as lines in `ci/uki-cmdline.txt`; and
+  each command line exactly its line, byte for byte, with one composefs digest in all of them;
 - it carries the PCR 11 policy for TPM2 unlock signed for its main profile alone, with that policy
   key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
-- it is signed with that certificate (`sbverify --cert`).
+- it is signed with that certificate (`sbverify --cert`), and carries no other signature: exactly one
+  Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
+  second one would make the UKI acceptable to whoever trusts that other key.
 
 **Neither the certificate nor the policy key is committed yet** (the Nyra keys do not exist yet), so
 the gate refuses every image: fail closed, like the placeholder signer address in the policy.
@@ -74,6 +78,29 @@ apply to every Nyra UKI) or a UKI with another command line. A change to the sea
 in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose
 digest does not match at install time, and `sign` runs only after `install-boot` installed and booted
 this image.
+
+### Reading the UKI as systemd-stub does
+
+The checks are only as good as their reading of the file, and pefile, which they use, reads a PE file
+differently from systemd-stub in places. Both `uki-check.py` and `pcr-policy.py` therefore read the
+sections through `tools/signing/pe_sections.py`, which reads them the way the stub does and refuses
+any file where the two readings could differ:
+
+- sections in the order of the section table, the order the stub reads them in and groups them into
+  profiles by (pefile's own list is sorted by address);
+- a section name ends at its first NUL, as the stub compares it (`.linux\0x` is a `.linux`);
+- a section's data is what the loader puts in memory: VirtualSize bytes;
+- refused: any pefile warning, and a section header pefile did not read (it stops at some malformed
+  headers with only a warning, while the stub reads on); a section empty in memory, overlapping the
+  headers or another section in memory, or reaching beyond SizeOfImage (the stub ignores it); section
+  data that is not in the file before the certificate table (the signature does not cover it); two
+  sections of one name in the base sections or in one profile (the stub takes the first); a
+  certificate table other than none (before signing) or one PKCS#7 entry at the end of the file.
+
+A command line is compared byte for byte, without trimming whitespace; only trailing NULs are cut,
+since the stub stops at the first NUL, and every byte must be printable ASCII (0x20 to 0x7e). Under
+Secure Boot a profile without its own `.cmdline` boots with the base one, or, with no base one, with
+whatever the boot loader passes: hence the exact layout above.
 
 ## How a machine verifies it
 
@@ -152,7 +179,14 @@ built, whose UKI is signed with that run's throwaway key:
 - refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
   `systemd.import_credentials=on` in its main command line, a second UKI next to it, an add-on in
   `<uki>.efi.extra.d/`, the UKI without its PCR policy, with a policy signature changed by one
-  character, and with the policy moved into the recovery profile.
+  character, and with the policy moved into the recovery profile;
+- refused even when signed with the trusted key, each for its own reason, for every rule of "Reading
+  the UKI as systemd-stub does", on variants of the image's UKI: a zeroed section header followed by
+  one more `.profile`, a section misaligned in the file (a pefile warning), a section named
+  `.linux\0s`, a fourth profile without a command line, a profile with two, the recovery and reset
+  command lines swapped in the section table, a `\x1c` or a space in front of a command line, two
+  command lines at the same address, the base command line beyond SizeOfImage, an empty `.profile`,
+  a second signature, and command line data inside the certificate table.
 
 ## The PCR policy key
 

@@ -255,7 +255,9 @@ upstream change is in `patches/upstream/systemd-gpt-auto-root-efivar-read.md`.
 `tools/vm/boot-repeat.sh` (image.yml, `boot-rounds`) proves it: a test-only udev rule puts a 1-byte
 file over the variable for the first probe of the boot disk, inside systemd-udevd's own mount
 namespace. With the image's rule masked the initrd waits in vain, as in the boots that failed; with
-it the system starts. Then the same boot, without the test rule, many times on six runners.
+it the system starts. Then the same boot, without the test rule, many times on six runners. Both
+boots also run in install-boot for every image, so that a systemd or dracut update that changes the
+order of the rules or leaves the rule out of the initrd fails there.
 
 ## Boot protection (`tools/vm/boot-protection.sh`)
 

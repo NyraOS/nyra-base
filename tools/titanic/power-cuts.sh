@@ -125,8 +125,9 @@ round() {
       if grep -aq SWITCH-END "$log"; then where="after the switch ($(grep -ao 'SWITCH-END=[0-9]*' "$log" | head -1))"; fi
       ;;
     finalize)
+      # The reboot is announced (@reboot): the cut can come after the next kernel has started.
       cut "$log" CUT-ARMED "$delay" --command "$reg" --command "$switch && ls /boot/loader/entries.staged" \
-        --command 'echo CUT''-ARMED; systemctl reboot; sleep 600' || return 1
+        --command "@reboot echo CUT''-ARMED; systemctl reboot" --command 'sleep 600' || return 1
       where="during the shutdown"
       if [ "$(grep -ac 'Linux version' "$log")" -ge 2 ]; then where="during the next boot"; fi
       ;;

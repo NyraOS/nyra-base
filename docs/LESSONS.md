@@ -201,6 +201,10 @@ Each line is something that broke or surprised us once.
   `renameat2` with `RENAME_EXCHANGE`). Without `-T`, mv moves A into B when B is a directory.
   util-linux's `exch` does the same, but its package (util-linux-extra) also installs `newgrp` setuid
   root: CI now fails when the image gains a setuid or setgid file not listed in `ci/setuid.txt`.
+- A check whose list is empty (`ci/capabilities.txt`) never shows that it can fail. The build job
+  runs it once more on a container of the image (`podman mount`) with one file given
+  `cap_net_raw+ep` by the host's `setcap`, and requires exactly that error. Both checks read the
+  mounted root filesystem from the host, so the same code runs on the image and on the control.
 - A service with `StandardOutput=inherit` on the console (a prompt that needs the console at once)
   writes nothing to the journal: check its effects, not its log, in tests.
 
@@ -302,6 +306,27 @@ Each line is something that broke or surprised us once.
 - A refusal test needs a control and a reason: the same gate must accept a correct image in the same
   run, and every refusal must match its expected message. Otherwise a missing tool (`sbverify` not
   installed, `pefile` missing) or a gate that refuses everything looks like a passing negative test.
+- **A check on a PE file must read it as systemd-stub does, not as pefile does** (systemd 262, from
+  the sources). pefile sorts `pe.sections` by address; the stub reads the section table in order and
+  groups profiles by it. The stub compares names up to the first NUL; `rstrip(b"\0")` keeps what
+  follows. pefile stops at an all-zero section header (or after three errors in one header, or past
+  0x800 headers) and only adds a warning; the stub reads on. The stub ignores a section that reaches
+  beyond SizeOfImage, takes the first section of a name, and reads sections from memory, where a later
+  section can overlap an earlier one. Read through one function (`tools/signing/pe_sections.py`) and
+  refuse every file where the two readings could differ, instead of modelling each difference.
+- Under Secure Boot a profile without its own `.cmdline` takes the base one, and with no base one the
+  boot loader's: pin the whole `.cmdline`/`.profile` layout, not just the command lines in order.
+  Compare command lines as bytes: Python's `str.strip()` also removes `\x1c` to `\x1f`, and
+  systemd-stub turns control characters into spaces, neither of which the committed line shows.
+- `sbverify --cert` passes when any one of the file's signatures verifies, and `sbsign` on a signed
+  file adds a second signature ("adding additional signature"): count the certificate table's
+  entries to require exactly one.
+- Variants for a PE check are cheapest made from the real UKI: change its section headers (name,
+  addresses, place in the table) or a command line in its file alignment slack, then sign. A variant
+  proves the new rule only if the old check accepted it: run the variants against the old code once.
+- `python3 -I` does not put the script's directory on `sys.path`; a script that imports a module next
+  to it adds that directory itself (and sets `sys.dont_write_bytecode`, so nothing is written into the
+  checkout).
 
 ## Testing in CI
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for
@@ -411,6 +436,16 @@ Each line is something that broke or surprised us once.
 - The sealed command line has `rd.emergency=reboot`: a boot that ends in the initrd's emergency mode
   starts again after its diagnostics. A check that expects such a boot and no new kernel start
   needs `rd.emergency=halt` in its test add-on (`tools/vm/boot-repeat.sh`).
+- With `rd.emergency=reboot`, a boot without the test console's credentials (no emergency
+  diagnostics) that fails in the initrd reboots silently, and the next boot can pass the check.
+  `vm-boot.py` therefore fails at once on a kernel start ("Linux version" on the console) that the
+  run did not announce: `--boots N` expects N, a `--chat-then-login` chat and `@reboot` one more each.
+- Output that the serial port has not sent yet is dropped when the next command of the unit resets
+  the console: the initrd's emergency diagnostics (`ExecStartPre`) lost their last lines and end
+  marker once, when `dracut-emergency` started. The diagnostics now sleep 3 s after the marker.
+- `subprocess.Popen` with the default buffering keeps typed text in a buffer: a write to a QEMU that
+  has exited fails only at `flush()`, and the buffer fails again when Python exits ("Exception
+  ignored ... BrokenPipeError"). `vm-boot.py` uses unbuffered pipes (`bufsize=0`) and reports the exit.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.

@@ -5,11 +5,13 @@
 # It refuses unless:
 #   - /boot holds exactly one file, EFI/Linux/<name>.efi, and nothing else (no second UKI, no add-on,
 #     no <uki>.efi.extra.d directory): bootc installs every PE file it finds there;
-#   - that file is the sealed UKI (tools/signing/uki-check.py: a kernel, and exactly the committed
-#     command lines of ci/uki-cmdline.txt);
+#   - that file is the sealed UKI (tools/signing/uki-check.py: read as systemd-stub reads it, a kernel,
+#     one command line per profile, exactly the committed ones of ci/uki-cmdline.txt, and at most one
+#     Authenticode signature);
 #   - it carries the PCR 11 policy for TPM2 unlock signed for its main profile only, with PCR_KEY as
 #     the policy key (tools/signing/pcr-policy.py check);
-#   - it is signed with CERT. No certificate or policy key committed yet means every image is refused.
+#   - it is signed with CERT, so with exactly one signature, CERT's. No certificate or policy key
+#     committed yet means every image is refused.
 #   tools/signing/uki-gate.sh BOOT_DIR CERT PCR_KEY
 set -euo pipefail
 
