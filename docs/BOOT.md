@@ -289,7 +289,7 @@ UKI's own `.cmdline` and the add-ons. Whoever sets SMBIOS can therefore add kern
 last occurrence wins: `systemd.import_credentials=yes` turns credential import back on (CI shows it,
 table above). That is the firmware, or a VM's host, which can already run whatever it wants below the
 system; the command line under Secure Boot is no boundary against it. What it cannot do is unlock
-the disk: the stub measures the string into PCR 12, which the TPM2 enrollment binds ("TPM2 unlock" above).
+the disk: the stub measures the string into PCR 12, which the TPM2 enrollment will bind ("TPM2 unlock" above).
 systemd-boot's own SMBIOS string (`io.systemd.boot.kernel-cmdline-extra`) only reaches the boot
 loader's command line, which the stub ignores under Secure Boot.
 

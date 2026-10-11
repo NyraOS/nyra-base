@@ -107,8 +107,8 @@ any file where the two readings could differ:
   `.rodata`, `.data`: the loader applies them in memory, after the signature check), and a relocation
   table anywhere but at the start of the `.reloc` section (where shim reads it); two sections of one
   name in the base sections or in one profile (the stub takes the first); a certificate table other
-  than none (before signing) or one PKCS#7 entry at the end of the file, with one signer and no
-  unsigned attributes (a nested signature is one).
+  than none (before signing) or one PKCS#7 entry at the end of the file, DER with one-byte tags, with
+  one signer, no unsigned attributes (a nested signature is one) and nothing after it in the entry.
 
 A command line is compared byte for byte, without trimming whitespace; only trailing NULs are cut,
 since the stub stops at the first NUL, and every byte must be printable ASCII (0x20 to 0x7e). Under
@@ -203,7 +203,9 @@ built, whose UKI is signed with that run's throwaway key:
   address, the base command line beyond SizeOfImage, an empty `.profile`, a command line without
   `IMAGE_SCN_MEM_READ`, one with `IMAGE_SCN_MEM_DISCARDABLE`, one with
   `IMAGE_SCN_CNT_UNINITIALIZED_DATA`, a base relocation moved onto the base command line, a second
-  signature, and a nested one (made with `osslsigncode -nest`; the trusted signature still verifies);
+  signature, and a nested one (made with `osslsigncode -nest`; the trusted signature still verifies),
+  also with its tag written in the high tag number form, and two bytes after the signature in its
+  certificate entry;
 - refused, signed with the trusted key and then changed (so its signature no longer holds, but the
   reading refuses it first): command line data inside the certificate table.
 

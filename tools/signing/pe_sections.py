@@ -9,8 +9,8 @@ put in memory, so sections() raises Refused for any file where that could differ
   - a section header pefile did not read, or any pefile warning (pefile stops at some malformed
     headers and only warns, while the stub reads on);
   - a certificate table that is neither empty (before signing) nor exactly one Authenticode
-    signature: one PKCS#7 entry that fills the table, at the end of the file, with one signer and no
-    unsigned attributes (where a nested signature would be);
+    signature: one PKCS#7 entry that fills the table, at the end of the file, DER with one-byte tags,
+    with one signer, no unsigned attributes (where a nested signature would be) and nothing after it;
   - a section the loader does not copy as it is: without IMAGE_SCN_MEM_READ or with
     IMAGE_SCN_MEM_DISCARDABLE (shim does not copy it; only .reloc may be discardable, shim reads it
     from the file), or with IMAGE_SCN_CNT_UNINITIALIZED_DATA (shim fills it with zeros);
@@ -45,10 +45,13 @@ def name_of(s):
 
 
 def der(data, at, end):
-    """(tag, start, end of the contents) of the DER element at AT, which must end by END."""
+    """(tag, start, end of the contents) of the DER element at AT, which must end by END. Tags are one
+    byte: the high tag number form (low five bits all set) is refused, OpenSSL would read it."""
     if at + 2 > end:
         raise Refused("the PKCS#7 signature does not parse")
     tag, n, at = data[at], data[at + 1], at + 2
+    if tag & 0x1F == 0x1F:
+        raise Refused("the PKCS#7 signature does not parse (not DER: a high tag number)")
     if n & 0x80:
         k = n & 0x7F
         if not 1 <= k <= 4:
@@ -69,8 +72,10 @@ def children(data, element):
 
 
 def one_signer(data, at, end):
-    """Refuses a PKCS#7 SignedData with other than one SignerInfo, or one with unsigned attributes."""
-    content_info = children(data, der(data, at, end))
+    """Refuses a PKCS#7 SignedData with other than one SignerInfo, or one with unsigned attributes, or
+    bytes after it in the certificate entry."""
+    whole = der(data, at, end)
+    content_info = children(data, whole)
     explicit = children(data, content_info[1]) if [tag for tag, _, _ in content_info] == [0x06, 0xA0] else []
     signed_data = children(data, explicit[0]) if [tag for tag, _, _ in explicit] == [0x30] else []
     if not signed_data or signed_data[-1][0] != 0x31:
@@ -81,6 +86,9 @@ def one_signer(data, at, end):
     if any(tag == 0xA1 for tag, _, _ in children(data, signers[0])):
         raise Refused("not exactly one Authenticode signature: unsigned attributes in the PKCS#7 signature "
                       "(a nested signature, for example)")
+    if whole[2] != end:
+        raise Refused(f"not exactly one Authenticode signature: {end - whole[2]} bytes after the PKCS#7 signature "
+                      "in its certificate entry")
 
 
 def relocations(pe, data):

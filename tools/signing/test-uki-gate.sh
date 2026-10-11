@@ -22,7 +22,8 @@
 #     character or a space in a command line, overlapping sections, a section beyond the image or
 #     empty in memory, a command line that is not readable, discardable or uninitialized data (shim
 #     does not copy it), a base relocation that changes a command line, a second Authenticode
-#     signature, and a nested one;
+#     signature, a nested one, also with its tag in the high tag number form, and bytes after the
+#     signature in its certificate entry;
 #   - refused, signed with the trusted key and then changed (so its signature no longer holds; it is
 #     refused before that check): section data in the certificate table.
 # The "gate" and "other" keys are made here, live only in WORKDIR on the ephemeral runner and are
@@ -324,7 +325,70 @@ rm "$t/nested/$uki"
 osslsigncode sign -nest -h sha256 -certs "$t/other.crt" -key "$t/other.key" -in "$t/nested.efi" -out "$t/nested/$uki" >/dev/null
 sbverify --cert "$t/gate.crt" "$t/nested/$uki"
 refused "not exactly one Authenticode signature: unsigned attributes in the PKCS#7 signature" "$t/nested" "$t/gate.crt"
-rm -rf "${t:?}/nested" "$t/nested.efi"
+# The same, with the unsigned attributes' tag [1] (A1) written in the high tag number form (BF 01),
+# which OpenSSL also reads as [1], and the lengths around it made to match.
+copy hightag
+python3 -I - "$t/nested/$uki" "$t/hightag/$uki" <<'PY'
+import struct
+import sys
+import pefile
+data = open(sys.argv[1], "rb").read()
+pe = pefile.PE(data=data, fast_load=True)
+at = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress
+pkcs7 = data[at + 8:at + struct.unpack_from("<I", data, at)[0]]
+def node(b, i):
+    """tag, start of the contents and end of the DER element at i (one-byte tags)."""
+    n, j = b[i + 1], i + 2
+    if n & 0x80:
+        n, j = int.from_bytes(b[j:j + (n & 0x7F)], "big"), j + (n & 0x7F)
+    return b[i], j, j + n
+def length(n):
+    return bytes([n]) if n < 0x80 else bytes([0x80 | (n.bit_length() + 7) // 8]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+def rewrite(b, i, path):
+    """The element at i, its descendant along path (child indexes) re-tagged BF 01."""
+    tag, start, end = node(b, i)
+    if not path:
+        assert tag == 0xA1, hex(tag)
+        return b"\xbf\x01" + length(end - start) + b[start:end]
+    kids, k = [], start
+    while k < end:
+        kids.append(k)
+        k = node(b, k)[2]
+    parts = [b[k:node(b, k)[2]] for k in kids]
+    parts[path[0]] = rewrite(b, kids[path[0]], path[1:])
+    return bytes([tag]) + length(sum(map(len, parts))) + b"".join(parts)
+# ContentInfo > [0] > SignedData > signerInfos (last) > SignerInfo > unsigned attributes (last).
+new = rewrite(pkcs7, 0, [1, 0, -1, 0, -1])
+entry = struct.pack("<IHH", 8 + len(new), 0x0200, 0x0002) + new
+entry += bytes(-len(entry) % 8)
+p = bytearray(data[:at] + entry)
+struct.pack_into("<I", p, pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].get_file_offset() + 4, len(entry))
+open(sys.argv[2], "wb").write(p)
+PY
+sbverify --cert "$t/gate.crt" "$t/hightag/$uki"
+refused "the PKCS#7 signature does not parse \\(not DER: a high tag number\\)" "$t/hightag" "$t/gate.crt"
+rm -rf "${t:?}/nested" "$t/nested.efi" "${t:?}/hightag"
+# Two bytes after the trusted key's PKCS#7 signature, inside its certificate entry (osslsigncode leaves
+# such bytes, sbsign none): the signature still verifies.
+copy trailing
+sign "$t/unsigned.efi" "$t/trailing.efi"
+python3 -I - "$t/trailing.efi" "$t/trailing/$uki" <<'PY'
+import struct
+import sys
+import pefile
+data = open(sys.argv[1], "rb").read()
+pe = pefile.PE(data=data, fast_load=True)
+at = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress
+n = struct.unpack_from("<I", data, at)[0]
+entry = struct.pack("<I", n + 2) + data[at + 4:at + n] + b"\0\0"
+entry += bytes(-len(entry) % 8)
+p = bytearray(data[:at] + entry)
+struct.pack_into("<I", p, pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].get_file_offset() + 4, len(entry))
+open(sys.argv[2], "wb").write(p)
+PY
+sbverify --cert "$t/gate.crt" "$t/trailing/$uki"
+refused "not exactly one Authenticode signature: 2 bytes after the PKCS#7 signature in its certificate entry" "$t/trailing" "$t/gate.crt"
+rm -rf "${t:?}/trailing" "$t/trailing.efi"
 copy certdata
 sign "$t/unsigned.efi" "$t/certdata/$uki"
 python3 -I - "$t/certdata/$uki" <<'PY'
