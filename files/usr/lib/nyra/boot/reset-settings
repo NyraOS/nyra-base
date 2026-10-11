@@ -8,7 +8,9 @@
 #   /etc/hostname                      its name on the network
 #   regular users (UID 1000-59999)     their lines in passwd, shadow, subuid and subgid, their own
 #                                      groups, and their membership in the image's groups (sudo:
-#                                      administrators), so /home keeps its owners and they can log in
+#                                      administrators), so /home keeps its owners and they can log in;
+#                                      a line is chosen by its name and its ID together, and a name
+#                                      found twice in one of the files is not kept at all
 # /home and /var are not touched. Kept users' lines are copied as they are: this is not a cleanup of
 # a compromised /etc. Power cuts: the new /etc is built next to the old one, then the two directories
 # are exchanged in one step (renameat2 RENAME_EXCHANGE, mv --exchange), so a boot sees either the old
@@ -86,10 +88,21 @@ has() { [ -n "$(line "$1" "$2")" ]; }
 uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
 if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then install -m 0444 "$old/machine-id" "$new/machine-id"; fi
 if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then install -m 0644 "$old/hostname" "$new/hostname"; fi
-users="$(awk -F: "NF == 7 && \$1 ~ /^[a-z_][a-z0-9_.-]*\$/ && $uid_ok { print \$1 }" "$old/passwd" 2>/dev/null || true)"
+# Names that appear more than once in passwd, shadow, group or gshadow (each file on its own) are
+# not kept: which of the lines would be the account?
+dups=" $(for f in passwd shadow group gshadow; do
+	if [ -f "$old/$f" ]; then awk -F: 'c[$1]++ == 1 { print $1 }' "$old/$f" || true; fi
+done | tr '\n' ' ')"
+# The lines of FILE with NF fields, a valid name that is not in $dups, and an ID (third field) of
+# 1000-59999; with NAME, only that name's line. A line is chosen by its name and its ID together.
+kept() {
+	awk -F: -v nf="$2" -v n="${3-}" -v dups="$dups" "NF == nf && \$1 ~ /^[a-z_][a-z0-9_.-]*\$/ &&
+		!index(dups, \" \" \$1 \" \") && $uid_ok && (n == \"\" || \$1 == n)" "$1" 2>/dev/null || true
+}
+users="$(kept "$old/passwd" 7 | awk -F: '{ print $1 }')"
 for u in $users; do
 	has "$new/passwd" "$u" && continue
-	line "$old/passwd" "$u" >> "$new/passwd"
+	kept "$old/passwd" 7 "$u" >> "$new/passwd"
 	sh="$(awk -F: -v u="$u" 'NF == 9 && $1 == u { print; exit }' "$old/shadow" 2>/dev/null || true)"
 	echo "${sh:-$u:!:1::::::}" >> "$new/shadow"
 	for f in subuid subgid; do
@@ -97,16 +110,16 @@ for u in $users; do
 	done
 done
 # The users' own groups (GID 1000-59999), then their membership in the image's groups.
-for g in $(awk -F: "NF == 4 && $uid_ok { print \$1 }" "$old/group" 2>/dev/null || true); do
+for g in $(kept "$old/group" 4 | awk -F: '{ print $1 }'); do
 	has "$new/group" "$g" && continue
-	line "$old/group" "$g" >> "$new/group"
+	kept "$old/group" 4 "$g" >> "$new/group"
 	gs="$(line "$old/gshadow" "$g")"
 	echo "${gs:-$g:!::}" >> "$new/gshadow"
 done
 for f in group gshadow; do
 	[ -f "$old/$f" ] || continue
-	awk -F: -v OFS=: -v users=" $(echo $users) " '
-		NR == FNR { if (NF == 4) old[$1] = $4; next }
+	awk -F: -v OFS=: -v users=" $(echo $users) " -v dups="$dups" '
+		NR == FNR { if (NF == 4 && !index(dups, " " $1 " ")) old[$1] = $4; next }
 		NF == 4 && ($1 in old) {
 			n = split(old[$1], m, ",")
 			for (i = 1; i <= n; i++)
