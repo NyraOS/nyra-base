@@ -93,9 +93,11 @@ aa="$(grep -ao 'nyra-profiles: [0-9]*' "$logs/serial-full-disk-1.log" | tail -1 
 vm 2 "boots with the disk full, AppArmor loaded without its cache" \
   --command "$fill && full /var && echo 'the disk is still full' && $(booted "$old") && $running && $(aa_fallback "$aa")" || fail=1
 
+# The ESP is read-only at /boot: the test fills and frees it through esp-writable, as esp-sync writes.
+espw=/usr/lib/nyra/boot/esp-writable
 vm 3 "the ESP full: the update fails, nothing staged; the ESP freed: v1 staged" \
-  --command "$fill && rm /var/nyra-fill /var/nyra-fill-rest && fill /boot" \
-  --command "$(refused 1); r=\$?; rm -f /boot/nyra-fill /boot/nyra-fill-rest; test \$r = 0" \
+  --command "$fill && rm /var/nyra-fill /var/nyra-fill-rest && $espw bash -c '$fill && fill /boot'" \
+  --command "$(refused 1); r=\$?; $espw rm -f /boot/nyra-fill /boot/nyra-fill-rest; test \$r = 0" \
   --command "$(switch 1) && ls /boot/loader/entries.staged" || fail=1
 
 for ((v = 1; v <= updates; v++)); do

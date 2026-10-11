@@ -6,7 +6,7 @@
 # (default deny, proven with a connection from a network namespace), only declared listening
 # sockets, only declared running services, timers and sockets (the units blocked in the
 # Containerfile stay inactive), the signature policy in place and owned by root, unused
-# filesystems not autoloaded.
+# filesystems not autoloaded, the ESP read-only at /boot.
 # Each guest command must end with the status of its whole check: vm-boot.py reads only the last
 # status and the guest shell has no set -e or pipefail, so checks are joined with && and loops set
 # a flag. --self-test runs the parsing-heavy commands against stubs, without a VM (shellcheck job).
@@ -98,6 +98,10 @@ firewall_probe='ip netns add probe && ip link add v0 type veth peer name v1 netn
 # Unused filesystems are blacklisted (no autoload on mount); what people plug in still mounts.
 filesystems='modprobe --showconfig | grep -x "blacklist f2fs" && ! modprobe --showconfig | grep -xE "blacklist (vfat|exfat|ntfs3|ext4|btrfs|xfs|udf|isofs|hfsplus|squashfs|erofs|overlay)" && truncate -s 64M /tmp/fs.img && ! mount -o loop -t f2fs /tmp/fs.img /mnt && ! grep -qw f2fs /proc/filesystems && echo "f2fs: not autoloaded" && mkfs.vfat /tmp/fs.img >/dev/null && mount -o loop /tmp/fs.img /mnt && findmnt /mnt && umount /mnt'
 
+# The ESP: the only FAT mount, read-only at /boot, and a write there fails (only esp-writable makes
+# it writable, in a mount namespace of its own).
+esp='m="$(findmnt -rn -t vfat -o TARGET,OPTIONS)"; echo "$m"; e="$(touch /boot/nyra-probe 2>&1)"; echo "touch: $e"; test "$(echo "$m" | wc -l)" = 1 && test "${m%% *}" = /boot && echo "${m#* }" | tr , "\n" | grep -qx ro && test -f /boot/EFI/BOOT/BOOTX64.EFI && echo "$e" | grep -q "Read-only file system" && test ! -e /boot/nyra-probe && echo "the ESP is read-only at /boot"'
+
 python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
@@ -111,4 +115,5 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \
   --command "$filesystems" \
   --command "$time_client" \
-  --command "$time_switch"
+  --command "$time_switch" \
+  --command "$esp"
