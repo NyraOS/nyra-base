@@ -68,7 +68,9 @@ AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
 # A boot that ends in emergency mode prints what the disk looks like to udev first: the root account
 # is locked, so there is no shell to ask afterwards. The initrd gets it too (it imports the
-# credentials), where a missing /dev/gpt-auto-root ends in its emergency mode.
+# credentials), where a missing /dev/gpt-auto-root ends in its emergency mode. The unit's main
+# command resets the console, which drops what the serial port has not sent yet: the diagnostics
+# wait a moment at the end, or their last lines (and the end marker) can be lost.
 EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nExecStartPre=-/bin/sh -c '"
              "echo \"@@ emergency: diagnostics\"; "
              "for d in /dev/vd*; do echo \"== $$d\"; udevadm info -q property \"$$d\"; done; "
@@ -76,7 +78,7 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
              "v=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f; ls -l $$v; cat $$v; echo; "
              "for d in /sys/block/vd*; do echo \"== $$d probed again now\"; udevadm test-builtin blkid $$d 2>/dev/null; done; "
              "journalctl -b -o short-monotonic --no-pager -u systemd-udevd.service; "
-             "echo \"@@ end of diagnostics\"'\n")
+             "echo \"@@ end of diagnostics\"; sleep 3'\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
