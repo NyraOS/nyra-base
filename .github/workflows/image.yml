@@ -275,7 +275,8 @@ jobs:
       # The sign job's UKI release gate, on this image (its UKI signed with this run's key): accepted
       # with this run's certificate and policy key, refused as the sign job runs it (the committed Nyra
       # certificate and policy key), and refused for an add-on, another command line, a second UKI, an
-      # add-on next to it, and a PCR policy missing, not verifying or outside the main profile.
+      # add-on next to it, a PCR policy missing, not verifying or outside the main profile, and a UKI
+      # whose sections pefile could read differently from systemd-stub (tools/signing/pe_sections.py).
       - name: Test the UKI release gate (docs/SIGNING.md)
         run: |
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
