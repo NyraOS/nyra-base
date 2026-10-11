@@ -10,8 +10,9 @@
 #   - refused with a certificate that did not sign it, and with a policy key that did not sign its
 #     policy;
 #   - refused, even when signed with the trusted key: an add-on in place of the UKI, the UKI with
-#     another command line, a second UKI, an add-on next to the UKI, the UKI without its PCR policy,
-#     with a policy signature that does not verify, and with the policy moved to the recovery profile;
+#     another command line, a second UKI, an add-on next to the UKI, the UKI without its Nyra SBAT
+#     component, without its PCR policy, with a policy signature that does not verify, and with the
+#     policy moved to the recovery profile;
 #   - refused, even when signed with the trusted key, wherever pefile's reading of the UKI could
 #     differ from systemd-stub's (tools/signing/pe_sections.py): a section header pefile does not
 #     read, a pefile warning, a section name with a NUL inside, a profile without a command line, a
@@ -96,6 +97,17 @@ PY
 copy cmdline
 sign "$t/cmdline.efi" "$t/cmdline/$uki"
 refused "command line not as committed" "$t/cmdline" "$t/gate.crt"
+
+# The UKI without its Nyra SBAT component (the line renamed), signed: it could not be revoked.
+python3 -I - "$t/unsigned.efi" "$t/nosbat.efi" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert data.count(b"\nnyra,") == 1, data.count(b"\nnyra,")
+open(sys.argv[2], "wb").write(data.replace(b"\nnyra,", b"\nnyrx,"))
+PY
+copy nosbat
+sign "$t/nosbat.efi" "$t/nosbat/$uki"
+refused "one Nyra component line" "$t/nosbat" "$t/gate.crt"
 
 # A second UKI next to the image's, and an add-on next to it (both signed).
 copy second
