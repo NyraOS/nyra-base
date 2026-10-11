@@ -44,6 +44,7 @@ file.
 | `systemd-tpm2-clear.service` | asks the firmware to clear the TPM on `factory-reset.target`, which Nyra does not use |
 | `systemd-pcrextend.socket` | a Varlink API to extend PCRs; nothing in the base calls it (the phase units run the tool directly) |
 | `systemd-pcrmachine.service`, `systemd-pcrproduct.service`, `systemd-pcrnvdone.service`, `systemd-pcrfs-root.service` | measure the machine ID, the product ID and the root file system into PCR 15 and NvPCRs, which the Nyra policy does not use |
+| `systemd-pcrlogin@.service` (`allow-pcrlogin`) | measures each login into the NvPCR `login`; the image has no NvPCRs (see "TPM measurement units that stay") |
 | `tpm-udev.path` | TPM device permissions inside containers only |
 
 On an installed machine `/usr` is read-only, so an administrator turns a blocked unit back on with
@@ -97,9 +98,10 @@ units above. Only these stay, all from `/usr`:
 
 | Unit | Why | Cost |
 |---|---|---|
-| `systemd-pcrphase-initrd.service` (initramfs), `systemd-pcrphase-sysinit.service`, `systemd-pcrphase.service` | measure the boot phases (`enter-initrd`, `leave-initrd`, `sysinit`, `ready`) into PCR 11, which the signed policy covers | one-shot at boot, one TPM command each (milliseconds); nothing resident, no wake-ups |
+| `systemd-pcrphase-initrd.service` (initramfs) | measures `enter-initrd` into PCR 11 when the initrd starts (the only phase the signed policy covers) and `leave-initrd` when it ends, which ends the unlock | one-shot at boot, one TPM command at start and one at stop (milliseconds); nothing resident, no wake-ups |
+| `systemd-pcrphase-sysinit.service`, `systemd-pcrphase.service` | measure `sysinit` and `ready` into PCR 11: a second barrier, so PCR 11 leaves the signed value even if `leave-initrd` was not measured | one-shot at boot, one TPM command each; nothing resident |
 | `systemd-pcrosseparator.service` (initramfs) | a separator into PCR 7, 12 and the other firmware PCRs before the disk is unlocked, so what is measured later does not count as boot state | one-shot in the initramfs, one TPM command; nothing resident |
-| `systemd-tpm2-setup-early.service` (initramfs), `systemd-tpm2-setup.service` | the TPM's storage root key, which salts and encrypts the session that unlocks the disk | one-shot at boot; creates the key once, later boots only read it; nothing resident |
+| `systemd-tpm2-setup-early.service` (initramfs), `systemd-tpm2-setup.service` | the TPM's storage root key (SRK), which salts and encrypts the session that unlocks the disk | one-shot at boot. The early one creates the SRK once; the later one also creates the endorsement key (EK) once, when the TPM allows it. Both stay in the TPM as persistent objects, also after a reinstall; later boots only read them. No NV index (no NvPCRs, below); nothing resident |
 
 `systemd-pcrphase-factory-reset.service` and `systemd-pcrphase-storage-target-mode.service` stay
 linked too, but only `factory-reset.target` and `storage-target-mode.target` start them, and nothing in
@@ -108,13 +110,32 @@ Nyra starts those targets.
 All of them start only on a machine with a TPM that booted a measured UKI (`ConditionSecurity=measured-os`),
 and do nothing on one without (`--graceful`). No socket or service stays running.
 
-The phase and separator units have `FailureAction=reboot-force` upstream, and it stays: if a
-measurement fails, PCR 11 (or PCR 7 and 12) would keep the value of an earlier phase, so the running
-system would still satisfy a policy meant for the boot. A TPM that is present but fails every command
-therefore makes the machine restart again and again (boot counting cannot help, every version does
-the same); the way out is to turn the TPM off in the firmware, after which the units do nothing and
-the disk asks for its password or the recovery key. The VM test with a software TPM checks a clean
-boot with none of these units failed.
+**No NvPCRs.** systemd 262 defines four NvPCRs (`cryptsetup`, `hardware`, `login`, `verity`; NV
+indexes in the TPM that work like extra PCRs), and Nyra uses none. The image ships no NvPCR
+definitions (`/usr/lib/nvpcr/*.nvpcr` are removed in the Containerfile, so the initramfs has none
+either). Without them `systemd-tpm2-setup-early` allocates nothing, and `systemd-pcrnvdone.service`
+(their separator) and `systemd-pcrlogin@.service` (a measurement at every login) stay blocked. With
+the definitions, the first boot would allocate four NV indexes that stay in the TPM after a
+reinstall, for nothing that Nyra reads. Removing only the definitions is not enough: the login
+measurement then fails at every login, hence its block. Cost now: none.
+
+**`FailureAction=reboot-force`.** The phase and separator units have it upstream, and it stays. What
+each failure would do:
+- **`leave-initrd` not measured:** this is the one that matters. PCR 11 would keep the
+  `enter-initrd` value, so the running system could still get the disk's key out of the TPM. The
+  forced reboot is the barrier; `sysinit` is a second one.
+- **`enter-initrd` or the separator not measured:** PCR 11, or PCR 7 and 12, then match no enrolled
+  value, and the disk asks for its password. These units fail closed by themselves; the reboot adds
+  nothing.
+- **`sysinit` or `ready` not measured:** no effect on the unlock, since PCR 11 is already past the
+  signed value.
+
+A reboot loop is therefore possible only with a TPM that is present but fails at every boot. Boot
+counting cannot help there, since every version does the same. Such a TPM cannot unseal either, so the
+loop costs availability, not confidentiality; a TPM that fails once makes one extra reboot. The way
+out is to turn the TPM off in the firmware: the stub then measures nothing, the units do nothing, and
+the disk asks for its password or the recovery key. The VM test with a software TPM must check both: a
+clean boot with none of these units failed, and that way out.
 
 ## Firewall
 

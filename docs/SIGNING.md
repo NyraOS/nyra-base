@@ -56,9 +56,10 @@ unless:
   them (see "Reading the UKI as systemd-stub does" below): exactly one `.linux` section (a kernel, so
   not an add-on or another PE file); one `.cmdline` in the base sections, which profile 0 inherits,
   and exactly one in each further profile, with as many profiles as lines in `ci/uki-cmdline.txt`; and
-  each command line exactly its line, byte for byte, with one composefs digest in all of them;
-- it carries the PCR 11 policy for TPM2 unlock signed for its main profile alone, with that policy
-  key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
+  each command line exactly its line, byte for byte, with one composefs digest in all of them; and
+  one `.sbat` section with the Nyra component line (docs/BOOT.md, "SBAT");
+- it carries the PCR 11 policy for TPM2 unlock signed for its main profile's initrd alone, with that
+  policy key (`tools/signing/pcr-policy.py check`, docs/BOOT.md "TPM2 unlock");
 - it is signed with that certificate (`sbverify --cert`), and carries no other signature: exactly one
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
@@ -178,8 +179,8 @@ built, whose UKI is signed with that run's throwaway key:
 - refused with a certificate that did not sign it, and with a policy key that is not the UKI's;
 - refused even when signed with the trusted key: a signed add-on in place of the UKI, the UKI with
   `systemd.import_credentials=on` in its main command line, a second UKI next to it, an add-on in
-  `<uki>.efi.extra.d/`, the UKI without its PCR policy, with a policy signature changed by one
-  character, and with the policy moved into the recovery profile;
+  `<uki>.efi.extra.d/`, the UKI without its Nyra SBAT component, without its PCR policy, with a
+  policy signature changed by one character, and with the policy moved into the recovery profile;
 - refused even when signed with the trusted key, each for its own reason, for every rule of "Reading
   the UKI as systemd-stub does", on variants of the image's UKI: a zeroed section header followed by
   one more `.profile`, a section misaligned in the file (a pefile warning), a section named
@@ -188,25 +189,56 @@ built, whose UKI is signed with that run's throwaway key:
   command lines at the same address, the base command line beyond SizeOfImage, an empty `.profile`,
   a second signature, and command line data inside the certificate table.
 
+The PCR policy signing is tested on every build too (`tools/signing/test-pcr-policy.sh`), on a UKI
+that `ci/ukify.sh` builds from the image just built, with a policy key made by the test:
+
+- signed, joined and checked as in the signing step (the control), and systemd-measure, given the
+  main profile's sections, makes the same signature byte for byte;
+- `sign` refuses, and prints no signature, for a key that is not the UKI's `.pcrpkey`, a `.pcrsig`
+  that asks for a later phase, a measured section changed after ukify wrote the digest, and a UKI
+  already signed;
+- `check` refuses a later phase signed as well as `enter-initrd`, a later phase alone,
+  `enter-initrd` without the reference, the policy twice, PCRs 7 and 11, a SHA-1 bank, another
+  reference, data to sign that is not the policy and its reference, another key's fingerprint, and
+  a signature by another key.
+
 ## The PCR policy key
 
-TPM2 unlock binds to a PCR 11 policy signed with a Nyra key (docs/BOOT.md, "TPM2 unlock"). Its
-signature is part of the UKI, under the Secure Boot signature, so it is made in the same signing step.
+TPM2 unlock binds to a PCR 11 policy signed with a Nyra key (docs/BOOT.md, "TPM2 unlock"): the main
+profile's, for the `enter-initrd` phase only, with the policy reference `initrd`, so the disk unlocks
+in the initrd and nowhere later. Its signature is part of the UKI, under the Secure Boot signature, so
+it is made in the same signing step.
 
 - **In CI:** an RSA key made for the run in step 3 of `ci/build-image.sh`, deleted after signing, like
   the UKI key. Only its public half leaves the step (into the UKI as `.pcrpkey`, and for the tests).
 - **The real key** is kept like the UKI key, never in CI or on a developer machine: a working key in a
   KMS/HSM, certified by the hardware root that also stands behind the UKI key. Signing a policy is a
-  plain signature over a SHA-256 digest (`pcr-policy.py sign` runs `openssl dgst -sha256 -sign` over
-  each policy digest), which a KMS or a PKCS#11 provider can do instead. Only its public key is
-  committed, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`, next to `nyra.crt`; the
-  release gate refuses any other. Nothing is created yet.
+  plain signature over a SHA-256 digest: `pcr-policy.py sign` runs `openssl dgst -sha256 -sign` over
+  the policy digest and its reference, which a KMS or a PKCS#11 provider can do instead. **The signer
+  never signs a digest it has not computed.** Whatever holds the real key runs `pcr-policy.py sign`'s
+  check first: it computes the main profile's `enter-initrd` policy from the UKI and refuses a UKI
+  that asks for anything else (docs/BOOT.md). A signature over PCR 11 is a credential that unlocks
+  every boot with that PCR value until the key is rotated, so a wrong one cannot be taken back.
+- **Only the public half is committed**, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`
+  next to `nyra.crt`; the release gate refuses any other. Nothing is created yet.
 - **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md): a new key per release line,
-  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key, so a
-  rotation has two steps: an update first enrolls the new key next to the old one (while the disk is
-  unlocked), then, once machines have it, images are signed with the new key only and the old
-  enrollment is removed. Versions signed with the old key still boot, but ask for the disk password
-  or the recovery key. The schedule and the enrollment on update come with the encryption work.
+  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key. Since the
+  policy unlocks only in the initrd, the running system cannot open the TPM enrollment to add a key.
+  So **the next key is enrolled in advance**, next to the current one, so that a rotation never needs
+  the recovery key:
+  1. **At install,** the disk gets two TPM2 enrollments: the current key and the next one (two
+     key pairs exist at any time; the next one has signed nothing yet). The image carries the public
+     halves of both.
+  2. **A rotation** is a release signed with the next key only. It unlocks through the enrollment
+     that was waiting for it. While that release's initrd still runs (the `enter-initrd` phase, the
+     disk open), it enrolls the key after it as the new "next" and removes the enrollment of the old
+     key.
+  3. Versions signed with the old key still boot, but ask for the disk password or the recovery
+     key.
+
+  A machine that never booted a release of one rotation before the next rotation came has neither
+  enrollment and asks for the recovery key once. The schedule, and the enrollment in the initrd,
+  come with the encryption work.
 
 ## Trust roots
 
