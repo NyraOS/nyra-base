@@ -204,6 +204,31 @@ Each line is something that broke or surprised us once.
   addresses, so its connection meets the input chain like traffic from the LAN.
 - Under Secure Boot with a UKI, the kernel command line is the one inside the UKI: arguments from
   `/usr/lib/bootc/kargs.d` reach Type #1 entries (bootc install, updates), not a hand-built UKI.
+- mkosi runs `systemctl preset-all` after installing the packages, and Debian ships no
+  `disable *` preset: every unit with an `[Install]` section ends up enabled, conflicting ones too
+  (`chrony.service` and `chronyd-restricted.service`, plus `chrony-wait.service`). On a first boot
+  systemd applies the presets again (enable only), so a unit that must stay off needs a `disable`
+  line in a preset in `/usr/lib/systemd/system-preset/`; a `systemctl disable` alone in the build
+  could be undone.
+  A `ConditionPathExists=` block does not help against `Conflicts=`: the start jobs of both units
+  are already in the same transaction.
+- `systemd-timedated` takes the time service from `ntp-units.d/*.list` (the first loadable unit of
+  the lists in name order), not from what is enabled: with only chrony's `50-chrony.list` it reported
+  NTP off next to a running `chronyd-restricted`, and `timedatectl set-ntp true` enabled
+  `chrony.service`, whose alias then made `chronyd-restricted` stop. A list of our own that sorts
+  first (`10-nyra.list`) points it at the unit we ship.
+- Debian's AppArmor profile for `chronyd` allows reading `/etc/chrony/**` and, through
+  `abstractions/base`, everything under `/usr/lib`: a configuration in `/usr/lib/nyra/chrony/` is
+  readable, one in `/usr/share/` would not be.
+- `chronyd -U` (Debian's `chronyd-restricted.service`) runs without root, so it cannot bind the
+  command port (UDP 323): set `cmdport 0`; `chronyc` as root uses the Unix socket.
+  `chrony-wait.service` asks over `127.0.0.1` and therefore cannot work with it.
+- NTS-KE checks the certificate dates with the local clock: with the clock in 2035 both
+  `time.cloudflare.com` and `nts.netnod.se` were refused as expired, so NTS alone can never correct
+  a clock that is far off. `nocerttimecheck 1` lifts only the date check, until the first clock
+  update. Debian's configuration does not set it.
+- chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
+  resolves to another address starts with a new key exchange.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
@@ -374,7 +399,7 @@ Each line is something that broke or surprised us once.
 - systemd sets the clock to its build time at boot when the hardware clock is before it **or more
   than about 15 years after it**: an RTC in 1970 and one in 2099 both start at the image's build
   time (the snapshot date), still before the real time. A clock that is wrong but within that range
-  (2035) stays wrong. The image has no time synchronization, so nothing corrects it.
+  (2035) stays wrong until chronyd corrects it (docs/DEFAULTS.md, "Time").
 - curl reports a wrong clock as `SSL certificate OpenSSL verify result: certificate is not yet valid
   or the system clock is incorrect (9)` or `... certificate has expired (10)`, which is what
   `nyra-updated` passes on.
@@ -398,6 +423,13 @@ Each line is something that broke or surprised us once.
   cache exists depends on a race at the first boot: `apparmor.service` runs next to
   `systemd-tmpfiles-setup.service`, and without `/var/cache` yet the parser loads without writing a
   cache. So one T6 run passed and the next had AppArmor failing on the full disk.
+- With chronyd in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
+  2035) were corrected within seconds of reaching the network, so a check that needs the clock
+  wrong must keep chronyd from its servers (the T9 hostile boot points their names at the runner).
+- Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
+  answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
+  replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)
+  and stayed on it for minutes: a source it replaces can land on an address of the other family.
 - `vm-boot.py` shuts down cleanly only when every command passed: after a failed command QEMU is
   killed, so a version staged in that boot is never finalized. Stage in a boot of its own.
 - `rm -rf --no-preserve-root /` takes under 2 s in the VM and reaches more than `/etc` and `/var`:

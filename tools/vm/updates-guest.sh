@@ -86,3 +86,25 @@ untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoof
 	update-ca-certificates >/dev/null 2>&1
 	return $rc
 }
+
+synced() { # synced NOT_BEFORE: chronyd set the clock through NTS; it reads between NOT_BEFORE (the
+	# runner's time when this boot started) and 10 minutes later
+	if ! chronyc waitsync 90 0.1 0 2; then
+		chronyc -n sources
+		chronyc -N authdata
+		journalctl -b -u chronyd-restricted -o short-monotonic --no-pager | tail -50
+		return 1
+	fi
+	chronyc -n sources
+	chronyc -N authdata
+	now="$(date +%s)"
+	date -u
+	[ "$now" -ge "$1" ] && [ "$now" -lt $(($1 + 600)) ]
+}
+
+not_synced() { # chronyd tried for 30 s and did not set the clock
+	! chronyc waitsync 15 0 0 2 || return 1
+	chronyc -n sources
+	chronyc -N authdata
+	journalctl -b -u chronyd-restricted -o short-monotonic --no-pager | tail -20
+}

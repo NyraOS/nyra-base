@@ -14,6 +14,7 @@ it is something the user switches on, not off), and how CI proves it.
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
+| Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
 signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
@@ -84,7 +85,7 @@ and stop run `flush ruleset`, which removes `inet nyra` while `nyra-firewall.ser
 only orders the two at boot.)
 
 Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
-(update checks, docs/UPDATES.md).
+(update checks, docs/UPDATES.md), `chronyd-restricted.service` (the clock, see "Time").
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.
@@ -120,7 +121,9 @@ boot with none of these units failed.
 The ruleset (`inet nyra`, input hook only) lets in loopback, replies to connections this machine
 started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements, MLD queries) and
 DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
-Outbound and forwarded traffic is not filtered.
+Outbound and forwarded traffic is not filtered: chronyd's NTS key exchange (TCP 4460) and NTP
+queries (UDP 123) go out, and only their replies come back in (`established`). Nothing listens for
+time: chronyd opens no server port and no command port (see "Time").
 
 - nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
   per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
@@ -133,6 +136,57 @@ Outbound and forwarded traffic is not filtered.
   it. Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule.
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
+
+## Time
+
+The clock decides whether a TLS certificate is valid, so an attacker who can move it can make an
+expired or revoked certificate look valid, or a good one look expired. Plain NTP is not authenticated:
+anyone on the path can answer. The base therefore takes its time only through NTS (Network Time
+Security, RFC 8915): a TLS key exchange with the server (NTS-KE, TCP 4460), then NTP packets
+(UDP 123) authenticated with the keys from that exchange.
+
+| What | How |
+|---|---|
+| Client | `chrony`, which conflicts with `systemd-timesyncd` (not installed) |
+| Sources | `time.cloudflare.com` and `nts.netnod.se`, both with `nts`; no pool, no servers from DHCP, no unauthenticated fallback. `minsources 2`: the clock is updated only when both operators are reachable and agree, so one compromised or impersonated server cannot move it |
+| Configuration | `/usr/lib/nyra/chrony/chrony.conf`, passed with `-f` by a drop-in of `chronyd-restricted.service`. Debian's `/etc/chrony/chrony.conf` (an unauthenticated pool and servers from DHCP) stays as the package left it and is not read |
+| Service | Debian's `chronyd-restricted.service`: started as `_chrony`, with `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state, runtime and log directories only, Debian's seccomp filter (`-F 1`, set in the drop-in) and AppArmor profile (enforce mode) (`systemd-analyze security`: exposure 1.9, "OK"). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it and disables `chrony.service` (chronyd started as root; the two units conflict) and `chrony-wait.service` (it asks chronyd over UDP 323, which the restricted client does not open, and would delay the boot). systemd applies presets again at the first boot, so the preset is what keeps them that way. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`, ahead of chrony's own list: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it, never `chrony.service` with Debian's configuration |
+| State | NTS cookies (`ntsdumpdir`) and the drift file in `/var/lib/chrony` |
+| Control | `chronyc` as root, over the Unix socket in `/run/chrony`; `cmdport 0`, so no UDP 323 |
+| Bootstrap | `nocerttimecheck 1`, see below |
+
+**A wrong clock at boot.** NTS-KE checks the server certificate like any TLS client, including its
+validity dates. A machine whose clock is outside them (a hardware clock in 2035, or reset by an empty
+battery to a date before the certificate was issued) could therefore never correct it: the
+certificates of `time.cloudflare.com` and `nts.netnod.se` were checked with the clock in 2035 and
+both were refused as expired. Such a machine would also fail every update (docs/UPDATES.md, T9).
+`nocerttimecheck 1` turns off only the check of the dates, and only until the first clock update
+after chronyd starts; the chain to a trusted CA and the server name are still checked. Debian's
+configuration does not set it; chrony's documentation describes this case as its purpose.
+
+What it costs: until that first update, an attacker on the path who holds the private key of a
+certificate for one of these names that has *expired* (and was issued by a trusted CA) can complete
+the key exchange and offer a wrong time. A stolen key of a certificate that is still valid works
+with or without this setting (chrony does not check revocation), so the expired keys are the only
+addition. With `minsources 2` the attacker needs such keys for both operators, Cloudflare and
+Netnod, at the same time. Not done: pinning the CAs of the two servers (`ntstrustedcerts`), which
+would stop time synchronization silently the day an operator changes its CA.
+
+What `minsources 2` costs: if one of the two operators cannot be reached, the clock is not updated
+at all and runs on the hardware clock until both answer again.
+
+**Local changes**, in `/etc`, kept across updates: more sources in `/etc/chrony/sources.d/*.sources`
+(they count towards `minsources`); other directives in `/etc/chrony/conf.d/*.conf`, which are read
+after ours and override them (`minsources 1`, for example). To replace the whole configuration, set
+`DAEMON_OPTS="-F 1 -f /etc/chrony/my.conf"` in `/etc/default/chrony`: the later `-f` wins.
+
+**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM, two runs: about
+1.0 MB installed (the `chrony` package, 727 KB, plus `ucf`, `sensible-utils` and two small Perl
+libraries); one resident process, started at boot because the clock has to be right before the
+first update check. Synchronized and idle: about 10.8 MB resident (most of it shared libraries,
+GnuTLS among them) and about 6.3 MB charged to its cgroup; at most 5 context switches in 60 s
+(about 0.08 per second); 82 to 87 ms of CPU time from its start, key exchanges included. It polls
+each of the two sources every 64 to 1024 s and has no listening socket.
 
 ## Filesystems
 

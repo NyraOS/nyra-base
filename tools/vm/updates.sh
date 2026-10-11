@@ -47,11 +47,13 @@
 #  27  v13: v14 staged (its initramfs is broken)
 #  28  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
 #      v14 is marked failed and refused
-#  29  v13, the hardware clock in 2099 (T9): the sheet server refused, unsigned images refused;
-#      the clock set right: v15 staged
+#  29  v13, the hardware clock in 2099 (T9): chronyd corrects it through NTS; v15 staged
 #  30  v15, the hardware clock in 1970: the same; v16 staged
-#  31  v16, the hardware clock in 2035: the same; with the clock set right, up to date
-#  32  v16, the clock right: the shipped signature policy linked again; then the secure defaults
+#  31  v16, the hardware clock in 2035: the same; up to date; chronyd's cost measured
+#  32  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
+#      request sent), the sheet server refused, unsigned images refused; the real servers back:
+#      corrected, up to date
+#  33  v16, the clock right: the shipped signature policy linked again; then the secure defaults
 #      check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -492,34 +494,88 @@ l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
 
-# A wrong clock (T9). The image has no time synchronization, so the test sets the clock right
-# itself, as a user would. The hardware clock in 2099 and in 1970: systemd sets the clock to its build
-# time at boot (a clock more than about 15 years after it counts as wrong too), still before the real
-# time; in 2035 the clock stays wrong, ahead. Each time: the system boots; the sheet server's
-# certificate is refused (not yet valid, expired) and nothing is staged; unsigned and wrongly signed
-# images are still refused (image signatures do not depend on the clock); with the clock set right
-# the next check succeeds: the wrong clock left nothing behind. Each boot comes from a file system
-# last mounted at another time.
+# A wrong clock (T9). The hardware clock in 2099 and in 1970: systemd sets the clock to its build time
+# at boot (a clock more than about 15 years after it counts as wrong too), still before the real time;
+# in 2035 systemd keeps it, years ahead, outside the validity of every certificate. Each time chronyd
+# corrects it through NTS by itself (nocerttimecheck: docs/DEFAULTS.md, "Time") and the update works,
+# without anyone setting the clock. Then, with the clock in 2035 again, a hostile network: the NTS
+# servers' names point to the runner (as a spoofed DNS answer would), where a TLS server with a
+# certificate the guest does not trust answers on the NTS-KE port and an NTP server answers every
+# request, unauthenticated, with a time in 2001. The clock stays in 2035 and chronyd sends not one NTP
+# request (no unauthenticated fallback): the server counts exactly one, a probe the test sends itself
+# to show that UDP 123 reaches it from the guest and its answer comes back; the sheet server's certificate is refused (expired) and nothing
+# is staged; unsigned and wrongly signed images are still refused (image signatures do not depend on
+# the clock). With the real servers back (once name resolution no longer answers with the runner:
+# resolved can answer from its old copy of /etc/hosts right after the edit), chronyd is restarted,
+# corrects the clock and the system is up to date.
+# Each boot comes from a file system last mounted at another time.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=time.cloudflare.com \
+  -addext subjectAltName=DNS:time.cloudflare.com,DNS:nts.netnod.se -keyout "$u/time.key" -out "$u/time.crt" 2>/dev/null
+cat >"$u/fake-time.py" <<'EOF'
+import socket, ssl, struct, sys, threading
+cert, key, log = sys.argv[1:4]
+
+def note(what):
+    with open(log, "a") as f:
+        f.write(what + "\n")
+
+def ntske():  # TCP 4460: TLS with a certificate that is not from a trusted CA
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    server = socket.create_server(("127.0.0.1", 4460))
+    while True:
+        conn, _ = server.accept()
+        note("nts-ke")
+        try:
+            ctx.wrap_socket(conn, server_side=True).close()
+        except (ssl.SSLError, OSError):
+            conn.close()
+
+threading.Thread(target=ntske, daemon=True).start()
+ntp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+ntp.bind(("127.0.0.1", 123))
+t = 3187296000  # 2001-01-01 in NTP seconds
+while True:  # UDP 123: every request answered without authentication, with the time in 2001
+    req, addr = ntp.recvfrom(2048)
+    note("ntp")
+    if len(req) >= 48:
+        ntp.sendto(struct.pack("!BBbbIII", 0x24, 1, 6, -20, 0, 0, 0x4c4f434c) +
+                   struct.pack("!II", t, 0) + req[40:48] + struct.pack("!IIII", t, 0, t, 0), addr)
+EOF
+: >"$u/fake-time.log"
+sudo python3 -I "$u/fake-time.py" "$u/time.crt" "$u/time.key" "$u/fake-time.log" &
+timeout 30 sh -c 'until ss -Htln "sport = :4460" | grep -q . && ss -Huln "sport = :123" | grep -qF 127.0.0.1:123; do sleep 1; done'
+trap 'sudo pkill -f sheet-server.py || true; sudo pkill -f fake-time.py || true; sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
 tls_time='SSL certificate .*certificate (has expired|is not yet valid)'
 unsigned="refused_switch updates.nyraos.com/nyra-base:v0 'A signature was required, but no signature exists' && refused_switch updates.nyraos.com/nyra-base:attacker 'cryptographic signature verification failed'"
-vm "v13, the hardware clock in 2099: certificate refused, unsigned refused; clock set right: v15 staged" --poweroff \
+vm "v13, the hardware clock in 2099: corrected through NTS; v15 staged" --poweroff \
   --rtc 2099-06-01T00:00:00 \
-  --command "$lib; expect booted $d13 && running && date -u && test \"\$(date +%s)\" -lt $(date +%s)" \
-  --command "$lib; refused s15 '$tls_time' && expect staged none" \
-  --command "$lib; $unsigned" \
-  --command "date -u -s @$(date +%s) && $lib && outcome s15 Staged && expect staged $d15"
-vm "v15, the hardware clock in 1970: certificate refused, unsigned refused; clock set right: v16 staged" --poweroff \
+  --command "$lib; expect booted $d13 && running && synced $(date +%s)" \
+  --command "$lib; outcome s15 Staged && expect staged $d15"
+vm "v15, the hardware clock in 1970: corrected through NTS; v16 staged" --poweroff \
   --rtc 1970-01-01T00:00:00 \
-  --command "$lib; expect booted $d15 && running && blessed && date -u && test \"\$(date +%s)\" -lt $(date +%s)" \
-  --command "$lib; refused s16 '$tls_time' && expect staged none" \
-  --command "$lib; $unsigned" \
-  --command "date -u -s @$(date +%s) && $lib && outcome s16 Staged && expect staged $d16"
-vm "v16, the hardware clock in 2035: certificate refused, unsigned refused; clock set right: up to date" --poweroff \
+  --command "$lib; expect booted $d15 && running && blessed && synced $(date +%s)" \
+  --command "$lib; outcome s16 Staged && expect staged $d16"
+vm "v16, the hardware clock in 2035: corrected through NTS; up to date" --poweroff \
   --rtc 2035-06-01T00:00:00 \
-  --command "$lib; expect booted $d16 && running && blessed && date -u && test \"\$(date +%Y)\" = 2035" \
+  --command "$lib; expect booted $d16 && running && blessed && synced $(date +%s)" \
+  --command "$lib; outcome s16 UpToDate && expect staged none" \
+  --command 'p="$(systemctl show -P MainPID chronyd-restricted.service)" && ps -o rss=,vsz= -p "$p" && systemctl show -P MemoryCurrent chronyd-restricted.service && c() { awk "/ctxt_switches/ {s += \$2} END {print s}" "/proc/$p/status"; } && a="$(c)" && sleep 60 && echo "chronyd: $(( $(c) - a )) context switches in 60 s, CPU time $(systemctl show -P CPUUsageNSec chronyd-restricted.service) ns since start"' \
+  --command 'echo "10.0.2.2 time.cloudflare.com nts.netnod.se" >> /etc/hosts'
+vm "v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong, certificate refused, unsigned refused; the real servers back: corrected, up to date" --poweroff \
+  --rtc 2035-06-01T00:00:00 \
+  --command "$lib; expect booted $d16 && running && not_synced && date -u && test \"\$(date +%Y)\" = 2035" \
+  --command "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(bytes([0x23]) + bytes(47), (\"10.0.2.2\", 123)); print(\"NTP probe: answer of\", len(s.recv(512)), \"bytes\")'" \
   --command "$lib; refused s16 '$tls_time' && expect staged none" \
   --command "$lib; $unsigned" \
-  --command "date -u -s @$(date +%s) && $lib && outcome s16 UpToDate && expect staged none"
+  --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se && ! getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " && systemctl restart chronyd-restricted.service' \
+  --command "$lib; synced $(date +%s) && outcome s16 UpToDate && expect staged none"
+ke="$(grep -c '^nts-ke$' "$u/fake-time.log" || true)" ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
+echo "spoofed time servers: $ke NTS-KE connections (refused by the guest), $ntp NTP requests (1 expected: the test's own probe)"
+if [ "$ke" -lt 1 ] || [ "$ntp" != 1 ]; then
+  echo "::error::chronyd must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request; the probe must reach the NTP server"
+  exit 1
+fi
 
 # The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v16, with the
 # shipped signature policy linked again.
