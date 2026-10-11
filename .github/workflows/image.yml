@@ -246,23 +246,43 @@ jobs:
 
       # Setuid and setgid files, and files with capabilities (security.capability), give a local user
       # root's (or a group's) rights: a new one must be a decision, not a side effect of a package.
-      # The ones the image has are listed in ci/setuid.txt and ci/capabilities.txt.
+      # The ones the image has are listed in ci/setuid.txt and ci/capabilities.txt. Control: the same
+      # check on a copy of the image (a container, its root filesystem mounted) with one file given
+      # cap_net_raw+ep must fail, naming only that file.
       - name: No new setuid, setgid or file-capability files (ci/setuid.txt, ci/capabilities.txt)
         run: |
-          sudo podman run --rm --entrypoint find localhost/nyra-base:ci / -xdev -type f -perm /6000 | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
+          check() { # check ROOT: the image's root filesystem, mounted
+            # An empty or unmounted directory would pass: the root filesystem must look like the image.
+            sudo test -x "$1/usr/bin/bootc" || { echo "::error::$1 is not the image's root filesystem"; return 1; }
+            sudo find "$1" -xdev -type f -perm /6000 | sed "s|^$1||" | LC_ALL=C sort > "$RUNNER_TEMP/setuid.txt"
+            sudo getcap -r "$1" | sed "s|^$1||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
+            local l new fail=0
+            for l in setuid capabilities; do
+              echo "== $l"; cat "$RUNNER_TEMP/$l.txt"
+              new="$(LC_ALL=C comm -13 "ci/$l.txt" "$RUNNER_TEMP/$l.txt")"
+              if [ -n "$new" ]; then
+                echo "::error::New files, not in ci/$l.txt: $(tr '\n' ' ' <<<"$new")"
+                fail=1
+              fi
+            done
+            return "$fail"
+          }
           m="$(sudo podman image mount localhost/nyra-base:ci)"
-          sudo getcap -r "$m" | sed "s|^$m||; s| .*||" | LC_ALL=C sort > "$RUNNER_TEMP/capabilities.txt"
+          check "$m"
           sudo podman image umount localhost/nyra-base:ci
-          fail=0
-          for l in setuid capabilities; do
-            echo "== $l"; cat "$RUNNER_TEMP/$l.txt"
-            new="$(LC_ALL=C comm -13 "ci/$l.txt" "$RUNNER_TEMP/$l.txt")"
-            if [ -n "$new" ]; then
-              echo "::error::New files, not in ci/$l.txt: $(tr '\n' ' ' <<<"$new")"
-              fail=1
-            fi
-          done
-          exit "$fail"
+          c="$(sudo podman create -q localhost/nyra-base:ci)"
+          m="$(sudo podman mount "$c")"
+          sudo cp "$m/usr/bin/true" "$m/usr/bin/nyra-cap-test"
+          sudo setcap cap_net_raw+ep "$m/usr/bin/nyra-cap-test"
+          if out="$(check "$m")"; then r=0; else r=$?; fi
+          sudo podman rm -f "$c" >/dev/null
+          echo "Control, the image with /usr/bin/nyra-cap-test given cap_net_raw+ep (exit $r):"
+          sed 's/^::error::/expected error: /' <<<"$out"
+          if [ "$r" = 0 ] || [ "$(grep -c '^::error::' <<<"$out")" != 1 ] ||
+             ! grep -qxF '::error::New files, not in ci/capabilities.txt: /usr/bin/nyra-cap-test ' <<<"$out"; then
+            echo "::error::The check did not catch exactly the file given cap_net_raw+ep."
+            exit 1
+          fi
 
       - name: Test the signature policy (docs/SIGNING.md)
         run: |
