@@ -15,8 +15,9 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
   builds with the caches; a manual run on `main` builds without caches, like a release, but is never signed, and it never
   delays or replaces a release build of `image.yml` (its own concurrency group).
 - Then the `power-cuts` job installs the same image again and cuts the power at random moments of an
-  update (below); in parallel the `stress` job installs it too, fills its disk and updates it under
-  extreme load (below). The `results` job writes `titanic-results.json`.
+  update (below); in parallel the `stress` job installs it too, fills its disk, updates it under
+  extreme load and lets a hostile root loose on it (below). The `results` job writes
+  `titanic-results.json`.
 
 ## The tests
 
@@ -33,7 +34,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: boots, refused certificate, unsigned images refused, updates work once the clock is right) | partial: the image has no time synchronization, the test sets the clock right itself |
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
-| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | none (a read-only `/usr` is checked under T1) | not implemented |
+| T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | partial: apt and dpkg do not tell the user what to use instead |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
@@ -94,6 +95,30 @@ anything, bootc too) and 256 MiB written and flushed again and again; the load i
 average 3 or more, less than 300 MiB available). Then an update with `bootc switch`: it must either
 stage exactly the test version or fail with nothing staged. The next boot must run the old or the new
 version; the update then completes without load, and the new version boots and runs.
+
+## A hostile root
+
+[`tools/titanic/hostile-root.sh`](../tools/titanic/hostile-root.sh) follows one installed system with
+Secure Boot on (the UKI certificate of the run as a MOK, as in the boot tests of docs/BOOT.md). Each
+protection has a control in the same run, so that the test fails if the protection is missing, not
+only if the action fails for another reason:
+
+| Boot | What root does | Expected | Control |
+|---|---|---|---|
+| 1 | `apt install`, `apt-get install` | both fail (apt is not in the image) | |
+| 1 | `dpkg -i` of a package with a file in `/usr/bin` | fails with "Read-only file system", the file is not there | the same package installs with `dpkg --root=` into a writable directory |
+| 1 | | `/usr` has the same checksum after apt and dpkg as before | |
+| 1 | `insmod` of an in-tree module (`dummy`) with its signature cut off | refused, "Operation not permitted" (kernel lockdown) | the same module with its signature loads from the same place |
+| 1 | `echo none > /sys/kernel/security/lockdown` | refused, still `integrity` | raising it to `confidentiality` works |
+| 2 | `rm -rf --no-preserve-root /`, then a power cut | `/usr` has the same checksum as before | the markers the test put in `/etc` and `/var` are gone |
+| 3 | the "Nyra OS Reset settings" entry, picked before `rm` | `/etc` is the image's again, the system restarts into the normal boot and runs; `/usr` unchanged, Secure Boot and the lockdown on, the "Nyra OS" firmware entry back | |
+
+The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
+content of every file. The ESP as `rm` left it is listed in the step summary. With `/etc` gone,
+`systemd-firstboot` asks for a root password before the reset question (systemd-sysusers creates root
+again without one); the test skips it with Enter, as the question allows. Not covered: a friendly
+message from apt and dpkg that says what to use instead (there is none yet), and what `rm` takes with
+`/var`, including `/home`: the files of the users are gone, which no reset can bring back.
 
 ## Results
 
