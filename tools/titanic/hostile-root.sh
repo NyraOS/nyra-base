@@ -24,7 +24,8 @@
 #      the reset's. RESET; the system restarts by itself into the normal boot: running, /usr the same
 #      as before rm, /etc the image's (root, locked, and the signature policy link), Secure Boot and
 #      the lockdown on, the "Nyra OS" firmware entry back. The console of both boots shows no
-#      first-boot question.
+#      first-boot question, and apparmor.service finished in the reset boot (the image's profiles
+#      from /usr).
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). Every boot runs even if one before it failed; the step fails if any did.
@@ -182,6 +183,13 @@ vm --poweroff --log "$logs/serial-hostile-root-3.log" --chat "$answer=>RESET" \
 # skipped unit is at most "Initial Setup skipped, ...".
 if grep -aE 'Initial Setup\.|Please enter the new' "$logs/serial-hostile-root-3.log"; then
   echo "hostile root 3: systemd-firstboot ran or asked a question"
+  fail=1
+fi
+# AppArmor in the reset boot, with /etc empty: the profiles of the image from /usr. Up to the reset
+# question, the console must show apparmor.service finished and never failed.
+reset_boot="$(sed -n '1,/Type RESET to reset/p' "$logs/serial-hostile-root-3.log")"
+if ! grep -aq 'Finished.*apparmor\.service' <<<"$reset_boot" || grep -a 'Failed to start.*apparmor\.service' <<<"$reset_boot"; then
+  echo "hostile root 3: AppArmor did not start in the reset boot"
   fail=1
 fi
 

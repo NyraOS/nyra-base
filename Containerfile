@@ -116,8 +116,10 @@ RUN rm /usr/lib/nvpcr/*.nvpcr && rmdir /usr/lib/nvpcr && \
       > /usr/lib/systemd/system/systemd-pcrlogin@.service.d/10-nyra.conf
 
 # Secure defaults (docs/DEFAULTS.md): AppArmor profiles and the inbound firewall at every boot,
-# enabled from /usr; systemd-networkd does not start without the firewall.
-RUN mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
+# enabled from /usr; systemd-networkd does not start without the firewall. A copy of the profiles in
+# /usr loads when /etc/apparmor.d is gone (apparmor.service drop-in).
+RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
+    mkdir -p /usr/lib/systemd/system/sysinit.target.wants /usr/lib/systemd/system/systemd-networkd.service.d && \
     cd /usr/lib/systemd/system/sysinit.target.wants && ln -sf ../apparmor.service ../nyra-firewall.service . && \
     test -f apparmor.service && test -f nyra-firewall.service && test -x /usr/sbin/nft && \
     printf '# Nyra: no network without the inbound firewall\n[Unit]\nRequires=nyra-firewall.service\nAfter=nyra-firewall.service\n' \
@@ -171,4 +173,6 @@ RUN rm -rf /kernel
 FROM ${SEALED}
 COPY --from=uki . /boot/EFI/Linux/
 LABEL containers.bootc=1
-RUN bootc container lint --fatal-warnings
+# The copy of the AppArmor profiles in /usr (apparmor.service drop-in) is the image's /etc/apparmor.d,
+# file for file and link for link, also when a step after the copy changed one of them.
+RUN diff -r --no-dereference /etc/apparmor.d /usr/lib/nyra/apparmor.d && bootc container lint --fatal-warnings

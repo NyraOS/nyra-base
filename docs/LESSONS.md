@@ -574,3 +574,12 @@ Each line is something that broke or surprised us once.
   refuses `-i` looks inside such groups too, up to an option that takes the rest as its value
   (`-iD1` installs with debug level 1; in `-Di` the `i` is the value of `-D`). A `COPY` of
   `files/usr/` over `/usr/bin/dpkg` replaces the binary: move it away in a step before the `COPY`.
+- Debian keeps the AppArmor profiles only in `/etc/apparmor.d`. With `/etc` emptied, Debian's
+  `apparmor.systemd reload` warns ("Unable to find profiles directory"), loads nothing and exits 0;
+  only our check that some profile is loaded failed `apparmor.service`, in the Reset settings boot
+  (seen in the T12 logs). `apparmor_parser --base DIR -- DIR` loads a copy from elsewhere, with its
+  includes (`tunables/`, `abstractions/`) resolved there instead of in `/etc`.
+- The image's `login.defs` gives every new user 65536 subordinate UIDs and GIDs from 100000 up
+  (`SUB_UID_MIN`, `SUB_GID_MIN`; `/etc/subuid` and `/etc/subgid` exist, empty). Lower IDs are the
+  system's, the users' and systemd's own (dynamic users, `nobody`): what Reset settings keeps from an
+  old `/etc` must start at 100000 or above.

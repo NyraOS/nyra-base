@@ -573,9 +573,16 @@ bootc). A third profile needs no new key and keeps the command line sealed; it b
 2. **What is kept**, copied from the current `/etc` when it is valid:
    - `/etc/machine-id`: the machine's identity (the journal, the DHCP client identifier);
    - `/etc/hostname`: its name on the network;
-   - **regular users** (UID 1000–59999): their lines in `passwd`, `shadow`, `subuid` and `subgid`,
-     their own groups, and their membership in the image's groups (`sudo`: the administrators). Without
-     them the files in `/home` would have no owner and nobody could log in, or open recovery.
+   - **regular users** (UID and primary GID 1000–59999): their lines in `passwd`, `shadow`, `subuid`
+     and `subgid`, their own groups, and their membership in the image's groups (`sudo`: the
+     administrators). Without them the files in `/home` would have no owner and nobody could log in,
+     or open recovery. A line is kept only if both its name and its IDs (UID and primary GID, or
+     GID) qualify, and a name that appears twice in `passwd`, `shadow`, `group` or `gshadow` is not
+     kept at all: which line would be the account? A user's range of subordinate IDs (`subuid`,
+     `subgid`, for containers) is kept only if it is that name's only line in the file, numeric, and
+     starts at 100000 or above, as `useradd` assigns them (`SUB_UID_MIN`): lower IDs belong to the
+     system and to the users themselves, which no user's containers may map. The account itself is
+     kept either way.
 
    Everything else comes back from the image: mounts, network settings, enabled or masked services,
    time zone, firewall changes. `/home` and `/var` are not touched.
@@ -617,14 +624,16 @@ the reset brings back the image's root account (`*`), and it never copies root's
 
 CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
 then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,
-`/etc/resolv.conf` deleted, a stray file); the reset entry answered with something else, and with
+`/etc/resolv.conf` deleted, a stray file, a user and a group name each twice, first with ID 0);
+the reset entry answered with something else, and with
 Control-D, changes nothing; a power cut as the reset starts building the new `/etc`, and another as it
 switches to it, each leave `/etc` whole (all old or all new) on the next boot; a power cut right after
 the switch leaves the new `/etc` in place, a running system, and the previous `/etc` as `etc.nyra-new`
 (no marker); a power cut right after the new `/etc`'s directory is made leaves no `etc.nyra-new`
 without its marker and `etc.nyra-old` as it was; the reset itself brings the image's `/etc` back and
 reboots, and the next boot has none of the breakage, the administrator with the same password hash
-and groups, the file in `/home`, the machine ID and the host name, and the previous `/etc` as
+and groups, the file in `/home`, the machine ID and the host name, nothing of the names found twice
+(root the only UID 0), and the previous `/etc` as
 `etc.nyra-old` (`0700`).
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
