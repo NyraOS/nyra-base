@@ -177,6 +177,10 @@ Each line is something that broke or surprised us once.
   `renameat2` with `RENAME_EXCHANGE`). Without `-T`, mv moves A into B when B is a directory.
   util-linux's `exch` does the same, but its package (util-linux-extra) also installs `newgrp` setuid
   root: CI now fails when the image gains a setuid or setgid file not listed in `ci/setuid.txt`.
+- A check whose list is empty (`ci/capabilities.txt`) never shows that it can fail. The build job
+  runs it once more on a container of the image (`podman mount`) with one file given
+  `cap_net_raw+ep` by the host's `setcap`, and requires exactly that error. Both checks read the
+  mounted root filesystem from the host, so the same code runs on the image and on the control.
 - A service with `StandardOutput=inherit` on the console (a prompt that needs the console at once)
   writes nothing to the journal: check its effects, not its log, in tests.
 
