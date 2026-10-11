@@ -7,7 +7,7 @@ it is something the user switches on, not off), and how CI proves it.
 
 | Default | How | Checked in the VM |
 |---|---|---|
-| AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
+| AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
 | Kernel lockdown `integrity` | `lockdown=integrity` in `/usr/lib/bootc/kargs.d/10-nyra-lockdown.toml`; Debian's kernel also turns it on under Secure Boot | `/sys/kernel/security/lockdown` shows `[integrity]` |
 | Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |
@@ -34,6 +34,8 @@ file.
 | `dpkg-db-backup.timer`, `.service` | backs up the dpkg database, which mkosi removes from the image |
 | `podman.socket`, `podman.service` | podman's Docker-compatible API as root; nothing in the base uses it (Distrobox uses the podman command) |
 | `podman-auto-update.timer`, `.service` | pulls and restarts containers labelled for auto-update, unattended, every day |
+| `podman-restart.service` | starts root's containers whose restart policy is `always` at boot; the base has none (Distrobox and `podman run` as a user are rootless). It runs podman as root at every boot, and podman's first command after a boot rewrites root's container database even when it holds no container: with the root file system full that fails and the system is `degraded` |
+| `podman-clean-transient.service` | removes what containers left behind in podman's transient storage mode, which the base does not use; it fails on a full root file system for the same reason |
 | `netavark-dhcp-proxy.socket`, `.service` | a root daemon for DHCP on macvlan container networks, which the base does not set up |
 | `e2scrub_all.timer`, `e2scrub_all.service`, `e2scrub_reap.service` | online ext4 checks through LVM snapshots; the base has no LVM |
 | `xfs_healer_start.service` | XFS self-healing; the root is ext4 (`xfs_healer@` is blocked too) |
@@ -68,7 +70,8 @@ ConditionPathExists=
 (`systemctl edit <unit>` creates the same file.) The same goes for the other pairs:
 `podman-auto-update.timer` + `.service`, `netavark-dhcp-proxy.socket` + `.service`,
 `dpkg-db-backup.timer` + `.service`, `e2scrub_all.timer` + `e2scrub_all.service`; enable the
-socket or timer.
+socket or timer. `podman-restart.service` is on its own (Debian already enables it): once unblocked, it
+starts root's containers with `--restart=always` at every boot.
 
 Per systemd.unit(5), any `Condition…=` assigned the empty string resets the whole list, conditions
 of every kind, including any in the unit file itself (`systemctl cat <unit>` shows them). Drop-ins
@@ -81,8 +84,7 @@ and stop run `flush ruleset`, which removes `inet nyra` while `nyra-firewall.ser
 only orders the two at boot.)
 
 Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
-(update checks, docs/UPDATES.md), `podman-restart.service`
-(starts the user's rootful containers with `--restart=always` at boot), `podman-clean-transient.service`.
+(update checks, docs/UPDATES.md).
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.

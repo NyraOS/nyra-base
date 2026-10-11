@@ -67,6 +67,7 @@ RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && cd /usr/lib/syst
 # reasons are there), blocked from /usr; a layer that needs one creates /usr/lib/nyra/allow-<unit>.
 RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       podman.socket podman.service podman-auto-update.timer podman-auto-update.service \
+      podman-restart.service podman-clean-transient.service \
       netavark-dhcp-proxy.socket netavark-dhcp-proxy.service \
       e2scrub_all.timer e2scrub_all.service e2scrub_reap.service xfs_healer_start.service \
       systemd-pcrlock-file-system.service systemd-pcrlock-firmware-code.service \
@@ -97,7 +98,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
-      systemd-bless-boot.service && \
+      systemd-bless-boot.service apparmor.service && \
     /usr/libexec/nyra-updated check-config
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, and the measurement of

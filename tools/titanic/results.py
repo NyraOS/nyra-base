@@ -52,7 +52,7 @@ TESTS = {
            "limit, nothing staged, staged later."),
     "T6": ("Full disk", "partial", [FULL_DISK],
            "The root file system full: the update fails and says why, nothing staged, the system boots "
-           "and runs; the ESP full: the same; the space the system takes stays the same across updates "
+           "and runs, AppArmor loaded without its cache; the ESP full: the same; the space the system takes stays the same across updates "
            "(8 in a row). Not yet: the desktop and its message (no graphical session yet)."),
     "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT],
            "EFI variables reset, boot order changed, boot files deleted, cut or corrupted, ESP full: "

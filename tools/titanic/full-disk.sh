@@ -66,6 +66,10 @@ running='{ s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemc
 fill='full() { ! dd if=/dev/zero of="$1/nyra-probe" bs=4k count=1 conv=fsync status=none 2>/dev/null; r=$?; rm -f "$1/nyra-probe"; return $r; }; fill() { f="$(stat -f -c "%a %S" "$1")" && fallocate -l $(( ${f% *} * ${f#* } )) "$1/nyra-fill"; { dd if=/dev/zero of="$1/nyra-fill-rest" bs=4k status=none 2>/dev/null; sync; df -k "$1"; full "$1"; }; }'
 # The update fails on the full disk and says why; nothing is staged; bootc still answers.
 refused() { echo "out=\"\$($(switch "$1") 2>&1)\"; rc=\$?; echo \"\$out\" | tail -5; test \$rc != 0 && echo \"\$out\" | grep -q 'No space left on device' && $staged"; }
+# The AppArmor profiles loaded now. aa_fallback N: N profiles, loaded without the cache (its directory
+# was removed before the disk was filled, so the parser cannot set it up on the full disk).
+profiles='n="$(wc -l < /sys/kernel/security/apparmor/profiles)"; echo "nyra""-profiles: $n"; test "$n" -gt 0'
+aa_fallback() { echo "n=\"\$(wc -l < /sys/kernel/security/apparmor/profiles)\"; echo \"profiles: \$n\"; journalctl -b -u apparmor.service -o cat --no-pager | tail -5; test \"\$n\" = '$1' && journalctl -b -u apparmor.service -o cat --no-pager | grep -q 'AppArmor profiles again, without the cache'"; }
 # The space the system takes, in KiB: the composefs store and the deployments' state, and the ESP.
 space='echo "nyra""-space: $(du -sk /sysroot/composefs /sysroot/state/deploy | awk "{s += \$1} END {print s}") $(du -sk /boot/ | cut -f1)"'
 
@@ -79,14 +83,15 @@ vm() { # vm N TITLE [vm-boot.py options and --command ...]
 # The first three boots report a failure and go on, so the updates below run (and measure) anyway.
 fail=0
 vm 1 "the root file system full: the update fails, nothing staged" \
-  --command "$running" \
-  --command "$reg && $fill && fill /var" \
+  --command "$running && $profiles" \
+  --command "$reg && rm -rf /var/cache/apparmor && $fill && fill /var" \
   --command "$(refused 1)" \
   --command "$running && $(booted "$old")" || fail=1
 
 # A failed boot ends without a clean shutdown (vm-boot.py), so v1 is staged in the next one.
-vm 2 "boots with the disk full" \
-  --command "$fill && full /var && echo 'the disk is still full' && $(booted "$old") && $running" || fail=1
+aa="$(grep -ao 'nyra-profiles: [0-9]*' "$logs/serial-full-disk-1.log" | tail -1 | cut -d' ' -f2 || true)"
+vm 2 "boots with the disk full, AppArmor loaded without its cache" \
+  --command "$fill && full /var && echo 'the disk is still full' && $(booted "$old") && $running && $(aa_fallback "$aa")" || fail=1
 
 vm 3 "the ESP full: the update fails, nothing staged; the ESP freed: v1 staged" \
   --command "$fill && rm /var/nyra-fill /var/nyra-fill-rest && fill /boot" \
