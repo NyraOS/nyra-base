@@ -31,7 +31,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh` | full |
 | T8 | Configuration broken by the user | none: needs the system settings reset | not implemented |
-| T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: boots, refused certificate, unsigned images refused, updates work once the clock is right) | partial: the image has no time synchronization, the test sets the clock right itself |
+| T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | fail: `rm -rf /` empties the ESP (mounted at `/boot` on access) and deletes the firmware boot entries, so nothing boots afterwards, not even recovery; partial at best, apt and dpkg do not tell the user what to use instead |
