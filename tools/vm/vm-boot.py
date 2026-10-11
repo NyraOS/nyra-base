@@ -39,13 +39,15 @@ itself first. A command written "@reboot CMD" is typed without waiting for its
 result, then the script logs in again at the next login prompt (a soft reboot).
 
 A boot that ends in emergency mode (in the initrd too) prints what udev saw of the disk
-first (a drop-in passed as a credential), and the script fails there without waiting
-for the timeout.
+first (a drop-in passed as a credential), the size of LoaderDevicePartUUID and what a new
+probe of each disk finds now, and the script fails there without waiting for the timeout.
+A failed boot names its serial log in the output, so the job log leads to the whole console.
 
 KVM is mandatory: accel=kvm, no fallback to emulation.
 """
 import argparse
 import base64
+import os
 import re
 import secrets
 import shutil
@@ -67,7 +69,8 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
              "echo \"@@ emergency: diagnostics\"; "
              "for d in /dev/vd*; do echo \"== $$d\"; udevadm info -q property \"$$d\"; done; "
              "ls -l /dev/gpt-auto-root* /dev/disk/by-partuuid; "
-             "cat /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f; echo; "
+             "v=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f; ls -l $$v; cat $$v; echo; "
+             "for d in /sys/block/vd*; do echo \"== $$d probed again now\"; udevadm test-builtin blkid $$d 2>/dev/null; done; "
              "journalctl -b -o short-monotonic --no-pager -u systemd-udevd.service; "
              "echo \"@@ end of diagnostics\"'\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
@@ -133,7 +136,11 @@ def refused(con, pattern, timeout):
 
 def marker(con, pattern, expected, timeout):
     """multi-user.target is reached, 20 s pass, and PATTERN was printed or not, as expected."""
-    if not con.wait_for(rb"Reached target multi-user\.target", timeout, cleaned=True):
+    m = con.wait_for(rb"Reached target multi-user\.target|@@ emergency: diagnostics", timeout, cleaned=True)
+    if m and m.group() != b"Reached target multi-user.target":
+        con.wait_for(rb"@@ end of diagnostics", 300)
+        raise RuntimeError("the boot ended in emergency mode (diagnostics in the serial log)")
+    if not m:
         raise RuntimeError(f"multi-user.target not reached within {timeout} s")
     time.sleep(20)
     with con.lock:
@@ -333,6 +340,7 @@ def main():
     if not ok:
         tail = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]|\r", b"", con.buf).decode(errors="replace").splitlines()[-40:]
         print("vm-boot: last lines of the serial console:\n" + "\n".join(tail))
+        print(f"vm-boot: {a.title}: the whole serial console is in {os.path.basename(a.log)} (the job's serial log artifact)")
     print(f"vm-boot: {'passed' if ok else 'FAILED'}")
     return 0 if ok else 1
 
