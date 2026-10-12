@@ -428,8 +428,12 @@ Each line is something that broke or surprised us once.
   exceeded` (several jobs in one day: the test registry's `podman pull` in install-boot and Titanic).
   The base images the CI takes from it are pulled once per pinned digest and kept in the Actions cache
   (`ci/pinned-images.sh`). `podman save` and `podman load` keep the image ID (the config digest) but
-  not the manifest digest, so a loaded copy is not found by `name@sha256:…`: the script checks the
-  ID, tags the image `localhost/pinned/<name>`, and the tools image is built `--from` that tag.
+  not the manifest digest, so a loaded copy is not found by `name@sha256:…`: the script tags the image
+  `localhost/pinned/<name>`, and the tools image is built `--from` that tag.
+- The image ID alone does not prove a loaded copy: podman 4.9.3 (the runner's) does not check the
+  layers against the config's DiffIDs when it loads an archive (podman 5 does). The cached copy is an
+  OCI layout with uncompressed layers, and `ci/verify-oci.py` checks, before `podman load` reads that
+  same directory, that each layer's sha256 is the config's DiffID at its position.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
