@@ -44,6 +44,12 @@ Each line is something that broke or surprised us once.
   CVEs. OSV's `DEBIAN-CVE-*` records carry the CVSS vectors (v3 or v4) but cover Debian releases, not
   `sid`: querying OSV with a `sid` version matches open ranges of older releases. So the tracker says
   whether `sid` is affected and OSV says how badly.
+- **Pick a snapshot by the amd64 `Packages` index, not by the source upload.** A fixed source can be
+  on `snapshot.debian.org` hours before its amd64 build (podman 5.8.6+ds1-3: source and most
+  architectures at `20261012T023456Z`, amd64 only at `20261012T082414Z`). Check the version in the
+  snapshot's `dists/unstable/main/binary-amd64/Packages.xz` (its hash is in the signed InRelease), or
+  ask `snapshot.debian.org/mr/package/<src>/<ver>/binfiles/<bin>/<ver>?fileinfo=1` for the amd64
+  `first_seen`.
 - The mkosi container needs `python3-pefile`.
 - **apt only warns on a suite mismatch.** A correctly signed InRelease for another suite (unstable
   served where testing was asked) is accepted with `W: Conflicting distribution`. `ci/tools.Containerfile`
