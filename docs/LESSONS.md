@@ -61,6 +61,20 @@ Each line is something that broke or surprised us once.
 - **bootc's preset enables `bootc-fetch-apply-updates.timer`**, which reboots on its own after an update.
   It is blocked with a `/usr` drop-in. `xfs_healer@` (from `xfsprogs`) fails on a non-XFS root and is
   blocked the same way.
+- **A drop-in cannot remove a dependency.** `OnFailure=` (empty) in a `local-fs.target.d` drop-in leaves
+  `OnFailure=emergency.target` in place (checked with systemd 262): a dependency goes away only with
+  the unit file itself, so the image build edits `local-fs.target`. `OnFailureJobMode=fail` is no way
+  around it: emergency mode still starts, next to the boot (its conflicting stop jobs are dropped "to
+  minimize impact"), as seen when the "Reset settings" question came mixed with the emergency shell.
+- **dracut copies a unit's drop-ins only when its module lists them**, but it copies every
+  `/usr/lib/systemd/system.conf.d/*.conf`. `DefaultDeviceTimeoutSec=` there would also shorten the
+  initramfs's wait for the root disk; a prefix drop-in for device units (`dev-.device.d/`, which
+  systemd applies to every `dev-*.device`) stays in the running system. The image build checks it with
+  `lsinitrd`.
+- **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
+  with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
+  since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from
+  /etc/fstab").
 
 ## Shutdown
 - **A console login could hold the shutdown for 90 s** (about one power-off in ten in CI). After

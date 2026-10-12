@@ -143,14 +143,25 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
 # and the udev rule that probes the boot disk once more when its first probe could not read
-# LoaderDevicePartUUID (docs/BOOT.md, "Finding the root partition").
+# LoaderDevicePartUUID (docs/BOOT.md, "Finding the root partition"). The 10 s device timeout of the
+# running system (dev-.device.d) must stay out of it: the root may take longer to appear.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
     test -f /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\ninstall_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
-    kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver"
+    kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver" && \
+    lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initrd.txt && \
+    grep -q ' usr/lib/systemd/system/local-fs.target$' /tmp/initrd.txt && \
+    ! grep -F 'dev-.device.d' /tmp/initrd.txt
+
+# Mounts from /etc/fstab (docs/BOOT.md): one that fails (a disk that is not connected, a wrong line)
+# does not stop the boot in emergency mode, whose root shell is locked anyway. systemd's local-fs.target
+# starts emergency.target when it fails, and a drop-in cannot remove a dependency: the running
+# system's copy loses its OnFailure= lines. After dracut: the initramfs keeps systemd's own.
+RUN f=/usr/lib/systemd/system/local-fs.target && grep -qx 'OnFailure=emergency.target' "$f" && \
+    sed -i '/^OnFailure/d' "$f" && ! grep -q '^OnFailure' "$f"
 
 # bootc root filesystem layout: state lives in /var, /usr is read-only, composefs on.
 RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt /var && \
