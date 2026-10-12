@@ -29,6 +29,7 @@ POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
 FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
 EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
 HOSTILE_ROOT = ("stress", "Hostile root (Titanic T12)")
+BROKEN_CONFIG = ("stress", "Configuration broken by the user (Titanic T8)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
 TESTS = {
@@ -58,8 +59,13 @@ TESTS = {
     "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT],
            "EFI variables reset, boot order changed, boot files deleted, cut or corrupted, ESP full: "
            "boots through the fallback path and repairs itself."),
-    "T8": ("Configuration broken by the user", None, [],
-           "Needs the system settings reset, which does not exist yet."),
+    "T8": ("Configuration broken by the user", "full", [BROKEN_CONFIG],
+           "With Secure Boot on: /etc/fstab (a line that is not a mount, a disk that is not "
+           "connected), /etc/passwd (the system accounts deleted), the network settings and "
+           "/etc/systemd/system (emptied, services masked), each broken on its own: the system boots to "
+           "a login prompt; all of it at once, then Reset settings: the broken files are the image's, "
+           "the file in /home is the same, the user logs in with their password, the network and the "
+           "basic services work."),
     "T9": ("Wrong clock", "full", [UPDATES],
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
@@ -108,15 +114,20 @@ def evaluate(jobs, run_url):
 def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
-                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT}]
+                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T9", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass"], r
+    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T12", "T13", "T15")] == \
+        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
     r = evaluate(failed, "u")
     assert r["T2"]["result"] == "fail" and "(failure)" in r["T2"]["note"] and r["T4"]["result"] == "pass", r
+    # T8 and T12 are steps of the same job: one failing does not fail the other.
+    failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["steps"][0]["name"] == BROKEN_CONFIG[1]
+              else j for j in every]
+    r = evaluate(failed, "u")
+    assert r["T8"]["result"] == "fail" and "(failure)" in r["T8"]["note"] and r["T12"]["result"] == "pass", r
     r = evaluate([j for j in every if j["name"] != "image / build"], "u")
     assert r["T1"]["result"] == r["T4"]["result"] == "fail" and "(not found)" in r["T4"]["note"], r
     r = evaluate([dict(j, steps=[dict(j["steps"][0], conclusion="skipped")]) for j in every], "u")

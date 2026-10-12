@@ -26,53 +26,19 @@
 #      the lockdown on, the "Nyra OS" firmware entry back. The console of both boots shows no
 #      first-boot question, and apparmor.service finished in the reset boot (the image's profiles
 #      from /usr).
-# The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
-# with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
-# end). Every boot runs even if one before it failed; the step fails if any did.
+# The setup (the disk copy, the variable store with the MOKs, the test console add-on) is
+# tools/titanic/secure-boot-system.sh. Every boot runs even if one before it failed; the step fails
+# if any did.
 #   tools/titanic/hostile-root.sh IMAGE DISK.qcow2 UKI_CERT WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
 image="$1" disk="$2" uki_cert="$3" work="$4" logs="$5" summary="$6"
-hr="$work/hostile-root"
-mnt="$hr/esp"
-loop=""
-mkdir -p "$mnt"
-trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop" || true; rm -rf "$hr"' EXIT
-
-openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI add-on test key" \
-  -keyout "$hr/local.key" -out "$hr/local.crt" 2>/dev/null
-tools/vm/test-addon.sh "$image" "$hr/console.addon.efi" systemd.import_credentials=yes "$hr/local.key" "$hr/local.crt"
-# Owner GUID: shim's. Secure Boot on, Microsoft keys, the UKI certificate and the local key as MOKs.
-virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$hr/vars.fd" \
-  --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$uki_cert" \
-  --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$hr/local.crt"
-
-qemu-img convert -O raw "$disk" "$hr/disk.raw"
-esp() { # mount the ESP of the test disk on $mnt (read-only with "ro")
-  loop="$(sudo losetup -P --show -f "$hr/disk.raw")"
-  local p e=""
-  for p in "$loop"p*; do
-    if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then e="$p"; fi
-  done
-  test -n "$e"
-  sudo mount ${1:+-o "$1"} "$e" "$mnt"
-}
-unesp() { sudo umount "$mnt" && sudo losetup -d "$loop" && loop=""; }
-esp
-sudo test -f "$mnt/loader/addons/nyra-test-console.addon.efi"
-sudo cp "$hr/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
-unesp
-
-vm() {
-  python3 -B tools/vm/vm-boot.py --secure-boot "$hr/vars.fd" --keep-vars --disk "$hr/disk.raw" --persist \
-    --autologin --timeout 240 --summary "$summary" "$@"
-}
+# shellcheck source=tools/titanic/secure-boot-system.sh
+. tools/titanic/secure-boot-system.sh "$image" "$disk" "$uki_cert" "$work/hostile-root" "$summary"
 
 # --- guest commands ---------------------------------------------------------------------------------
-# Each must end with the status of its whole check (vm-boot.py reads only the last one). The guest
-# shell is interactive: no "!" right before a word inside double quotes (history expansion).
-running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
-secure='mokutil --sb-state && cat /sys/kernel/security/lockdown && mokutil --sb-state | grep -qx "SecureBoot enabled" && grep -q "\[integrity\]" /sys/kernel/security/lockdown'
+# As in tools/titanic/secure-boot-system.sh: each ends with the status of its whole check, and no "!"
+# right before a word inside double quotes.
 # Every path under /usr with its type, mode, owner, size and link target, and the content of every
 # file: two checksums, printed as "nyra-usr: <16 hex>-<16 hex>" (the host reads it from the log).
 usrsum='u="$(find /usr -xdev -printf "%y %m %U %G %s %p %l\n" | LC_ALL=C sort | sha256sum | cut -c1-16)-$(find /usr -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)" && echo "nyra""-usr: $u"'
