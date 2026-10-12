@@ -663,14 +663,42 @@ only after the initramfs is built):
 
 The journal says what is missing: `Timed out waiting for device … - /dev/disk/by-label/…` and
 `Dependency failed for var-mnt-….mount`, or `Failed to mount …` for a line that does not work. A line
-that is not a mount at all is skipped by systemd. The root, `/usr`, `/var` and the ESP do not come
-from `/etc/fstab` and are not affected. The "Reset settings" entry ignores `/etc/fstab` entirely
-(`fstab=no`, see "Reset system settings").
+that is not a mount at all is skipped by systemd. The "Reset settings" entry ignores `/etc/fstab`
+entirely (`fstab=no`, see "Reset system settings").
+
+**What `local-fs.target` no longer guarantees.** A mount that fails at once (a wrong option or type)
+fails `local-fs.target` at once too, so a unit ordered only after `local-fs.target` can start while
+the other local mounts are still in progress. The root, `/usr`, `/etc` and `/var` are set up in the
+initramfs and are not among them. The ESP is: `boot.mount` comes after its file system check, and
+the units that write to the ESP are ordered after `boot.mount` itself:
+
+- `systemd-boot-random-seed` (the only one that runs this early, before `sysinit.target`) has
+  `After=boot.mount` in its drop-in. Without it, CI saw it start before the ESP's check, with
+  `esp-writable` mounting the ESP read-write while it was checked, and `boot.mount` then fail;
+- `nyra-boot-repair` has `RequiresMountsFor=/boot`; `systemd-bless-boot` and `nyra-updated` come after
+  `boot-complete.target`, whose health checks come after `nyra-boot-repair`; bootc writes when
+  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`.
+
+`/tmp` (a tmpfs, `tmp.mount`) is the other local mount: a unit that writes there before it is mounted
+writes to the root file system, under the tmpfs. Units with `PrivateTmp=` wait for it by themselves.
+
+If the ESP itself cannot be mounted (a damaged partition), the boot goes on as before this change:
+`boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped, and
+the health checks still pass: they judge the system version, and failing them would restart the
+machine into the previous version, which finds the same partition. What writes to the ESP later
+(blessing the boot, boot counting) goes through `esp-writable`, which mounts the partition by itself
+when `/boot` is not mounted.
+
+**A line with `x-initrd.mount`** is mounted in the initramfs, which keeps systemd's own behaviour:
+if it fails, the initramfs's emergency mode reboots (`rd.emergency=reboot`),
+so the normal entry restarts again and again. The "Reset settings" entry does not read `/etc/fstab`
+(`fstab=no`, in the initramfs too), so it still boots, and the reset removes the user's `/etc/fstab`.
 
 CI (`tools/vm/reset-settings.sh`, boots 13-15) adds to `/etc/fstab`, without `nofail`, a disk that is not
 connected, a line that is not a mount and a tmpfs with an option it does not know: the normal boot
-reaches the login prompt without emergency mode, only the tmpfs mount failed, and the journal names
-the missing disk less than 20 s after the start of the system; the reset entry asks within 30 s of
+reaches the login prompt without emergency mode, only the tmpfs mount failed, the ESP's check, then
+`boot.mount`, then the boot loader random seed came in that order and `nyra-boot-repair` ran, and the
+journal names the missing disk less than 20 s after the start of the system; the reset entry asks within 30 s of
 the start of the system, without reading `/etc/fstab`, and the reset removes the lines.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)

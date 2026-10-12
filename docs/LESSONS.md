@@ -66,6 +66,11 @@ Each line is something that broke or surprised us once.
   the unit file itself, so the image build edits `local-fs.target`. `OnFailureJobMode=fail` is no way
   around it: emergency mode still starts, next to the boot (its conflicting stop jobs are dropped "to
   minimize impact"), as seen when the "Reset settings" question came mixed with the emergency shell.
+- **Without `OnFailure=`, `local-fs.target` is no longer a barrier.** A mount that fails at once (a
+  wrong option) fails the target's job at once, and every unit ordered only `After=local-fs.target`
+  starts while the other local mounts are still pending. In CI `systemd-boot-random-seed` (through
+  `esp-writable`) mounted the ESP read-write while its fsck ran, and `boot.mount` failed once. A unit
+  that needs a mount is ordered after that mount itself (`After=boot.mount`, `RequiresMountsFor=`).
 - **dracut copies a unit's drop-ins only when its module lists them**, but it copies every
   `/usr/lib/systemd/system.conf.d/*.conf`. `DefaultDeviceTimeoutSec=` there would also shorten the
   initramfs's wait for the root disk; a prefix drop-in for device units (`dev-.device.d/`, which
