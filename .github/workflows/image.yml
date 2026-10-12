@@ -148,8 +148,11 @@ jobs:
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
           df -h / /mnt
 
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        uses: ./.github/actions/pinned-images
+
       - name: Build the CI tools image
-        run: sudo podman build -q --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
+        run: sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
 
       # The compiled, stripped bootc is cached (this is the slow part, ~15 min); it is
       # saved right after the build so a later failing step does not throw it away.
@@ -467,6 +470,9 @@ jobs:
       - name: Stop the runner's automatic image prune
         run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
 
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        uses: ./.github/actions/pinned-images
+
       - name: Enable KVM for the runner user
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -702,6 +708,9 @@ jobs:
       # As in image.yml's build job: no `podman image prune` from the runner during the job.
       - name: Stop the runner's automatic image prune
         run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        uses: ./.github/actions/pinned-images
 
       - name: Check that the shipped policy trusts this signer
         env:

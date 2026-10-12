@@ -424,6 +424,12 @@ Each line is something that broke or surprised us once.
   …: image not known` from the pull or `<id>: image not known` from `podman tag` (podman 4.9.3; running
   `podman image prune -f` during the pull reproduces both). Every job that uses podman stops the timer
   and its service first.
+- Amazon ECR Public answers anonymous pulls from busy runner IPs with `toomanyrequests: Data limit
+  exceeded` (several jobs in one day: the test registry's `podman pull` in install-boot and Titanic).
+  The base images the CI takes from it are pulled once per pinned digest and kept in the Actions cache
+  (`ci/pinned-images.sh`). `podman save` and `podman load` keep the image ID (the config digest) but
+  not the manifest digest, so a loaded copy is not found by `name@sha256:…`: the script checks the
+  ID, tags the image `localhost/pinned/<name>`, and the tools image is built `--from` that tag.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
