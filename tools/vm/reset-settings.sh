@@ -171,8 +171,9 @@ no_emergency='test "$(systemctl show -P ActiveEnterTimestampMonotonic emergency.
 missing='/dev/disk/by-label/nyra-missing'
 # The ESP's order, whatever local-fs.target did: its file system check, then boot.mount, and only then
 # the boot loader's random seed, the first unit that writes to it (through esp-writable); then
-# nyra-boot-repair ran. Monotonic times in microseconds.
-esp_order='c="$(systemctl show -P After boot.mount | tr " " "\n" | grep "^systemd-fsck@")"; f="$(systemctl show -P ActiveEnterTimestampMonotonic "$c")"; m="$(systemctl show -P ActiveEnterTimestampMonotonic boot.mount)"; r="$(systemctl show -P InactiveExitTimestampMonotonic systemd-boot-random-seed.service)"; echo "$c done at $f, boot.mount at $m, the boot loader random seed started at $r"; systemctl is-active boot.mount && test "$f" -gt 0 && test "$m" -ge "$f" && test "$r" -ge "$m" && test "$(systemctl show -P Result nyra-boot-repair.service)" = success && test "$(systemctl show -P ExecMainExitTimestampMonotonic nyra-boot-repair.service)" -gt 0 && echo "the ESP was checked and mounted before anything wrote to it; nyra-boot-repair ran"'
+# nyra-boot-repair ran. Monotonic times in microseconds. The only file system check that ran is the
+# ESP's (the missing disk's never starts).
+esp_order='c="$(systemctl list-units --plain --no-legend --state=active "systemd-fsck@*" | cut -d " " -f 1)"; f="$(systemctl show -P ActiveEnterTimestampMonotonic "$c")"; m="$(systemctl show -P ActiveEnterTimestampMonotonic boot.mount)"; r="$(systemctl show -P InactiveExitTimestampMonotonic systemd-boot-random-seed.service)"; echo "$c done at $f, boot.mount at $m, the boot loader random seed started at $r"; systemctl is-active boot.mount && test "$f" -gt 0 && test "$m" -ge "$f" && test "$r" -ge "$m" && test "$(systemctl show -P Result nyra-boot-repair.service)" = success && test "$(systemctl show -P ExecMainExitTimestampMonotonic nyra-boot-repair.service)" -gt 0 && echo "the ESP was checked and mounted before anything wrote to it; nyra-boot-repair ran"'
 
 # After the reboot: the journal's line for the missing disk (waited for: the login prompt can come
 # first), and how long after the start of the system (systemd in the root file system) it came.
