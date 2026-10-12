@@ -31,9 +31,9 @@
 #      etc.nyra-new without its marker (which the next reset would keep instead of etc.nyra-old), and
 #      etc.nyra-old as it was;
 #   13. /etc/fstab broken without nofail (a disk that is not connected, a line that is not a mount, a
-#      mount with an option tmpfs does not know), then a normal boot: no emergency mode, the journal
-#      names the missing disk, the device timeout is 10 s, multi-user.target comes less than 30 s
-#      later than in the boot before, and only the wrong mount failed;
+#      mount with an option tmpfs does not know), then a normal boot: no emergency mode, only the wrong
+#      mount failed, the device timeout is 10 s, and the journal names the missing disk less than 20 s
+#      after the start of the system;
 #   14. the reset entry with that /etc/fstab, answered with something else than RESET: fstab=no on the
 #      command line, /etc/fstab not read, no emergency mode, the question within 30 s of the start of
 #      the system;
@@ -164,23 +164,21 @@ vm --poweroff --log "$logs/serial-reset-settings-12.log" \
 
 # A broken /etc/fstab (docs/BOOT.md, "Mounts from /etc/fstab"), none of its lines with nofail: a disk
 # that is not connected, a line that is not a mount, and a mount that fails (an option tmpfs does not
-# know). Seconds from the start of the system (systemd in the root file system) to multi-user.target,
-# once the boot is over:
-boot_s='systemctl is-system-running --wait > /dev/null; echo $(( ($(systemctl show -P ActiveEnterTimestampMonotonic multi-user.target) - $(systemctl show -P UserspaceTimestampMonotonic)) / 1000000 ))'
+# know).
 break_fstab="printf 'garbage line, not a mount\\nLABEL=nyra-missing /var/mnt/missing ext4 defaults 0 2\\ntmpfs /var/mnt/invalid tmpfs nyra-no-such-option 0 0\\n' >> /etc/fstab && cat /etc/fstab"
 no_emergency='test "$(systemctl show -P ActiveEnterTimestampMonotonic emergency.target)" = 0 && echo "emergency mode was never entered"'
 missing='/dev/disk/by-label/nyra-missing'
 
+# After the reboot: the journal's line for the missing disk (waited for: the login prompt can come
+# first), and how long after the start of the system (systemd in the root file system) it came.
 vm --poweroff --log "$logs/serial-reset-settings-13.log" \
   --title "Reset settings 13: /etc/fstab with a disk that is not connected and wrong lines; the normal boot goes on" \
-  --command "$boot_s > /var/tmp/nyra-boot-s && echo \"multi-user.target \$(cat /var/tmp/nyra-boot-s) s after the start of the system, before\"" \
   --command "$break_fstab" \
   --command '@reboot systemctl reboot' \
-  --command "$no_emergency" \
-  --command "journalctl -b -o cat --no-pager | grep -E 'nyra-missing|var-mnt-' ; journalctl -b -o cat --no-pager | grep -q 'Timed out waiting for device .*$missing' && echo 'the journal names the missing disk'" \
-  --command "u=\"\$(systemd-escape -p --suffix=device $missing)\" && systemctl show -p JobRunningTimeoutUSec \"\$u\" && test \"\$(systemctl show -P JobRunningTimeoutUSec \"\$u\")\" = 10s && ! mountpoint -q /var/mnt/missing" \
-  --command "a=\"\$(cat /var/tmp/nyra-boot-s)\" b=\"\$($boot_s)\"; echo \"multi-user.target \$b s after the start of the system, \$((b - a)) s more than before\"; test \$((b - a)) -lt 30" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = degraded && test "$(systemctl --failed --plain --no-legend | cut -d " " -f 1)" = var-mnt-invalid.mount && echo "only the mount that cannot work failed"' \
+  --command "$no_emergency" \
+  --command "journalctl -b -o cat --no-pager | grep -E 'nyra-missing|var-mnt-'; for i in \$(seq 60); do l=\"\$(journalctl -b -o short-monotonic --no-pager | grep -m 1 'Timed out waiting for device .*$missing')\"; test -n \"\$l\" && break; sleep 1; done; test -n \"\$l\" && echo \"\$l\" && t=\"\$(echo \"\$l\" | sed -E 's/^\\[ *([0-9]+)\\..*/\\1/')\" && u=\$((\$(systemctl show -P UserspaceTimestampMonotonic) / 1000000)) && echo \"the journal names the missing disk, \$((t - u)) s after the start of the system\" && test \$((t - u)) -lt 20" \
+  --command "u=\"\$(systemd-escape -p --suffix=device $missing)\" && systemctl show -p JobRunningTimeoutUSec \"\$u\" && test \"\$(systemctl show -P JobRunningTimeoutUSec \"\$u\")\" = 10s && ! mountpoint -q /var/mnt/missing" \
   --command "$oneshot"
 
 vm --poweroff --log "$logs/serial-reset-settings-14.log" --chat-then-login --chat "$answer=>no" \

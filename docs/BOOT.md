@@ -669,8 +669,8 @@ from `/etc/fstab` and are not affected. The "Reset settings" entry ignores `/etc
 
 CI (`tools/vm/reset-settings.sh`, boots 13-15) adds to `/etc/fstab`, without `nofail`, a disk that is not
 connected, a line that is not a mount and a tmpfs with an option it does not know: the normal boot
-reaches the login prompt without emergency mode, less than 30 s later than the boot before, the
-journal names the missing disk and only the tmpfs mount failed; the reset entry asks within 30 s of
+reaches the login prompt without emergency mode, only the tmpfs mount failed, and the journal names
+the missing disk less than 20 s after the start of the system; the reset entry asks within 30 s of
 the start of the system, without reading `/etc/fstab`, and the reset removes the lines.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
