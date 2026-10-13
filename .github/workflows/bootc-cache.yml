@@ -60,9 +60,13 @@ jobs:
           path: ~/cache/bootc.tar
           key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
 
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        if: steps.bootc-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/pinned-images
+
       - name: Build the CI tools image
         if: steps.bootc-cache.outputs.cache-hit != 'true'
-        run: sudo podman build -q --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
+        run: sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
 
       - name: Build bootc from source
         if: steps.bootc-cache.outputs.cache-hit != 'true'

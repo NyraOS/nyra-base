@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Pinned base images
+description: >-
+  The base images of ci/pinned-images.sh in podman's storage, from the Actions cache, or pulled from
+  Amazon ECR Public by digest and cached when the cache has none. The key changes with the pinned
+  digests and image IDs. Release builds (RELEASE=true) never restore it: they pull.
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        lookup-only: ${{ env.RELEASE == 'true' }}
+        path: ~/pinned-images
+        key: pinned-images-${{ hashFiles('ci/pinned-images.sh', 'ci/tools.Containerfile') }}
+    - shell: bash
+      run: ci/pinned-images.sh ~/pinned-images
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/pinned-images
+        key: ${{ steps.cache.outputs.cache-primary-key }}

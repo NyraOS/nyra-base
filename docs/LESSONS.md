@@ -424,6 +424,22 @@ Each line is something that broke or surprised us once.
   …: image not known` from the pull or `<id>: image not known` from `podman tag` (podman 4.9.3; running
   `podman image prune -f` during the pull reproduces both). Every job that uses podman stops the timer
   and its service first.
+- Amazon ECR Public answers anonymous pulls from busy runner IPs with `toomanyrequests: Data limit
+  exceeded` (several jobs in one day: the test registry's `podman pull` in install-boot and Titanic).
+  The base images the CI takes from it are pulled once per pinned digest and kept in the Actions cache
+  (`ci/pinned-images.sh`). `podman save` and `podman load` keep the image ID (the config digest) but
+  not the manifest digest, so a loaded copy is not found by `name@sha256:…`: the script tags the image
+  `localhost/pinned/<name>`, and the tools image is built `--from` that tag.
+- The image ID alone does not prove a loaded copy: podman 4.9.3 (the runner's) does not check the
+  layers against the config's DiffIDs when it reads an image (podman 5 does). Checking the files
+  before podman reads them is not enough either: a checker in another language can parse the same
+  JSON differently from Go's decoder (which matches keys without regard to case), and `podman load`
+  picks the format itself. So `ci/pinned-images.sh` checks what podman stored: it reads the cached
+  copy with the `oci:` transport, saves the image again (`--format oci-dir --uncompressed`) and
+  `ci/verify-oci.py` checks every layer against the config's DiffIDs, refusing JSON keys that are
+  not ASCII or appear twice in any case (`podman save` passes the stored manifest through). A refused
+  cache entry fails every job that restores it: delete it (`gh cache delete pinned-images-…`, the key
+  is in the job's log) or change the key.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
