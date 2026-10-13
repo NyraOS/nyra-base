@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Active from boot, does its work when stopped at shutdown. Ordered after bootc-finalize-staged,
 # so it stops first: the counter is in place before bootc swaps loader/entries.staged in. And after
-# boot.mount, so /boot is still mounted then (esp-writable mounts the ESP itself if it is not).
+# boot.mount, so /boot is still mounted then (without it, esp-writable writes nothing).
 [Unit]
 Description=Nyra: three boot tries for a newly staged system version
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md

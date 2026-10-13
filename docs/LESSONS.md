@@ -254,6 +254,12 @@ Each line is something that broke or surprised us once.
   directory's cluster before its entry in the parent). A remount through `mount(2)` does not change
   `dirsync` (it is not among the flags a remount applies), and a second mount of the same device
   keeps the first one's superblock flags: the first mount has to be `dirsync`.
+- `fsck.fat` (dosfstools 4.2) exits 1 for any damage it finds, even when it cannot read the boot
+  sector at all ("Logical sector size is zero"), and 6 only when it cannot open the device.
+  `systemd-fsck` takes 1 as "errors corrected": a damaged ESP usually passes its check, and it is the
+  mount that fails. A unit that needs the ESP checked waits for `boot.mount`, not for its fsck.
+- `findmnt -t vfat` (util-linux 2.41) exits 0 when nothing matches, as long as no mount point is
+  given: test its output (`test -z "$(findmnt -n -t vfat)"`), or name the target (`findmnt -t vfat /boot`).
 - `efibootmgr -c` puts the new entry first in `BootOrder`. Entries are matched by label, partition
   UUID and path, so an old "Nyra OS" entry for another disk is replaced, not reused.
 

@@ -28,6 +28,10 @@
 #      and loader/entries can leave it: the fallback UKI in EFI/Linux boots, the entry is put back;
 #  13. loader/entries empty: the same;
 #  14. bootc's entry boots again, the fallback UKI is still there, with no tries left (sorted last).
+#  15. the ESP's file system check fails (a drop-in in /etc): boot.mount fails, esp-writable refuses
+#      and writes nothing (the random seed is unchanged), nyra-updated does not run, the health checks
+#      pass and the system starts;
+#  16. the drop-in removed: the ESP is checked and mounted read-only again, esp-writable writes.
 # "Newer" and "older" are made by changing the first digit of the Debian version in the file's
 # SBAT section; that copy is never started (the boots go through EFI/nyra), so its signature does
 # not matter.
@@ -255,3 +259,34 @@ vm --log "$logs/serial-boot-protection-14.log" \
   --command "$(selected bootc_)" \
   --command "$repair" \
   --command 'ls /boot/EFI/Linux; f="$(ls /boot/EFI/Linux/nyra-fallback-*)"; test "$(echo "$f" | wc -l)" = 1 && case "$f" in *+0.efi) true ;; *) false ;; esac'
+
+# The ESP's file system check fails (a drop-in in /etc makes systemd-fsck@ fail, which only the ESP
+# uses in the running system): boot.mount fails, and nothing writes to the ESP without that check.
+# esp-writable refuses with an error in the journal (the boot loader random seed: unchanged on the
+# ESP, read through a read-only mount made here), no FAT file system stays mounted, nyra-updated does
+# not run (its start tries the check again, which fails again), and the system still starts: the
+# health checks pass (boot-complete.target), and only the check and the random seed failed.
+fsck_fails='mkdir -p /etc/systemd/system/systemd-fsck@.service.d && printf "[Service]\nExecStart=\nExecStart=/bin/false\n" > /etc/systemd/system/systemd-fsck@.service.d/99-nyra-test.conf && cat /etc/systemd/system/systemd-fsck@.service.d/99-nyra-test.conf'
+partuuid='p="/dev/disk/by-partuuid/$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tr -d "\000" | tr A-F a-f)"'
+seed_ro="$partuuid"'; seed() { mount -t vfat -o ro "$p" /mnt && sha256sum /mnt/loader/random-seed; umount /mnt; }'
+refused='journalctl -b -p err -o cat --no-pager -u systemd-boot-random-seed | grep -F "esp-writable: the ESP is not mounted at /boot"'
+vm --log "$logs/serial-boot-protection-15.log" \
+  --title "Boot protection 15: the ESP's file system check fails: nothing is written to the ESP, the system starts" \
+  --command "$fsck_fails" \
+  --command '@reboot systemctl reboot' \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; f="$(systemctl --failed --plain --no-legend | cut -d " " -f 1 | sort | tr "\n" " ")"; echo "failed: $f"; test "$s" = degraded && test "$(echo "$f" | wc -w)" = 2 && case "$f" in "systemd-boot-random-seed.service systemd-fsck@"*".service ") true ;; *) false ;; esac' \
+  --command 'journalctl -b -o cat --no-pager -u boot.mount; ! mountpoint -q /boot && test "$(systemctl show -P ActiveState boot.mount)" != active && journalctl -b -o cat --no-pager -u boot.mount | grep -q "Dependency failed" && echo "boot.mount failed with the check"' \
+  --command "$refused"' && test -z "$(findmnt -n -t vfat)" && echo "esp-writable refused; no FAT file system mounted"' \
+  --command "$seed_ro"'; a="$(seed)"; systemctl restart systemd-boot-random-seed.service; r=$?; b="$(seed)"; echo "before: $a"; echo "after:  $b"; test "$r" != 0 && test -n "$a" && test "$a" = "$b" && test "$('"$refused"' | wc -l)" = 2 && test -z "$(findmnt -n -t vfat)" && echo "the random seed on the ESP is unchanged"' \
+  --command 'systemctl start nyra-updated.service; r=$?; systemctl show -p ExecMainStartTimestampMonotonic nyra-updated.service; test "$r" != 0 && test "$(systemctl show -P ExecMainStartTimestampMonotonic nyra-updated.service)" = 0 && ! mountpoint -q /boot && echo "nyra-updated did not run"' \
+  --command 'journalctl -b -k -o cat --no-pager | grep -i fat; systemctl is-active boot-complete.target && systemctl show -p Result nyra-health-system.service nyra-health-bootc.service && test "$(systemctl show -P Result nyra-health-system.service)" = success && test "$(systemctl show -P Result nyra-health-bootc.service)" = success && echo "the health checks passed, bootc status among them"'
+
+# The drop-in removed: the normal boot is as before (the ESP checked and mounted read-only, the
+# repair ran), and esp-writable writes again (a new random seed on the ESP).
+vm --log "$logs/serial-boot-protection-16.log" \
+  --title "Boot protection 16: the check passes again: the ESP mounted, esp-writable writes" \
+  --command 'rm -r /etc/systemd/system/systemd-fsck@.service.d' \
+  --command '@reboot systemctl reboot' \
+  --command "$repair" \
+  --command 'findmnt /boot && findmnt -no OPTIONS /boot | tr , "\n" | grep -qx ro && test "$(systemctl show -P Result systemd-boot-random-seed.service)" = success && test "$(systemctl show -P Result nyra-boot-repair.service)" = success && ! journalctl -b -o cat --no-pager | grep -F "esp-writable: the ESP is not mounted" && echo "the ESP is mounted read-only; the random seed and the repair ran"' \
+  --command 'a="$(sha256sum /boot/loader/random-seed)"; systemctl restart systemd-boot-random-seed.service && b="$(sha256sum /boot/loader/random-seed)" && echo "before: $a" && echo "after:  $b" && test "$a" != "$b" && ! touch /boot/nyra-probe 2>/dev/null && echo "esp-writable wrote a new random seed; /boot is still read-only"'

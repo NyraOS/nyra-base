@@ -104,6 +104,7 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       systemd-pcrlock-firmware-config.service systemd-pcrlock-machine-id.service \
       systemd-pcrlock-make-policy.service systemd-pcrlock-secureboot-authority.service \
       systemd-pcrlock-secureboot-policy.service systemd-pcrlock.socket systemd-sysupdate-notify-pcrlock.socket \
+      systemd-sysupdate-notify-bootctl.socket \
       systemd-tpm2-clear.service systemd-pcrextend.socket systemd-pcrmachine.service systemd-pcrproduct.service \
       systemd-pcrnvdone.service systemd-pcrfs-root.service tpm-udev.path systemd-boot-update.service; do \
       test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \

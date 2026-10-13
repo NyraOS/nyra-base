@@ -457,7 +457,8 @@ jobs:
   # never gets healthy falls back after 3 tries, a healthy one is blessed), and tools/vm/boot-protection.sh
   # (Secure Boot, one firmware variable store across eleven boots: editor off from the first boot,
   # fallback path, "Nyra OS" entry and BootOrder repaired, damaged or missing boot files, ESP full,
-  # no older boot loader over a newer one, a newer one only after the version is blessed), and
+  # no older boot loader over a newer one, a newer one only after the version is blessed, nothing
+  # written to the ESP when its file system check fails), and
   # tools/vm/recovery.sh (the UKI's signed "Nyra OS Recovery" profile boots under Secure Boot and asks
   # for an administrator's password; a wrong one gives no shell), and tools/vm/reset-settings.sh (the
   # "Nyra OS Reset settings" profile brings /etc back to the image's, keeps accounts, /home, machine ID
