@@ -247,6 +247,47 @@ impl System for Real {
         sync()
     }
 
+    fn delete_rollback(&mut self) -> Result<(), Error> {
+        // The deployment's ID is its composefs digest, which bootc status reports.
+        #[derive(Deserialize)]
+        struct Host {
+            status: HostStatus,
+        }
+        #[derive(Deserialize)]
+        struct HostStatus {
+            rollback: Option<Entry>,
+        }
+        #[derive(Deserialize)]
+        struct Entry {
+            composefs: Option<Composefs>,
+        }
+        #[derive(Deserialize)]
+        struct Composefs {
+            verity: String,
+        }
+        let json = run_ok(
+            Command::new("bootc").args(["status", "--format", "json"]),
+            SHORT,
+        )?;
+        let host: Host = serde_json::from_slice(&json)
+            .map_err(|e| Error::Command(format!("bootc status: {e}")))?;
+        let id = host
+            .status
+            .rollback
+            .and_then(|e| e.composefs)
+            .map(|c| c.verity)
+            .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                Error::Command("bootc status: no composefs rollback deployment".into())
+            })?;
+        // It also collects what only that deployment used: as long as a pull, at most.
+        run_ok(
+            Command::new("bootc").args(["delete-deployment", &id]),
+            self.stage_limit,
+        )?;
+        sync()
+    }
+
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
         let path = Path::new(DISCARDED);
         let dir = path.parent().expect("a directory");

@@ -9,7 +9,8 @@
 //!   version the sheet picks for this machine, pinned by digest, without applying it. The reboot
 //!   stays the user's choice.
 //! - [`on_health_failure`] (`OnFailure=` of the health checks): a full reboot while the new version
-//!   is still on trial, so systemd-boot's boot counting can fall back to the previous one.
+//!   is still on trial, so systemd-boot's boot counting can fall back to the previous one; off trial,
+//!   the system stays up and the pending version is not blamed (rule 12).
 //!
 //! The rules, each with a unit test in `tests.rs`:
 //!
@@ -40,6 +41,13 @@
 //!     The outcome says so ([`Outcome::ForeignImage`]), so such a machine is not silently without updates.
 //! 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
 //!     version floor) is discarded the same way as in rule 7.
+//! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
+//!     health checks. When the older version fails them too (a boot that is not on trial), the
+//!     version fallen back from is forgiven instead, once: the machine's own settings (`/etc`) are
+//!     what is broken. Once they are repaired the version is offered again; a second fallback from
+//!     it marks it failed. Its deployment, the
+//!     rollback one by then, kept the `/etc` it was tried with (bootc keeps one per deployment), so
+//!     it is deleted ([`System::delete_rollback`]) and the version staged afresh, on trial again.
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -303,6 +311,8 @@ pub struct State {
     pub failed: BTreeSet<String>,
     /// The digest prepared by the last update and not yet confirmed good.
     pub pending: Option<String>,
+    /// The last digest forgiven under rule 12: a second fallback from it marks it failed.
+    pub forgiven: Option<String>,
 }
 
 /// The state directory (`/var/lib/nyra-updated`, 0700, files 0600).
@@ -459,6 +469,8 @@ pub trait System {
     /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
     /// there is no rollback deployment.
     fn rollback(&mut self) -> Result<(), Error>;
+    /// Deletes the rollback deployment, its boot entries and its `/etc` (`bootc delete-deployment`).
+    fn delete_rollback(&mut self) -> Result<(), Error>;
     /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
     /// and again at shutdown, so it is not finalized and the boot entries stay as they are
     /// (`/run/nyra-updated/discarded`, `esp-sync`). Until the next reboot, anything staged is
@@ -505,6 +517,12 @@ fn payload_sha256(envelope: &[u8]) -> Result<String, Error> {
         .collect())
 }
 
+/// The machine came back from `digest`: it is the rollback deployment, and not the booted one.
+fn fell_back_from(status: &Status, digest: &str) -> bool {
+    Status::digest(&status.rollback) == Some(digest)
+        && Status::digest(&status.booted) != Some(digest)
+}
+
 /// Learns what became of the version prepared last time (rule 5).
 fn settle_pending(state: &mut State, status: &Status) {
     let Some(pending) = state.pending.clone() else {
@@ -513,9 +531,7 @@ fn settle_pending(state: &mut State, status: &Status) {
     if Status::digest(&status.staged) == Some(&pending) {
         return; // still waiting for the reboot
     }
-    if Status::digest(&status.rollback) == Some(&pending)
-        && Status::digest(&status.booted) != Some(&pending)
-    {
+    if fell_back_from(status, &pending) {
         // It booted and the machine came back: systemd-boot's fallback after three tries.
         state.failed.insert(pending);
     }
@@ -636,9 +652,10 @@ pub fn check(
     // Rule 3: decide with every retraction remembered, not only the ones this sheet still lists.
     let mut sheet = sheet;
     sheet.retracted = state.retracted.iter().cloned().collect();
-    let target = match sheet.decide(&installed, group)? {
+    let (target, retraction) = match sheet.decide(&installed, group)? {
         Decision::UpToDate => return Ok(Outcome::UpToDate),
-        Decision::Update(t) | Decision::Retract(t) => t,
+        Decision::Update(t) => (t, false),
+        Decision::Retract(t) => (t, true),
     };
     check_target(&target, &state, &cfg.version_floor)?;
 
@@ -646,8 +663,13 @@ pub fn check(
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        sys.rollback()?;
-        return Ok(Outcome::RolledBack(target));
+        if retraction {
+            sys.rollback()?;
+            return Ok(Outcome::RolledBack(target));
+        }
+        // Rule 12: a newer version offered again. Its deployment would boot with the settings it
+        // was tried with, not today's: it goes, and the version is staged like any update.
+        sys.delete_rollback()?;
     }
 
     state.pending = Some(target.digest.clone());
@@ -670,23 +692,38 @@ pub fn check(
     Ok(Outcome::Staged(target))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthAction {
     /// Full reboot started: the next try, or systemd-boot's fallback.
     Reboot,
     /// The running version is not on trial: a reboot would boot it again (a loop). It stays up,
-    /// unhealthy, for the user and the repair tools.
-    Stay,
+    /// unhealthy, for the user and the repair tools. It holds the version fallen back from, if it
+    /// was forgiven (rule 12).
+    Stay(Option<String>),
 }
 
-/// A health check failed on this boot (rule 8).
-pub fn on_health_failure(sys: &mut impl System) -> Result<HealthAction, Error> {
+/// A health check failed on this boot (rules 8 and 12). Off trial with a pending version, it reads
+/// `bootc status`. No lock: on a boot that is not healthy, [`check`] stops before it reads the state.
+pub fn on_health_failure(sys: &mut impl System, store: &Store) -> Result<HealthAction, Error> {
     let info = sys.boot_info()?;
     if info.soft_rebooted || info.on_trial {
         sys.reboot()?;
         return Ok(HealthAction::Reboot);
     }
-    Ok(HealthAction::Stay)
+    // Rule 12: if the machine fell back from the pending version and this older one fails too,
+    // the settings are to blame, not that version: it is forgiven, once. Anything else (a version
+    // only staged, or booted without a boot counter: rule 9) stays for the next check to settle.
+    let mut state = store.load()?;
+    let Some(pending) = state.pending.clone() else {
+        return Ok(HealthAction::Stay(None));
+    };
+    if !fell_back_from(&sys.status()?, &pending) || state.forgiven.as_ref() == Some(&pending) {
+        return Ok(HealthAction::Stay(None));
+    }
+    state.pending = None;
+    state.forgiven = Some(pending.clone());
+    store.save(&state)?;
+    Ok(HealthAction::Stay(Some(pending)))
 }
 
 #[cfg(test)]

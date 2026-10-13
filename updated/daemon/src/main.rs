@@ -2,21 +2,27 @@
 //! `nyra-updated` commands, all run by systemd (`docs/UPDATES.md`):
 //!
 //! - `check` (timer): one update check, see the library documentation for the rules;
-//! - `health-failed` (`OnFailure=` of the health checks): a full reboot while on trial;
+//! - `health-failed` (`OnFailure=` of the health checks): a full reboot while on trial; off trial,
+//!   a version fallen back from is forgiven once (rule 12) and the console says how to reset the
+//!   settings;
 //! - `health` (`nyra-health-bootc.service`): bootc reports the booted image, so this version can
 //!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key.
 
-use nyra_updated::system::Real;
-use nyra_updated::{check, on_health_failure, Config, Error, Lock, Outcome, Store, System};
+use nyra_updated::system::{run as run_limited, Real};
+use nyra_updated::{
+    check, on_health_failure, Config, Error, HealthAction, Lock, Outcome, Store, System,
+};
 use std::path::Path;
-use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, ExitCode};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CONFIG: &str = "/usr/lib/nyra/updates/updated.conf";
 const KEYS: &str = "/usr/lib/nyra/updates/channel-sheet.pem";
 const STATE_DIR: &str = "/var/lib/nyra-updated";
 const LOCK: &str = "/run/nyra-updated.lock";
+/// Writes what the user sees when the system stays up after a failed health check (docs/UPDATES.md).
+const NOTICE: &str = "/usr/lib/nyra/health/notice";
 
 /// Updates are not configured: the image ships no channel sheet key yet (docs/UPDATES.md).
 const NOT_CONFIGURED: &str =
@@ -56,7 +62,23 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             // The boot state it decided on, for the journal.
             let mut sys = Real::default();
             let info = sys.boot_info()?;
-            on_health_failure(&mut sys).map(|a| (6, true, format!("{a:?} ({info:?})")))
+            let store = Store {
+                dir: STATE_DIR.into(),
+            };
+            let action = on_health_failure(&mut sys, &store);
+            // The system stays up unhealthy (an error too): the user is told how to repair it.
+            if !matches!(action, Ok(HealthAction::Reboot)) {
+                match run_limited(&mut Command::new(NOTICE), Duration::from_secs(60)) {
+                    Ok(out) if out.status.success() => {}
+                    Ok(out) => eprintln!(
+                        "<4>nyra-updated: {NOTICE} failed ({}): {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                    Err(e) => eprintln!("<4>nyra-updated: {NOTICE}: {e}"),
+                }
+            }
+            action.map(|a| (6, true, format!("{a:?} ({info:?})")))
         }
         "health" => {
             let booted = Real::default()

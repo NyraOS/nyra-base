@@ -83,6 +83,27 @@ Each line is something that broke or surprised us once.
   initramfs's wait for the root disk; a prefix drop-in for device units (`dev-.device.d/`, which
   systemd applies to every `dev-*.device`) stays in the running system. The image build checks it with
   `lsinitrd`.
+- **bootc does not see boot counting.** It orders the boot entries by sort key, so after systemd-boot
+  fell back from a version with no tries left (`+0-3`), `bootc status` still has that version first
+  (`rollbackQueued: true`), and `bootc rollback` then puts the running version first (seen in CI).
+- **bootc keeps one `/etc` per deployment.** A version fallen back from keeps the `/etc` it was
+  finalized with: repairing the running system's settings does not reach it, and booting it again
+  (`bootc rollback`) brings the broken settings back (seen in CI). To try it with today's settings,
+  delete it (`bootc delete-deployment <composefs digest>`, a hidden command in bootc 1.16) and stage
+  it again: bootc does not stage an image that already has a deployment ("No changes").
+- **A failed health check does not say whether the version or the settings are broken.** A deleted
+  system account (`messagebus`, `systemd-network`) or a masked service fails the core services after
+  the next boot, whichever version boots. Settings changed after an update was staged therefore fail
+  the new version's tries, and the fallback finds the same `/etc`. What tells them apart is the
+  older version: if it fails too, the settings are to blame (docs/UPDATES.md, "The version or the
+  settings").
+- **Account names are lookups in `/etc`** (`nsswitch.conf` has only `files`): with a broken
+  `/etc/passwd`, `setpriv --reuid=nobody` fails ("failed to parse reuid: 'nobody'"). Code that must
+  work then, recovery above all, gives IDs by number (65534 for `nobody` and `nogroup`).
+- **A message on the text console without touching `/etc`:** agetty (util-linux 2.42) reads issue
+  drop-ins from `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` (`*.issue`), and `agetty
+  --reload` makes the ones already at the login prompt show it again; Debian's `pam_motd` reads
+  `/run/motd.d` after a login.
 - **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
   with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
   since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from

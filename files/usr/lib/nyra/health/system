@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS health check (nyra-health-system.service, docs/UPDATES.md): the core services of the base
+# are running, AppArmor's profiles loaded among them (apparmor.service checks that some are). Prints
+# the ones that are not, one per line, and fails; the notice (notice, next to this) names them too.
+set -u
+rc=0
+for u in dbus.service systemd-journald.service systemd-logind.service systemd-udevd.service \
+	systemd-networkd.service systemd-resolved.service apparmor.service; do
+	if ! systemctl is-active --quiet "$u"; then
+		echo "$u"
+		rc=1
+	fi
+done
+exit "$rc"

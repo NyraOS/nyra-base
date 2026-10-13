@@ -208,6 +208,12 @@ impl System for Fake {
         self.status.rollback_queued = !self.status.rollback_queued;
         Ok(())
     }
+    fn delete_rollback(&mut self) -> Result<(), Error> {
+        self.calls.push("delete rollback".into());
+        self.status.rollback = None;
+        self.status.rollback_queued = false;
+        Ok(())
+    }
     /// The staged deployment stays in bootc's status until the reboot; it is just not finalized.
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
         self.calls.push(format!("discard {digest}"));
@@ -783,7 +789,10 @@ fn a_failed_health_check_on_trial_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.on_trial = true;
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Reboot));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -792,7 +801,10 @@ fn a_failed_health_check_after_a_soft_reboot_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.soft_rebooted = true;
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Reboot));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -811,8 +823,169 @@ fn every_try_of_a_counted_entry_is_on_trial() {
 fn a_failed_health_check_off_trial_does_not_loop_reboots() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Stay));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(None))
+    );
     assert!(fake.calls.is_empty());
+}
+
+#[test]
+fn a_failed_health_check_on_trial_keeps_the_pending_version() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    run_check(&mut fake, &dir).unwrap();
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    fake.boot.on_trial = true;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+}
+
+// --- rule 12: the machine's settings, not the version ------------------------------------------
+
+#[test]
+fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    // The settings were broken after C was staged: C failed three times, systemd-boot went back to
+    // A, and A fails its health checks too (not on trial, so it stays up). bootc still orders C's
+    // entry first (by sort key, not by tries left).
+    fake.status = Status {
+        booted: dep(A),
+        staged: None,
+        rollback: dep(C),
+        rollback_queued: true,
+    };
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(Some(C.into())))
+    );
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::NotHealthy));
+    // The settings repaired, A is healthy: C is not failed. Its deployment, with the settings it
+    // failed with, is deleted, and C is staged again (pending, on trial).
+    fake.healthy = true;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending.as_deref(), Some(C));
+    assert_eq!(
+        fake.calls[fake.calls.len() - 2..],
+        [
+            "delete rollback".to_string(),
+            format!("stage updates.nyraos.com/nyra@{C}")
+        ]
+    );
+    assert!(!fake.calls.contains(&"rollback".to_string()));
+    // C boots, counted: confirmed.
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending, None);
+}
+
+#[test]
+fn a_new_version_booted_without_a_counter_is_still_reported_after_a_failed_health_check() {
+    // Rule 9 is not lost: C's first boot was not counted (not on trial) and a health check failed.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    run_check(&mut fake, &dir).unwrap();
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    fake.boot.counted = false;
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(None))
+    );
+    fake.healthy = true;
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::NotBootCounted(C.into()))
+    );
+}
+
+#[test]
+fn a_staged_version_is_not_forgiven_by_a_failed_health_check_before_it_booted() {
+    // A health check fails (restarted by hand) on the boot that staged C: C has not been tried.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(None))
+    );
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+    // C fails its tries and the machine comes back to a healthy A: C failed.
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+}
+
+#[test]
+fn a_version_is_forgiven_only_once() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    let fallback = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    // First fallback from C, A unhealthy too: forgiven, C staged again after the repair.
+    fake.status = fallback.clone();
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(Some(C.into())))
+    );
+    fake.healthy = true;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    // Second fallback from C, A unhealthy again: not forgiven, and failed once A is healthy.
+    fake.status = fallback;
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(None))
+    );
+    fake.healthy = true;
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    assert!(dir.store().load().unwrap().failed.contains(C));
+}
+
+#[test]
+fn a_version_offered_again_that_fails_again_is_failed() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.status.rollback = dep(C);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    // C fails its three tries; systemd-boot goes back to A, which is healthy now.
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    assert!(dir.store().load().unwrap().failed.contains(C));
 }
 
 // --- the state directory ----------------------------------------------------------------------
@@ -838,6 +1011,7 @@ fn the_state_is_written_atomically_and_privately() {
         retracted: [B.to_string()].into(),
         failed: [C.to_string()].into(),
         pending: Some(A.into()),
+        forgiven: Some(B.into()),
     };
     store.save(&state).unwrap();
     assert_eq!(store.load().unwrap(), state);
