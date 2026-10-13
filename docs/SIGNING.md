@@ -9,9 +9,10 @@ from our registry that do not carry that signature.
    from scratch: bootc compiled from its pinned commit (its Cargo.lock moved to zlink 0.7.1 for a
    reproducible build and pinned by hash, `ci/build-bootc.sh`), every Debian package downloaded from the
    pinned snapshot. The caches (compiled bootc, downloaded packages) are used only by pull
-   requests, whose images are never signed. A cached file is not re-verified, so it must never
-   reach a signed image. A release build does restore the bootc cache, but only to compare it with
-   its own fresh compile (a difference fails the build); the image is built from the fresh one.
+   requests, whose images are never signed. A cache is not trusted, so no job of a release unpacks
+   one: they only look caches up, to save one that is missing (`ci/check-release-cache.py` checks
+   this in CI). The release's bootc is compared with the build cached on `main` by a separate job,
+   `bootc-reproducible`, with no permissions and no checkout; a difference stops the `sign` job.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
    - GitHub issues an OIDC token for the workflow run;

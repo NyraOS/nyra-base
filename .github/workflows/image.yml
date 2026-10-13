@@ -7,9 +7,10 @@
 # bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
 # documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
 # publishing to the update server comes later.
-# Release builds (push or manual run on main) use no cached content (the bootc cache is only compared
-# with the fresh bootc build), and the sign job signs
-# them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate.
+# Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
+# save one when it is missing; ci/check-release-cache.py checks that), and the sign job signs
+# them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
+# and the release's bootc is identical to the build cached on main (bootc-reproducible).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md).
@@ -125,6 +126,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       uki_cert: ${{ steps.image.outputs.uki_cert }}
+      bootc_key: ${{ steps.bootc-cache.outputs.cache-primary-key }}
+      bootc_cached: ${{ steps.bootc-cache.outputs.cache-hit }}
+      bootc_sha256: ${{ steps.bootc.outputs.sha256 }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,38 +162,28 @@ jobs:
       # saved right after the build so a later failing step does not throw it away.
       # The key covers only what the build depends on: the pinned commit, the snapshot
       # (tools image packages, SOURCE_DATE_EPOCH), the tools image and ci/build-bootc.sh.
+      # Release builds compile bootc themselves and only look the cache up; bootc-reproducible compares
+      # their build with the cached one.
       - name: Restore the bootc build
         id: bootc-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          # Release builds compile bootc themselves and restore the cache only to compare it with
-          # their own build (the next step): two compiles of the same source must be identical.
+          lookup-only: ${{ env.RELEASE == 'true' }}
           path: ~/cache/bootc.tar
           key: bootc-${{ env.BOOTC_COMMIT }}-${{ env.SNAPSHOT }}-${{ hashFiles('ci/tools.Containerfile', 'ci/build-bootc.sh') }}
 
       - name: Build bootc from source
+        id: bootc
         if: steps.bootc-cache.outputs.cache-hit != 'true' || env.RELEASE == 'true'
         run: |
           mkdir -p ~/cache
-          if [ -f ~/cache/bootc.tar ]; then mv ~/cache/bootc.tar ~/cache/bootc.cached.tar; fi
           sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
             -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             localhost/nyra-tools bash /ci/build-bootc.sh
           sudo chown -R "$(id -u):$(id -g)" ~/cache
-          if [ -f ~/cache/bootc.cached.tar ]; then
-            if cmp ~/cache/bootc.cached.tar ~/cache/bootc.tar; then
-              echo "Reproducible: this bootc build is identical to the cached one."
-            else
-              mkdir -p "$RUNNER_TEMP/bootc-cached" "$RUNNER_TEMP/bootc-new"
-              tar -C "$RUNNER_TEMP/bootc-cached" -xf ~/cache/bootc.cached.tar
-              tar -C "$RUNNER_TEMP/bootc-new" -xf ~/cache/bootc.tar
-              diff -rq "$RUNNER_TEMP/bootc-cached" "$RUNNER_TEMP/bootc-new" || true
-              echo "::error::bootc compiled from the same source differs from the cached build (files above)."
-              exit 1
-            fi
-          else
-            echo "::notice::No cached bootc build for this key, nothing to compare."
-          fi
+          sha256="$(sha256sum < ~/cache/bootc.tar | cut -d' ' -f1)"
+          echo "bootc build: sha256 $sha256"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Save the bootc build
         if: steps.bootc-cache.outputs.cache-hit != 'true'
@@ -687,8 +681,45 @@ jobs:
   # on GitHub-hosted runners are signed; the job is skipped until the repository variables
   # GCP_WIF_PROVIDER and GCP_SIGNER_SA are set. Only this job can request an OIDC token.
   # It refuses an image whose UKI is not signed with the committed Nyra certificate (UKI release gate).
+  # Two compiles of the same bootc source must be identical: the release's (build) and the one cached
+  # on main (bootc-cache.yml). The release job never unpacks a cache, so the cached build is unpacked
+  # here, on a runner of its own, without permissions and without the repository; only this job's
+  # result reaches the release (sign needs it).
+  bootc-reproducible:
+    needs: build
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      # Only a build cached before this run: one this run saved (none was cached) is its own.
+      - name: Restore the bootc build cached on main
+        id: cache
+        if: needs.build.outputs.bootc_cached == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cache/bootc.tar
+          key: ${{ needs.build.outputs.bootc_key }}
+
+      - name: Compare it with the release's bootc
+        env:
+          HIT: ${{ steps.cache.outputs.cache-hit }}
+          RELEASE_SHA256: ${{ needs.build.outputs.bootc_sha256 }}
+        run: |
+          [[ "$RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          if [ "$HIT" != true ]; then
+            echo "::notice::No cached bootc build for this key, nothing to compare."
+            exit 0
+          fi
+          cached="$(sha256sum < ~/cache/bootc.tar | cut -d' ' -f1)"
+          if [ "$cached" != "$RELEASE_SHA256" ]; then
+            echo "::error::bootc compiled from the same source differs from the build cached on main: release $RELEASE_SHA256, cached $cached."
+            exit 1
+          fi
+          echo "Reproducible: the release's bootc build is identical to the cached one ($cached)."
+
   sign:
-    needs: [build, install-boot]
+    needs: [build, install-boot, bootc-reproducible]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
     if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
     runs-on: ubuntu-24.04
