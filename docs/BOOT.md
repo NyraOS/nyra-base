@@ -505,7 +505,7 @@ The image's UKI has three profiles (a multi-profile UKI, systemd 257 and later),
 |---|---|---|
 | 0 | Nyra OS | the one bootc writes: `<kargs.d> composefs=<digest>` |
 | 1 | Nyra OS Recovery | the same plus `systemd.unit=rescue.target` |
-| 2 | Nyra OS Reset settings | the same plus `systemd.unit=nyra-reset-settings.target` (see "Reset system settings") |
+| 2 | Nyra OS Reset settings | the same plus `systemd.unit=nyra-reset-settings.target fstab=no` (see "Reset system settings") |
 
 bootc computes the composefs digest, so `ci/ukify.sh` runs `bootc container ukify` once to read
 the command line, makes the recovery profile PE file with `ukify build --profile --cmdline`, and runs
@@ -562,7 +562,9 @@ or deleted services), the boot menu offers **"Nyra OS Reset settings"**: profile
 UKI, with an entry `loader/entries/nyra-reset.CONF` kept by `nyra-boot-repair` exactly like the
 recovery entry (written for the running blessed version, carried across updates, invisible to
 bootc). A third profile needs no new key and keeps the command line sealed; it boots straight into
-`nyra-reset-settings.target`, like `rescue.target`.
+`nyra-reset-settings.target`, like `rescue.target`. Its `fstab=no` makes systemd ignore `/etc/fstab`,
+in the initramfs too: whatever the user wrote there, the reset's question comes at once, and the image
+mounts nothing from it (its `/etc` has no `fstab`).
 
 `nyra-reset-settings.service` (`/usr/lib/nyra/boot/reset-settings`) asks on the console to type
 `RESET`; anything else, or Control-D, continues the normal boot and changes nothing. Then:
@@ -634,11 +636,74 @@ without its marker and `etc.nyra-old` as it was; the reset itself brings the ima
 reboots, and the next boot has none of the breakage, the administrator with the same password hash
 and groups, the file in `/home`, the machine ID and the host name, nothing of the names found twice
 (root the only UID 0), and the previous `/etc` as
-`etc.nyra-old` (`0700`).
+`etc.nyra-old` (`0700`). Then `/etc/fstab` breaks again (see "Mounts from /etc/fstab"): the normal boot
+goes on, the reset entry asks at once without reading it, and the reset removes it.
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
 `/home` (the factory reset).
+
+## Mounts from /etc/fstab
+
+A line the user adds to `/etc/fstab` that cannot be mounted does not stop the boot: the system starts
+without that file system, as a disk that is not connected simply does not show up. Without `nofail`,
+systemd would wait 90 s for the disk, then fail `local-fs.target` and start emergency mode, whose
+root shell is locked (root has no password), so the machine could only be switched off. Two changes,
+both in the running system only: the initramfs, which mounts the root and `/usr`, keeps systemd's
+behaviour (the image build checks that the drop-in below is not in it, and changes `local-fs.target`
+only after the initramfs is built):
+
+- **10 s for a device**, not 90 s: a drop-in for every `/dev/...` device unit
+  (`dev-.device.d/10-nyra.conf`, `JobRunningTimeoutSec=10s`). A line's own
+  `x-systemd.device-timeout=` still wins, for a disk that takes longer to appear, or one unlocked with
+  a password typed at boot (`/etc/crypttab`), which needs `x-systemd.device-timeout=0`.
+- **No emergency mode from `local-fs.target`**: the image's `local-fs.target` has no
+  `OnFailure=emergency.target` (removed in the image build; a drop-in cannot remove a dependency).
+  The mount that failed stays failed, nothing else is held back.
+
+The journal says what is missing: `Timed out waiting for device … - /dev/disk/by-label/…` and
+`Dependency failed for var-mnt-….mount`, or `Failed to mount …` for a line that does not work. A line
+that is not a mount at all is skipped by systemd. The "Reset settings" entry ignores `/etc/fstab`
+entirely (`fstab=no`, see "Reset system settings").
+
+**What `local-fs.target` no longer guarantees.** A mount that fails at once (a wrong option or type)
+fails `local-fs.target` at once too, so a unit ordered only after `local-fs.target` can start while
+the other local mounts are still in progress. The root, `/usr`, `/etc` and `/var` are set up in the
+initramfs and are not among them. The ESP is: `boot.mount` comes after its file system check, and
+the units that write to the ESP are ordered after `boot.mount` itself:
+
+- `systemd-boot-random-seed` (the only one that runs this early, before `sysinit.target`) has
+  `After=boot.mount` in its drop-in. Without it, CI saw it start before the ESP's check, with
+  `esp-writable` mounting the ESP read-write while it was checked, and `boot.mount` then fail;
+- `nyra-boot-repair` has `RequiresMountsFor=/boot`; `systemd-bless-boot` and `nyra-updated` come after
+  `boot-complete.target`, whose health checks come after `nyra-boot-repair`; bootc writes when
+  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`.
+
+`/tmp` (a tmpfs, `tmp.mount`) is the other local mount. The boot's tmpfiles
+(`systemd-tmpfiles-setup`, which makes `/tmp/.X11-unix` and the like) are ordered after `tmp.mount`
+in their drop-in, and units with `PrivateTmp=` wait for it by themselves.
+
+If the ESP itself cannot be mounted (a damaged partition), the boot goes on as before this change:
+`boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped, and
+the health checks still pass: they judge the system version, and failing them would restart the
+machine into the previous version, which finds the same partition. What writes to the ESP later
+(blessing the boot, boot counting) goes through `esp-writable`, which mounts the partition by itself
+when `/boot` is not mounted.
+
+**A line with `x-initrd.mount`** is mounted in the initramfs, which keeps systemd's own behaviour:
+if it fails, the initramfs's emergency mode reboots (`rd.emergency=reboot`),
+so the normal entry restarts again and again. The "Reset settings" entry does not read `/etc/fstab`
+(`fstab=no`, in the initramfs too), so it still boots, and the reset removes the user's `/etc/fstab`.
+
+CI (`tools/vm/reset-settings.sh`, boots 13-15) adds to `/etc/fstab`, without `nofail`, a disk that is not
+connected, a swap partition on a disk that is not connected (`tmp.mount` waits for `swap.target`), a
+line that is not a mount, and a `proc` mount with an option it does not know, which fails at once,
+before the ESP and `/tmp` are mounted. The normal boot reaches the login prompt without emergency
+mode, and only the `proc` mount failed. The boot loader random seed is ordered after `boot.mount` and
+came after the ESP's check and `boot.mount`, and `nyra-boot-repair` ran. The boot's tmpfiles are
+ordered after `tmp.mount` and came after it (`/tmp/.X11-unix` is root's, mode 1777). The journal
+names the missing disk less than 20 s after the start of the system. The reset entry asks within
+30 s of the start of the system, without reading `/etc/fstab`, and the reset removes the lines.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 

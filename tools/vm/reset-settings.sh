@@ -29,7 +29,18 @@
 #      etc.nyra-old (0700);
 #   11. the reset, with a power cut right after it makes the new /etc's directory; 12. no
 #      etc.nyra-new without its marker (which the next reset would keep instead of etc.nyra-old), and
-#      etc.nyra-old as it was.
+#      etc.nyra-old as it was;
+#   13. /etc/fstab broken without nofail (a disk that is not connected, a line that is not a mount, a
+#      proc mount with an option it does not know, which fails before the ESP and /tmp are mounted, a
+#      swap partition on a disk that is not connected), then a normal boot: no emergency mode, only
+#      the wrong mount failed; the boot loader random seed ordered after boot.mount, and the ESP
+#      checked, then mounted, then written by it; nyra-boot-repair run; the boot's tmpfiles ordered
+#      after tmp.mount and run after it (/tmp/.X11-unix root, 1777); the device timeout is 10 s, and
+#      the journal names the missing disk less than 20 s after the start of the system;
+#   14. the reset entry with that /etc/fstab, answered with something else than RESET: fstab=no on the
+#      command line, /etc/fstab not read, no emergency mode, the question within 30 s of the start of
+#      the system;
+#   15. the reset with that /etc/fstab; the normal boot after it runs, without those lines.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The password is random, for this throwaway disk only.
@@ -153,3 +164,46 @@ vm --poweroff --log "$logs/serial-reset-settings-12.log" \
   --title "Reset settings 12: after that power cut, no etc.nyra-new without its marker, etc.nyra-old as it was" \
   --command "$running" \
   --command "$state; ls -a \$s; { test ! -e \$s/etc.nyra-new || test -e \$s/etc.nyra-new/.nyra-reset-new; } && test -f \$s/etc.nyra-old/passwd && test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && echo 'no etc.nyra-new without the marker; etc.nyra-old is intact'"
+
+# A broken /etc/fstab (docs/BOOT.md, "Mounts from /etc/fstab"), none of its lines with nofail: a disk
+# that is not connected, a swap partition on a disk that is not connected (tmp.mount waits for
+# swap.target), a line that is not a mount, and a mount that fails at once (proc with an option it does
+# not know: unlike tmpfs it does not wait for swap.target), so local-fs.target fails before the ESP and
+# /tmp are mounted.
+break_fstab="printf 'garbage line, not a mount\\nLABEL=nyra-missing /var/mnt/missing ext4 defaults 0 2\\nLABEL=nyra-missing-swap none swap defaults 0 0\\nproc /var/mnt/invalid proc nyra-no-such-option 0 0\\n' >> /etc/fstab && cat /etc/fstab"
+no_emergency='test "$(systemctl show -P ActiveEnterTimestampMonotonic emergency.target)" = 0 && echo "emergency mode was never entered"'
+missing='/dev/disk/by-label/nyra-missing'
+# The ESP's order, whatever local-fs.target did: its file system check, then boot.mount, and only then
+# the boot loader's random seed, the first unit that writes to it (through esp-writable); then
+# nyra-boot-repair ran. Monotonic times in microseconds. The only file system check that ran is the
+# ESP's (the missing disk's never starts).
+esp_order='i="$(systemctl show -P StateChangeTimestampMonotonic var-mnt-invalid.mount)"; echo "var-mnt-invalid.mount failed at $i"; systemctl show -P After systemd-boot-random-seed.service | tr " " "\n" | grep -qx boot.mount && echo "systemd-boot-random-seed: After=boot.mount" && c="$(systemctl list-units --plain --no-legend --state=active "systemd-fsck@*" | cut -d " " -f 1)"; f="$(systemctl show -P ActiveEnterTimestampMonotonic "$c")"; m="$(systemctl show -P ActiveEnterTimestampMonotonic boot.mount)"; r="$(systemctl show -P InactiveExitTimestampMonotonic systemd-boot-random-seed.service)"; echo "$c done at $f, boot.mount at $m, the boot loader random seed started at $r"; systemctl is-active boot.mount && test "$f" -gt 0 && test "$m" -ge "$f" && test "$r" -ge "$m" && test "$i" -gt 0 && test "$i" -lt "$m" && test "$(systemctl show -P Result nyra-boot-repair.service)" = success && test "$(systemctl show -P ExecMainExitTimestampMonotonic nyra-boot-repair.service)" -gt 0 && echo "the ESP was checked and mounted before anything wrote to it; nyra-boot-repair ran"'
+# /tmp's order too: tmp.mount, then the boot's tmpfiles, which made /tmp/.X11-unix (root, 1777).
+tmp_order='systemctl show -P After systemd-tmpfiles-setup.service | tr " " "\n" | grep -qx tmp.mount && echo "systemd-tmpfiles-setup: After=tmp.mount" && i="$(systemctl show -P StateChangeTimestampMonotonic var-mnt-invalid.mount)"; m="$(systemctl show -P ActiveEnterTimestampMonotonic tmp.mount)"; t="$(systemctl show -P InactiveExitTimestampMonotonic systemd-tmpfiles-setup.service)"; echo "tmp.mount at $m, the boot'"'"'s tmpfiles started at $t"; stat -c "%U %a %n" /tmp/.X11-unix; systemctl is-active tmp.mount systemd-tmpfiles-setup.service && test "$m" -gt 0 && test "$t" -ge "$m" && test "$i" -lt "$m" && test "$(stat -c "%U %a" /tmp/.X11-unix)" = "root 1777" && echo "/tmp was mounted before the boot'"'"'s tmpfiles ran"'
+
+# After the reboot: the journal's line for the missing disk (waited for: the login prompt can come
+# first), and how long after the start of the system (systemd in the root file system) it came.
+vm --poweroff --log "$logs/serial-reset-settings-13.log" \
+  --title "Reset settings 13: /etc/fstab with a disk that is not connected and wrong lines; the normal boot goes on" \
+  --command "$break_fstab" \
+  --command '@reboot systemctl reboot' \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = degraded && test "$(systemctl --failed --plain --no-legend | cut -d " " -f 1)" = var-mnt-invalid.mount && echo "only the mount that cannot work failed"' \
+  --command "$no_emergency" \
+  --command "$esp_order" \
+  --command "$tmp_order" \
+  --command "journalctl -b -o cat --no-pager | grep -E 'nyra-missing|var-mnt-'; for i in \$(seq 60); do l=\"\$(journalctl -b -o short-monotonic --no-pager | grep -m 1 'Timed out waiting for device .* - $missing\\.\$')\"; test -n \"\$l\" && break; sleep 1; done; test -n \"\$l\" && echo \"\$l\" && t=\"\$(echo \"\$l\" | sed -E 's/^\\[ *([0-9]+)\\..*/\\1/')\" && u=\$((\$(systemctl show -P UserspaceTimestampMonotonic) / 1000000)) && echo \"the journal names the missing disk, \$((t - u)) s after the start of the system\" && test \$((t - u)) -lt 20" \
+  --command "u=\"\$(systemd-escape -p --suffix=device $missing)\" && systemctl show -p JobRunningTimeoutUSec \"\$u\" && test \"\$(systemctl show -P JobRunningTimeoutUSec \"\$u\")\" = 10s && ! mountpoint -q /var/mnt/missing" \
+  --command "$oneshot"
+
+vm --poweroff --log "$logs/serial-reset-settings-14.log" --chat-then-login --chat "$answer=>no" \
+  --title "Reset settings 14: the reset entry with that /etc/fstab: the question at once, no emergency mode" \
+  --command 'cat /proc/cmdline; grep -Eq "(^| )fstab=no( |$)" /proc/cmdline' \
+  --command "$no_emergency" \
+  --command 'test "$(systemctl show -P LoadState var-mnt-missing.mount)" = not-found && test "$(systemctl show -P LoadState var-mnt-invalid.mount)" = not-found && ! journalctl -b -o cat --no-pager | grep "Timed out waiting for device" && echo "/etc/fstab was not read"' \
+  --command 'q=$(( ($(systemctl show -P InactiveExitTimestampMonotonic nyra-reset-settings.service) - $(systemctl show -P UserspaceTimestampMonotonic)) / 1000000 )); echo "the reset question $q s after the start of the system"; test "$q" -lt 30' \
+  --command "$oneshot"
+
+vm --poweroff --log "$logs/serial-reset-settings-15.log" --chat-then-login --chat "$answer=>RESET" \
+  --title "Reset settings 15: the reset with that /etc/fstab, then the normal boot without it" \
+  --command "$running" \
+  --command "! grep -s 'nyra-missing\\|nyra-no-such-option' /etc/fstab && echo 'the broken /etc/fstab lines are gone'"

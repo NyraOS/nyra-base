@@ -4,4 +4,4 @@
 # line, so a change to kargs.d or to the profiles must change this file too, in the same review.
 lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=DIGEST
 lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=DIGEST systemd.unit=rescue.target
-lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=DIGEST systemd.unit=nyra-reset-settings.target
+lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=DIGEST systemd.unit=nyra-reset-settings.target fstab=no
