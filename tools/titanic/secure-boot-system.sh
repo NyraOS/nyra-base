@@ -32,11 +32,8 @@ virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$sb_dir/vars.f
 qemu-img convert -O raw "$sb_disk" "$sb_dir/disk.raw"
 esp() { # mount the ESP of the test disk on $mnt with these options (rw or ro)
   loop="$(sudo losetup -P --show -f "$sb_dir/disk.raw")"
-  local p e=""
-  for p in "$loop"p*; do
-    if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then e="$p"; fi
-  done
-  test -n "$e"
+  local e
+  e="$(tools/vm/esp-of.sh "$loop")"
   sudo mount -o "$1" "$e" "$mnt"
 }
 unesp() { sudo umount "$mnt" && sudo losetup -d "$loop" && loop=""; }

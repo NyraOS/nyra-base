@@ -15,11 +15,7 @@ mkdir -p "$mnt"
 trap 'sudo umount -q "$mnt" 2>/dev/null || true; [ -z "$loop" ] || sudo losetup -d "$loop" || true; rm -rf "$mnt"' EXIT
 tools/vm/test-addon.sh "$image" "$work/console.addon.efi" systemd.import_credentials=yes
 loop="$(sudo losetup -P --show -f "$disk")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 sudo mount "$esp" "$mnt"
 sudo mkdir -p "$mnt/loader/addons"
 sudo cp "$work/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"

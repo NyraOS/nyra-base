@@ -64,11 +64,7 @@ shim="$bp/ref/shimx64.efi.signed" mm="$bp/ref/mmx64.efi.signed" sdboot="$bp/ref/
 
 qemu-img convert -O raw "$disk" "$bp/disk.raw"
 loop="$(sudo losetup -P --show -f "$bp/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 
 # 0. The installed ESP, before the first boot.
 sudo mount "$esp" "$mnt"

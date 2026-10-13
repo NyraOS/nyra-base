@@ -34,11 +34,7 @@ virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$rc/vars.fd" \
 
 qemu-img convert -O raw "$disk" "$rc/disk.raw"
 loop="$(sudo losetup -P --show -f "$rc/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 
 # 0. The UKI bootc installed: signed as a whole, with the recovery profile.
 sudo mount "$esp" "$mnt"

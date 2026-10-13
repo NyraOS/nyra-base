@@ -14,11 +14,7 @@ sudo podman run --rm --privileged --pid=host \
   bootc install to-disk --composefs-backend --bootloader systemd --filesystem ext4 \
     --wipe --via-loopback /output/disk.raw
 loop="$(sudo losetup -P --show -f "$work/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 mkdir -p "$work/esp" && sudo mount "$esp" "$work/esp"
 sudo podman run --rm --network none -v "$work/esp:/esp" "$image" \
   /usr/lib/nyra/boot/esp-sync install /esp

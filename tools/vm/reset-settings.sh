@@ -64,11 +64,7 @@ virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$rs/vars.fd" \
 
 qemu-img convert -O raw "$disk" "$rs/disk.raw"
 loop="$(sudo losetup -P --show -f "$rs/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 sudo mount "$esp" "$mnt"
 entries=("$mnt"/loader/entries/bootc_*.conf)
 test "${#entries[@]}" = 1
