@@ -1,9 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: nyra-updated across real updates, on a copy of the installed test disk (docs/UPDATES.md).
-# Titanic T2 (power cuts), T3 (a broken version), T4 (signatures and versions), T5 (a hostile
-# network), T9 (a wrong clock), the discard of a staged deployment (bootc rollback twice) and
-# blessing after a soft reboot.
+# Titanic T2 (power cuts), T3 (a broken version, and a good one with broken settings), T4 (signatures
+# and versions), T5 (a hostile network), T9 (a wrong clock), the discard of a staged deployment
+# (bootc rollback twice) and blessing after a soft reboot.
 #
 # Everything the guest trusts is made for this run and deleted with the runner: an image signing key
 # (sigstore, the stand-in for our keyless signer: the guest's /etc/containers/policy.json is replaced
@@ -32,28 +32,34 @@
 #  11  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
 #      into v6: not blessed, system not degraded
 #  12  v6, first full boot: signed retraction below the version floor refused; retraction to the
-#      local rollback deployment (v5) uses bootc rollback
+#      local rollback deployment (v5) uses bootc rollback, with three tries
 #  13  v5, registry down: refused, nothing staged
 #  14  v5, a corrupted layer of v7 in the registry: refused, nothing staged
 #  15  v5, a valid layer of the same size with other content served for v7's: refused (digest)
-#  16  v5, registry repaired: v7 staged
-#  17  v7: v9 staged; power cut before it is finalized (its staged entries stay on the ESP)
-#  18  v7: v10, another version, staged: only its entries and v7's are staged (none left from v9)
-#  19  v10 boots; two boot entries (v10 and v7)
-#  20-24  v10: power cuts at random moments while nyra-updated pulls and stages v12 (seed printed)
-#  25  v10: v12 staged
-#  26  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
+#  16  v5, registry repaired: the settings broken (systemd-resolved masked, which shows at the next
+#      boot); v7 staged
+#  17  v7 fails its health check three times (the settings), systemd-boot falls back to v5, which
+#      fails it too: it stays up, v7 is not marked failed, the console says to reset the settings;
+#      the settings repaired by hand
+#  18  v5 healthy: v7 offered again, reached with bootc rollback, with three tries
+#  19  v7 boots counted and is blessed; v9 staged; power cut before it is finalized (its staged
+#      entries stay on the ESP)
+#  20  v7: v10, another version, staged: only its entries and v7's are staged (none left from v9)
+#  21  v10 boots; two boot entries (v10 and v7)
+#  22-26  v10: power cuts at random moments while nyra-updated pulls and stages v12 (seed printed)
+#  27  v10: v12 staged
+#  28  v12: another host (valid certificate for another name), a 50 kbit/s link and a registry that
 #      stalls mid-pull refused, nothing staged; v13 staged
-#  27  v13: v14 staged (its initramfs is broken)
-#  28  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
+#  29  v13: v14 staged (its initramfs is broken)
+#  30  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
 #      v14 is marked failed and refused
-#  29  v13, the hardware clock in 2099 (T9): chronyd corrects it through NTS; v15 staged
-#  30  v15, the hardware clock in 1970: the same; v16 staged
-#  31  v16, the hardware clock in 2035: the same; up to date; chronyd's cost measured
-#  32  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
+#  31  v13, the hardware clock in 2099 (T9): chronyd corrects it through NTS; v15 staged
+#  32  v15, the hardware clock in 1970: the same; v16 staged
+#  33  v16, the hardware clock in 2035: the same; up to date; chronyd's cost measured
+#  34  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
 #      request sent), the sheet server refused, unsigned images refused; the real servers back:
 #      corrected, up to date
-#  33  v16, the clock right: the shipped signature policy linked again; then the secure defaults
+#  35  v16, the clock right: the shipped signature policy linked again; then the secure defaults
 #      check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -405,7 +411,8 @@ vm "v5: hostile network, downgrade, replay; soft reboot into v6" --poweroff \
 vm "v6, first full boot: retraction below the floor refused; retraction to v5 by bootc rollback" --poweroff \
   --command "$lib; expect booted $d6 && running && blessed" \
   --command "$lib; refused floor 'below the version floor'" \
-  --command "$lib; outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true" \
+  --command "$lib; outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true && entries | grep -F +3" \
+  --command "$lib; outcome retract6 RollbackQueued && test \"\$(queued)\" = true" \
   --command 'bootc status --format json'
 
 sudo podman stop -t 1 nyra-test-registry >/dev/null
@@ -438,13 +445,37 @@ vm "v5, a layer of the same size with other content in place of v7's" --poweroff
   --command "$lib; refused s7 'Unable to pull container image.*FinishPipe.*corrupted blob, expecting' && expect staged none && expect booted $d5"
 sudo podman exec nyra-test-registry sh -c "mv $blob.orig $blob"
 
-vm "v5, registry repaired: v7 staged" --poweroff \
-  --command "$lib; outcome s7 Staged && expect staged $d7 && expect booted $d5"
+# A good version and the machine's settings broken (T3, rule 12): systemd-resolved masked, as a user
+# could, on a healthy boot of v5. It shows only at the next boot, and both v5 and v7 get it (v7's
+# /etc is v5's, merged). v7 fails its health check three times and systemd-boot falls back to v5,
+# which fails it too: the settings are to blame, not v7. v5 stays up, v7 is not marked failed, and the
+# console and the login message say to reset the settings. The repair here is by hand (unmask):
+# "Reset settings" would also undo this test's own trust in /etc (it is tested in T8). Then v7 is
+# offered again and reached with bootc rollback, with three tries, and is blessed.
+vm "v5, registry repaired: the settings broken (systemd-resolved masked); v7 staged" --poweroff \
+  --command "$lib; expect booted $d5 && running && systemctl mask systemd-resolved.service" \
+  --command "$lib; outcome s7 Staged && expect staged $d7"
+
+vm "v7 fails its health check three times (the settings), back on v5, which fails it too" --poweroff --boots 4 \
+  --command "$lib; expect booted $d5 && expect rollback $d7 && entries | grep -F +0-3" \
+  --command "systemctl is-failed nyra-health-system.service && ! systemctl is-active boot-complete.target && { /usr/lib/nyra/health/system; true; } && journalctl -b -u nyra-updated-health-failed -o cat --no-pager | grep -F 'Stay(Some(' | grep -F $d7" \
+  --command 'cat /run/issue.d/50-nyra-health.issue && cmp /run/issue.d/50-nyra-health.issue /run/motd.d/50-nyra-health.motd && grep -qF systemd-resolved.service /run/issue.d/50-nyra-health.issue && grep -qF "Nyra OS Reset settings" /run/issue.d/50-nyra-health.issue' \
+  --command "$lib; outcome s7 NotHealthy && ! grep -F $d7 /var/lib/nyra-updated/state.json && echo 'v7 is neither pending nor failed'" \
+  --command 'systemctl unmask systemd-resolved.service'
+l="$logs/serial-updates-$n.log"
+echo "kernel starts: $(grep -c 'Linux version' "$l")"
+[ "$(grep -c 'Linux version' "$l")" = 4 ]
+
+vm "v5, the settings repaired: v7 offered again, through bootc rollback, with three tries" --poweroff \
+  --command "$lib; expect booted $d5 && running && ! test -e /run/issue.d/50-nyra-health.issue" \
+  --command "$lib; outcome s7 RolledBack && expect rollback $d7 && test \"\$(queued)\" = true && entries | grep -F +3" \
+  --command "$lib; outcome s7 RollbackQueued && grep -F $d7 /var/lib/nyra-updated/state.json"
 
 # Stale staged entries: a power cut between staging and finalization leaves loader/entries.staged
-# on the ESP; the next update, to another version, must not carry them into its swap.
-vm "v7: v9 staged; power cut before it is finalized" --power-cut-at POWERCUT \
-  --command "$lib; expect booted $d7 && running" \
+# on the ESP; the next update, to another version, must not carry them into its swap. The first
+# check on v7 also proves that it booted with a boot counter (rule 9).
+vm "v7, counted and blessed: v9 staged; power cut before it is finalized" --power-cut-at POWERCUT \
+  --command "$lib; expect booted $d7 && running && blessed" \
   --command "$lib; outcome s9 Staged && expect staged $d9 && ls /boot/loader/entries.staged && echo POWER''CUT"
 
 vm "v7 after the power cut: v10 staged, nothing left from v9" --poweroff \

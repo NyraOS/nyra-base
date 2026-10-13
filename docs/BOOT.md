@@ -570,7 +570,9 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
   `/usr/lib/nyra/boot/recovery-shell` instead of sulogin (a drop-in in `/usr`): it asks for a user
   name, accepts only members of the `sudo` group (the administrators) whose account has a usable
   password (`passwd -S` status `P`: PAM's `nullok` would let an empty password through), and checks
-  the password with `su` through PAM, run as `nobody` so that it has to ask. Only then a root shell
+  the password with `su` through PAM, run as `nobody` so that it has to ask. `nobody` is given by
+  number (UID and GID 65534): name lookups read only `/etc/passwd` and `/etc/group`, which may have
+  lost the account exactly when recovery is needed (Titanic T8). Only then a root shell
   starts; leaving it continues to the normal boot target. A wrong password or a non-administrator
   gives a message and the prompt again, after 3 s. Control-C and Control-Z do nothing at the prompt;
   Control-D continues the normal boot (as sulogin does). `emergency.service` (a failed boot) still uses sulogin, which refuses
@@ -591,7 +593,9 @@ password prompt, a wrong password gives no shell, the right one gives root in `r
 ## Reset system settings (`tools/vm/reset-settings.sh`)
 
 When a user's changes in `/etc` break the system (`/etc/fstab`, `/etc/passwd`, the network, masked
-or deleted services), the boot menu offers **"Nyra OS Reset settings"**: profile 2 of the same signed
+or deleted services), the boot menu offers **"Nyra OS Reset settings"**. When a health check fails
+on a version that is not on trial, the login console and the message after a login point there
+(`docs/UPDATES.md`, "The version or the settings"). It is profile 2 of the same signed
 UKI, with an entry `loader/entries/nyra-reset.CONF` kept by `nyra-boot-repair` exactly like the
 recovery entry (written for the running blessed version, carried across updates, invisible to
 bootc). A third profile needs no new key and keeps the command line sealed; it boots straight into
@@ -673,8 +677,8 @@ and groups, the file in `/home`, the machine ID and the host name, nothing of th
 goes on, the reset entry asks at once without reading it, and the reset removes it.
 
 Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
-the network and `/etc/systemd/system` the way a user could, checks that each still boots, then resets
-all of it at once.
+the network and `/etc/systemd/system` the way a user could, checks that each still boots, then breaks
+all of it at once, opens Recovery without the system accounts in `/etc/passwd`, and resets it.
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
@@ -762,6 +766,10 @@ A new version must prove itself, or the machine goes back to the previous one by
   tries left after all others, so the previous version boots next.
 - `systemd-bless-boot` drops the counter once `boot-complete.target` is reached. Health checks are
   units `RequiredBy=boot-complete.target`; a failing one keeps the boot from being blessed.
+- **After `bootc rollback`**, which `nyra-updated` uses when the version it wants is already the
+  rollback deployment, bootc rewrites `loader/entries` at once, without counters. `esp-sync
+  rollback-counter` then renames the entry that is not the running system's to `…+3.conf`, so that
+  version is on trial too (`docs/UPDATES.md`, rule 6).
 
 CI follows one VM through six boots: the installed version switches (from a local registry) to an
 unhealthy version (a test-only unit required by `boot-complete.target` fails), which then runs three

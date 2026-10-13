@@ -160,6 +160,17 @@ pub fn on_trial(bless_status: &str) -> bool {
 /// and removes the staged boot entries before `bootc-finalize-staged` would swap them in.
 pub const DISCARDED: &str = "/run/nyra-updated/discarded";
 
+/// A rollback swapped the boot order on this boot ([`System::rolled_back`]). In `/run`: it ends with
+/// this boot, when the new order takes effect.
+pub const ROLLED_BACK: &str = "/run/nyra-updated/rolled-back";
+
+/// The entry `bootc rollback` made the next boot gets three tries (boot counting), like a new version.
+pub fn esp_sync_rollback_counter() -> Command {
+    let mut cmd = Command::new("/usr/lib/nyra/boot/esp-sync");
+    cmd.arg("rollback-counter");
+    cmd
+}
+
 /// Removes the discarded version's staged boot entries from the ESP at once; `esp-sync` removes them
 /// again at shutdown, so a failure here still leaves the version unfinalized.
 pub fn esp_sync_discard() -> Command {
@@ -244,7 +255,16 @@ impl System for Real {
 
     fn rollback(&mut self) -> Result<(), Error> {
         run_ok(Command::new("bootc").arg("rollback"), SHORT)?;
-        sync()
+        let path = Path::new(ROLLED_BACK);
+        let dir = path.parent().expect("a directory");
+        std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
+        std::fs::write(path, "").map_err(|e| Error::Io(format!("{ROLLED_BACK}: {e}")))?;
+        sync()?;
+        run_ok(&mut esp_sync_rollback_counter(), SHORT).map(drop)
+    }
+
+    fn rolled_back(&mut self) -> Result<bool, Error> {
+        Ok(Path::new(ROLLED_BACK).exists())
     }
 
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {

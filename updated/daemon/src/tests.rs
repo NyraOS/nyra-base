@@ -131,6 +131,10 @@ struct Fake {
     state_at_stage: Option<State>,
     /// The staged deployment discarded on this boot (`/run/nyra-updated/discarded`).
     discarded: Option<String>,
+    /// A rollback swapped the boot order on this boot (`/run/nyra-updated/rolled-back`).
+    rolled_back: bool,
+    /// What `rollback` returns after it swapped the order (esp-sync failing).
+    rollback_error: Option<Error>,
 }
 
 impl Fake {
@@ -153,6 +157,8 @@ impl Fake {
             store_dir: dir.store().dir,
             state_at_stage: None,
             discarded: None,
+            rolled_back: false,
+            rollback_error: None,
         }
     }
     fn staged(&self) -> Vec<&String> {
@@ -206,7 +212,11 @@ impl System for Fake {
         }
         self.status.staged = None;
         self.status.rollback_queued = !self.status.rollback_queued;
-        Ok(())
+        self.rolled_back = true;
+        self.rollback_error.clone().map_or(Ok(()), Err)
+    }
+    fn rolled_back(&mut self) -> Result<bool, Error> {
+        Ok(self.rolled_back)
     }
     /// The staged deployment stays in bootc's status until the reboot; it is just not finalized.
     fn discard_staged(&mut self, digest: &str) -> Result<(), Error> {
@@ -697,6 +707,15 @@ fn a_retraction_to_the_local_rollback_deployment_uses_bootc_rollback() {
         fake.calls,
         vec![format!("fetch {SHEET_URL}"), "rollback".to_string()]
     );
+    // On trial like any new version.
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(A));
+    // Until the reboot nothing more happens: another rollback would swap the order back, and A is
+    // not a version the machine fell back from.
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::RollbackQueued));
+    assert_eq!(fake.calls.len(), 2);
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending.as_deref(), Some(A));
 }
 
 #[test]
@@ -783,7 +802,10 @@ fn a_failed_health_check_on_trial_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.on_trial = true;
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Reboot));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -792,7 +814,10 @@ fn a_failed_health_check_after_a_soft_reboot_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.soft_rebooted = true;
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Reboot));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -811,8 +836,108 @@ fn every_try_of_a_counted_entry_is_on_trial() {
 fn a_failed_health_check_off_trial_does_not_loop_reboots() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
-    assert_eq!(on_health_failure(&mut fake), Ok(HealthAction::Stay));
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(None))
+    );
     assert!(fake.calls.is_empty());
+}
+
+#[test]
+fn a_failed_health_check_on_trial_keeps_the_pending_version() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    run_check(&mut fake, &dir).unwrap();
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    fake.boot.on_trial = true;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Reboot)
+    );
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+}
+
+// --- rule 12: the machine's settings, not the version ------------------------------------------
+
+#[test]
+fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    // The settings were broken after C was staged: C failed three times, systemd-boot went back to
+    // A, and A fails its health checks too (not on trial, so it stays up).
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(Some(C.into())))
+    );
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::NotHealthy));
+    // The settings repaired, A is healthy: C is not failed, and is reached again with bootc
+    // rollback, on trial (pending, three tries).
+    fake.healthy = true;
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::RolledBack(image(C)))
+    );
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending.as_deref(), Some(C));
+    assert_eq!(fake.calls.last().map(String::as_str), Some("rollback"));
+    // C boots, counted: confirmed.
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    fake.rolled_back = false;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending, None);
+}
+
+#[test]
+fn a_version_tried_again_that_fails_again_is_failed() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.status.rollback = dep(C);
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::RolledBack(image(C)))
+    );
+    // C fails its three tries; systemd-boot goes back to A, which is healthy now.
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    fake.rolled_back = false;
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    assert!(dir.store().load().unwrap().failed.contains(C));
+}
+
+#[test]
+fn a_rollback_that_fails_after_swapping_the_order_still_leaves_the_version_pending() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.status.rollback = dep(C);
+    // bootc rollback works, esp-sync rollback-counter does not.
+    fake.rollback_error = Some(Error::Command("esp-sync failed".into()));
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Command("esp-sync failed".into()))
+    );
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::RollbackQueued));
 }
 
 // --- the state directory ----------------------------------------------------------------------

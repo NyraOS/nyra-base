@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: what the user sees when a health check failed and the system stays up (not on trial), run
+# by "nyra-updated health-failed" (docs/UPDATES.md). The version was not to blame (or it would be on
+# trial and fall back): usually the system settings in /etc are, which "Reset settings" in the boot
+# menu brings back. One text, on the login console (agetty reads /run/issue.d) and after a login
+# (pam_motd reads /run/motd.d); both go away with this boot.
+set -u
+# The core services that are not running (the health check itself), or else the failed checks.
+down="$(/usr/lib/nyra/health/system | tr '\n' ' ')"
+if [ -z "$down" ]; then
+	down="$(systemctl list-units --state=failed --plain --no-legend 'nyra-health-*' | cut -d ' ' -f 1 | tr '\n' ' ')"
+fi
+text="Nyra OS: some system services did not start: ${down% }.
+Changed system settings are the usual cause. To repair them, restart, choose
+\"Nyra OS Reset settings\" in the boot menu and follow the steps there. User accounts,
+passwords and the files in /home are kept."
+mkdir -p /run/issue.d /run/motd.d
+printf '\n%s\n\n' "$text" > /run/issue.d/50-nyra-health.issue
+printf '\n%s\n\n' "$text" > /run/motd.d/50-nyra-health.motd
+# agetty shows the issue when it starts; one already at the login prompt shows it again.
+agetty --reload 2>/dev/null || true

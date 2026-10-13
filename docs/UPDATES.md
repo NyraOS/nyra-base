@@ -63,7 +63,8 @@ a private key anyone knows: `nyra-updated` refuses it as a trusted key.
 fetches and verifies the sheet, and stages the version it picks, pinned by digest, without applying
 it: the reboot stays the user's choice. `nyra-updated health-failed` (`OnFailure=` of the health checks)
 reboots fully while a new version is on trial, so systemd-boot's boot counting can fall back
-(`docs/BOOT.md`). Each rule has a unit test (`updated/daemon/src/tests.rs`):
+(`docs/BOOT.md`); otherwise the system stays up and says how to reset the settings (below). Each
+rule has a unit test (`updated/daemon/src/tests.rs`):
 
 1. One update at a time (a lock); every bootc, systemctl and curl call has a time limit and is killed
    with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
@@ -75,8 +76,11 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
 4. No downgrade, and no target below the image's version floor, not even a signed retraction (a leaked
    old key cannot send machines back to any image ever signed).
 5. A version the machine fell back from is marked failed and never staged or offered again.
-6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
-   "No changes").
+6. A target that is already the local rollback deployment (a retraction, or a version offered again
+   under rule 12) is reached with `bootc rollback` (a switch would answer "No changes"). It is on
+   trial like any new version: pending, and its entry gets three tries (`esp-sync rollback-counter`:
+   bootc's rollback rewrites the boot entries without counters). Until the reboot nothing else is
+   done (`/run/nyra-updated/rolled-back`): a second rollback would swap the boot order back.
 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
    deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
@@ -91,6 +95,8 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
     as foreign.
 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
     version floor) is discarded the same way as in rule 7.
+12. A version is marked failed only when the version the machine fell back to passes its health
+    checks (below, "The version or the settings").
 
 ### Discarding a staged deployment (rules 7 and 11)
 
@@ -113,10 +119,11 @@ by hand is discarded with it.
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target` |
-| `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running |
+| `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
-| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8) |
+| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, the pending version forgotten (rule 12) and the notice |
+| `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start, and how to reset the settings |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
 
 The image build runs `systemd-analyze verify` on these units and `nyra-updated check-config`, which
@@ -130,6 +137,28 @@ the target being active on a healthy boot.
 being blessed and, while the version is on trial, reboots so systemd-boot can fall back. They finish
 before `systemd-user-sessions.service`, so nobody can log in while they run and an unprivileged user
 cannot make one fail (which would force reboots and mark a good version failed).
+
+**The version or the settings.** A health check can fail because of the machine's own settings in
+`/etc` (a deleted system account, a masked service, a mount in `/etc/fstab` that `apparmor.service`
+needs), not because of the version. An update is only staged on a healthy boot, but settings changed
+afterwards show at the next boot, which is the new version's first. That version then fails its three
+tries and systemd-boot falls back. Both versions share those settings (bootc merges `/etc` into the
+new version), so the older one fails its health checks too. It is not on trial and stays up, and
+`health-failed` then:
+
+- forgets the pending version instead of letting the next check mark it failed (rule 12). Once the
+  settings are repaired and a boot is healthy, the version is offered again. It is the rollback
+  deployment by then, so it comes back through `bootc rollback`, with three tries (rule 6). If it
+  fails again on a healthy machine, the fallback marks it failed as usual;
+- runs `/usr/lib/nyra/health/notice`. It names the core services that did not start (or the failed
+  health checks) and says to restart and choose "Nyra OS Reset settings" in the boot menu, which
+  keeps the user accounts, passwords and `/home` (`docs/BOOT.md`). The text is shown on the login
+  console (agetty reads `/run/issue.d`, and is asked to show it again) and after a login (pam_motd
+  reads `/run/motd.d`). It goes with the boot.
+
+Any failed health check on a boot that is not on trial does the same, with or without an update: a
+version that is not on trial passed its checks before, so what changed is the machine. The cost of
+not knowing at once: the new version's three tries before the fallback.
 
 A broken kernel or initramfs never reaches the health checks: the sealed command line has `panic=10`
 (`/usr/lib/bootc/kargs.d/10-nyra-panic.toml`), so a kernel panic reboots instead of halting, and the
@@ -160,7 +189,7 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 32 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 34 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
@@ -187,9 +216,10 @@ bootc reads it.
 | T4 | older version served (downgrade), replayed older sheet | refused |
 | — | soft reboot into a new version from a counted boot | `systemd-bless-boot` skipped, system `running`, the entry keeps `+3` |
 | T4 | signed retraction below the version floor | refused |
-| T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
+| T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6), its entry with three tries; a second check does nothing until the reboot |
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
+| T3 | a good version, the settings broken after it was staged (`systemd-resolved` masked) | it fails its health check three times and systemd-boot falls back; the older version fails it too and stays up: the new version is not marked failed, the console and the login message say to reset the settings. Settings repaired: the version is offered again through `bootc rollback`, boots counted and is blessed |
 | T3 | new version whose kernel finds no usable initramfs | it panics and reboots by itself (`panic=10`) three times, systemd-boot falls back, the version is marked failed and refused |
 | T5 | DNS answer for another host (a certificate from a trusted CA, for another name) | refused (TLS name check), nothing staged |
 | T5 | a 50 kbit/s link | the pull is stopped at the time limit, nothing staged; staged later on a normal link |

@@ -9,7 +9,8 @@
 //!   version the sheet picks for this machine, pinned by digest, without applying it. The reboot
 //!   stays the user's choice.
 //! - [`on_health_failure`] (`OnFailure=` of the health checks): a full reboot while the new version
-//!   is still on trial, so systemd-boot's boot counting can fall back to the previous one.
+//!   is still on trial, so systemd-boot's boot counting can fall back to the previous one; off trial,
+//!   the system stays up and the pending version is not blamed (rule 12).
 //!
 //! The rules, each with a unit test in `tests.rs`:
 //!
@@ -24,8 +25,10 @@
 //!    version floor, including signed retractions (a leaked old key cannot send machines back to
 //!    any image ever signed).
 //! 5. A version the machine fell back from is marked failed and never prepared or offered again.
-//! 6. A retraction to the version that is already the local rollback deployment uses
-//!    `bootc rollback` (bootc would answer "No changes" to a switch).
+//! 6. A target that is already the local rollback deployment (a retraction, or a version offered
+//!    again under rule 12) is reached with `bootc rollback` (bootc would answer "No changes" to a
+//!    switch). It is on trial like any new version: pending, with three tries
+//!    ([`System::rollback`]), and nothing else is done until the reboot.
 //! 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a wrong
 //!    staged deployment is discarded: it is never finalized ([`System::discard_staged`]), whatever
 //!    the rollback deployment is, and nothing else is staged until the next reboot.
@@ -40,6 +43,11 @@
 //!     The outcome says so ([`Outcome::ForeignImage`]), so such a machine is not silently without updates.
 //! 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
 //!     version floor) is discarded the same way as in rule 7.
+//! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
+//!     health checks. When a health check fails on a boot that is not on trial, the pending version
+//!     is forgotten instead: the machine's own settings (`/etc`, which both versions share) fail
+//!     the older version too, so they are what is broken. The version is offered again once the
+//!     settings are repaired, and tried again with boot counting (rule 6).
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -456,9 +464,12 @@ pub trait System {
     /// Prepares `image_ref` for the next boot, without applying it (`bootc switch`).
     fn stage(&mut self, image_ref: &str) -> Result<(), Error>;
     /// Discards a staged deployment and swaps the boot order (`bootc rollback`): the rollback
-    /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
-    /// there is no rollback deployment.
+    /// deployment becomes the next boot, with three tries (boot counting, `esp-sync
+    /// rollback-counter`). Fails when there is no rollback deployment. Once the order is swapped,
+    /// [`System::rolled_back`] says so until the reboot, even if this returns an error.
     fn rollback(&mut self) -> Result<(), Error>;
+    /// [`System::rollback`] swapped the boot order on this boot (`/run/nyra-updated/rolled-back`).
+    fn rolled_back(&mut self) -> Result<bool, Error>;
     /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
     /// and again at shutdown, so it is not finalized and the boot entries stay as they are
     /// (`/run/nyra-updated/discarded`, `esp-sync`). Until the next reboot, anything staged is
@@ -485,6 +496,9 @@ pub enum Outcome {
     Staged(Image),
     /// The target is the local rollback deployment: `bootc rollback` made it the next boot.
     RolledBack(Image),
+    /// A rollback was made on this boot: nothing more happens until the reboot (another rollback
+    /// would swap the boot order back).
+    RollbackQueued,
     /// The staged deployment (this digest) must not boot and was discarded (rules 7 and 11); nothing
     /// more happens until the next reboot.
     Discarded(String),
@@ -564,6 +578,12 @@ pub fn check(
     let booted = status.booted.clone().ok_or(Error::NoBootedImage)?;
     if !cfg.is_official(booted.image.as_deref()) {
         return Ok(Outcome::ForeignImage(booted.image));
+    }
+
+    // Rule 6: the boot order a rollback made stands until the reboot. Its target is pending, not a
+    // version the machine fell back from.
+    if sys.rolled_back()? {
+        return Ok(Outcome::RollbackQueued);
     }
 
     let first_boot_of_pending = state.pending.as_deref() == Some(booted.digest.as_str());
@@ -646,7 +666,13 @@ pub fn check(
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        sys.rollback()?;
+        // Rule 6: on trial like any new version, so pending as soon as the boot order is swapped.
+        let rolled_back = sys.rollback();
+        if sys.rolled_back()? {
+            state.pending = Some(target.digest.clone());
+            store.save(&state)?;
+        }
+        rolled_back?;
         return Ok(Outcome::RolledBack(target));
     }
 
@@ -670,23 +696,32 @@ pub fn check(
     Ok(Outcome::Staged(target))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthAction {
     /// Full reboot started: the next try, or systemd-boot's fallback.
     Reboot,
     /// The running version is not on trial: a reboot would boot it again (a loop). It stays up,
-    /// unhealthy, for the user and the repair tools.
-    Stay,
+    /// unhealthy, for the user and the repair tools. The pending version it holds, if any, was
+    /// forgotten (rule 12).
+    Stay(Option<String>),
 }
 
-/// A health check failed on this boot (rule 8).
-pub fn on_health_failure(sys: &mut impl System) -> Result<HealthAction, Error> {
+/// A health check failed on this boot (rules 8 and 12). No lock: on a boot that is not healthy,
+/// [`check`] stops before it reads the state.
+pub fn on_health_failure(sys: &mut impl System, store: &Store) -> Result<HealthAction, Error> {
     let info = sys.boot_info()?;
     if info.soft_rebooted || info.on_trial {
         sys.reboot()?;
         return Ok(HealthAction::Reboot);
     }
-    Ok(HealthAction::Stay)
+    // Rule 12: a version the machine fell back from, if that is how this boot came about, is not
+    // what fails here.
+    let mut state = store.load()?;
+    let forgotten = state.pending.take();
+    if forgotten.is_some() {
+        store.save(&state)?;
+    }
+    Ok(HealthAction::Stay(forgotten))
 }
 
 #[cfg(test)]

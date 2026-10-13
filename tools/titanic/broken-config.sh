@@ -15,11 +15,14 @@
 #             chronyd, the firewall and the update timer masked
 #        Expected: the system boots to a login prompt. What happens is in the step summary and the
 #        serial logs: the system state, the failed units, the basic services, the network, whether the
-#        user can log in, and the warnings of the boot. A boot that does not reach the login prompt
-#        fails the step.
-#   6    all four at once on the system itself; the "Nyra OS Reset settings" entry is picked for the
-#        next boot (bootctl set-oneshot, as a user would in the boot menu)
-#   7    that boot: RESET; the system restarts by itself into the normal boot: running; /etc/fstab,
+#        user can log in, the notice a failed health check leaves on the console, and the warnings of
+#        the boot. A boot that does not reach the login prompt fails the step.
+#   6    all four at once on the system itself; the "Nyra OS Recovery" entry is picked for the next
+#        boot (bootctl set-oneshot, as a user would in the boot menu)
+#   7    that boot: recovery asks for an administrator although /etc/passwd has no nobody (the
+#        password is checked as UID 65534); a wrong password gives no shell, the right one a root
+#        shell in rescue.target; then the "Nyra OS Reset settings" entry is picked for the next boot
+#   8    that boot: RESET; the system restarts by itself into the normal boot: running; /etc/fstab,
 #        /etc/passwd (plus the user's line), the network settings, /etc/resolv.conf and
 #        /etc/systemd/system are the image's; the file in /home is the same; the user logs in with
 #        their password (a wrong one is refused); the network works; the basic services are active;
@@ -55,7 +58,7 @@ break_network='mkdir -p /etc/systemd/network && printf "[Match]\nName=en* eth*\n
 break_services='rm -rf /etc/systemd/system/* && systemctl mask systemd-resolved.service chronyd-restricted.service nyra-firewall.service nyra-updated.timer && ls -lR /etc/systemd/system'
 
 # What a broken system does after it booted; only shown, never a failure.
-observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system: \$s\"; systemctl --no-pager --failed; for u in $units; do echo \"\$u: \$(systemctl is-active \$u)\"; done; ip -br address; ip route; if $net; then echo 'network: the runner answers'; else echo 'network: the runner does not answer'; fi; if $login_ok; then echo '$user: logs in with the password'; else echo '$user: cannot log in'; fi; journalctl -b -p warning -o short-monotonic --no-pager | tail -n 40; true"
+observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system: \$s\"; systemctl --no-pager --failed; for u in $units; do echo \"\$u: \$(systemctl is-active \$u)\"; done; ip -br address; ip route; if $net; then echo 'network: the runner answers'; else echo 'network: the runner does not answer'; fi; if $login_ok; then echo '$user: logs in with the password'; else echo '$user: cannot log in'; fi; cat /run/issue.d/50-nyra-health.issue 2>/dev/null; journalctl -b -p warning -o short-monotonic --no-pager | tail -n 40; true"
 # /etc after the reset: the broken paths are the image's (seen under the bind mount of /etc through a
 # bind mount of / alone, as the reset itself does), /etc/passwd with the user's line added.
 image_etc="i=/run/nyra-t8-image; f=0; mkdir -p \$i && mount --bind / \$i && mount -o remount,bind,ro \$i || f=1; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' /etc/passwd | diff \$i/etc/passwd - || f=1; elif test -e \$i/etc/\$p || test -L \$i/etc/\$p; then diff -r --no-dereference \$i/etc/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the image\"; f=1; fi; done; umount \$i; test \$f = 0 && echo '/etc/fstab, /etc/passwd (plus the user), the network settings, /etc/resolv.conf and /etc/systemd/system are the image'\"'\"'s'"
@@ -94,15 +97,30 @@ for what in fstab passwd network services; do
 done
 
 vm --poweroff --log "$logs/serial-broken-config-6.log" \
-  --title "Broken configuration 6: all of it at once; Reset settings picked for the next boot" \
+  --title "Broken configuration 6: all of it at once; Recovery picked for the next boot" \
   --command "$break_services" \
   --command "$break_network" \
   --command "$break_passwd" \
   --command "$break_fstab" \
-  --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"' || fail=1
+  --command 'bootctl set-oneshot nyra-recovery.CONF && echo "next boot: Recovery (as picked in the boot menu)"' || fail=1
 
-if vm --poweroff --log "$logs/serial-broken-config-7.log" --chat "$answer=>RESET" --chat-then-login \
-    --title "Broken configuration 7: Reset settings, then the normal boot" \
+# Recovery checks the password through su run as UID 65534, by number: /etc/passwd has no nobody now.
+again='Wrong user name or password, or not an administrator\.(.|\n)*Administrator user name: '
+if vm --poweroff --log "$logs/serial-broken-config-7.log" \
+    --chat "Administrator user name: =>$user" --chat "Password: =>wrong-$token" \
+    --chat "$again=>$user" --chat "Password: =>$pw" \
+    --title "Broken configuration 7: Recovery without the system accounts; Reset settings picked for the next boot" \
+    --command 'id; test "$(id -u)" = 0 && grep -q "systemd.unit=rescue.target" /proc/cmdline && systemctl is-active rescue.target' \
+    --command '! grep "^nobody:" /etc/passwd && echo "/etc/passwd has no nobody"' \
+    --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"'; then
+  recovery="recovery asks for an administrator and opens a root shell for the right password, without the system accounts"
+else
+  recovery="**recovery did not work without the system accounts** (serial-broken-config-7.log)"
+  fail=1
+fi
+
+if vm --poweroff --log "$logs/serial-broken-config-8.log" --chat "$answer=>RESET" --chat-then-login \
+    --title "Broken configuration 8: Reset settings, then the normal boot" \
     --command "$running" \
     --command "$image_etc" \
     --command "test \"\$(cat /home/$user/keep.txt)\" = $token && test \"\$(stat -c %U /home/$user/keep.txt)\" = $user && echo 'the file in /home is the same'" \
@@ -112,7 +130,7 @@ if vm --poweroff --log "$logs/serial-broken-config-7.log" --chat "$answer=>RESET
     --command "$secure"; then
   reset="the reset brings the image's settings back: the system runs, the user logs in, the network works"
 else
-  reset="**the reset did not bring the system back** (serial-broken-config-7.log)"
+  reset="**the reset did not bring the system back** (serial-broken-config-8.log)"
   fail=1
 fi
 
@@ -123,7 +141,9 @@ fi
   echo "|---|---|"
   printf '%s' "$rows"
   echo
-  echo "All of it at once, then Reset settings: $reset."
+  echo "All of it at once, then Recovery: $recovery."
+  echo
+  echo "Then Reset settings: $reset."
   echo
 } >> "$summary"
 

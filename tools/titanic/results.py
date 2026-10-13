@@ -43,6 +43,9 @@ TESTS = {
            "at random moments."),
     "T3": ("Broken version", "partial", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
            "A version whose health check fails falls back within 3 boots and is not offered again; "
+           "a good version whose health check fails because of settings broken after it was staged "
+           "falls back too, but is not marked failed (the older version fails as well) and boots "
+           "counted once the settings are repaired; "
            "the network comes up after every soft reboot and full boot of an update (20 rounds); a version "
            "whose kernel panics (no usable initramfs) reboots by itself and falls back the same way. "
            "Not yet: no graphical session, dead network."),
@@ -67,7 +70,8 @@ TESTS = {
            "With Secure Boot on: /etc/fstab (a line that is not a mount, a disk that is not "
            "connected), /etc/passwd (the system accounts deleted), the network settings and "
            "/etc/systemd/system (emptied, services masked), each broken on its own: the system boots to "
-           "a login prompt; all of it at once, then Reset settings: the broken files are the image's, "
+           "a login prompt; all of it at once: Recovery opens for the administrator without the system "
+           "accounts; then Reset settings: the broken files are the image's, "
            "the file in /home is the same, the user logs in with their password, the network and the "
            "basic services work."),
     "T9": ("Wrong clock", "full", [UPDATES],
