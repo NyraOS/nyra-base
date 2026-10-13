@@ -91,7 +91,10 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image and install it to a disk image with bootc
+        env:
+          IMAGE_SHA256: ${{ needs.image.outputs.image_sha256 }}
         run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
           digest="$(sudo podman image inspect -f '{{.Digest}}' localhost/nyra-base:ci)"
@@ -171,7 +174,10 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image and install it to a disk image with bootc
+        env:
+          IMAGE_SHA256: ${{ needs.image.outputs.image_sha256 }}
         run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
           digest="$(sudo podman image inspect -f '{{.Digest}}' localhost/nyra-base:ci)"

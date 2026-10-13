@@ -451,9 +451,13 @@ Each line is something that broke or surprised us once.
   cache: `actions/cache` restores an entry by extracting its archive as the runner's user, so the
   entry decides which files the job then runs, before any check of what it holds. Release jobs only
   look caches up (`lookup-only`, to save one that is missing), and `ci/check-release-cache.py` fails
-  CI when a restore in `image.yml` or `.github/actions/` would unpack in a release. The comparison of
-  the release's bootc with the cached build runs in a job of its own (`bootc-reproducible`), with no
-  permissions and no checkout, whose only effect on the release is its result.
+  CI when a restore in `image.yml` or a local action it uses would unpack in a release. The
+  comparison of the release's bootc with the cached build runs in a job of its own
+  (`bootc-reproducible`), with no permissions and no checkout.
+- `permissions:` does not limit the runner's own token for artifacts and caches: any job of a run
+  can replace an artifact another job of the run uploaded. Artifacts that reach the release are
+  checked against the sha256 their producing job reported as a job output (`ci/check-artifact.sh`):
+  a finished job's outputs cannot be changed.
 - A cache saved by a pull request is visible only to that pull request; a cache saved on `main` is
   visible to all. Release runs on `main` were cancelled by the next merge before they saved, so after a
   key change every new pull request built bootc from scratch (~38 min instead of ~8). The

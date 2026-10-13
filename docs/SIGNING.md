@@ -13,6 +13,9 @@ from our registry that do not carry that signature.
    one: they only look caches up, to save one that is missing (`ci/check-release-cache.py` checks
    this in CI). The release's bootc is compared with the build cached on `main` by a separate job,
    `bootc-reproducible`, with no permissions and no checkout; a difference stops the `sign` job.
+   The jobs of a run can replace each other's artifacts, so every job that uses the image artifact
+   (`install-boot`, `sign`, the Titanic jobs) first checks it against the sha256 that `build`
+   reported as a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
    - GitHub issues an OIDC token for the workflow run;

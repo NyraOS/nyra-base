@@ -10,7 +10,8 @@
 # Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
 # save one when it is missing; ci/check-release-cache.py checks that), and the sign job signs
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
-# and the release's bootc is identical to the build cached on main (bootc-reproducible).
+# and the release's bootc is identical to the build cached on main (bootc-reproducible). Every job
+# that uses the image artifact checks it against the sha256 build reported (ci/check-artifact.sh).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md).
@@ -45,6 +46,9 @@ on:
       uki_cert:
         description: The certificate of this run's UKI key (base64), for Secure Boot tests in the caller
         value: ${{ jobs.build.outputs.uki_cert }}
+      image_sha256:
+        description: The sha256 of the nyra-base-oci-archive artifact, as the build job made it
+        value: ${{ jobs.build.outputs.image_sha256 }}
 permissions:
   contents: read
 # A new push to a pull request cancels its older run; on main a running release is never cancelled.
@@ -126,6 +130,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       uki_cert: ${{ steps.image.outputs.uki_cert }}
+      # Every job that uses an artifact of this job checks it against these (ci/check-artifact.sh).
+      image_sha256: ${{ steps.export.outputs.image_sha256 }}
+      sbom_sha256: ${{ steps.sbom.outputs.sbom_sha256 }}
       bootc_key: ${{ steps.bootc-cache.outputs.cache-primary-key }}
       bootc_cached: ${{ steps.bootc-cache.outputs.cache-hit }}
       bootc_sha256: ${{ steps.bootc.outputs.sha256 }}
@@ -321,9 +328,11 @@ jobs:
           grep -q "holds a test key" <<<"$out"
 
       - name: Export the image and the SBOM
+        id: export
         run: |
           mkdir -p dist
           sudo podman save --format oci-archive -o dist/nyra-base.oci.tar localhost/nyra-base:ci
+          echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           cp "$WORK/out/nyra-base-rootfs.manifest" dist/nyra-base.manifest.json
           cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
           sudo chown -R "$(id -u):$(id -g)" dist
@@ -357,6 +366,7 @@ jobs:
       # that gets a chance to touch the image. A blocking finding fails this job, so install-boot
       # and sign do not run.
       - name: SBOM and vulnerability scan (docs/SBOM.md)
+        id: sbom
         run: |
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
@@ -364,6 +374,7 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
+          echo "sbom_sha256=$(sha256sum < dist/nyra-base.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Uploaded even when the scan blocks, to see why. Releases will attach the SBOM, once images
       # are published.
@@ -489,7 +500,10 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
         run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
           digest="$(sudo podman image inspect -f '{{.Digest}}' localhost/nyra-base:ci)"
@@ -652,7 +666,10 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image and install it to a disk image
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
         run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
           tools/vm/install-disk.sh localhost/nyra-base:ci "$WORK"
@@ -683,11 +700,11 @@ jobs:
   # It refuses an image whose UKI is not signed with the committed Nyra certificate (UKI release gate).
   # Two compiles of the same bootc source must be identical: the release's (build) and the one cached
   # on main (bootc-cache.yml). The release job never unpacks a cache, so the cached build is unpacked
-  # here, on a runner of its own, without permissions and without the repository; only this job's
-  # result reaches the release (sign needs it).
+  # here, on a runner of its own, without permissions and without the repository; sign needs it.
+  # The jobs after it check the image artifact against build's output (ci/check-artifact.sh).
   bootc-reproducible:
     needs: build
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
@@ -761,7 +778,10 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image and push it to the local registry (as updates.nyraos.com)
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
         run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           tools/signing/local-registry.sh "$WORK"
           sudo podman load -q -i "$WORK/nyra-base.oci.tar"
           sudo podman run --rm --network host --tmpfs /var/tmp -v "$WORK:/w" localhost/nyra-base:ci \
