@@ -24,7 +24,8 @@ set -euo pipefail
 sources="public.ecr.aws/docker/library docker.io/library"
 store=()
 
-# The pinned image ID and index digest of NAME.
+# The pinned image ID and index digest of NAME. The names are fixed here; for debian only the
+# digest is read from ci/tools.Containerfile (its FROM), never the name or the source.
 pinned() {
   case "$1" in
     debian) echo "a23b5ee2cd75d1c22cb4ded04e78e8a0d930d57f77bd2695038367e0d5c09940 $(sed -n 's/^FROM .*@sha256://p' ci/tools.Containerfile)" ;;
@@ -84,8 +85,9 @@ load() {
 }
 
 # The first source unreachable: registry comes from the second, with the same checks. A digest no
-# source has, and a copy whose image ID is not the pinned one, fail. The log of each case is shown
-# with its workflow commands defused, so the expected errors make no annotations.
+# source has, an image whose image ID is not the pinned one (pulled or cached), and a name that is
+# not pinned, fail. The log of each case is shown with its workflow commands defused, so the
+# expected errors make no annotations.
 self_test() {
   local t id digest
   t="$(mktemp -d)"
@@ -101,12 +103,19 @@ self_test() {
   fi
   sed 's/^::/(self-test) ::/' "$t/log"
   grep -q "^::error::registry: no source served sha256:0\{64\}$" "$t/log"
-  if load "$t/cache" registry "$(pinned debian | cut -d' ' -f1)" "$digest" >"$t/log" 2>&1; then
-    echo "::error::self-test: an image with another image ID was accepted"
+  # Another image ID, pulled (from the second source) and from the cache.
+  for c in "$t/empty" "$t/cache"; do
+    if load "$c" registry "$(pinned debian | cut -d' ' -f1)" "$digest" >"$t/log" 2>&1; then
+      echo "::error::self-test: an image with another image ID was accepted ($c)"
+      exit 1
+    fi
+    sed 's/^::/(self-test) ::/' "$t/log"
+    grep -q "^::error::registry is image $id, not the pinned " "$t/log"
+  done
+  if (pinned nope) 2>/dev/null; then
+    echo "::error::self-test: an image that is not pinned was accepted"
     exit 1
   fi
-  sed 's/^::/(self-test) ::/' "$t/log"
-  grep -q "^::error::registry is image $id, not the pinned " "$t/log"
   sudo rm -rf "$t"
   echo "pinned-images.sh self-test: ok"
 }
