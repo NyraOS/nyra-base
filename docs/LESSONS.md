@@ -500,8 +500,17 @@ Each line is something that broke or surprised us once.
   and save its cache before pushing again.
 - **Release builds do not use the cache, pull requests do.** A release is what users install and what
   gets signed, so it is built only from pinned sources, never from a file another run left behind.
-  Pull requests only test, so they restore the bootc build. A release restores the bootc cache only to
-  compare it with its own fresh compile, never to build from it.
+  Pull requests only test, so they restore the bootc build. A release job does not even unpack a
+  cache: `actions/cache` restores an entry by extracting its archive as the runner's user, so the
+  entry decides which files the job then runs, before any check of what it holds. Release jobs only
+  look caches up (`lookup-only`, to save one that is missing), and `ci/check-release-cache.py` fails
+  CI when a restore in `image.yml` or a local action it uses would unpack in a release. The
+  comparison of the release's bootc with the cached build runs in a job of its own
+  (`bootc-reproducible`), with no permissions and no checkout.
+- `permissions:` does not limit the runner's own token for artifacts and caches: any job of a run
+  can replace an artifact another job of the run uploaded. Artifacts that reach the release are
+  checked against the sha256 their producing job reported as a job output (`ci/check-artifact.sh`):
+  a finished job's outputs cannot be changed.
 - A cache saved by a pull request is visible only to that pull request; a cache saved on `main` is
   visible to all. Release runs on `main` were cancelled by the next merge before they saved, so after a
   key change every new pull request built bootc from scratch (~38 min instead of ~8). The

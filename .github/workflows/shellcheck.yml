@@ -37,6 +37,10 @@ jobs:
         run: python3 -I tools/titanic/results.py --self-test
       - name: Self-test of the cached image check (ci/verify-oci.py)
         run: python3 -I ci/verify-oci.py --self-test
+      - name: Release jobs unpack no cache (ci/check-release-cache.py)
+        run: python3 -I ci/check-release-cache.py --self-test && python3 -I ci/check-release-cache.py
+      - name: Self-test of the artifact check (ci/check-artifact.sh)
+        run: ci/check-artifact.sh --self-test
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12
