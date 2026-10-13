@@ -29,15 +29,15 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T4 | Signatures and versions | `tools/signing/test-policy.sh`, `tools/vm/secure-boot.sh`, `tools/vm/updates.sh` | full |
 | T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
 | T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
-| T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh` | full |
+| T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh`, `tools/signing/tpm-unlock.sh` (the signed PCR policy unlocks the disk only in the initrd, swtpm) | full |
 | T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot? Then all of it at once and Reset settings, with Secure Boot) | full |
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
-| T10 | Disk encryption | none: encryption does not exist yet | not implemented |
+| T10 | Disk encryption | none yet: the signed TPM unlock policy is already tested (T7, T15, `tools/signing/tpm-unlock.sh`), but the user-facing encryption (password, recovery key, TPM after measurement-changing updates, never locked out) does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | full |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
 | T14 | Removable media pulled out | none: needs removable media support | not implemented |
-| T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates) | full |
+| T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates), `tools/signing/tpm-unlock.sh` (the TPM releases the disk key only in the initrd, swtpm; no NvPCR definitions in the image) | full |
 
 A test passes only if every step that runs it succeeded; a test that covers only part of its
 scenarios gives `partial` at best. A step that failed, was skipped or no longer exists fails the

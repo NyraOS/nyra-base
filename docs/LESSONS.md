@@ -378,6 +378,39 @@ Each line is something that broke or surprised us once.
 - Debian ships `systemd-measure` (and `systemd-pcrphase`) in **`systemd-tpm`**, not in `systemd` or
   `systemd-ukify`; ukify fails with `FileNotFoundError` without it. The initramfs needs dracut's
   `systemd-pcrextend` module, or the boot phases the policy covers are never measured.
+- **The signed PCR 11 unlock can be tested without a VM** (`tools/signing/tpm-unlock.sh`). systemd-stub
+  measures the UKI's sections into PCR 11 and systemd-pcrextend adds the boot phases, so the exact
+  PCR 11 state of any phase of any profile is reached by replaying that sequence into a software TPM
+  (swtpm): for each non-empty measured section extend `H(name\0)` then `H(data)`, then one word per
+  phase: `H("enter-initrd")`, `H("leave-initrd")`, `H("sysinit")`, `H("ready")`. systemd-pcrextend
+  measures only the phase's own word, and `systemd-measure --phase=enter-initrd:leave-initrd` splits
+  on `:` and extends one word at a time; extending the whole `a:b` string gives values no machine
+  ever has. Reuse the stub's section reader (`pe_sections.py`) and the signer's algorithm
+  (`pcr-policy.py`), and anchor every replayed state: compare the PCR 11 the software TPM holds with
+  `systemd-measure calculate --phase=…` from the image. A positive control on one state alone does
+  not catch a wrong later phase: a test whose refusals come from never reaching the real state
+  passes even when the policy is broken. Prove such a test with a mutation (here: a `.pcrsig` that
+  signs all four phases must fail it).
+- A refusal row must check its reason, not only the absence of success: a malformed input or a
+  failed setup step otherwise looks like a refusal. Run every setup step with `set -e`.
+- **Reset a PCR by power-cycling the TPM, not with `tpm2_clear`.** `tpm2_clear` drops the owner
+  hierarchy and the TPM's seed, so a key sealed with the systemd SRK can no longer be loaded ("Failed
+  to unseal"). Restarting swtpm on the same state directory (`--flags startup-clear`) resets the PCRs
+  to 0 while the seed and the persistent SRK stay, which is what happens between two boots. A second
+  `tpm2_startup` on a running swtpm does nothing (it is already initialized).
+- **Ubuntu confines swtpm with AppArmor** (`/etc/apparmor.d/usr.bin.swtpm`): it may write its state
+  only under the user's home, `/tmp` and libvirt's directories. A state directory elsewhere (the CI
+  work disk, `/mnt/work`) fails with "SWTPM_NVRAM_Lock_Dir: Could not open lockfile: Permission
+  denied", and then nothing listens. Keep the state in `RUNNER_TEMP` and wait until swtpm accepts a
+  connection before the first TPM command.
+- **`systemd-tpm2-setup` ignores `SYSTEMD_TPM2_DEVICE` and talks only to a kernel TPM** (`/dev/tpmrm0`),
+  so it cannot be pointed at an swtpm over TCP from userspace; it exits "No complete TPM2 support
+  detected" with `--graceful`. `systemd-cryptenroll` and `systemd-cryptsetup` do honour the variable
+  (and `swtpm:host=…,port=…`), so the unlock test uses them directly.
+- **A LUKS activation needs device-mapper, which a plain container does not have**, but the TPM part
+  does not: `systemd-cryptsetup attach` reaches "Completed TPM2 key unsealing" (the key is released)
+  before it fails to create the dm target. The unlock test asserts on the unsealing, so it needs no
+  privileged container and no device-mapper (`dm_mod`).
 - The policy's key fingerprint (`pkfp`) is SHA-256 of `i2d_PublicKey`: for RSA the PKCS#1
   `RSAPublicKey` DER (`openssl rsa -pubin -RSAPublicKey_out -outform DER`), not the
   SubjectPublicKeyInfo.

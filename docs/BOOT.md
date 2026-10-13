@@ -150,9 +150,10 @@ too. Disk unlock therefore depends on what the TPM measured, not on Secure Boot 
 ## TPM2 unlock: the signed PCR policy
 
 The disk will be encrypted (LUKS) and, on a machine with a TPM, unlock by itself at boot only when
-the Nyra UKI's main profile booted. This repository builds the signed policy into the UKI and checks
-it; no disk is enrolled yet (that comes with the encryption work, in the installer), and the VM test
-with a software TPM is still to come.
+the Nyra UKI's main profile booted. This repository builds the signed policy into the UKI, checks
+it, and tests the unlock it authorizes with a software TPM (`tools/signing/tpm-unlock.sh`, "The
+software-TPM test" below); enrolling a user's disk comes later, with the encryption work in the
+installer.
 
 **What is measured.** systemd-stub measures the UKI's sections into PCR 11 before it starts the
 kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`,
@@ -208,9 +209,9 @@ CI tests both verbs on a UKI built by `ci/ukify.sh` with a policy key of the tes
 (`tools/signing/test-pcr-policy.sh`). systemd-measure signs the same policy with the same signature,
 and every refusal above is checked with its reason.
 
-**What the enrollment must bind** (encryption work, not here): `systemd-cryptenroll
---tpm2-public-key=<.pcrpkey> --tpm2-public-key-pcrs=11 --tpm2-public-key-policyref=initrd
---tpm2-pcrs=7+12`, so that unlock needs:
+**What the enrollment must bind** (the installer enrolls a user's disk; the software-TPM test below
+enrolls a throwaway one the same way): `systemd-cryptenroll --tpm2-public-key=<.pcrpkey>
+--tpm2-public-key-pcrs=11 --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12`, so that unlock needs:
 - the signed PCR 11 policy (the Nyra UKI's main profile, in the initrd);
 - PCR 7 as enrolled (Secure Boot on, the same keys): never PCR 7 alone;
 - **PCR 12 at its value without add-ons**: systemd-stub measures add-ons and credentials from the
@@ -222,11 +223,43 @@ The sealed command line has `rd.shell=0 rd.emergency=reboot`
 (`/usr/lib/bootc/kargs.d/15-nyra-initrd.toml`): a failure in the initrd reboots instead of opening a
 shell, before or after the disk is unlocked. `systemd.import_credentials=no` stays. systemd-cryptsetup
 talks to the TPM over an encrypted session (parameter encryption, salted with the TPM's storage key)
-by itself; the VM test will check that it is in use.
+by itself.
 
 **The policy key.** In CI it is made for each run, like the UKI key, and deleted after signing. The
 real one is described in docs/SIGNING.md ("The PCR policy key"): kept like the UKI key, outside CI,
 with only its public half committed, and rotated, with the next key enrolled in advance.
+
+**The software-TPM test** (`tools/signing/tpm-unlock.sh`, `install-boot` job). The signing step and
+the release gate prove the policy is *signed* right; this proves the policy *unlocks* right, with the
+image's own systemd (262) and a software TPM (swtpm). No VM and no KVM: systemd-stub measures the
+UKI's sections into PCR 11 and systemd-pcrextend adds one word per boot phase (`enter-initrd`, then
+`leave-initrd`, `sysinit`, `ready`), so `tools/signing/tpm-replay.py` replays that sequence (the
+stub's section reading is `pe_sections.py`, the PCR 11 algorithm is `pcr-policy.py`'s) to bring swtpm
+to any phase of any profile, from a power-on each time (the TPM is restarted on its state, so PCR 11
+resets to 0 while the seed and storage root key persist, as between two boots). Every replayed state
+is anchored: the PCR 11 swtpm then holds must equal what the image's `systemd-measure calculate`
+gives for that profile and phase, or the test fails. A throwaway LUKS2 disk, with a random key
+generated here and deleted at the end, is enrolled with the binding above, and the test checks for
+each state whether the TPM releases the key, and why:
+
+| State / enrollment | Unlock | Reason checked in the log |
+|---|---|---|
+| main profile, `enter-initrd` (the signed policy) | **yes** | the key unsealed, over an encrypted (HMAC) session |
+| main profile, `leave-initrd`, `sysinit` or `ready` (the running system) | no | no signature for that PCR 11 policy |
+| recovery profile, reset profile | no | no signature for that PCR 11 policy |
+| an add-on measured into PCR 12 | no | the policy from the PCRs is not the one the key was sealed with |
+| the `enter-initrd` signature replayed onto the next phase's policy | no | the TPM rejects the signature |
+| an enrollment without the `initrd` reference | no | no signature without the reference (the TPM would refuse it too: the signature covers the policy and the reference) |
+
+"Unlock" is systemd-cryptsetup reaching the key unsealing; activating the device-mapper target
+afterwards needs no TPM and is not part of the check. A `.pcrsig` that also signed the later phases
+makes the `leave-initrd`, `sysinit` and `ready` rows fail (checked when the test was written). NvPCRs: the test
+checks that the image ships no NvPCR definitions (`/usr/lib/nvpcr`), so `systemd-tpm2-setup` has
+none to allocate (docs/DEFAULTS.md); that unit itself does not run in the test.
+
+Not covered here, and left for the encryption work: a real encrypted boot through the initrd with a
+TPM attached to the VM (no TPM unit failing, the forced reboot on a missed `leave-initrd`, the way
+out of a reboot loop with the TPM turned off), and the user-facing password and recovery-key fallback.
 
 ## SBAT
 
