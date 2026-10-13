@@ -456,14 +456,13 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
   the ESP read-only and every later update fails; `fsck.fat -a` does not repair it
   (docs/LESSONS.md). Every ESP mount is therefore `dirsync` (each directory change is written before
   the call returns): `/boot` (`boot.mount.d/10-nyra.conf`, the generator's options with `ro` and
-  `dirsync`; CI checks it; a remount keeps the flag), the mount `esp-writable` makes when `/boot`
-  is not mounted, and bootc's own (patched in `ci/build-bootc.sh`,
+  `dirsync`; CI checks it; a remount keeps the flag), and bootc's own (patched in `ci/build-bootc.sh`,
   `patches/upstream/bootc-esp-dirsync.md`). bootc already writes each file to
   a temporary name, fsyncs it and renames it. After `bootc-finalize-staged`, `sync` runs
   (`bootc-finalize-staged.service.d/10-nyra.conf`): bootc detaches its mount lazily, so what it
   wrote (the old files it removed) is not necessarily on the disk when it exits.
 
-CI follows one system through fourteen boots, with Secure Boot on and one firmware variable store kept
+CI follows one system through sixteen boots, with Secure Boot on and one firmware variable store kept
 across them (`vm-boot.py --keep-vars`). The image's command line imports no credentials, so the test
 console add-on on that disk is replaced by one signed with a key enrolled as a MOK in this test only:
 
@@ -484,6 +483,8 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | 12 | `loader/entries` deleted (what a power cut during the swap can leave) | boots through the fallback UKI; the entry is put back |
 | 13 | `loader/entries` emptied | the same |
 | 14 | | boots through bootc's entry again; one fallback UKI, still `+0` |
+| 15 | a drop-in in `/etc` that makes the ESP's file system check fail | `boot.mount` fails; `esp-writable` refuses with an error in the journal and the random seed on the ESP is unchanged; no FAT file system mounted; `nyra-updated` does not run; the health checks pass and the system starts, with only the check and the random seed failed |
+| 16 | that drop-in removed | the ESP checked and mounted read-only again, the repair runs, `esp-writable` writes (a new random seed) |
 
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
 section; the copy is never started (those boots go through `\EFI\nyra`), so its broken signature
@@ -508,10 +509,12 @@ So the ESP must stay intact:
   system", whoever makes it. Reading needs nothing special (`bootctl`, `systemd-bless-boot status`,
   `bootc status`).
 - **Writers use `/usr/lib/nyra/boot/esp-writable COMMAND`**: it runs the command in a mount namespace
-  of its own, where `/boot` is remounted read-write (or, if `/boot` is not mounted, the partition in
-  `LoaderDevicePartUUID` is mounted there, with the same options). That makes the file system itself
+  of its own, where `/boot` is remounted read-write. That makes the file system itself
   writable, but read-only is also a flag of each mount, and every other process's `/boot` keeps it.
   bootc does exactly this for its own writes (a remount of the existing mount in its namespace).
+  It only remounts what `boot.mount` mounted after the ESP's file system check: when `/boot` is not
+  mounted (the check or the mount failed), it writes nothing and logs an error that points to
+  `journalctl -u boot.mount` (see "Mounts from /etc/fstab").
   Through it: `esp-sync` (`repair`, `boot-counter`, `discard`; it runs itself again under
   `esp-writable`), `systemd-bless-boot good` and `bootctl random-seed` (drop-ins that replace their
   `ExecStart=`). `systemd-boot-update.service` is blocked instead (docs/DEFAULTS.md): it would write
@@ -743,9 +746,18 @@ in their drop-in, and units with `PrivateTmp=` wait for it by themselves.
 If the ESP itself cannot be mounted (a damaged partition), the boot goes on as before this change:
 `boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped, and
 the health checks still pass: they judge the system version, and failing them would restart the
-machine into the previous version, which finds the same partition. What writes to the ESP later
-(blessing the boot, boot counting) goes through `esp-writable`, which mounts the partition by itself
-when `/boot` is not mounted.
+machine into the previous version, which finds the same partition. Nyra's own writes to the ESP need
+it checked and mounted: `esp-writable` refuses (an error in the journal, pointing to
+`journalctl -u boot.mount`), so the boot loader random seed fails visibly and a counted boot is not
+blessed; `nyra-updated` does not run (`RequiresMountsFor=/boot`; each start tries the check and the
+mount again), so no update is staged that would boot without its boot counter. The user, or a later
+boot whose check passes, decides what happens to the ESP. What stays accepted: a version already on
+trial when the ESP breaks is not blessed, so after its three tries systemd-boot starts the previous
+version. Once `nyra-updated` runs again (the ESP checked and mounted), it marks that version failed,
+since the version the machine fell back to passes its health checks (docs/UPDATES.md, rules 5 and
+12). The same happened before when the partition could not be mounted at all.
+There is no reboot loop: the previous version is not on trial. CI: `tools/vm/boot-protection.sh`,
+boots 15 and 16.
 
 **A line with `x-initrd.mount`** is mounted in the initramfs, which keeps systemd's own behaviour:
 if it fails, the initramfs's emergency mode reboots (`rd.emergency=reboot`),
