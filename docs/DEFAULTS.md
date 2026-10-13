@@ -42,6 +42,7 @@ file.
 | `e2scrub_all.timer`, `e2scrub_all.service`, `e2scrub_reap.service` | online ext4 checks through LVM snapshots; the base has no LVM |
 | `xfs_healer_start.service` | XFS self-healing; the root is ext4 (`xfs_healer@` is blocked too) |
 | `systemd-pcrlock-*.service` (7), `systemd-pcrlock.socket`, `systemd-sysupdate-notify-pcrlock.socket` | systemd-pcrlock writes a TPM policy (an NV index) at every boot; Nyra unlocks with the signed PCR policy instead (docs/BOOT.md, "TPM2 unlock") |
+| `systemd-sysupdate-notify-bootctl.socket` | lets `systemd-sysupdate` ask `bootctl` (as root) to link a UKI it installed into the boot menu; Nyra updates through bootc, not `systemd-sysupdate`, and only `esp-sync` and bootc write boot entries (docs/BOOT.md, "The ESP is read-only") |
 | `systemd-tpm2-clear.service` | asks the firmware to clear the TPM on `factory-reset.target`, which Nyra does not use |
 | `systemd-pcrextend.socket` | a Varlink API to extend PCRs; nothing in the base calls it (the phase units run the tool directly) |
 | `systemd-pcrmachine.service`, `systemd-pcrproduct.service`, `systemd-pcrnvdone.service`, `systemd-pcrfs-root.service` | measure the machine ID, the product ID and the root file system into PCR 15 and NvPCRs, which the Nyra policy does not use |
