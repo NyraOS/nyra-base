@@ -437,7 +437,9 @@ Each line is something that broke or surprised us once.
   picks the format itself. So `ci/pinned-images.sh` checks what podman stored: it reads the cached
   copy with the `oci:` transport, saves the image again (`--format oci-dir --uncompressed`) and
   `ci/verify-oci.py` checks every layer against the config's DiffIDs, refusing JSON keys that are
-  not ASCII or appear twice in any case (`podman save` passes the stored manifest through).
+  not ASCII or appear twice in any case (`podman save` passes the stored manifest through). A refused
+  cache entry fails every job that restores it: delete it (`gh cache delete pinned-images-…`, the key
+  is in the job's log) or change the key.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.

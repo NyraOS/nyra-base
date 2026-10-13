@@ -6,8 +6,8 @@ with digest ID, and every layer blob, byte for byte, has the sha256 of the confi
 position (so it must be stored uncompressed). Every blob it names is hashed. JSON with a key twice
 (also when only the case differs: Go's decoder matches keys that way), a key that is not ASCII, or
 a schemaVersion other than the number 2 is refused: podman reads the same manifest with Go, and it
-must not read other layers than the ones checked here. podman 5 checks the DiffIDs itself when it reads an image; podman 4.9
-does not.
+must not read other layers than the ones checked here. podman 5 checks the DiffIDs itself when it
+reads an image; podman 4.9 does not.
 
   verify-oci.py DIR ID
   verify-oci.py --self-test
@@ -75,16 +75,19 @@ def self_test():
             f.write(data)
         return digest
 
-    def layout(d, layer, config_layer, manifest_extra="", index_extra="", version="2"):
-        """A layout whose config names CONFIG_LAYER's DiffID and whose manifest has LAYER; the
-        EXTRA texts are added to the manifest's and the index's JSON objects as they are."""
+    def layout(d, layers=(b"layer",), manifest_extra="", index_extra="", version="2", copies=1,
+               digest=None):
+        """A layout whose config has the DiffID of b"layer" and whose manifest has LAYERS; the
+        EXTRA texts are added to the manifest's and the index's JSON objects as they are, and the
+        index lists the manifest COPIES times, by its digest or by DIGEST."""
         os.makedirs(os.path.join(d, "blobs", "sha256"), exist_ok=True)
-        cfg = json.dumps({"rootfs": {"type": "layers", "diff_ids": [put(d, config_layer)]}}).encode()
+        cfg = json.dumps({"rootfs": {"type": "layers", "diff_ids": [put(d, b"layer")]}}).encode()
+        layer_list = ", ".join(f'{{"digest": "{put(d, layer)}"}}' for layer in layers)
         manifest = (f'{{"schemaVersion": 2, "config": {{"digest": "{put(d, cfg)}"}}, '
-                    f'"layers": [{{"digest": "{put(d, layer)}"}}]{manifest_extra}}}').encode()
+                    f'"layers": [{layer_list}]{manifest_extra}}}').encode()
+        entries = ", ".join([f'{{"digest": "{digest or put(d, manifest)}"}}'] * copies)
         with open(os.path.join(d, "index.json"), "w") as f:
-            f.write(f'{{"schemaVersion": {version}, "manifests": [{{"digest": "{put(d, manifest)}"}}]'
-                    f'{index_extra}}}')
+            f.write(f'{{"schemaVersion": {version}, "manifests": [{entries}]{index_extra}}}')
         return hashlib.sha256(cfg).hexdigest()
 
     def refused(d, image_id, want):
@@ -97,13 +100,18 @@ def self_test():
 
     with tempfile.TemporaryDirectory() as t:
         good = os.path.join(t, "good")
-        image_id = layout(good, b"layer", b"layer")
+        image_id = layout(good)
         verify(good, image_id)
         refused(good, "0" * 64, "the config is")
         changed = put(good, b"layer, changed")
         cases = [
             # One layer changed, the manifest names it, the config (the ID) is unchanged.
-            ("changed", {"layer": b"layer, changed"}, "not the config's DiffID"),
+            ("changed", {"layers": [b"layer, changed"]}, "not the config's DiffID"),
+            # A layer more than the config has DiffIDs; the index naming two manifests.
+            ("extra", {"layers": [b"layer", b"layer, changed"]}, "2 layers but 1 DiffIDs"),
+            ("two", {"copies": 2}, "lists 2 manifests"),
+            # A digest that is a path, not a sha256 digest.
+            ("path", {"digest": "sha256:../../index.json"}, "not a sha256 digest"),
             # The same key twice, in another case: a Go reader takes the last one.
             ("manifest", {"manifest_extra": f', "Layers": [{{"digest": "{changed}"}}]'}, "twice"),
             ("index", {"index_extra": ', "Manifests": []'}, "twice"),
@@ -112,7 +120,7 @@ def self_test():
         ]
         for name, kwargs, want in cases:
             d = os.path.join(t, name)
-            assert layout(d, **{"layer": b"layer", "config_layer": b"layer", **kwargs}) == image_id
+            assert layout(d, **kwargs) == image_id
             refused(d, image_id, want)
         # A blob whose bytes do not match its name.
         with open(os.path.join(good, "blobs", "sha256", hashlib.sha256(b"layer").hexdigest()), "wb") as f:
