@@ -744,20 +744,21 @@ the units that write to the ESP are ordered after `boot.mount` itself:
 in their drop-in, and units with `PrivateTmp=` wait for it by themselves.
 
 If the ESP itself cannot be mounted (a damaged partition), the boot goes on as before this change:
-`boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped, and
-the health checks still pass: they judge the system version, and failing them would restart the
-machine into the previous version, which finds the same partition. Nyra's own writes to the ESP need
-it checked and mounted: `esp-writable` refuses (an error in the journal, pointing to
+`boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped. When
+the kernel refuses to mount the ESP, a health check may fail as well: a version on trial then falls
+back after its three tries, and a version that is not on trial stays up with that check failed. There
+is no reboot loop either way. When only the file system check failed (the partition itself can be
+mounted), the health checks pass (CI, below). Nyra's own writes to the ESP need it checked and
+mounted: `esp-writable` refuses (an error in the journal, pointing to
 `journalctl -u boot.mount`), so the boot loader random seed fails visibly and a counted boot is not
 blessed; `nyra-updated` does not run (`RequiresMountsFor=/boot`; each start tries the check and the
 mount again), so no update is staged that would boot without its boot counter. The user, or a later
 boot whose check passes, decides what happens to the ESP. What stays accepted: a version already on
 trial when the ESP breaks is not blessed, so after its three tries systemd-boot starts the previous
-version. Once `nyra-updated` runs again (the ESP checked and mounted), it marks that version failed,
-since the version the machine fell back to passes its health checks (docs/UPDATES.md, rules 5 and
-12). The same happened before when the partition could not be mounted at all.
-There is no reboot loop: the previous version is not on trial. CI: `tools/vm/boot-protection.sh`,
-boots 15 and 16.
+version. Once `nyra-updated` runs again (the ESP checked and mounted), it marks that version failed
+if the version the machine fell back to passes its health checks (docs/UPDATES.md, rules 5 and 12).
+The same happened before when the partition could not be mounted at all. CI:
+`tools/vm/boot-protection.sh`, boots 15 and 16.
 
 **A line with `x-initrd.mount`** is mounted in the initramfs, which keeps systemd's own behaviour:
 if it fails, the initramfs's emergency mode reboots (`rd.emergency=reboot`),

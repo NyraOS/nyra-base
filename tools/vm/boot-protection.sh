@@ -274,7 +274,7 @@ vm --log "$logs/serial-boot-protection-15.log" \
   --title "Boot protection 15: the ESP's file system check fails: nothing is written to the ESP, the system starts" \
   --command "$fsck_fails" \
   --command '@reboot systemctl reboot' \
-  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; f="$(systemctl --failed --plain --no-legend | cut -d " " -f 1 | sort | tr "\n" " ")"; echo "failed: $f"; test "$s" = degraded && case "$f" in "systemd-boot-random-seed.service systemd-fsck@"*".service ") true ;; *) false ;; esac' \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; f="$(systemctl --failed --plain --no-legend | cut -d " " -f 1 | sort | tr "\n" " ")"; echo "failed: $f"; test "$s" = degraded && test "$(echo "$f" | wc -w)" = 2 && case "$f" in "systemd-boot-random-seed.service systemd-fsck@"*".service ") true ;; *) false ;; esac' \
   --command 'journalctl -b -o cat --no-pager -u boot.mount; ! mountpoint -q /boot && test "$(systemctl show -P ActiveState boot.mount)" != active && journalctl -b -o cat --no-pager -u boot.mount | grep -q "Dependency failed" && echo "boot.mount failed with the check"' \
   --command "$refused"' && test -z "$(findmnt -n -t vfat)" && echo "esp-writable refused; no FAT file system mounted"' \
   --command "$seed_ro"'; a="$(seed)"; systemctl restart systemd-boot-random-seed.service; r=$?; b="$(seed)"; echo "before: $a"; echo "after:  $b"; test "$r" != 0 && test -n "$a" && test "$a" = "$b" && test "$('"$refused"' | wc -l)" = 2 && test -z "$(findmnt -n -t vfat)" && echo "the random seed on the ESP is unchanged"' \
