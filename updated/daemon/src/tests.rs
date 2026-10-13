@@ -204,14 +204,18 @@ impl System for Fake {
         Ok(())
     }
     /// Like `bootc rollback` on composefs: fails without a rollback deployment, otherwise
-    /// discards a staged deployment and swaps the boot order.
-    fn rollback(&mut self) -> Result<(), Error> {
-        self.calls.push("rollback".into());
-        if self.status.rollback.is_none() {
-            return Err(Error::Command("bootc rollback failed".into()));
+    /// discards a staged deployment and swaps the boot order; not run when it is `queued` already.
+    fn rollback(&mut self, queued: bool) -> Result<(), Error> {
+        if queued {
+            self.calls.push("rollback-counter".into());
+        } else {
+            self.calls.push("rollback".into());
+            if self.status.rollback.is_none() {
+                return Err(Error::Command("bootc rollback failed".into()));
+            }
+            self.status.staged = None;
+            self.status.rollback_queued = !self.status.rollback_queued;
         }
-        self.status.staged = None;
-        self.status.rollback_queued = !self.status.rollback_queued;
         self.rolled_back = true;
         self.rollback_error.clone().map_or(Ok(()), Err)
     }
@@ -869,11 +873,13 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
     let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
     // The settings were broken after C was staged: C failed three times, systemd-boot went back to
-    // A, and A fails its health checks too (not on trial, so it stays up).
+    // A, and A fails its health checks too (not on trial, so it stays up). bootc still orders C's
+    // entry first (by sort key, not by tries left): for bootc, the rollback is queued.
     fake.status = Status {
         booted: dep(A),
+        staged: None,
         rollback: dep(C),
-        ..Status::default()
+        rollback_queued: true,
     };
     fake.healthy = false;
     assert_eq!(
@@ -881,8 +887,8 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
         Ok(HealthAction::Stay(Some(C.into())))
     );
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::NotHealthy));
-    // The settings repaired, A is healthy: C is not failed, and is reached again with bootc
-    // rollback, on trial (pending, three tries).
+    // The settings repaired, A is healthy: C is not failed, and is the next boot again, on trial
+    // (pending, three tries). bootc rollback is not run: it would put A first.
     fake.healthy = true;
     assert_eq!(
         run_check(&mut fake, &dir),
@@ -891,7 +897,11 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
     let state = dir.store().load().unwrap();
     assert!(state.failed.is_empty());
     assert_eq!(state.pending.as_deref(), Some(C));
-    assert_eq!(fake.calls.last().map(String::as_str), Some("rollback"));
+    assert_eq!(
+        fake.calls.last().map(String::as_str),
+        Some("rollback-counter")
+    );
+    assert!(fake.status.rollback_queued);
     // C boots, counted: confirmed.
     fake.status = Status {
         booted: dep(C),

@@ -463,11 +463,13 @@ pub trait System {
     fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error>;
     /// Prepares `image_ref` for the next boot, without applying it (`bootc switch`).
     fn stage(&mut self, image_ref: &str) -> Result<(), Error>;
-    /// Discards a staged deployment and swaps the boot order (`bootc rollback`): the rollback
-    /// deployment becomes the next boot, with three tries (boot counting, `esp-sync
-    /// rollback-counter`). Fails when there is no rollback deployment. Once the order is swapped,
-    /// [`System::rolled_back`] says so until the reboot, even if this returns an error.
-    fn rollback(&mut self) -> Result<(), Error>;
+    /// Makes the rollback deployment the next boot, with three tries (boot counting, `esp-sync
+    /// rollback-counter`). Unless bootc already orders it first (`queued`: after a boot-counting
+    /// fallback too, since bootc orders the entries by sort key, not by tries left), `bootc
+    /// rollback` discards a staged deployment and swaps the boot order; it fails when there is no
+    /// rollback deployment. From then on [`System::rolled_back`] says so until the reboot, even if
+    /// this returns an error.
+    fn rollback(&mut self, queued: bool) -> Result<(), Error>;
     /// [`System::rollback`] swapped the boot order on this boot (`/run/nyra-updated/rolled-back`).
     fn rolled_back(&mut self) -> Result<bool, Error>;
     /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
@@ -667,7 +669,7 @@ pub fn check(
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
         // Rule 6: on trial like any new version, so pending as soon as the boot order is swapped.
-        let rolled_back = sys.rollback();
+        let rolled_back = sys.rollback(status.rollback_queued);
         if sys.rolled_back()? {
             state.pending = Some(target.digest.clone());
             store.save(&state)?;

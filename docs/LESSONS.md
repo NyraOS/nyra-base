@@ -83,6 +83,10 @@ Each line is something that broke or surprised us once.
   initramfs's wait for the root disk; a prefix drop-in for device units (`dev-.device.d/`, which
   systemd applies to every `dev-*.device`) stays in the running system. The image build checks it with
   `lsinitrd`.
+- **bootc does not see boot counting.** It orders the boot entries by sort key, so after systemd-boot
+  fell back from a version with no tries left (`+0-3`), `bootc status` still has that version first
+  (`rollbackQueued: true`), and `bootc rollback` then puts the running version first. To boot the
+  version fallen back from again, give its entry new tries instead (seen in CI).
 - **A failed health check does not say whether the version or the settings are broken.** A deleted
   system account (`messagebus`, `systemd-network`) or a masked service fails the core services after
   the next boot, whichever version boots. Settings changed after an update was staged therefore fail

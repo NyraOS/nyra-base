@@ -77,10 +77,12 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    old key cannot send machines back to any image ever signed).
 5. A version the machine fell back from is marked failed and never staged or offered again.
 6. A target that is already the local rollback deployment (a retraction, or a version offered again
-   under rule 12) is reached with `bootc rollback` (a switch would answer "No changes"). It is on
-   trial like any new version: pending, and its entry gets three tries (`esp-sync rollback-counter`:
-   bootc's rollback rewrites the boot entries without counters). Until the reboot nothing else is
-   done (`/run/nyra-updated/rolled-back`): a second rollback would swap the boot order back.
+   under rule 12) is reached with `bootc rollback` (a switch would answer "No changes"), unless
+   bootc orders it first already (`rollbackQueued`, as after a boot-counting fallback: bootc sorts
+   the entries by sort key, not by tries left). It is on trial like any new version: pending, and
+   its entry gets three tries (`esp-sync rollback-counter`: bootc's rollback rewrites the boot
+   entries without counters, and a fallback leaves `+0-3`). Until the reboot nothing else is done
+   (`/run/nyra-updated/rolled-back`): a second rollback would swap the boot order back.
 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
    deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
@@ -148,7 +150,7 @@ new version), so the older one fails its health checks too. It is not on trial a
 
 - forgets the pending version instead of letting the next check mark it failed (rule 12). Once the
   settings are repaired and a boot is healthy, the version is offered again. It is the rollback
-  deployment by then, so it comes back through `bootc rollback`, with three tries (rule 6). If it
+  deployment by then, so it becomes the next boot again, with three tries (rule 6). If it
   fails again on a healthy machine, the fallback marks it failed as usual;
 - runs `/usr/lib/nyra/health/notice`. It names the core services that did not start (or the failed
   health checks) and says to restart and choose "Nyra OS Reset settings" in the boot menu, which
@@ -219,7 +221,7 @@ bootc reads it.
 | T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6), its entry with three tries; a second check does nothing until the reboot |
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
-| T3 | a good version, the settings broken after it was staged (`systemd-resolved` masked) | it fails its health check three times and systemd-boot falls back; the older version fails it too and stays up: the new version is not marked failed, the console and the login message say to reset the settings. Settings repaired: the version is offered again through `bootc rollback`, boots counted and is blessed |
+| T3 | a good version, the settings broken after it was staged (`systemd-resolved` masked) | it fails its health check three times and systemd-boot falls back; the older version fails it too and stays up: the new version is not marked failed, the console and the login message say to reset the settings. Settings repaired: the version is offered again (its entry, still first for bootc, gets three tries again), boots counted and is blessed |
 | T3 | new version whose kernel finds no usable initramfs | it panics and reboots by itself (`panic=10`) three times, systemd-boot falls back, the version is marked failed and refused |
 | T5 | DNS answer for another host (a certificate from a trusted CA, for another name) | refused (TLS name check), nothing staged |
 | T5 | a 50 kbit/s link | the pull is stopped at the time limit, nothing staged; staged later on a normal link |

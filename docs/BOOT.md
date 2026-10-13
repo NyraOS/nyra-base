@@ -766,10 +766,10 @@ A new version must prove itself, or the machine goes back to the previous one by
   tries left after all others, so the previous version boots next.
 - `systemd-bless-boot` drops the counter once `boot-complete.target` is reached. Health checks are
   units `RequiredBy=boot-complete.target`; a failing one keeps the boot from being blessed.
-- **After `bootc rollback`**, which `nyra-updated` uses when the version it wants is already the
-  rollback deployment, bootc rewrites `loader/entries` at once, without counters. `esp-sync
-  rollback-counter` then renames the entry that is not the running system's to `…+3.conf`, so that
-  version is on trial too (`docs/UPDATES.md`, rule 6).
+- **When `nyra-updated` wants the rollback deployment** (`docs/UPDATES.md`, rule 6), `bootc
+  rollback` rewrites `loader/entries` at once, without counters; after a fallback, that version's
+  entry still comes first for bootc, with `+0-3`. `esp-sync rollback-counter` then renames the entry
+  that is not the running system's to `…+3.conf`, so that version is on trial too.
 
 CI follows one VM through six boots: the installed version switches (from a local registry) to an
 unhealthy version (a test-only unit required by `boot-complete.target` fails), which then runs three

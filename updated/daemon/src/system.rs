@@ -164,7 +164,8 @@ pub const DISCARDED: &str = "/run/nyra-updated/discarded";
 /// this boot, when the new order takes effect.
 pub const ROLLED_BACK: &str = "/run/nyra-updated/rolled-back";
 
-/// The entry `bootc rollback` made the next boot gets three tries (boot counting), like a new version.
+/// The rollback deployment's entry, which `bootc rollback` made the next boot, gets three tries
+/// (boot counting) like a new version, also when a fallback left it with none.
 pub fn esp_sync_rollback_counter() -> Command {
     let mut cmd = Command::new("/usr/lib/nyra/boot/esp-sync");
     cmd.arg("rollback-counter");
@@ -253,8 +254,12 @@ impl System for Real {
         sync()
     }
 
-    fn rollback(&mut self) -> Result<(), Error> {
-        run_ok(Command::new("bootc").arg("rollback"), SHORT)?;
+    fn rollback(&mut self, queued: bool) -> Result<(), Error> {
+        // bootc rollback swaps the order: called when the rollback deployment already comes first,
+        // it would put the running version first again.
+        if !queued {
+            run_ok(Command::new("bootc").arg("rollback"), SHORT)?;
+        }
         let path = Path::new(ROLLED_BACK);
         let dir = path.parent().expect("a directory");
         std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;

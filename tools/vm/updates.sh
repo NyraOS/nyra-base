@@ -41,7 +41,7 @@
 #  17  v7 fails its health check three times (the settings), systemd-boot falls back to v5, which
 #      fails it too: it stays up, v7 is not marked failed, the console says to reset the settings;
 #      the settings repaired by hand
-#  18  v5 healthy: v7 offered again, reached with bootc rollback, with three tries
+#  18  v5 healthy: v7 offered again; its entry, still first for bootc, gets three tries again
 #  19  v7 boots counted and is blessed; v9 staged; power cut before it is finalized (its staged
 #      entries stay on the ESP)
 #  20  v7: v10, another version, staged: only its entries and v7's are staged (none left from v9)
@@ -451,7 +451,8 @@ sudo podman exec nyra-test-registry sh -c "mv $blob.orig $blob"
 # which fails it too: the settings are to blame, not v7. v5 stays up, v7 is not marked failed, and the
 # console and the login message say to reset the settings. The repair here is by hand (unmask):
 # "Reset settings" would also undo this test's own trust in /etc (it is tested in T8). Then v7 is
-# offered again and reached with bootc rollback, with three tries, and is blessed.
+# offered again: bootc still orders its entry first (no bootc rollback), which gets three tries
+# again; it boots counted and is blessed.
 vm "v5, registry repaired: the settings broken (systemd-resolved masked); v7 staged" --poweroff \
   --command "$lib; expect booted $d5 && running && systemctl mask systemd-resolved.service" \
   --command "$lib; outcome s7 Staged && expect staged $d7"
@@ -466,7 +467,7 @@ l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ]
 
-vm "v5, the settings repaired: v7 offered again, through bootc rollback, with three tries" --poweroff \
+vm "v5, the settings repaired: v7 offered again, its entry with three tries again" --poweroff \
   --command "$lib; expect booted $d5 && running && ! test -e /run/issue.d/50-nyra-health.issue" \
   --command "$lib; outcome s7 RolledBack && expect rollback $d7 && test \"\$(queued)\" = true && entries | grep -F +3" \
   --command "$lib; outcome s7 RollbackQueued && grep -F $d7 /var/lib/nyra-updated/state.json"
