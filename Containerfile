@@ -49,9 +49,13 @@ RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/ny
 
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
+# Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password
+# (docs/BOOT.md, "No first-boot questions"): the build fails when systemd's own line changes.
 COPY files/usr/ /usr/
 RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
-    apt-get install hello 2>&1 | grep -q Distrobox
+    apt-get install hello 2>&1 | grep -q Distrobox && \
+    grep -Fqx 'ExecStart=systemd-firstboot --prompt-locale --prompt-keymap-auto --prompt-timezone --prompt-root-password --mute-console=yes' \
+      /usr/lib/systemd/system/systemd-firstboot.service
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 

@@ -652,14 +652,25 @@ password would make it useless in exactly the case it is for, a broken `/etc/pas
 
 **No first-boot questions.** With `/etc` emptied (or without a machine ID), systemd counts the boot as
 the first one: systemd-sysusers creates root again with the password `!unprovisioned`, and
-`systemd-firstboot` would ask for a root password and, without credentials, a time zone before the
-reset's question. A drop-in in `/usr` (`systemd-firstboot.service.d/10-nyra.conf`) skips
-`systemd-firstboot` when the command line has `systemd.unit=nyra-reset-settings.target`, which under
-Secure Boot only the sealed reset profile has, or an SMBIOS string from the firmware or a VM's host
-(see "The platform is trusted"; that only skips the questions): the first question is the reset's.
-Root stays locked:
-the reset brings back the image's root account (`*`), and it never copies root's lines from the old
-`/etc`.
+systemd's `systemd-firstboot` would ask for a root password, so whoever is at the console could set
+one, and, without credentials, a time zone. A drop-in in `/usr`
+(`systemd-firstboot.service.d/10-nyra.conf`) changes two things:
+
+- **Never a root password question**, on every boot: it runs systemd's own command line without
+  `--prompt-root-password` (the image build fails when systemd's line changes, so the copy is
+  checked again). Root stays locked (`!unprovisioned`) on a normal boot with `/etc` emptied. The
+  other questions stay as they were: the locale, the keymap (on a local console, not a serial one)
+  and the time zone, each only when it is not set yet (the installer is to set them). `systemd-firstboot`
+  still sets root's password from the `passwd.*` credentials, as systemd-sysusers does before it,
+  but the image imports no credentials (see "The kernel command line is fixed").
+- **Not at all on the reset entry**, when the command line has `systemd.unit=nyra-reset-settings.target`,
+  which under Secure Boot only the sealed reset profile has, or an SMBIOS string from the firmware or
+  a VM's host (see "The platform is trusted"; that only skips the questions): the first question is
+  the reset's. Root stays locked: the reset brings back the image's root account (`*`), and it never
+  copies root's lines from the old `/etc`.
+
+On the first boot after an install, root is already in `/etc/shadow` (the image's `*`), so
+`systemd-firstboot` never asked for its password there; nothing changes on that boot.
 
 CI follows one system with Secure Boot on: a normal boot adds an administrator and a host name,
 then breaks the settings (garbage in `/etc/fstab` and `/etc/passwd`, `systemd-resolved` masked,
@@ -674,7 +685,11 @@ reboots, and the next boot has none of the breakage, the administrator with the 
 and groups, the file in `/home`, the machine ID and the host name, nothing of the names found twice
 (root the only UID 0), and the previous `/etc` as
 `etc.nyra-old` (`0700`). Then `/etc/fstab` breaks again (see "Mounts from /etc/fstab"): the normal boot
-goes on, the reset entry asks at once without reading it, and the reset removes it.
+goes on, the reset entry asks at once without reading it, and the reset removes it. Last, `/etc` is
+emptied and the normal entry boots: `systemd-firstboot` runs (a first boot) and finishes with success,
+asks nothing (the test passes the time zone as a credential), the boot reaches `multi-user.target`, and
+root is locked (a drop-in passed as a credential prints the unit's state and root's line from
+`/etc/shadow` on the console, so the check does not depend on a login with `/etc` emptied).
 
 Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
 the network and `/etc/systemd/system` the way a user could, checks that each still boots, then breaks
@@ -682,7 +697,8 @@ all of it at once, opens Recovery without the system accounts in `/etc/passwd`, 
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
-`/home` (the factory reset).
+`/home` (the factory reset). After `/etc` is emptied no administrator is left, so recovery has no one
+to authenticate.
 
 ## Mounts from /etc/fstab
 
