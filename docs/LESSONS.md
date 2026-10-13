@@ -70,7 +70,8 @@ Each line is something that broke or surprised us once.
   wrong option) fails the target's job at once, and every unit ordered only `After=local-fs.target`
   starts while the other local mounts are still pending. In CI `systemd-boot-random-seed` (through
   `esp-writable`) mounted the ESP read-write while its fsck ran, and `boot.mount` failed once. A unit
-  that needs a mount is ordered after that mount itself (`After=boot.mount`, `RequiresMountsFor=`).
+  that needs a mount is ordered after that mount itself (`After=boot.mount`, `RequiresMountsFor=`);
+  the same holds for the boot's tmpfiles and `/tmp` (`After=tmp.mount`).
 - **dracut copies a unit's drop-ins only when its module lists them**, but it copies every
   `/usr/lib/systemd/system.conf.d/*.conf`. `DefaultDeviceTimeoutSec=` there would also shorten the
   initramfs's wait for the root disk; a prefix drop-in for device units (`dev-.device.d/`, which

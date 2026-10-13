@@ -679,8 +679,9 @@ the units that write to the ESP are ordered after `boot.mount` itself:
   `boot-complete.target`, whose health checks come after `nyra-boot-repair`; bootc writes when
   `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`.
 
-`/tmp` (a tmpfs, `tmp.mount`) is the other local mount: a unit that writes there before it is mounted
-writes to the root file system, under the tmpfs. Units with `PrivateTmp=` wait for it by themselves.
+`/tmp` (a tmpfs, `tmp.mount`) is the other local mount. The boot's tmpfiles
+(`systemd-tmpfiles-setup`, which makes `/tmp/.X11-unix` and the like) are ordered after `tmp.mount`
+in their drop-in, and units with `PrivateTmp=` wait for it by themselves.
 
 If the ESP itself cannot be mounted (a damaged partition), the boot goes on as before this change:
 `boot.mount` is wanted, not required, by `local-fs.target`. `nyra-boot-repair` is then skipped, and
@@ -695,9 +696,11 @@ so the normal entry restarts again and again. The "Reset settings" entry does no
 (`fstab=no`, in the initramfs too), so it still boots, and the reset removes the user's `/etc/fstab`.
 
 CI (`tools/vm/reset-settings.sh`, boots 13-15) adds to `/etc/fstab`, without `nofail`, a disk that is not
-connected, a line that is not a mount and a tmpfs with an option it does not know: the normal boot
+connected, a swap partition on a disk that is not connected, a line that is not a mount and a tmpfs
+with an option it does not know: the normal boot
 reaches the login prompt without emergency mode, only the tmpfs mount failed, the ESP's check, then
-`boot.mount`, then the boot loader random seed came in that order and `nyra-boot-repair` ran, and the
+`boot.mount`, then the boot loader random seed came in that order and `nyra-boot-repair` ran,
+`tmp.mount` came before the boot's tmpfiles (`/tmp/.X11-unix` is root's, mode 1777), and the
 journal names the missing disk less than 20 s after the start of the system; the reset entry asks within 30 s of
 the start of the system, without reading `/etc/fstab`, and the reset removes the lines.
 
