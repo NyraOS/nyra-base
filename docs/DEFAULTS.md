@@ -119,7 +119,10 @@ either). Without them `systemd-tpm2-setup-early` allocates nothing, and `systemd
 (their separator) and `systemd-pcrlogin@.service` (a measurement at every login) stay blocked. With
 the definitions, the first boot would allocate four NV indexes that stay in the TPM after a
 reinstall, for nothing that Nyra reads. Removing only the definitions is not enough: the login
-measurement then fails at every login, hence its block. Cost now: none.
+measurement then fails at every login, hence its block. Cost now: none. The software-TPM test
+(docs/BOOT.md, "The software-TPM test") checks that `/usr/lib/nvpcr` is absent from the image;
+`systemd-tpm2-setup` itself does not run in that test (it talks only to a kernel TPM), so the test's
+own NV check shows only that enrolling and unsealing allocate no NV index.
 
 **`FailureAction=reboot-force`.** The phase and separator units have it upstream, and it stays. What
 each failure would do:
@@ -136,8 +139,9 @@ A reboot loop is therefore possible only with a TPM that is present but fails at
 counting cannot help there, since every version does the same. Such a TPM cannot unseal either, so the
 loop costs availability, not confidentiality; a TPM that fails once makes one extra reboot. The way
 out is to turn the TPM off in the firmware: the stub then measures nothing, the units do nothing, and
-the disk asks for its password or the recovery key. The VM test with a software TPM must check both: a
-clean boot with none of these units failed, and that way out.
+the disk asks for its password or the recovery key. Checking both in a real boot (no unit failed, and
+that way out) needs a TPM attached to the VM and an encrypted disk, and is left for the encryption
+work; the software-TPM test (docs/BOOT.md) already proves the unlock the policy authorizes.
 
 ## Firewall
 

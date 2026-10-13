@@ -486,7 +486,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
-            python3-virt-firmware systemd-ukify sbsigntool
+            python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -553,6 +553,14 @@ jobs:
       - name: Secure defaults (docs/DEFAULTS.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/vm/security-defaults.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # The signed PCR 11 policy unlocks the disk only in the initrd (docs/BOOT.md, "TPM2 unlock"):
+      # swtpm and the image's own systemd 262 enroll a throwaway LUKS disk and check, for each boot
+      # state, whether the TPM releases the key. No VM and no KVM: tools/signing/tpm-replay.py replays
+      # the stub's PCR 11 measurements into swtpm. Only the loaded image is needed, not the disk.
+      - name: TPM2 disk-unlock policy (docs/BOOT.md)
+        if: ${{ !cancelled() }}
+        run: tools/signing/tpm-unlock.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

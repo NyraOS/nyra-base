@@ -20,6 +20,7 @@ BOOT = ("install-boot", "Boot the installed disk with KVM")
 TAMPERED = ("install-boot", "Tampered composefs object (Titanic T1)")
 POLICY = ("build", "Test the signature policy (docs/SIGNING.md)")
 DEFAULTS = ("install-boot", "Secure defaults (docs/DEFAULTS.md)")
+TPM_UNLOCK = ("install-boot", "TPM2 disk-unlock policy (docs/BOOT.md)")
 SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
@@ -56,9 +57,12 @@ TESTS = {
            "The root file system full: the update fails and says why, nothing staged, the system boots "
            "and runs, AppArmor loaded without its cache; the ESP full: the same; the space the system takes stays the same across updates "
            "(8 in a row). Not yet: the desktop and its message (no graphical session yet)."),
-    "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT],
+    "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT, TPM_UNLOCK],
            "EFI variables reset, boot order changed, boot files deleted, cut or corrupted, ESP full: "
-           "boots through the fallback path and repairs itself."),
+           "boots through the fallback path and repairs itself. The signed PCR 11 policy releases the "
+           "disk key only in the initrd (main profile, enter-initrd): not on the running system, not "
+           "in the recovery or reset profile, not with an add-on measured into PCR 12, not for a "
+           "signature replayed to another phase, and not without the policy reference (swtpm)."),
     "T8": ("Configuration broken by the user", "full", [BROKEN_CONFIG],
            "With Secure Boot on: /etc/fstab (a line that is not a mount, a disk that is not "
            "connected), /etc/passwd (the system accounts deleted), the network settings and "
@@ -70,7 +74,10 @@ TESTS = {
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
            "request is sent, the update server's certificate and unsigned images are refused."),
-    "T10": ("Disk encryption", None, [], "Disk encryption does not exist yet."),
+    "T10": ("Disk encryption", None, [],
+            "The signed TPM unlock policy is tested under T7 and T15 (tools/signing/tpm-unlock.sh), but "
+            "the user-facing encryption (password, recovery key, TPM after measurement-changing "
+            "updates, never locked out) does not exist yet."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
     "T12": ("Hostile root", "full", [HOSTILE_ROOT],
             "As root with Secure Boot on: apt, apt-get and dpkg -i cannot change /usr and say what to "
@@ -85,9 +92,11 @@ TESTS = {
             "disk is written without a pause: staged exactly or failed with nothing staged; the next "
             "boot runs, the update completes."),
     "T14": ("Media removed", None, [], "Needs removable media support, which does not exist yet."),
-    "T15": ("Secure defaults", "full", [DEFAULTS, SECURE_BOOT, UPDATES],
+    "T15": ("Secure defaults", "full", [DEFAULTS, SECURE_BOOT, UPDATES, TPM_UNLOCK],
             "Secure Boot with a MOK, lockdown, AppArmor, firewall, listening sockets, running units and "
-            "the signature policy checked after installation and again after updates."),
+            "the signature policy checked after installation and again after updates. The TPM unlock "
+            "policy releases the key only in the initrd (swtpm), and the image ships no NvPCR "
+            "definitions (/usr/lib/nvpcr absent)."),
 }
 
 
@@ -114,7 +123,7 @@ def evaluate(jobs, run_url):
 def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
-                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG}]
+                          SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T12", "T13", "T15")] == \
         ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass", "pass"], r
