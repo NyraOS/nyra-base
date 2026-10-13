@@ -723,7 +723,10 @@ jobs:
           HIT: ${{ steps.cache.outputs.cache-hit }}
           RELEASE_SHA256: ${{ needs.build.outputs.bootc_sha256 }}
         run: |
-          [[ "$RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          if ! [[ "$RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::build reported no sha256 of its bootc build ('$RELEASE_SHA256')."
+            exit 1
+          fi
           if [ "$HIT" != true ]; then
             echo "::notice::No cached bootc build for this key, nothing to compare."
             exit 0

@@ -117,6 +117,8 @@ jobs:
 
         assert run(good, action) == [], run(good, action)
         assert run(good, bad_action), "a local action's restore without lookup-only passed"
+        missing = good.replace("./.github/actions/a/b", "./.github/actions/none")
+        assert any("no action.yml" in p for p in run(missing, action)), "a missing local action passed"
         for text in bad:
             assert run(text, action), text
     print("check-release-cache.py self-test: ok")
