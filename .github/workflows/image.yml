@@ -161,6 +161,15 @@ jobs:
 
       - name: Pinned base images, cached (ci/pinned-images.sh)
         uses: ./.github/actions/pinned-images
+        with:
+          images: debian registry
+
+      # The second source of the pinned images: with the first unreachable, registry comes from Docker
+      # Hub and passes the same checks; a wrong digest or image ID fails. Pull requests only, in a
+      # podman store of its own.
+      - name: Self-test of the pinned image sources (ci/pinned-images.sh)
+        if: github.event_name == 'pull_request'
+        run: ci/pinned-images.sh --self-test
 
       - name: Build the CI tools image
         run: sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci
@@ -477,6 +486,8 @@ jobs:
 
       - name: Pinned base images, cached (ci/pinned-images.sh)
         uses: ./.github/actions/pinned-images
+        with:
+          images: registry
 
       - name: Enable KVM for the runner user
         run: |
@@ -500,6 +511,7 @@ jobs:
           path: ${{ env.WORK }}
 
       - name: Load the image
+        id: load
         env:
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
         run: |
@@ -565,9 +577,10 @@ jobs:
       # The signed PCR 11 policy unlocks the disk only in the initrd (docs/BOOT.md, "TPM2 unlock"):
       # swtpm and the image's own systemd 262 enroll a throwaway LUKS disk and check, for each boot
       # state, whether the TPM releases the key. No VM and no KVM: tools/signing/tpm-replay.py replays
-      # the stub's PCR 11 measurements into swtpm. Only the loaded image is needed, not the disk.
+      # the stub's PCR 11 measurements into swtpm. Only the loaded image is needed, not the disk: it
+      # runs when the image loaded (so the steps before it succeeded), even if the install failed.
       - name: TPM2 disk-unlock policy (docs/BOOT.md)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
         run: tools/signing/tpm-unlock.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Secure Boot chain (docs/BOOT.md)
@@ -770,6 +783,8 @@ jobs:
 
       - name: Pinned base images, cached (ci/pinned-images.sh)
         uses: ./.github/actions/pinned-images
+        with:
+          images: registry
 
       - name: Check that the shipped policy trusts this signer
         env:

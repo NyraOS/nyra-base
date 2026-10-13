@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 name: Pinned base images
 description: >-
-  The base images of ci/pinned-images.sh in podman's storage, from the Actions cache, or pulled from
-  Amazon ECR Public by digest and cached when the cache has none. The key changes with the pinned
-  digests and image IDs. Release builds (RELEASE=true) never restore it: they pull.
+  The base images of ci/pinned-images.sh that the job needs (input images) in podman's storage, from
+  the Actions cache, or pulled by digest (Amazon ECR Public, then Docker Hub) and cached when the
+  cache has none. The key changes with the images listed and with the pinned digests and image IDs.
+  Release builds (RELEASE=true) never restore it: they pull.
+inputs:
+  images:
+    description: The images the job needs, separated by spaces (debian, registry)
+    required: true
 runs:
   using: composite
   steps:
@@ -12,9 +17,13 @@ runs:
       with:
         lookup-only: ${{ env.RELEASE == 'true' }}
         path: ~/pinned-images
-        key: pinned-images-${{ hashFiles('ci/pinned-images.sh', 'ci/tools.Containerfile') }}
+        key: pinned-images-${{ inputs.images }}-${{ hashFiles('ci/pinned-images.sh', 'ci/tools.Containerfile') }}
     - shell: bash
-      run: ci/pinned-images.sh ~/pinned-images
+      env:
+        IMAGES: ${{ inputs.images }}
+      run: |
+        read -ra names <<<"$IMAGES"
+        ci/pinned-images.sh ~/pinned-images "${names[@]}"
     - if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:

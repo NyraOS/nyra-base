@@ -63,6 +63,8 @@ jobs:
       - name: Pinned base images, cached (ci/pinned-images.sh)
         if: steps.bootc-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/pinned-images
+        with:
+          images: debian
 
       - name: Build the CI tools image
         if: steps.bootc-cache.outputs.cache-hit != 'true'
