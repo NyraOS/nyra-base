@@ -153,8 +153,9 @@ settings") must bring the image's settings back:
 | 3 | `/etc/passwd`: every system account deleted (root and the user kept), a line that is not an account | the same |
 | 4 | the network: the wired network's settings replaced in `/etc/systemd/network` with a wrong static address, `/etc/resolv.conf` replaced with a wrong name server | the same |
 | 5 | `/etc/systemd/system`: everything deleted (what the image enables there), then systemd-resolved, chronyd, the firewall and the update timer masked | the same |
-| 6 | all four at once; "Nyra OS Reset settings" picked for the next boot (`bootctl set-oneshot`, as in the boot menu) | |
-| 7 | that boot: `RESET`, then the normal boot | running; `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; the user logs in with their password, a wrong one is refused; the network works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the firewall, AppArmor, the update timer); Secure Boot and the lockdown on |
+| 6 | all four at once; "Nyra OS Recovery" picked for the next boot (`bootctl set-oneshot`, as in the boot menu) | |
+| 7 | that boot: Recovery without the system accounts | it asks for an administrator although `/etc/passwd` has no `nobody`; a wrong password gives no shell, the right one a root shell in `rescue.target`; "Nyra OS Reset settings" picked for the next boot |
+| 8 | that boot: `RESET`, then the normal boot | running; `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; the user logs in with their password, a wrong one is refused; the network works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the firewall, AppArmor, the update timer); Secure Boot and the lockdown on |
 
 Boots 2-5 each break a copy of the system after boot 1 (QEMU snapshot), then reboot it, so that each
 breakage shows what it does on its own. What happens is in the step summary and the serial logs
@@ -162,6 +163,16 @@ breakage shows what it does on its own. What happens is in the step summary and 
 units, the basic services, the network, whether the user can log in, the boot's warnings. A boot that
 does not reach the login prompt fails the test: the expected result is that the system boots. The
 summary ends with one line per breakage and the result of the reset.
+
+**One failed unit is expected, and only there.** bootc's `bootc-sysusers-shadow-sync.service` runs
+on every boot before `systemd-sysusers` and removes the lines of `/etc/shadow` and `/etc/gshadow`
+whose account is gone. It reads `/etc/passwd` first, and when a line there is not an account it stops
+with an error before it changes anything: the unit fails. On boots 3 and 7 (and on boot 8 before the
+reset) that is what it should do. It is harmless: `systemd-sysusers` runs only when `/etc` needs an
+update, which these boots do not, and nothing else waits for it. T8 checks it on every boot with a
+shell: on boots 3 and 7 it failed, on the line that is not an account (its journal); on all the
+others, the reset's normal boot included, it ran and succeeded. A failure anywhere else, or for
+another reason, fails the test; `systemctl --failed` is not filtered.
 
 The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
 such account) so that it has to ask; the network check is a file served by the runner, which the guest

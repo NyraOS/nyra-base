@@ -21,12 +21,16 @@
 #        boot (bootctl set-oneshot, as a user would in the boot menu)
 #   7    that boot: recovery asks for an administrator although /etc/passwd has no nobody (the
 #        password is checked as UID 65534); a wrong password gives no shell, the right one a root
-#        shell in rescue.target; then the "Nyra OS Reset settings" entry is picked for the next boot
+#        shell in rescue.target; the shadow sync failed on the line that is not an account; then the
+#        "Nyra OS Reset settings" entry is picked for the next boot
 #   8    that boot: RESET; the system restarts by itself into the normal boot: running; /etc/fstab,
 #        /etc/passwd (plus the user's line), the network settings, /etc/resolv.conf and
 #        /etc/systemd/system are the image's; the file in /home is the same; the user logs in with
 #        their password (a wrong one is refused); the network works; the basic services are active;
-#        Secure Boot and the lockdown on.
+#        the shadow sync ran and succeeded; Secure Boot and the lockdown on.
+# One unit is checked on every boot with a shell: bootc's shadow sync
+# (bootc-sysusers-shadow-sync.service) failed on 3 and 7, where /etc/passwd has a line it cannot
+# parse, for that reason; it ran and succeeded on all the others.
 # Every boot runs even if one before it failed; the step fails if any did. The password is random,
 # for this throwaway disk only.
 #   tools/titanic/broken-config.sh IMAGE DISK.qcow2 UKI_CERT WORKDIR LOGDIR SUMMARY
@@ -51,6 +55,13 @@ net="curl -fsS --max-time 10 http://10.0.2.2:8088/t8 | grep -qx $token"
 su="setpriv --reuid=65534 --regid=65534 --clear-groups -- su -c id -- $user"
 login_ok="printf '%s\\n' '$pw' | $su | grep '^uid=[0-9]*($user)'"
 login_wrong="! printf 'wrong\\n' | $su"
+# bootc's shadow sync (it removes /etc/shadow and /etc/gshadow lines of accounts that are gone) stops
+# before it changes anything when /etc/passwd has a line it cannot parse: the unit fails. That is the
+# only failure of it T8 allows, with that reason, on the boots with that line; everywhere else it ran
+# and succeeded.
+shadow_unit=bootc-sysusers-shadow-sync.service
+shadow_ok="test \"\$(systemctl is-active $shadow_unit)\" = active && echo '$shadow_unit: ran and succeeded'"
+shadow_refused="systemctl is-failed -q $shadow_unit && journalctl -b -u $shadow_unit --no-pager | grep -F 'failed to parse passwd entry' && echo '$shadow_unit: failed as expected, on the line that is not an account in /etc/passwd'"
 
 break_fstab='mkdir -p /var/mnt/data && printf "a line that is not a mount\nLABEL=nyra-t8-data /var/mnt/data ext4 defaults 0 2\n" >> /etc/fstab && cat /etc/fstab'
 break_passwd="grep -E '^(root|$user):' /etc/passwd > /var/tmp/passwd && echo 'a line that is not an account' >> /var/tmp/passwd && cat /var/tmp/passwd > /etc/passwd && rm /var/tmp/passwd && cat /etc/passwd"
@@ -69,6 +80,7 @@ fail=0
 vm --poweroff --log "$logs/serial-broken-config-1.log" \
   --title "Broken configuration 1: a user with a password and a file in /home" \
   --command "$running" \
+  --command "$shadow_ok" \
   --command "$secure" \
   --command "useradd -m -G sudo -s /bin/bash $user && printf '$user:%s\\n' '$pw' | chpasswd && echo $token > /home/$user/keep.txt && chown $user: /home/$user/keep.txt && ls -l /home/$user" \
   --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused (control)'" \
@@ -84,13 +96,15 @@ for what in fstab passwd network services; do
     network) title="the network: a wrong static address, a wrong name server" b="$break_network" ;;
     services) title="/etc/systemd/system: emptied, then 4 services masked" b="$break_services" ;;
   esac
+  shadow="$shadow_ok"
+  [ "$what" != passwd ] || shadow="$shadow_refused"
   if python3 -B tools/vm/vm-boot.py --secure-boot "$t8/vars.fd" --disk "$t8/disk.raw" --autologin --timeout 240 \
       --summary "$summary" --log "$logs/serial-broken-config-$n.log" \
       --title "Broken configuration $n: $title; the next boot" \
-      --command "$b" --command '@reboot systemctl reboot' --command "$observe"; then
+      --command "$b" --command '@reboot systemctl reboot' --command "$observe" --command "$shadow"; then
     rows+="| $title | boots to a login prompt |"$'\n'
   else
-    rows+="| $title | **does not boot to a login prompt** (serial-broken-config-$n.log) |"$'\n'
+    rows+="| $title | **does not boot to a login prompt, or the shadow sync is not as expected** (serial-broken-config-$n.log) |"$'\n'
     fail=1
   fi
   n=$((n + 1))
@@ -98,6 +112,7 @@ done
 
 vm --poweroff --log "$logs/serial-broken-config-6.log" \
   --title "Broken configuration 6: all of it at once; Recovery picked for the next boot" \
+  --command "$shadow_ok" \
   --command "$break_services" \
   --command "$break_network" \
   --command "$break_passwd" \
@@ -112,6 +127,7 @@ if vm --poweroff --log "$logs/serial-broken-config-7.log" \
     --title "Broken configuration 7: Recovery without the system accounts; Reset settings picked for the next boot" \
     --command 'id; test "$(id -u)" = 0 && grep -q "systemd.unit=rescue.target" /proc/cmdline && systemctl is-active rescue.target' \
     --command '! grep "^nobody:" /etc/passwd && echo "/etc/passwd has no nobody"' \
+    --command "$shadow_refused" \
     --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"'; then
   recovery="recovery asks for an administrator and opens a root shell for the right password, without the system accounts"
 else
@@ -127,6 +143,7 @@ if vm --poweroff --log "$logs/serial-broken-config-8.log" --chat "$answer=>RESET
     --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused'" \
     --command "$net && echo 'the network works: the runner answers'" \
     --command "systemctl is-active $units" \
+    --command "$shadow_ok" \
     --command "$secure"; then
   reset="the reset brings the image's settings back: the system runs, the user logs in, the network works"
 else
