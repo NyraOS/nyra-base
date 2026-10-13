@@ -52,11 +52,7 @@ sudo chown -R "$(id -u):$(id -g)" "$sb"
 
 qemu-img convert -O raw "$disk" "$sb/disk.raw"
 loop="$(sudo losetup -P --show -f "$sb/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 
 sudo mount "$esp" "$mnt"
 # bootc install (bootctl) put the Debian-signed systemd-boot on the ESP.

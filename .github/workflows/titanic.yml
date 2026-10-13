@@ -99,19 +99,7 @@ jobs:
           digest="$(sudo podman image inspect -f '{{.Digest}}' localhost/nyra-base:ci)"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
-          truncate -s 12G "$WORK/disk.raw"
-          sudo podman run --rm --privileged --pid=host \
-            -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v "$WORK:/output" \
-            localhost/nyra-base:ci \
-            bootc install to-disk --composefs-backend --bootloader systemd --filesystem ext4 \
-              --wipe --via-loopback /output/disk.raw
-          loop="$(sudo losetup -P --show -f "$WORK/disk.raw")"
-          for p in "$loop"p*; do [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ] && esp="$p"; done
-          mkdir -p "$WORK/esp" && sudo mount "$esp" "$WORK/esp"
-          sudo podman run --rm --network none -v "$WORK/esp:/esp" localhost/nyra-base:ci \
-            /usr/lib/nyra/boot/esp-sync install /esp
-          sudo umount "$WORK/esp" && sudo losetup -d "$loop"
-          sudo chown "$(id -u):$(id -g)" "$WORK/disk.raw"
+          tools/vm/install-disk.sh localhost/nyra-base:ci "$WORK"
           tools/vm/test-console.sh localhost/nyra-base:ci "$WORK/disk.raw" "$WORK"
           qemu-img convert -O qcow2 "$WORK/disk.raw" "$WORK/disk.qcow2"
           rm "$WORK/disk.raw"
@@ -179,19 +167,7 @@ jobs:
           digest="$(sudo podman image inspect -f '{{.Digest}}' localhost/nyra-base:ci)"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
-          truncate -s 12G "$WORK/disk.raw"
-          sudo podman run --rm --privileged --pid=host \
-            -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v "$WORK:/output" \
-            localhost/nyra-base:ci \
-            bootc install to-disk --composefs-backend --bootloader systemd --filesystem ext4 \
-              --wipe --via-loopback /output/disk.raw
-          loop="$(sudo losetup -P --show -f "$WORK/disk.raw")"
-          for p in "$loop"p*; do [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ] && esp="$p"; done
-          mkdir -p "$WORK/esp" && sudo mount "$esp" "$WORK/esp"
-          sudo podman run --rm --network none -v "$WORK/esp:/esp" localhost/nyra-base:ci \
-            /usr/lib/nyra/boot/esp-sync install /esp
-          sudo umount "$WORK/esp" && sudo losetup -d "$loop"
-          sudo chown "$(id -u):$(id -g)" "$WORK/disk.raw"
+          tools/vm/install-disk.sh localhost/nyra-base:ci "$WORK"
           tools/vm/test-console.sh localhost/nyra-base:ci "$WORK/disk.raw" "$WORK"
           qemu-img convert -O qcow2 "$WORK/disk.raw" "$WORK/disk.qcow2"
           rm "$WORK/disk.raw"

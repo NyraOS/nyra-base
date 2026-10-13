@@ -562,6 +562,14 @@ Each line is something that broke or surprised us once.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
+- Right after `losetup -P --show`, the loop device's partition devices (`/dev/loopNp1`, ...) can
+  be missing for a moment, for instance while udev rereads the partition table. A `"$loop"p*` glob
+  then finds nothing, and a bare `test -n "$esp"` under `set -e` ends the step with exit 1 and no
+  message. A CI step once ended like that, after the disk copy and before any boot, and passed when
+  re-run with the same image; the other silent checks there depend only on the image, so this race
+  is the likely cause (the log alone cannot tell). `tools/vm/esp-of.sh` waits for udev, retries for up to 10 s and fails
+  with a `::error::` that names the loop device and the partitions it found. A check that can fail
+  under `set -e` should say what it expected.
 - `vm-boot.py`'s `wait_for` used to stop as soon as QEMU had exited, before it read the last lines:
   a guest that printed the awaited line and powered off at once looked like it never printed it.
   It now looks once more after the console reader has finished.

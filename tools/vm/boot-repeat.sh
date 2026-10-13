@@ -35,11 +35,7 @@ virt-fw-vars --input /usr/share/OVMF/OVMF_VARS_4M.ms.fd --output "$br/vars.fd" \
   --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 "$br/local.crt"
 qemu-img convert -O raw "$disk" "$br/disk.raw"
 loop="$(sudo losetup -P --show -f "$br/disk.raw")"
-esp=""
-for p in "$loop"p*; do
-  if [ "$(sudo blkid -o value -s TYPE "$p")" = vfat ]; then esp="$p"; fi
-done
-test -n "$esp"
+esp="$(tools/vm/esp-of.sh "$loop")"
 sudo mount "$esp" "$mnt"
 sudo mkdir -p "$mnt/loader/addons"
 sudo cp "$br/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.efi"
