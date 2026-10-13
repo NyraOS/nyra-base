@@ -16,7 +16,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
   delays or replaces a release build of `image.yml` (its own concurrency group).
 - Then the `power-cuts` job installs the same image again and cuts the power at random moments of an
   update (below); in parallel the `stress` job installs it too, fills its disk, updates it under
-  extreme load and lets a hostile root loose on it (below). The `results` job writes
+  extreme load, lets a hostile root loose on it and breaks its configuration (below). The `results` job writes
   `titanic-results.json`.
 
 ## The tests
@@ -30,7 +30,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
 | T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh` | full |
-| T8 | Configuration broken by the user | none: needs the system settings reset | not implemented |
+| T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot? Then all of it at once and Reset settings, with Secure Boot) | full |
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | none: encryption does not exist yet | not implemented |
 | T11 | Version jumps and channels | none: needs published versions and channels | not implemented |
@@ -137,6 +137,36 @@ console shows `systemd-firstboot` starting.
 
 Not covered: what `rm` takes with `/var`, including `/home`: the files of the users are gone, which
 no reset can bring back.
+
+## Configuration broken by the user
+
+[`tools/titanic/broken-config.sh`](../tools/titanic/broken-config.sh) follows one installed system
+with Secure Boot on, set up as for the hostile root (the shared part is
+[`tools/titanic/secure-boot-system.sh`](../tools/titanic/secure-boot-system.sh)). Root breaks `/etc`
+the way a user can; the system must still boot, and "Reset settings" (docs/BOOT.md, "Reset system
+settings") must bring the image's settings back:
+
+| Boot | What | Expected |
+|---|---|---|
+| 1 | a user, an administrator with a password, and a file in their home | control: the user logs in with the password, a wrong one is refused, the network works |
+| 2 | `/etc/fstab`: a line that is not a mount, and a disk that is not connected (`LABEL=nyra-t8-data`, without `nofail`) | the system boots to a login prompt |
+| 3 | `/etc/passwd`: every system account deleted (root and the user kept), a line that is not an account | the same |
+| 4 | the network: the wired network's settings replaced in `/etc/systemd/network` with a wrong static address, `/etc/resolv.conf` replaced with a wrong name server | the same |
+| 5 | `/etc/systemd/system`: everything deleted (what the image enables there), then systemd-resolved, chronyd, the firewall and the update timer masked | the same |
+| 6 | all four at once; "Nyra OS Reset settings" picked for the next boot (`bootctl set-oneshot`, as in the boot menu) | |
+| 7 | that boot: `RESET`, then the normal boot | running; `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; the user logs in with their password, a wrong one is refused; the network works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the firewall, AppArmor, the update timer); Secure Boot and the lockdown on |
+
+Boots 2-5 each break a copy of the system after boot 1 (QEMU snapshot), then reboot it, so that each
+breakage shows what it does on its own. What happens is in the step summary and the serial logs
+(`serial-broken-config-<boot>.log` in `titanic-stress-serial-log`): the system state, the failed
+units, the basic services, the network, whether the user can log in, the boot's warnings. A boot that
+does not reach the login prompt fails the test: the expected result is that the system boots. The
+summary ends with one line per breakage and the result of the reset.
+
+The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
+such account) so that it has to ask; the network check is a file served by the runner, which the guest
+reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
+the state `/etc`, through a bind mount of `/` alone.
 
 ## Results
 

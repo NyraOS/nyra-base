@@ -7,7 +7,9 @@
 #   stress      on the same image: a full disk during an update and at boot, and the space the system
 #               takes across 8 updates in a row (tools/titanic/full-disk.sh); an update under extreme
 #               load (tools/titanic/extreme-load.sh); a hostile root: apt, dpkg, an unsigned module,
-#               rm -rf / (tools/titanic/hostile-root.sh), with Secure Boot and image.yml's UKI certificate
+#               rm -rf / (tools/titanic/hostile-root.sh); the configuration broken by the user, then
+#               Reset settings (tools/titanic/broken-config.sh); these two with Secure Boot and
+#               image.yml's UKI certificate
 #   results     titanic-results.json: one result per test T1-T15 (tools/titanic/results.py), read
 #               from this run's steps through the API with the run's own read-only token
 # Artifacts: titanic-results, the serial logs (install-boot-serial-log, titanic-power-cuts-serial-log,
@@ -212,6 +214,15 @@ jobs:
         run: |
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/titanic/hostile-root.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" \
+            "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      - name: Configuration broken by the user (Titanic T8)
+        if: ${{ !cancelled() }}
+        env:
+          UKI_CERT: ${{ needs.image.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/titanic/broken-config.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the serial logs

@@ -639,6 +639,10 @@ and groups, the file in `/home`, the machine ID and the host name, nothing of th
 `etc.nyra-old` (`0700`). Then `/etc/fstab` breaks again (see "Mounts from /etc/fstab"): the normal boot
 goes on, the reset entry asks at once without reading it, and the reset removes it.
 
+Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
+the network and `/etc/systemd/system` the way a user could, checks that each still boots, then resets
+all of it at once.
+
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
 `/home` (the factory reset).

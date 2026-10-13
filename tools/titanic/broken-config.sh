@@ -1,0 +1,130 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# CI only (titanic.yml): Titanic T8, the configuration broken by the user (docs/TITANIC.md). One
+# system on a copy of the installed test disk, with Secure Boot on (tools/titanic/secure-boot-system.sh):
+#   1    a user, an administrator with a password, and a file in their home; control: the user logs
+#        in with the password (su through PAM, run as nobody so that it has to ask), a wrong one is
+#        refused, and the network works (a file served by the runner, through QEMU's 10.0.2.2)
+#   2-5  each of these on its own, on a copy of that system (QEMU snapshot), then a reboot:
+#          2  /etc/fstab: a line that is not a mount, and a disk that is not connected
+#          3  /etc/passwd: every system account deleted (root and the user kept), a line that is not
+#             an account
+#          4  the network: the wired network's settings replaced in /etc with a wrong static address,
+#             /etc/resolv.conf replaced with a wrong name server
+#          5  /etc/systemd/system: everything deleted (the services enabled there), then systemd-resolved,
+#             chronyd, the firewall and the update timer masked
+#        Expected: the system boots to a login prompt. What happens is in the step summary and the
+#        serial logs: the system state, the failed units, the basic services, the network, whether the
+#        user can log in, and the warnings of the boot. A boot that does not reach the login prompt
+#        fails the step.
+#   6    all four at once on the system itself; the "Nyra OS Reset settings" entry is picked for the
+#        next boot (bootctl set-oneshot, as a user would in the boot menu)
+#   7    that boot: RESET; the system restarts by itself into the normal boot: running; /etc/fstab,
+#        /etc/passwd (plus the user's line), the network settings, /etc/resolv.conf and
+#        /etc/systemd/system are the image's; the file in /home is the same; the user logs in with
+#        their password (a wrong one is refused); the network works; the basic services are active;
+#        Secure Boot and the lockdown on.
+# Every boot runs even if one before it failed; the step fails if any did. The password is random,
+# for this throwaway disk only.
+#   tools/titanic/broken-config.sh IMAGE DISK.qcow2 UKI_CERT WORKDIR LOGDIR SUMMARY
+set -euo pipefail
+
+image="$1" disk="$2" uki_cert="$3" work="$4" logs="$5" summary="$6"
+t8="$work/broken-config"
+# shellcheck source=tools/titanic/secure-boot-system.sh
+. tools/titanic/secure-boot-system.sh "$image" "$disk" "$uki_cert" "$t8" "$summary"
+
+user=nyra-t8 pw="$(openssl rand -hex 12)" token="$(openssl rand -hex 8)"
+# The network check: a file served by the runner, which the guest reaches as 10.0.2.2.
+mkdir -p "$t8/www"
+echo "$token" > "$t8/www/t8"
+python3 -m http.server 8088 --bind 127.0.0.1 --directory "$t8/www" > "$t8/http.log" 2>&1 &
+
+# --- guest commands (as in tools/titanic/secure-boot-system.sh) -----------------------------------
+units="systemd-journald.service dbus.service systemd-logind.service systemd-networkd.service systemd-resolved.service chronyd-restricted.service nyra-firewall.service apparmor.service nyra-updated.timer"
+net="curl -fsS --max-time 10 http://10.0.2.2:8088/t8 | grep -qx $token"
+# The user's password through PAM: su, run as nobody so that it has to ask, reads it from its input.
+# nobody by number (65534): the broken /etc/passwd has no such account.
+su="setpriv --reuid=65534 --regid=65534 --clear-groups -- su -c id -- $user"
+login_ok="printf '%s\\n' '$pw' | $su | grep '^uid=[0-9]*($user)'"
+login_wrong="! printf 'wrong\\n' | $su"
+
+break_fstab='mkdir -p /var/mnt/data && printf "a line that is not a mount\nLABEL=nyra-t8-data /var/mnt/data ext4 defaults 0 2\n" >> /etc/fstab && cat /etc/fstab'
+break_passwd="grep -E '^(root|$user):' /etc/passwd > /var/tmp/passwd && echo 'a line that is not an account' >> /var/tmp/passwd && cat /var/tmp/passwd > /etc/passwd && rm /var/tmp/passwd && cat /etc/passwd"
+break_network='mkdir -p /etc/systemd/network && printf "[Match]\nName=en* eth*\n[Network]\nAddress=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n" > /etc/systemd/network/80-nyra-wired.network && rm -f /etc/resolv.conf && echo "nameserver 192.0.2.53" > /etc/resolv.conf && cat /etc/systemd/network/80-nyra-wired.network /etc/resolv.conf'
+break_services='rm -rf /etc/systemd/system/* && systemctl mask systemd-resolved.service chronyd-restricted.service nyra-firewall.service nyra-updated.timer && ls -lR /etc/systemd/system'
+
+# What a broken system does after it booted; only shown, never a failure.
+observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system: \$s\"; systemctl --no-pager --failed; for u in $units; do echo \"\$u: \$(systemctl is-active \$u)\"; done; ip -br address; ip route; if $net; then echo 'network: the runner answers'; else echo 'network: the runner does not answer'; fi; if $login_ok; then echo '$user: logs in with the password'; else echo '$user: cannot log in'; fi; journalctl -b -p warning -o short-monotonic --no-pager | tail -n 40; true"
+# /etc after the reset: the broken paths are the image's (seen under the bind mount of /etc through a
+# bind mount of / alone, as the reset itself does), /etc/passwd with the user's line added.
+image_etc="i=/run/nyra-t8-image; f=0; mkdir -p \$i && mount --bind / \$i && mount -o remount,bind,ro \$i || f=1; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' /etc/passwd | diff \$i/etc/passwd - || f=1; elif test -e \$i/etc/\$p || test -L \$i/etc/\$p; then diff -r --no-dereference \$i/etc/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the image\"; f=1; fi; done; umount \$i; test \$f = 0 && echo '/etc/fstab, /etc/passwd (plus the user), the network settings, /etc/resolv.conf and /etc/systemd/system are the image'\"'\"'s'"
+
+answer='Type RESET to reset, anything else or Control-D to boot normally: '
+fail=0
+
+vm --poweroff --log "$logs/serial-broken-config-1.log" \
+  --title "Broken configuration 1: a user with a password and a file in /home" \
+  --command "$running" \
+  --command "$secure" \
+  --command "useradd -m -G sudo -s /bin/bash $user && printf '$user:%s\\n' '$pw' | chpasswd && echo $token > /home/$user/keep.txt && chown $user: /home/$user/keep.txt && ls -l /home/$user" \
+  --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused (control)'" \
+  --command "$net && echo 'the network works: the runner answers (control)'" || fail=1
+
+# Each breakage on its own, on a copy of that system: does it boot?
+rows=""
+n=2
+for what in fstab passwd network services; do
+  case "$what" in
+    fstab) title="/etc/fstab: a line that is not a mount, a disk that is not connected" b="$break_fstab" ;;
+    passwd) title="/etc/passwd: the system accounts deleted, a line that is not an account" b="$break_passwd" ;;
+    network) title="the network: a wrong static address, a wrong name server" b="$break_network" ;;
+    services) title="/etc/systemd/system: emptied, then 4 services masked" b="$break_services" ;;
+  esac
+  if python3 -B tools/vm/vm-boot.py --secure-boot "$t8/vars.fd" --disk "$t8/disk.raw" --autologin --timeout 240 \
+      --summary "$summary" --log "$logs/serial-broken-config-$n.log" \
+      --title "Broken configuration $n: $title; the next boot" \
+      --command "$b" --command '@reboot systemctl reboot' --command "$observe"; then
+    rows+="| $title | boots to a login prompt |"$'\n'
+  else
+    rows+="| $title | **does not boot to a login prompt** (serial-broken-config-$n.log) |"$'\n'
+    fail=1
+  fi
+  n=$((n + 1))
+done
+
+vm --poweroff --log "$logs/serial-broken-config-6.log" \
+  --title "Broken configuration 6: all of it at once; Reset settings picked for the next boot" \
+  --command "$break_services" \
+  --command "$break_network" \
+  --command "$break_passwd" \
+  --command "$break_fstab" \
+  --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"' || fail=1
+
+if vm --poweroff --log "$logs/serial-broken-config-7.log" --chat "$answer=>RESET" --chat-then-login \
+    --title "Broken configuration 7: Reset settings, then the normal boot" \
+    --command "$running" \
+    --command "$image_etc" \
+    --command "test \"\$(cat /home/$user/keep.txt)\" = $token && test \"\$(stat -c %U /home/$user/keep.txt)\" = $user && echo 'the file in /home is the same'" \
+    --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused'" \
+    --command "$net && echo 'the network works: the runner answers'" \
+    --command "systemctl is-active $units" \
+    --command "$secure"; then
+  reset="the reset brings the image's settings back: the system runs, the user logs in, the network works"
+else
+  reset="**the reset did not bring the system back** (serial-broken-config-7.log)"
+  fail=1
+fi
+
+{
+  echo "### Configuration broken by the user (Titanic T8)"
+  echo
+  echo "| Broken | Before the reset |"
+  echo "|---|---|"
+  printf '%s' "$rows"
+  echo
+  echo "All of it at once, then Reset settings: $reset."
+  echo
+} >> "$summary"
+
+exit "$fail"
