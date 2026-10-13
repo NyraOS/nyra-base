@@ -63,6 +63,8 @@ jobs:
 
       - name: Pinned base images, cached (ci/pinned-images.sh)
         uses: ./.github/actions/pinned-images
+        with:
+          images: registry
 
       - id: seed
         name: Pick the seed
@@ -140,6 +142,8 @@ jobs:
 
       - name: Pinned base images, cached (ci/pinned-images.sh)
         uses: ./.github/actions/pinned-images
+        with:
+          images: registry
 
       # As in image.yml's install-boot job.
       - name: Enable KVM for the runner user

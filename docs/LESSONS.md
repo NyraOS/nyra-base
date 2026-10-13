@@ -501,9 +501,15 @@ Each line is something that broke or surprised us once.
 - Amazon ECR Public answers anonymous pulls from busy runner IPs with `toomanyrequests: Data limit
   exceeded` (several jobs in one day: the test registry's `podman pull` in install-boot and Titanic).
   The base images the CI takes from it are pulled once per pinned digest and kept in the Actions cache
-  (`ci/pinned-images.sh`). `podman save` and `podman load` keep the image ID (the config digest) but
-  not the manifest digest, so a loaded copy is not found by `name@sha256:…`: the script tags the image
-  `localhost/pinned/<name>`, and the tools image is built `--from` that tag.
+  (`ci/pinned-images.sh`). Release jobs never use the cache, so they pull, and one refused pull stopped
+  a release: each job pulls only the images it needs (`images:` of the action; the cache key names
+  them), and a failed pull from ECR Public is tried again on Docker Hub by the same index digest
+  (`docker.io/library/<name>@sha256:…`). ECR Public's copies of Docker Hub's official images are the
+  same index, byte for byte, so the digest and the image ID stay the only things trusted, whichever
+  source served the image; the job's log says which one. `podman save` and `podman load` keep the
+  image ID (the config digest) but not the manifest digest, so a loaded copy is not found by
+  `name@sha256:…`: the script tags the image `localhost/pinned/<name>`, and the tools image is built
+  `--from` that tag.
 - The image ID alone does not prove a loaded copy: podman 4.9.3 (the runner's) does not check the
   layers against the config's DiffIDs when it reads an image (podman 5 does). Checking the files
   before podman reads them is not enough either: a checker in another language can parse the same
@@ -517,6 +523,10 @@ Each line is something that broke or surprised us once.
 - The bootc cache key hashes `ci/build-bootc.sh` and `ci/tools.Containerfile`, not `image.yml`, so
   editing the test jobs does not rebuild bootc (~35 min). Anything that changes the bootc build output
   belongs in that script, or the cache keeps serving the old build.
+- A step with `if: ${{ !cancelled() }}` also runs after an earlier step failed, and then fails for a
+  reason of its own (the TPM2 unlock test with `mkdir /mnt/work: Permission denied` when the pinned
+  images failed), which hides the first error in the log. Such a step names the steps it needs:
+  `!cancelled() && steps.<id>.outcome == 'success'`.
 - The workflows cancel the previous run of the same branch on a new push: let a cold bootc build finish
   and save its cache before pushing again.
 - **Release builds do not use the cache, pull requests do.** A release is what users install and what
