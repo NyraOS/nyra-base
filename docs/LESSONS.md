@@ -85,8 +85,12 @@ Each line is something that broke or surprised us once.
   `lsinitrd`.
 - **bootc does not see boot counting.** It orders the boot entries by sort key, so after systemd-boot
   fell back from a version with no tries left (`+0-3`), `bootc status` still has that version first
-  (`rollbackQueued: true`), and `bootc rollback` then puts the running version first. To boot the
-  version fallen back from again, give its entry new tries instead (seen in CI).
+  (`rollbackQueued: true`), and `bootc rollback` then puts the running version first (seen in CI).
+- **bootc keeps one `/etc` per deployment.** A version fallen back from keeps the `/etc` it was
+  finalized with: repairing the running system's settings does not reach it, and booting it again
+  (`bootc rollback`) brings the broken settings back (seen in CI). To try it with today's settings,
+  delete it (`bootc delete-deployment <composefs digest>`, a hidden command in bootc 1.16) and stage
+  it again: bootc does not stage an image that already has a deployment ("No changes").
 - **A failed health check does not say whether the version or the settings are broken.** A deleted
   system account (`messagebus`, `systemd-network`) or a masked service fails the core services after
   the next boot, whichever version boots. Settings changed after an update was staged therefore fail

@@ -32,7 +32,7 @@
 #  11  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
 #      into v6: not blessed, system not degraded
 #  12  v6, first full boot: signed retraction below the version floor refused; retraction to the
-#      local rollback deployment (v5) uses bootc rollback, with three tries
+#      local rollback deployment (v5) uses bootc rollback
 #  13  v5, registry down: refused, nothing staged
 #  14  v5, a corrupted layer of v7 in the registry: refused, nothing staged
 #  15  v5, a valid layer of the same size with other content served for v7's: refused (digest)
@@ -41,7 +41,8 @@
 #  17  v7 fails its health check three times (the settings), systemd-boot falls back to v5, which
 #      fails it too: it stays up, v7 is not marked failed, the console says to reset the settings;
 #      the settings repaired by hand
-#  18  v5 healthy: v7 offered again; its entry, still first for bootc, gets three tries again
+#  18  v5 healthy: v7 offered again; its deployment, with the settings it failed with, deleted;
+#      v7 staged afresh
 #  19  v7 boots counted and is blessed; v9 staged; power cut before it is finalized (its staged
 #      entries stay on the ESP)
 #  20  v7: v10, another version, staged: only its entries and v7's are staged (none left from v9)
@@ -411,8 +412,7 @@ vm "v5: hostile network, downgrade, replay; soft reboot into v6" --poweroff \
 vm "v6, first full boot: retraction below the floor refused; retraction to v5 by bootc rollback" --poweroff \
   --command "$lib; expect booted $d6 && running && blessed" \
   --command "$lib; refused floor 'below the version floor'" \
-  --command "$lib; outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true && entries | grep -F +3" \
-  --command "$lib; outcome retract6 RollbackQueued && test \"\$(queued)\" = true" \
+  --command "$lib; outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true" \
   --command 'bootc status --format json'
 
 sudo podman stop -t 1 nyra-test-registry >/dev/null
@@ -451,8 +451,8 @@ sudo podman exec nyra-test-registry sh -c "mv $blob.orig $blob"
 # which fails it too: the settings are to blame, not v7. v5 stays up, v7 is not marked failed, and the
 # console and the login message say to reset the settings. The repair here is by hand (unmask):
 # "Reset settings" would also undo this test's own trust in /etc (it is tested in T8). Then v7 is
-# offered again: bootc still orders its entry first (no bootc rollback), which gets three tries
-# again; it boots counted and is blessed.
+# offered again: its deployment kept the /etc it failed with (bootc keeps one per deployment), so it
+# is deleted and v7 is staged afresh, with today's settings; it boots counted and is blessed.
 vm "v5, registry repaired: the settings broken (systemd-resolved masked); v7 staged" --poweroff \
   --command "$lib; expect booted $d5 && running && systemctl mask systemd-resolved.service" \
   --command "$lib; outcome s7 Staged && expect staged $d7"
@@ -467,10 +467,9 @@ l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ]
 
-vm "v5, the settings repaired: v7 offered again, its entry with three tries again" --poweroff \
+vm "v5, the settings repaired: v7 offered again, its old deployment deleted, staged afresh" --poweroff \
   --command "$lib; expect booted $d5 && running && ! test -e /run/issue.d/50-nyra-health.issue" \
-  --command "$lib; outcome s7 RolledBack && expect rollback $d7 && test \"\$(queued)\" = true && entries | grep -F +3" \
-  --command "$lib; outcome s7 RollbackQueued && grep -F $d7 /var/lib/nyra-updated/state.json"
+  --command "$lib; outcome s7 Staged && expect staged $d7 && expect rollback none && grep -F $d7 /var/lib/nyra-updated/state.json"
 
 # Stale staged entries: a power cut between staging and finalization leaves loader/entries.staged
 # on the ESP; the next update, to another version, must not carry them into its swap. The first

@@ -25,10 +25,8 @@
 //!    version floor, including signed retractions (a leaked old key cannot send machines back to
 //!    any image ever signed).
 //! 5. A version the machine fell back from is marked failed and never prepared or offered again.
-//! 6. A target that is already the local rollback deployment (a retraction, or a version offered
-//!    again under rule 12) is reached with `bootc rollback` (bootc would answer "No changes" to a
-//!    switch). It is on trial like any new version: pending, with three tries
-//!    ([`System::rollback`]), and nothing else is done until the reboot.
+//! 6. A retraction to the version that is already the local rollback deployment uses
+//!    `bootc rollback` (bootc would answer "No changes" to a switch).
 //! 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a wrong
 //!    staged deployment is discarded: it is never finalized ([`System::discard_staged`]), whatever
 //!    the rollback deployment is, and nothing else is staged until the next reboot.
@@ -45,9 +43,10 @@
 //!     version floor) is discarded the same way as in rule 7.
 //! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
 //!     health checks. When a health check fails on a boot that is not on trial, the pending version
-//!     is forgotten instead: the machine's own settings (`/etc`, which both versions share) fail
-//!     the older version too, so they are what is broken. The version is offered again once the
-//!     settings are repaired, and tried again with boot counting (rule 6).
+//!     is forgotten instead: the machine's own settings (`/etc`) fail the older version too, so they
+//!     are what is broken. Once they are repaired the version is offered again. Its deployment, the
+//!     rollback one by then, kept the `/etc` it was tried with (bootc keeps one per deployment), so
+//!     it is deleted ([`System::delete_rollback`]) and the version staged afresh, on trial again.
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -463,15 +462,12 @@ pub trait System {
     fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error>;
     /// Prepares `image_ref` for the next boot, without applying it (`bootc switch`).
     fn stage(&mut self, image_ref: &str) -> Result<(), Error>;
-    /// Makes the rollback deployment the next boot, with three tries (boot counting, `esp-sync
-    /// rollback-counter`). Unless bootc already orders it first (`queued`: after a boot-counting
-    /// fallback too, since bootc orders the entries by sort key, not by tries left), `bootc
-    /// rollback` discards a staged deployment and swaps the boot order; it fails when there is no
-    /// rollback deployment. From then on [`System::rolled_back`] says so until the reboot, even if
-    /// this returns an error.
-    fn rollback(&mut self, queued: bool) -> Result<(), Error>;
-    /// [`System::rollback`] swapped the boot order on this boot (`/run/nyra-updated/rolled-back`).
-    fn rolled_back(&mut self) -> Result<bool, Error>;
+    /// Discards a staged deployment and swaps the boot order (`bootc rollback`): the rollback
+    /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
+    /// there is no rollback deployment.
+    fn rollback(&mut self) -> Result<(), Error>;
+    /// Deletes the rollback deployment, its boot entries and its `/etc` (`bootc delete-deployment`).
+    fn delete_rollback(&mut self) -> Result<(), Error>;
     /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
     /// and again at shutdown, so it is not finalized and the boot entries stay as they are
     /// (`/run/nyra-updated/discarded`, `esp-sync`). Until the next reboot, anything staged is
@@ -498,9 +494,6 @@ pub enum Outcome {
     Staged(Image),
     /// The target is the local rollback deployment: `bootc rollback` made it the next boot.
     RolledBack(Image),
-    /// A rollback was made on this boot: nothing more happens until the reboot (another rollback
-    /// would swap the boot order back).
-    RollbackQueued,
     /// The staged deployment (this digest) must not boot and was discarded (rules 7 and 11); nothing
     /// more happens until the next reboot.
     Discarded(String),
@@ -582,12 +575,6 @@ pub fn check(
         return Ok(Outcome::ForeignImage(booted.image));
     }
 
-    // Rule 6: the boot order a rollback made stands until the reboot. Its target is pending, not a
-    // version the machine fell back from.
-    if sys.rolled_back()? {
-        return Ok(Outcome::RollbackQueued);
-    }
-
     let first_boot_of_pending = state.pending.as_deref() == Some(booted.digest.as_str());
     let before = state.clone();
     settle_pending(&mut state, &status);
@@ -658,9 +645,10 @@ pub fn check(
     // Rule 3: decide with every retraction remembered, not only the ones this sheet still lists.
     let mut sheet = sheet;
     sheet.retracted = state.retracted.iter().cloned().collect();
-    let target = match sheet.decide(&installed, group)? {
+    let (target, retraction) = match sheet.decide(&installed, group)? {
         Decision::UpToDate => return Ok(Outcome::UpToDate),
-        Decision::Update(t) | Decision::Retract(t) => t,
+        Decision::Update(t) => (t, false),
+        Decision::Retract(t) => (t, true),
     };
     check_target(&target, &state, &cfg.version_floor)?;
 
@@ -668,14 +656,13 @@ pub fn check(
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        // Rule 6: on trial like any new version, so pending as soon as the boot order is swapped.
-        let rolled_back = sys.rollback(status.rollback_queued);
-        if sys.rolled_back()? {
-            state.pending = Some(target.digest.clone());
-            store.save(&state)?;
+        if retraction {
+            sys.rollback()?;
+            return Ok(Outcome::RolledBack(target));
         }
-        rolled_back?;
-        return Ok(Outcome::RolledBack(target));
+        // Rule 12: a newer version offered again. Its deployment would boot with the settings it
+        // was tried with, not today's: it goes, and the version is staged like any update.
+        sys.delete_rollback()?;
     }
 
     state.pending = Some(target.digest.clone());
