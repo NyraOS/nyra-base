@@ -650,10 +650,19 @@ Each line is something that broke or surprised us once.
   again with the password `!unprovisioned`, which systemd-firstboot (262) treats as not set up, so
   it asks for a root password, and without credentials a time zone, before any later unit (the
   reset's question) gets the console; seen in CI. A `ConditionKernelCommandLine=!…` drop-in in `/usr`
-  skips it for one boot entry only. Its other wanted units still run: `first-boot-complete.target`
+  skips it for one boot entry only; on every other boot the drop-in runs systemd's command line
+  without `--prompt-root-password`. Its other wanted units still run: `first-boot-complete.target`
   is reached and the machine ID is committed. In early boot, systemd may print a skipped unit's
   condition on the console ("… skipped, unmet condition check"), so a check that a unit did not run
   looks for what it prints when it runs ("Initial Setup...", "Initial Setup."), not for its name.
+- systemd-firstboot (262) reads the `passwd.hashed-password.root` and `passwd.plaintext-password.root`
+  credentials and sets root's password from them whether or not it was asked to prompt for one, while
+  root is not set up (missing or `!unprovisioned`); `--prompt-root-password` only adds the question.
+  The `firstboot.*` credentials never touch root. systemd-sysusers uses the same `passwd.*`
+  credentials when it creates root, before systemd-firstboot runs, so only not importing credentials
+  keeps them out.
+- A drop-in that replaces `ExecStart=` copies the upstream command line and hides later changes to
+  it: the image build compares systemd's line with the one the copy was made from.
 - dpkg combines short options (`dpkg -Ri DIR` installs every package under `DIR`), so a wrapper that
   refuses `-i` looks inside such groups too, up to an option that takes the rest as its value
   (`-iD1` installs with debug level 1; in `-Di` the `i` is the value of `-D`). A `COPY` of
