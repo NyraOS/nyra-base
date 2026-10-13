@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Started by any failed nyra-health-*.service: a full reboot while the version is on trial (or after
 # a soft reboot), so systemd-boot's boot counting falls back (docs/UPDATES.md, docs/BOOT.md).
-# Otherwise the system stays up: the pending version is not blamed (rule 12), and the login console
-# and the message after a login say how to reset the settings (/usr/lib/nyra/health/notice).
+# Otherwise the system stays up: a version the machine fell back from is not blamed (rule 12), and the
+# login console and the message after a login say how to reset the settings
+# (/usr/lib/nyra/health/notice).
 [Unit]
 Description=Nyra: a health check failed, reboot so boot counting can fall back
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
@@ -12,7 +13,8 @@ DefaultDependencies=no
 Type=oneshot
 ExecStart=/usr/libexec/nyra-updated health-failed
 # It reads the boot state (systemctl, systemd-bless-boot, EFI variables) and asks for a reboot, or
-# writes its state file and the notice (in /run).
+# reads bootc status (off trial, with a pending version), writes its state file and the notice (in
+# /run). bootc needs no mount namespace of its own: PrivateTmp= already gives the unit one.
 # systemd-bless-boot status must find the ESP (read-only at /boot) and the entry on it: no
 # ProtectSystem=, no empty CapabilityBoundingSet= and no RestrictSUIDSGID= (openat2) here.
 NoNewPrivileges=yes

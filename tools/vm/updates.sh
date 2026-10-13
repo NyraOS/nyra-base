@@ -461,7 +461,7 @@ vm "v7 fails its health check three times (the settings), back on v5, which fail
   --command "$lib; expect booted $d5 && expect rollback $d7 && entries | grep -F +0-3" \
   --command "systemctl is-failed nyra-health-system.service && ! systemctl is-active boot-complete.target && { /usr/lib/nyra/health/system; true; } && journalctl -b -u nyra-updated-health-failed -o cat --no-pager | grep -F 'Stay(Some(' | grep -F $d7" \
   --command 'cat /run/issue.d/50-nyra-health.issue && cmp /run/issue.d/50-nyra-health.issue /run/motd.d/50-nyra-health.motd && grep -qF systemd-resolved.service /run/issue.d/50-nyra-health.issue && grep -qF "Nyra OS Reset settings" /run/issue.d/50-nyra-health.issue' \
-  --command "$lib; outcome s7 NotHealthy && ! grep -F $d7 /var/lib/nyra-updated/state.json && echo 'v7 is neither pending nor failed'" \
+  --command "$lib; outcome s7 NotHealthy && python3 -c 'import json, sys; s = json.load(open(\"/var/lib/nyra-updated/state.json\")); d = sys.argv[1]; sys.exit(s.get(\"pending\") == d or d in s.get(\"failed\", []) or s.get(\"forgiven\") != d)' $d7 && echo 'v7 is forgiven, neither pending nor failed'" \
   --command 'systemctl unmask systemd-resolved.service'
 l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l")"

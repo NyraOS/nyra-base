@@ -3,7 +3,8 @@
 //!
 //! - `check` (timer): one update check, see the library documentation for the rules;
 //! - `health-failed` (`OnFailure=` of the health checks): a full reboot while on trial; off trial,
-//!   the pending version is forgotten (rule 12) and the console says how to reset the settings;
+//!   a version fallen back from is forgiven once (rule 12) and the console says how to reset the
+//!   settings;
 //! - `health` (`nyra-health-bootc.service`): bootc reports the booted image, so this version can
 //!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key.

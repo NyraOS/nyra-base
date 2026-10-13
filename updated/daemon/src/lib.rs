@@ -42,9 +42,10 @@
 //! 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
 //!     version floor) is discarded the same way as in rule 7.
 //! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
-//!     health checks. When a health check fails on a boot that is not on trial, the pending version
-//!     is forgotten instead: the machine's own settings (`/etc`) fail the older version too, so they
-//!     are what is broken. Once they are repaired the version is offered again. Its deployment, the
+//!     health checks. When the older version fails them too (a boot that is not on trial), the
+//!     version fallen back from is forgiven instead, once: the machine's own settings (`/etc`) are
+//!     what is broken. Once they are repaired the version is offered again; a second fallback from
+//!     it marks it failed. Its deployment, the
 //!     rollback one by then, kept the `/etc` it was tried with (bootc keeps one per deployment), so
 //!     it is deleted ([`System::delete_rollback`]) and the version staged afresh, on trial again.
 //!
@@ -310,6 +311,8 @@ pub struct State {
     pub failed: BTreeSet<String>,
     /// The digest prepared by the last update and not yet confirmed good.
     pub pending: Option<String>,
+    /// The last digest forgiven under rule 12: a second fallback from it marks it failed.
+    pub forgiven: Option<String>,
 }
 
 /// The state directory (`/var/lib/nyra-updated`, 0700, files 0600).
@@ -514,6 +517,12 @@ fn payload_sha256(envelope: &[u8]) -> Result<String, Error> {
         .collect())
 }
 
+/// The machine came back from `digest`: it is the rollback deployment, and not the booted one.
+fn fell_back_from(status: &Status, digest: &str) -> bool {
+    Status::digest(&status.rollback) == Some(digest)
+        && Status::digest(&status.booted) != Some(digest)
+}
+
 /// Learns what became of the version prepared last time (rule 5).
 fn settle_pending(state: &mut State, status: &Status) {
     let Some(pending) = state.pending.clone() else {
@@ -522,9 +531,7 @@ fn settle_pending(state: &mut State, status: &Status) {
     if Status::digest(&status.staged) == Some(&pending) {
         return; // still waiting for the reboot
     }
-    if Status::digest(&status.rollback) == Some(&pending)
-        && Status::digest(&status.booted) != Some(&pending)
-    {
+    if fell_back_from(status, &pending) {
         // It booted and the machine came back: systemd-boot's fallback after three tries.
         state.failed.insert(pending);
     }
@@ -690,27 +697,33 @@ pub enum HealthAction {
     /// Full reboot started: the next try, or systemd-boot's fallback.
     Reboot,
     /// The running version is not on trial: a reboot would boot it again (a loop). It stays up,
-    /// unhealthy, for the user and the repair tools. The pending version it holds, if any, was
-    /// forgotten (rule 12).
+    /// unhealthy, for the user and the repair tools. It holds the version fallen back from, if it
+    /// was forgiven (rule 12).
     Stay(Option<String>),
 }
 
-/// A health check failed on this boot (rules 8 and 12). No lock: on a boot that is not healthy,
-/// [`check`] stops before it reads the state.
+/// A health check failed on this boot (rules 8 and 12). Off trial with a pending version, it reads
+/// `bootc status`. No lock: on a boot that is not healthy, [`check`] stops before it reads the state.
 pub fn on_health_failure(sys: &mut impl System, store: &Store) -> Result<HealthAction, Error> {
     let info = sys.boot_info()?;
     if info.soft_rebooted || info.on_trial {
         sys.reboot()?;
         return Ok(HealthAction::Reboot);
     }
-    // Rule 12: a version the machine fell back from, if that is how this boot came about, is not
-    // what fails here.
+    // Rule 12: if the machine fell back from the pending version and this older one fails too,
+    // the settings are to blame, not that version: it is forgiven, once. Anything else (a version
+    // only staged, or booted without a boot counter: rule 9) stays for the next check to settle.
     let mut state = store.load()?;
-    let forgotten = state.pending.take();
-    if forgotten.is_some() {
-        store.save(&state)?;
+    let Some(pending) = state.pending.clone() else {
+        return Ok(HealthAction::Stay(None));
+    };
+    if !fell_back_from(&sys.status()?, &pending) || state.forgiven.as_ref() == Some(&pending) {
+        return Ok(HealthAction::Stay(None));
     }
-    Ok(HealthAction::Stay(forgotten))
+    state.pending = None;
+    state.forgiven = Some(pending.clone());
+    store.save(&state)?;
+    Ok(HealthAction::Stay(Some(pending)))
 }
 
 #[cfg(test)]

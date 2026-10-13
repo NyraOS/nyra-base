@@ -93,7 +93,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
     version floor) is discarded the same way as in rule 7.
 12. A version is marked failed only when the version the machine fell back to passes its health
-    checks (below, "The version or the settings").
+    checks, or when the machine falls back from it a second time (below, "The version or the
+    settings").
 
 ### Discarding a staged deployment (rules 7 and 11)
 
@@ -119,8 +120,8 @@ by hand is discarded with it.
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
-| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, the pending version forgotten (rule 12) and the notice |
-| `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start, and how to reset the settings |
+| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice |
+| `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
 
 The image build runs `systemd-analyze verify` on these units and `nyra-updated check-config`, which
@@ -143,20 +144,24 @@ tries and systemd-boot falls back. Both versions share those settings (bootc mer
 new version), so the older one fails its health checks too. It is not on trial and stays up, and
 `health-failed` then:
 
-- forgets the pending version instead of letting the next check mark it failed (rule 12). Once the
-  settings are repaired and a boot is healthy, the version is offered again. Its deployment, the
+- forgives the version fallen back from, once, instead of letting the next check mark it failed
+  (rule 12). It checks with `bootc status` that the machine did fall back from the pending version
+  (it is the rollback deployment, not the booted one), as the check does; a version only staged, or
+  booted without a boot counter (rule 9), is left for the check. Once the settings are repaired and
+  a boot is healthy, the version is offered again. Its deployment, the
   rollback one by then, kept the `/etc` it failed with: bootc keeps one `/etc` per deployment, and
   the repair only reached the running one. So that deployment is deleted (`bootc delete-deployment`)
   and the version is staged afresh like any update: merged with today's settings, pending, three
-  tries. If it fails again on a healthy machine, the fallback marks it failed as usual;
+  tries. If it fails again, it is marked failed: at once on a healthy machine, and after the next
+  repair if the older version fails again too (it was forgiven already, `forgiven` in the state);
 - runs `/usr/lib/nyra/health/notice`. It names the core services that did not start (or the failed
   health checks) and says to restart and choose "Nyra OS Reset settings" in the boot menu, which
   keeps the user accounts, passwords and `/home` (`docs/BOOT.md`). The text is shown on the login
   console (agetty reads `/run/issue.d`, and is asked to show it again) and after a login (pam_motd
   reads `/run/motd.d`). It goes with the boot.
 
-Any failed health check on a boot that is not on trial does the same, with or without an update: a
-version that is not on trial passed its checks before, so what changed is the machine. The cost of
+Any failed health check on a boot that is not on trial shows the notice, with or without an update:
+a version that is not on trial passed its checks before, so what changed is the machine. The cost of
 not knowing at once: the new version's three tries before the fallback.
 
 A broken kernel or initramfs never reaches the health checks: the sealed command line has `panic=10`
