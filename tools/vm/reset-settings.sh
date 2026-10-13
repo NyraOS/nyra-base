@@ -42,9 +42,9 @@
 #      the system;
 #   15. the reset with that /etc/fstab; the normal boot after it runs, without those lines;
 #   16. /etc emptied, then a power cut; 17. the normal boot (not the reset entry): a first boot, so
-#      systemd-firstboot runs, but it asks for no root password and the boot goes on; root is locked
-#      (its line in /etc/shadow, printed on the console by a drop-in passed as a credential, so the
-#      check does not depend on a login with /etc emptied).
+#      systemd-firstboot runs and finishes (active, result success), but it asks for no root password
+#      and the boot goes on; root is locked (its line in /etc/shadow). Both are printed on the console
+#      by a drop-in passed as a credential, so the check does not depend on a login with /etc emptied.
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The password is random, for this throwaway disk only.
@@ -213,18 +213,21 @@ vm --poweroff --log "$logs/serial-reset-settings-15.log" --chat-then-login --cha
   --command "! grep -s 'nyra-missing\\|nyra-no-such-option' /etc/fstab && echo 'the broken /etc/fstab lines are gone'"
 
 # A normal boot with /etc emptied (docs/BOOT.md, "No first-boot questions"): any first-boot question
-# would stop the boot before multi-user.target. "Initial Setup." shows that systemd-firstboot did run.
+# would stop the boot before multi-user.target.
 vm --log "$logs/serial-reset-settings-16.log" --power-cut-at 'nyra-test: power cut' \
   --title "Reset settings 16: /etc emptied, then a power cut" \
   --command 'find /etc -mindepth 1 -delete; echo "left in /etc: $(ls -A /etc | wc -l)"; test -z "$(ls -A /etc)"' \
   --command 'sync && echo "nyra-test: power"" cut"'
-# The printed marker (NYRA-ROOT-LOCKED) does not appear literally in the drop-in.
+# A drop-in passed as a credential prints, in the system, systemd-firstboot's state and root's line,
+# and the marker only when systemd-firstboot ran and finished (active, result success: a skipped unit
+# is inactive, a failed one has another result) and root is locked. The printed marker
+# (NYRA-FIRSTBOOT-RAN-ROOT-LOCKED) does not appear literally in the drop-in.
 root_locked="systemd.unit-dropin.systemd-user-sessions.service=[Service]
-ExecStartPost=/bin/sh -c 'grep \"^root:\" /etc/shadow | cut -d: -f1,2 >/dev/ttyS0; grep -q \"^root:[!*]\" /etc/shadow && echo NYRA-ROOT-\$\$(echo LOCKED) >/dev/ttyS0'"
+ExecStartPost=/bin/sh -c 'a=\$\$(systemctl show -P ActiveState systemd-firstboot.service); r=\$\$(systemctl show -P Result systemd-firstboot.service); echo \"systemd-firstboot: \$\$a, \$\$r\" >/dev/ttyS0; grep \"^root:\" /etc/shadow | cut -d: -f1,2 >/dev/ttyS0; test \"\$\$a \$\$r\" = \"active success\" && grep -q \"^root:[!*]\" /etc/shadow && echo NYRA-FIRSTBOOT-RAN-ROOT-\$\$(echo LOCKED) >/dev/ttyS0'"
 vm --log "$logs/serial-reset-settings-17.log" --credential "$root_locked" \
-  --marker 'NYRA-ROOT-LOCKED' --marker-expected yes \
+  --marker 'NYRA-FIRSTBOOT-RAN-ROOT-LOCKED' --marker-expected yes \
   --title "Reset settings 17: the normal boot with /etc emptied: no root password question, root locked"
-if grep -aE 'Please enter the new' "$logs/serial-reset-settings-17.log" || ! grep -aq 'Initial Setup\.' "$logs/serial-reset-settings-17.log"; then
-  echo "reset settings 17: systemd-firstboot asked a question, or did not run"
+if grep -aE 'Please enter the new' "$logs/serial-reset-settings-17.log"; then
+  echo "reset settings 17: systemd-firstboot asked a question"
   exit 1
 fi

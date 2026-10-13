@@ -682,10 +682,10 @@ and groups, the file in `/home`, the machine ID and the host name, nothing of th
 (root the only UID 0), and the previous `/etc` as
 `etc.nyra-old` (`0700`). Then `/etc/fstab` breaks again (see "Mounts from /etc/fstab"): the normal boot
 goes on, the reset entry asks at once without reading it, and the reset removes it. Last, `/etc` is
-emptied and the normal entry boots: `systemd-firstboot` runs (a first boot), asks nothing (the test
-passes the time zone as a credential), the boot reaches `multi-user.target`, and root is locked (a
-drop-in passed as a credential prints root's line from `/etc/shadow` on the console, so the check does
-not depend on a login with `/etc` emptied).
+emptied and the normal entry boots: `systemd-firstboot` runs (a first boot) and finishes with success,
+asks nothing (the test passes the time zone as a credential), the boot reaches `multi-user.target`, and
+root is locked (a drop-in passed as a credential prints the unit's state and root's line from
+`/etc/shadow` on the console, so the check does not depend on a login with `/etc` emptied).
 
 Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
 the network and `/etc/systemd/system` the way a user could, checks that each still boots, then resets
@@ -693,7 +693,8 @@ all of it at once.
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
-`/home` (the factory reset).
+`/home` (the factory reset). After `/etc` is emptied no administrator is left, so recovery has no one
+to authenticate.
 
 ## Mounts from /etc/fstab
 
