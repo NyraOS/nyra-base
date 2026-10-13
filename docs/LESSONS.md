@@ -621,6 +621,13 @@ Each line is something that broke or surprised us once.
   takes long and fails much later.
 
 ## Titanic (docs/TITANIC.md)
+- bootc 1.16 enables `bootc-sysusers-shadow-sync.service` (through its generator, on composefs boots
+  with an `/etc/shadow`): before `systemd-sysusers` it removes the `/etc/shadow` and `/etc/gshadow`
+  lines whose account is in neither `/etc/passwd` nor `/usr/lib/passwd`. A line in `/etc/passwd` that
+  is not an account (not empty, not `#`, `+` or `-`) makes it stop before it writes anything, with
+  `failed to parse passwd entry at line N` in its journal, and the unit fails. That is harmless:
+  `systemd-sysusers` runs only when `/etc` needs an update (`ConditionNeedsUpdate=/etc`), and the
+  unit is only wanted by `sysinit.target`. Seen on every T8 boot with that line, before the reset.
 - composefs objects carry fs-verity: bytes changed on the block device under a mounted ext4 (root
   may write there) make every read of that block fail with `Input/output error`, through `/usr` and
   on the object itself. Drop the page cache first (`sync`, `blockdev --flushbufs`, `drop_caches`),

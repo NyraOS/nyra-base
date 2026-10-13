@@ -694,6 +694,8 @@ root is locked (a drop-in passed as a credential prints the unit's state and roo
 Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
 the network and `/etc/systemd/system` the way a user could, checks that each still boots, then breaks
 all of it at once, opens Recovery without the system accounts in `/etc/passwd`, and resets it.
+While `/etc/passwd` has a line that is not an account, bootc's `bootc-sysusers-shadow-sync.service`
+fails without changing anything (docs/TITANIC.md); after the reset it runs and succeeds again.
 
 What the installer and later work must still decide: other system data a user expects to keep (Wi-Fi
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
