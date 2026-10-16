@@ -116,7 +116,7 @@ by hand is discarded with it.
 
 | Path | What |
 |---|---|
-| `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
+| `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock`, and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |

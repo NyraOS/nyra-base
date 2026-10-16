@@ -31,6 +31,17 @@ Each line is something that broke or surprised us once.
   builds still compile bootc themselves, then compare the result with the cached build of the same key
   and fail on any difference. The image check above (`ci/check-reproducible.sh`) reuses one bootc build
   and runs on one runner, so it does not catch differences in bootc or ones that depend on the host.
+- **Download once, then build without network.** The reproducibility check builds the image a second
+  time with `--no-cache`, and cargo downloaded nyra-updated's crates from crates.io again, two minutes
+  after the first build: a 17 s network outage on the runner outlasted cargo's 3 retries (about 10 s
+  per request) and failed the job before any test. `ci/build-image.sh` now fetches the crates once
+  (`cargo fetch --locked`, 10 retries: over a minute per request), and both builds compile them in a
+  `RUN --network=none` step from that directory, mounted read-only. Cargo checks a crate against
+  `Cargo.lock` only when it downloads it: a `.crate` already in its cache is used as it is (checked
+  locally: one with a changed file compiled without a word). So the step checks every `.crate` against
+  the lock's checksums with `sha256sum` and copies only the download cache and the index, never the
+  unpacked `registry/src`, whose files cargo does not check at all. The binary is byte for byte the one the
+  online build gave.
 - **Strip bootc.** Debug info makes it ~378 MB; stripped it is ~40 MB.
 - **mkosi installs only what is listed.** No `passwd`, `login`, `util-linux` unless named. The list in
   `mkosi/mkosi.conf` is the whole system.

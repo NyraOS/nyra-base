@@ -12,9 +12,17 @@ ARG TOOLS=localhost/nyra-tools
 
 # nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
+# Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
+# first build), mounted read-only; the build has no network. Cargo does not check a crate already in
+# its download cache against Cargo.lock, so this step does, before cargo sees them.
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
-RUN --mount=type=tmpfs,dst=/root cd /src && cargo build --release --locked -p nyra-updated && \
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    cd /crates/registry/cache/index.crates.io-* && \
+    awk -F'"' '/^name = /{n=$2} /^version = /{v=$2} /^checksum = /{print $2 "  " n "-" v ".crate"}' /src/Cargo.lock | \
+      sha256sum --quiet --strict -c - && \
+    mkdir -p /root/.cargo/registry && cp -a /crates/registry/index /crates/registry/cache /root/.cargo/registry/ && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
     strip target/release/nyra-updated
 
 FROM ${ROOTFS} AS base

@@ -15,8 +15,9 @@ sudo podman run --rm --privileged -v "$PWD/mkosi:/src" -v "$WORK:/work" -v ~/cac
     --extra-tree=/work/bootc:/ --source-date-epoch="$SOURCE_DATE_EPOCH" --force build
 id="$(sudo podman pull -q "oci:$WORK/out2/nyra-base-rootfs")"
 sudo podman tag "$id" localhost/nyra-base-rootfs:again
-# Same steps as the first build (ci/build-image.sh), with the UKI it signed: the root filesystem is
-# rebuilt and compared, the signature is not made twice.
+# Same steps as the first build (ci/build-image.sh), with the UKI it signed and the nyra-updated crates
+# it fetched: the root filesystem is rebuilt and compared, the signature is not made twice, and nothing
+# is downloaded (a network outage on the runner does not fail the check).
 ci/build-image.sh localhost/nyra-base-rootfs:again localhost/nyra-base:again "$WORK/uki" -q --no-cache >/dev/null
 
 layers() { sudo podman image inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$1"; }
