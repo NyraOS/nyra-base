@@ -706,6 +706,30 @@ fn a_retraction_to_the_local_rollback_deployment_uses_bootc_rollback() {
 }
 
 #[test]
+fn a_second_check_before_the_reboot_does_not_roll_back_again() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
+    fake.status.rollback = dep(A);
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::RolledBack(image(A)))
+    );
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::WaitingForReboot(image(A)))
+    );
+    // One `bootc rollback`: A stays the next boot.
+    assert_eq!(
+        fake.calls
+            .iter()
+            .filter(|c| c.as_str() == "rollback")
+            .count(),
+        1
+    );
+    assert!(fake.status.rollback_queued);
+}
+
+#[test]
 fn a_failed_rollback_deployment_is_not_used_for_a_retraction() {
     let dir = TempDir::new();
     dir.store()

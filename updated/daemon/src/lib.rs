@@ -26,7 +26,9 @@
 //!    any image ever signed).
 //! 5. A version the machine fell back from is marked failed and never prepared or offered again.
 //! 6. A retraction to the version that is already the local rollback deployment uses
-//!    `bootc rollback` (bootc would answer "No changes" to a switch).
+//!    `bootc rollback` (bootc would answer "No changes" to a switch), once: when bootc already
+//!    reports that deployment as the next boot (`rollbackQueued`), a check before the reboot runs
+//!    nothing, because a second `bootc rollback` would swap the boot order back.
 //! 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a wrong
 //!    staged deployment is discarded: it is never finalized ([`System::discard_staged`]), whatever
 //!    the rollback deployment is, and nothing else is staged until the next reboot.
@@ -492,7 +494,8 @@ pub enum Outcome {
     /// is done (rule 10).
     ForeignImage(Option<String>),
     UpToDate,
-    /// The target is already staged; the user reboots when they want.
+    /// The target is already the next boot (staged, or the rollback deployment after
+    /// `bootc rollback`); the user reboots when they want.
     WaitingForReboot(Image),
     Staged(Image),
     /// The target is the local rollback deployment: `bootc rollback` made it the next boot.
@@ -664,6 +667,11 @@ pub fn check(
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
         if retraction {
+            // Rule 6, once: another `bootc rollback` would make the retracted version the next
+            // boot again.
+            if status.rollback_queued {
+                return Ok(Outcome::WaitingForReboot(target));
+            }
             sys.rollback()?;
             return Ok(Outcome::RolledBack(target));
         }

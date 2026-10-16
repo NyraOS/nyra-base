@@ -77,7 +77,9 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    old key cannot send machines back to any image ever signed).
 5. A version the machine fell back from is marked failed and never staged or offered again.
 6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
-   "No changes").
+   "No changes"), once: `bootc rollback` swaps the boot order every time it runs, so when `bootc status`
+   already reports the rollback deployment as the next boot (`rollbackQueued`), a check before the
+   reboot runs nothing (`WaitingForReboot`).
 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
    deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
@@ -220,7 +222,7 @@ bootc reads it.
 | T4 | older version served (downgrade), replayed older sheet | refused |
 | — | soft reboot into a new version from a counted boot | `systemd-bless-boot` skipped, system `running`, the entry keeps `+3` |
 | T4 | signed retraction below the version floor | refused |
-| T4 | signed retraction to the local rollback deployment | `bootc rollback` (rule 6) |
+| T4 | signed retraction to the local rollback deployment, then a second check before the reboot | `bootc rollback` once (rule 6): the second check leaves the order as it is, and the rollback deployment boots |
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
 | T3 | a good version, the settings broken after it was staged (`systemd-resolved` masked) | it fails its health check three times and systemd-boot falls back; the older version fails it too and stays up: the new version is not marked failed, the console and the login message say to reset the settings. Settings repaired: the version is offered again, its old deployment (with the old `/etc`) deleted, staged afresh; it boots counted and is blessed |
