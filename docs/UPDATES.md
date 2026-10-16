@@ -79,7 +79,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
    "No changes"), once: `bootc rollback` swaps the boot order every time it runs, so when `bootc status`
    already reports the rollback deployment as the next boot (`rollbackQueued`), a check before the
-   reboot runs nothing (`WaitingForReboot`).
+   reboot runs nothing (`WaitingForReboot`). Not for a version forgiven under rule 12: that one is
+   staged afresh, as there.
 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
    deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
@@ -155,7 +156,11 @@ new version), so the older one fails its health checks too. It is not on trial a
   the repair only reached the running one. So that deployment is deleted (`bootc delete-deployment`)
   and the version is staged afresh like any update: merged with today's settings, pending, three
   tries. If it fails again, it is marked failed: at once on a healthy machine, and after the next
-  repair if the older version fails again too (it was forgiven already, `forgiven` in the state);
+  repair if the older version fails again too (it was forgiven already, `forgiven` in the state).
+  The same holds when the version comes back as the target of a retraction (the version fallen back
+  to was retracted): bootc does not see boot counting and still reports the deployment fallen back
+  from as the next boot (`rollbackQueued`), so rule 6 would wait for a reboot that boots the
+  retracted version again;
 - runs `/usr/lib/nyra/health/notice`. It names the core services that did not start (or the failed
   health checks) and says to restart and choose "Nyra OS Reset settings" in the boot menu, which
   keeps the user accounts, passwords and `/home` (`docs/BOOT.md`). The text is shown on the login
@@ -195,7 +200,7 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 34 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 38 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
@@ -235,6 +240,7 @@ bootc reads it.
 | T9 | the hardware clock in 2099 and in 1970 (systemd sets both to its build time at boot, before the real time), and in 2035 (kept, ahead, outside the validity of every certificate) | chronyd corrects the clock through NTS by itself (docs/DEFAULTS.md, "Time"), the update is staged or the system is up to date; chronyd's memory, context switches and CPU time are printed |
 | T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: an untrusted certificate on the NTS-KE port, an NTP server that answers with a time in 2001 | the clock stays in 2035, chronyd sends not one NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
+| T3 | a retraction to an older version that is not a local deployment, the settings broken after it was staged | it fails its health check three times and systemd-boot falls back to the retracted version, which fails it too: the older version is forgiven, and bootc still reports it as the next boot (`rollbackQueued`). Settings repaired: the retraction deletes its deployment (with the old `/etc`) and stages it afresh instead of waiting for a reboot; it boots counted and is blessed |
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
 disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft

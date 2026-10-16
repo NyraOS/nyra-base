@@ -922,6 +922,51 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
 }
 
 #[test]
+fn a_retraction_to_a_forgiven_version_stages_it_afresh() {
+    // B is retracted and A, not a local deployment, is staged by switch.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(A))));
+    // The settings were broken: A failed three times, systemd-boot went back to B, which fails too.
+    // A is forgiven. bootc still reports A as the next boot: it does not see that A has no tries
+    // left.
+    fake.status = Status {
+        booted: dep(B),
+        staged: None,
+        rollback: dep(A),
+        rollback_queued: true,
+    };
+    fake.healthy = false;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store()),
+        Ok(HealthAction::Stay(Some(A.into())))
+    );
+    // The settings repaired: the retraction to A must not wait for a reboot that boots B again.
+    // A's deployment, with the settings it failed with, is deleted and A staged afresh, on trial.
+    fake.healthy = true;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(A))));
+    assert_eq!(
+        fake.calls[fake.calls.len() - 2..],
+        [
+            "delete rollback".to_string(),
+            format!("stage updates.nyraos.com/nyra@{A}")
+        ]
+    );
+    assert!(!fake.calls.contains(&"rollback".to_string()));
+    let state = dir.store().load().unwrap();
+    assert!(state.failed.is_empty());
+    assert_eq!(state.pending.as_deref(), Some(A));
+    // A boots, counted: confirmed.
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(B),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    assert_eq!(dir.store().load().unwrap().pending, None);
+}
+
+#[test]
 fn a_new_version_booted_without_a_counter_is_still_reported_after_a_failed_health_check() {
     // Rule 9 is not lost: C's first boot was not counted (not on trial) and a health check failed.
     let dir = TempDir::new();
