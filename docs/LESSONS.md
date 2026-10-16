@@ -475,6 +475,32 @@ Each line is something that broke or surprised us once.
   to it adds that directory itself (and sets `sys.dont_write_bytecode`, so nothing is written into the
   checkout).
 
+## Disk encryption (docs/BOOT.md)
+- An encrypted root needs nothing on the sealed command line: systemd-gpt-auto-generator finds a LUKS2
+  root partition by its type and sets up `systemd-cryptsetup@root.service` for `/dev/gpt-auto-root-luks`
+  (with `tpm2-device=auto` when the stub measured the boot).
+- **Its root device still waits only systemd's 90 s.** gpt-auto gives the opened volume
+  (`dev-mapper-root.device`) no time limit, but the root mount waits for `/dev/gpt-auto-root`, whose job
+  times out after 90 s: a passphrase typed later ends in emergency mode. And systemd-cryptsetup gives up
+  after three wrong passphrases (`tries=3`), which gpt-auto offers no way to change.
+- **bootc points `/run/systemd/volatile-root` at `/dev/gpt-auto-root`**, which for an encrypted root is
+  the opened volume. systemd's `blockdev_get_root()` takes that link as it is (it traces dm-crypt to the
+  partition only without the link), so gpt-auto in the running system finds no disk and mounts no ESP
+  at `/boot`. bootc keeps a link that is already there.
+- Once gpt-auto finds the root's disk in the running system, it uses every partition type on it under
+  systemd's default host image policy (swap, `/home`, `/srv`, `/var`, `/var/tmp`, unencrypted ones
+  included). `systemd.image_policy=` on the command line limits it (`designator=flags:...:=default`;
+  `ignore` skips a type without failing the dissection). To see what it would do, run it by hand into
+  a temporary directory; `SYSTEMD_PROC_CMDLINE=` replaces the kernel command line for it.
+- In a container without udev, device-mapper waits for udev's confirmation forever (closing a LUKS volume
+  hung): `DM_DISABLE_UDEV=1` makes it create its nodes itself.
+- An ext4 that was not cleanly unmounted cannot be mounted read-only on a read-only device: `-o
+  ro,noload` (no journal replay).
+- `systemd-cryptenroll --recovery-key` prints the key alone on stdout, and the rest, a QR code of the
+  key included, on stderr: keep stderr out of the logs.
+- systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
+  echoed. A test that types a secret on a console waits a moment after the prompt.
+
 ## Testing in CI
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for
   good: the kernel shrinks the receiving socket's buffer below one segment, the window it offers is

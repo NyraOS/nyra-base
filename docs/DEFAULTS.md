@@ -106,6 +106,13 @@ units above. Only these stay, all from `/usr`:
 | `systemd-pcrosseparator.service` (initramfs) | a separator into PCR 7, 12 and the other firmware PCRs before the disk is unlocked, so what is measured later does not count as boot state | one-shot in the initramfs, one TPM command; nothing resident |
 | `systemd-tpm2-setup-early.service` (initramfs), `systemd-tpm2-setup.service` | the TPM's storage root key (SRK), which salts and encrypts the session that unlocks the disk | one-shot at boot. The early one creates the SRK once; the later one also creates the endorsement key (EK) once, when the TPM allows it. Both stay in the TPM as persistent objects, also after a reinstall; later boots only read them. No NV index (no NvPCRs, below); nothing resident |
 
+Nyra's own, in the initramfs only:
+
+| Unit | Why | Cost |
+|---|---|---|
+| `nyra-root-wait.service` | the initrd waits for an encrypted root without a time limit (its passphrase may take long), but a root partition must still appear within 90 s (docs/BOOT.md, "Disk encryption") | one-shot in the initrd: checks once a second whether the root partition is there, which it normally is within a second or two; nothing resident |
+| `nyra-luks-root.service` | with an encrypted root, the running system finds the ESP on the LUKS2 partition's disk (docs/BOOT.md, "Disk encryption") | one-shot in the initrd, only with an encrypted root: one symbolic link; nothing resident |
+
 `systemd-pcrphase-factory-reset.service` and `systemd-pcrphase-storage-target-mode.service` stay
 linked too, but only `factory-reset.target` and `storage-target-mode.target` start them, and nothing in
 Nyra starts those targets.

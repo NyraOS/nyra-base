@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Initrd only: a root partition must appear within 90 s (/usr/lib/nyra/boot/root-wait).
+[Unit]
+Description=Nyra: wait 90 s for the root partition
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/root-wait

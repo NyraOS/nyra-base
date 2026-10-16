@@ -25,7 +25,7 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 2. **UKI** from that committed image (`ci/ukify.sh`, with a second profile for recovery, see
    "Recovery"): `bootc container ukify` computes the composefs digest of the
    root filesystem and runs `ukify` with the command line `<kargs.d> composefs=<digest>` (today
-   `lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no composefs=…`, pinned in
+   `lockdown=integrity panic=10 rw rd.shell=0 rd.emergency=reboot systemd.import_credentials=no systemd.image_policy=… composefs=…`, pinned in
    `ci/uki-cmdline.txt`: no root device,
    systemd-gpt-auto-generator finds the root partition by its type). It reads the committed layers (`podman run --mount type=image`), not the
    build stage: `podman build --timestamp` rewrites file times when it commits, and the digest
@@ -147,13 +147,102 @@ too. Disk unlock therefore depends on what the TPM measured, not on Secure Boot 
     machines are enrolled with the new key it may still boot, but it no longer unlocks the disk
     (it asks for the password or the recovery key). How the rotation works is in "TPM2 unlock".
 
+## Disk encryption (`tools/vm/install-encrypted.sh`, `tools/vm/encryption.sh`)
+
+The root file system is encrypted with LUKS2, and nothing about it is in the boot chain: the sealed
+command line has no `rd.luks.*` argument and the image has no `/etc/crypttab`. In the initrd,
+systemd-gpt-auto-generator finds the root partition by its type ("Finding the root partition"), sees
+LUKS on it and sets up `systemd-cryptsetup@root.service` for `/dev/gpt-auto-root-luks`; the opened
+volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, and works the same after
+"Reset settings".
+
+**The disk** (what the installer creates; `tools/vm/install-encrypted.sh` does the same in CI):
+- GPT with the ESP (1 GiB, FAT) and the root partition, with the Discoverable Partitions root type
+  of the architecture (x86-64: `4f68bce3-e8cd-4db1-96e7-fbcaf984b709`), on the disk of the ESP, so that
+  `LoaderDevicePartUUID` leads to it;
+- LUKS2 on the root partition: aes-xts-plain64 with a 512-bit key, 4096-byte sectors, discards
+  allowed (a flag in the header, so TRIM reaches the SSD; the price is that the disk shows which
+  blocks are unused, not what they held);
+- ext4 with fs-verity on the opened volume, then `bootc install to-filesystem --root-mount-spec ""`
+  (no `root=`: the initrd finds it by its type) and `esp-sync install`.
+
+**Key slots:**
+- **the recovery key, always**: systemd-cryptenroll's `--recovery-key`, 256 bits written as 64
+  characters in 8 groups, from an alphabet whose letters sit in the same place on QWERTY, QWERTZ and
+  AZERTY keyboards, with a `systemd-recovery` token. Every prompt for the disk accepts it in place of
+  the password. It is shown to the user once, at installation, and never written to a log. Its key
+  slot has the minimal key derivation (PBKDF2, as systemd-cryptenroll sets it): 256 random bits need no
+  slow derivation;
+- **a password**, on a machine without a TPM: argon2id, with cryptsetup's own benchmark on the machine
+  (the installer runs there): about 2 s, up to 1 GiB of memory, less on a machine with little memory.
+  What protects a password is that cost against an attack on a copy of the header, not the number of
+  tries at the prompt (unlimited, below), so the installer must also require a minimum argon2id memory
+  and a minimum password strength. The initrd reads the keyboard as US, since it has no user settings,
+  so the installer accepts only password characters that sit in the same place on the user's layout;
+- **with a TPM (not yet):** the TPM2 enrollments of "TPM2 unlock" below, made by the installed system
+  in its initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's,
+  after the separator. The recovery key stays in every case.
+
+**Never locked out.** In the initrd (all three in the initramfs):
+- the root device has no time limit (`dev-gpt\x2dauto\x2droot.device.d`): an encrypted root appears only
+  once its passphrase is typed, and a recovery key read off paper can take longer than systemd's 90 s
+  for a device, after which the initrd would end in emergency mode and restart;
+- a root partition, plain or encrypted, must still appear within 90 s (`nyra-root-wait.service`), or
+  the initrd goes to emergency mode as before ("Finding the root partition");
+- after three wrong passphrases systemd-cryptsetup gives up; it is started again
+  (`systemd-cryptsetup@root.service.d`), so the prompt comes back as long as it takes, without a
+  restart.
+
+**Only the root and the ESP of the root's disk.** The sealed command line has
+`systemd.image_policy=root=encrypted+unprotected+absent:esp=unprotected+absent:=ignore`
+(`/usr/lib/bootc/kargs.d/20-nyra-image-policy.toml`): in the running system, systemd-gpt-auto-generator
+uses the root partition and the ESP and ignores every other partition type on that disk (swap,
+`/home`, `/srv`, `/var`, `/var/tmp`, ...). Without it, someone with the disk in hand could add an
+unencrypted swap or `/var/tmp` partition to the GPT, which is not measured, and the system would write
+memory or temporary files there in the clear. Nyra uses none of those partitions.
+
+**The ESP of an encrypted root.** The running system mounts the ESP of the root's disk at `/boot`
+(systemd-gpt-auto-generator), and finds that disk through `/run/systemd/volatile-root`, which bootc
+points at `/dev/gpt-auto-root`: for an encrypted root, the opened volume, whose disk systemd does not
+look for. `nyra-luks-root.service` (initrd only) points it at the LUKS2 partition first, as systemd
+itself finds the disk of an encrypted root file system; bootc keeps a link that is already there.
+
+**What CI proves** (`tools/vm/encryption.sh`, `install-boot` job, Titanic T10): the image installed on
+its own disk as above, booted without a TPM, the passphrase prompt answered on the serial console:
+
+| Check | Result |
+|---|---|
+| The partition table and the LUKS2 header, read offline | the layout and format above; one password key slot (argon2id), one recovery key slot with its token, no other token |
+| The password (first boot, kept on the disk) | unlocks in the initrd; the root is `/dev/mapper/root`, LUKS2 with discards; the ESP mounted at `/boot`; the system `running` |
+| The recovery key | unlocks in place of the password |
+| A wrong password, then the recovery key 120 s later | asked again; the late key still unlocks |
+| Three wrong passwords | asked again, without a restart; the password unlocks it |
+| Unencrypted swap, `/var/tmp` and `/srv` partitions added to the disk | not swapped to, not mounted; the ESP still at `/boot`; the control: gpt-auto run with a command line without the image policy makes a swap unit for the added partition |
+| Both secrets, searched for | not in the serial logs or the job summary, not in the unencrypted part of the disk (ESP, LUKS2 header), not in the decrypted root file system (the journal included) |
+
+**Known limits.**
+- The passphrase prompt is on the console until the graphical unlock screen comes: what is typed
+  before the prompt appears, or in the second between two prompts after a wrong passphrase, is shown on
+  the screen in the clear (never in a log).
+- aes-xts protects what is on the disk from being read, not from being changed: the root file system
+  has no integrity protection of its own, so someone with the disk in hand can corrupt chosen sectors
+  of `/etc` or `/var` (not read them). `/usr` is verified (composefs and fs-verity). Most distributions
+  encrypt this way; LUKS2 integrity costs speed and space.
+- The root is found by its type on the disk the boot came from. Without a TPM nothing proves to the
+  user that the prompt comes from their own system: someone who replaces the boot files can show a
+  prompt of their own and take the passphrase (encryption without attestation cannot tell). With a TPM,
+  the disk unlocks only for the measured, signed boot ("TPM2 unlock").
+
+Not covered yet: everything with a TPM (the first-boot enrollment, updates, Secure Boot turned off, a
+changed PCR 7 or 12, a cleared or missing TPM, the policy key's rotation, the PIN).
+
 ## TPM2 unlock: the signed PCR policy
 
 The disk will be encrypted (LUKS) and, on a machine with a TPM, unlock by itself at boot only when
 the Nyra UKI's main profile booted. This repository builds the signed policy into the UKI, checks
 it, and tests the unlock it authorizes with a software TPM (`tools/signing/tpm-unlock.sh`, "The
-software-TPM test" below); enrolling a user's disk comes later, with the encryption work in the
-installer.
+software-TPM test" below); enrolling a user's disk comes later, from the installed system's initrd
+("Disk encryption" above).
 
 **What is measured.** systemd-stub measures the UKI's sections into PCR 11 before it starts the
 kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`,
@@ -209,7 +298,7 @@ CI tests both verbs on a UKI built by `ci/ukify.sh` with a policy key of the tes
 (`tools/signing/test-pcr-policy.sh`). systemd-measure signs the same policy with the same signature,
 and every refusal above is checked with its reason.
 
-**What the enrollment must bind** (the installer enrolls a user's disk; the software-TPM test below
+**What the enrollment must bind** (the installed system enrolls its disk; the software-TPM test below
 enrolls a throwaway one the same way): `systemd-cryptenroll --tpm2-public-key=<.pcrpkey>
 --tpm2-public-key-pcrs=11 --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12`, so that unlock needs:
 - the signed PCR 11 policy (the Nyra UKI's main profile, in the initrd);
@@ -259,7 +348,8 @@ none to allocate (docs/DEFAULTS.md); that unit itself does not run in the test.
 
 Not covered here, and left for the encryption work: a real encrypted boot through the initrd with a
 TPM attached to the VM (no TPM unit failing, the forced reboot on a missed `leave-initrd`, the way
-out of a reboot loop with the TPM turned off), and the user-facing password and recovery-key fallback.
+out of a reboot loop with the TPM turned off). The password and the recovery key are tested without a
+TPM ("Disk encryption" above).
 
 ## SBAT
 
@@ -645,8 +735,7 @@ mounts nothing from it (its `/etc` has no `fstab`).
 
 **Kept as is.** The kept users' lines (`passwd`, `shadow`, groups) are copied unchanged, including
 their group and shell: the reset brings back broken system settings, it does not clean up an `/etc`
-that someone took over. Once the disk is encrypted, `/etc/crypttab` and whatever the unlock needs must
-be kept too.
+that someone took over. An encrypted disk needs nothing from `/etc` to unlock ("Disk encryption").
 
 **No password.** The reset grants no access: root stays locked, the users keep their passwords, and
 everything that changes goes back to the image's (secure) defaults. Asking for an administrator's

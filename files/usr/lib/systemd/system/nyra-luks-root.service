@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Initrd only, for an encrypted root: the running system finds the ESP on the disk of the LUKS2
+# partition (/usr/lib/nyra/boot/luks-root). Before bootc's root setup, which keeps the link.
+[Unit]
+Description=Nyra: the encrypted root's disk for the running system
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+ConditionPathExists=/dev/gpt-auto-root-luks
+After=systemd-cryptsetup@root.service sysroot.mount
+Before=bootc-root-setup.service initrd-root-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/luks-root

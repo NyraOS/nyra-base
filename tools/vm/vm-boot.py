@@ -19,6 +19,8 @@ no login prompt from the getty that a credential puts on ttyS0).
 --marker PATTERN, with --marker-expected yes|no, does not log in: it waits until
 the console shows that the system reached multi-user.target, waits 20 s more,
 and checks whether PATTERN was printed (by a unit, for example).
+Password requests (a disk's passphrase in the initrd) are answered on the serial
+console, where --chat can type them.
 --credential NAME=TEXT passes one more systemd credential over SMBIOS. The
 sealed command line does not import them (docs/BOOT.md); the test disks carry an
 add-on that does (tools/vm/test-addon.sh).
@@ -31,7 +33,8 @@ killed only after systemd's 90 s stop timeout) and unmount every file system.
 --power-cut-at REGEX kills QEMU (a power cut) as soon as REGEX shows up on the
 console, during the boot or during a command; the commands before it must pass.
 --chat 'EXPECT=>SEND' (repeatable) replaces the login: wait for the regular
-expression EXPECT, type SEND and Enter (SEND "@ctrl-d": Control-D alone), in order;
+expression EXPECT, wait a second, type SEND and Enter (SEND "@ctrl-d": Control-D alone;
+SEND "@sleep N TEXT": wait N seconds more, then type TEXT), in order;
 then a root shell prompt must follow (for a boot that asks for something else than
 a login, like recovery).
 With --chat-then-login a login prompt follows instead (the guest reboots after the
@@ -83,6 +86,11 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
              "for d in /sys/block/vd*; do echo \"== $$d probed again now\"; udevadm test-builtin blkid $$d 2>/dev/null; done; "
              "journalctl -b -o short-monotonic --no-pager -u systemd-udevd.service; "
              "echo \"@@ end of diagnostics\"; sleep 3'\n")
+# Password requests (the disk's passphrase or recovery key in the initrd) go to /dev/console, which is
+# not the serial port: the sealed command line has no console=ttyS0. The agent answers on ttyS0 instead,
+# in the initrd too (it imports the credentials), so a test can type the passphrase there.
+ASK_PASSWORD = ("[Service]\nExecStart=\n"
+                "ExecStart=systemd-tty-ask-password-agent --watch --console=/dev/ttyS0\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
@@ -190,6 +198,12 @@ def login(con, a, password, start):
             if not m:
                 raise RuntimeError(f"no {expect!r} on the console within {a.timeout} s")
             start += m.end()
+            # A second after the prompt, as a person would type: systemd-ask-password prints its
+            # prompt before it turns echo off, so input that arrives at once could be echoed.
+            time.sleep(1)
+            if send.startswith("@sleep "):
+                seconds, _, send = send[len("@sleep "):].partition(" ")
+                time.sleep(int(seconds))
             con.type("\x04" if send == "@ctrl-d" else send + "\r")
         if not a.chat_then_login:
             if not con.wait_for(rb"# ", 60, start):
@@ -300,6 +314,7 @@ def self_test():
     assert run(boot * 5 + shell, boots=4).startswith("unexpected reboot: kernel start 5")
     assert run(boot + ask + boot + shell, **reset) == "passed"
     assert run(boot + ask + shell, **reset) == "passed"
+    assert run(boot + ask + shell, chat=[ask + "=>@sleep 1 RESET"], chat_then_login=True) == "passed"
     assert run(boot + ask + boot + boot + shell, **reset).startswith("unexpected reboot: kernel start 3")
     assert run(boot + ask + boot + shell, chat=[ask + "=>no"]).startswith("unexpected reboot: kernel start 2")
     # The kernel starts allowed but not used (a soft @reboot, a chat without a reboot) end at the
@@ -382,6 +397,8 @@ def main():
            "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.emergency.service="
             + base64.b64encode(EMERGENCY.encode()).decode()]
+    cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.systemd-ask-password-console.service="
+            + base64.b64encode(ASK_PASSWORD.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
     if a.autologin:

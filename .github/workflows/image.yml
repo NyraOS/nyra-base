@@ -584,6 +584,15 @@ jobs:
         if: ${{ !cancelled() && steps.load.outcome == 'success' }}
         run: tools/signing/tpm-unlock.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      # Titanic T10 without a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed on LUKS2
+      # with a password and a recovery key as the installer does it (tools/vm/install-encrypted.sh);
+      # the password and the recovery key unlock it in the initrd, a wrong password is asked again,
+      # neither secret is in the logs or on the disk outside LUKS. It needs only the loaded image.
+      - name: Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 30
+        run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
