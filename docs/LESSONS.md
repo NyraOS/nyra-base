@@ -50,6 +50,10 @@ Each line is something that broke or surprised us once.
   snapshot's `dists/unstable/main/binary-amd64/Packages.xz` (its hash is in the signed InRelease), or
   ask `snapshot.debian.org/mr/package/<src>/<ver>/binfiles/<bin>/<ver>?fileinfo=1` for the amd64
   `first_seen`.
+- **The kernel arrives in two steps.** The `linux` source builds the modules; the image
+  (`linux-image-amd64`, `linux-image-<abi>`, `linux-binary-<abi>`) comes from `linux-signed-amd64`,
+  which follows later (linux 7.2.11-1: modules at `20261015T205142Z`, signed image at
+  `20261016T023245Z`). Check `linux-image-amd64` in the `Packages` index, not the `linux` upload.
 - The mkosi container needs `python3-pefile`.
 - **apt only warns on a suite mismatch.** A correctly signed InRelease for another suite (unstable
   served where testing was asked) is accepted with `W: Conflicting distribution`. `ci/tools.Containerfile`
