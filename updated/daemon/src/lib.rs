@@ -15,7 +15,9 @@
 //! The rules, each with a unit test in `tests.rs`:
 //!
 //! 1. One update at a time ([`Lock`]); every bootc, systemctl and curl call has a time limit and
-//!    is killed with its children when it hangs (`system::run`).
+//!    is killed with its children when it hangs (`system::run`). A download that fails while the
+//!    machine has no network is reported as that ([`Error::Offline`]), a warning: nothing is
+//!    marked failed, and the next check tries again.
 //! 2. The sheet's sequence and retracted digests are written atomically to the state directory
 //!    **before** anything acts on the sheet; a lower sequence is refused, an equal one only for
 //!    the identical payload.
@@ -127,6 +129,9 @@ pub enum Error {
     /// Another `nyra-updated` holds the lock.
     Busy,
     Timeout(String),
+    /// The download of the sheet or of the version failed while the machine had no network
+    /// ([`System::offline`]): a warning, not a failure (`docs/UPDATES.md`).
+    Offline(Box<Error>),
     Command(String),
     Io(String),
     Config(String),
@@ -161,6 +166,10 @@ impl fmt::Display for Error {
             ),
             Error::Busy => write!(f, "another nyra-updated is running"),
             Error::Timeout(what) => write!(f, "{what} timed out and was stopped"),
+            Error::Offline(e) => write!(
+                f,
+                "no network connection ({e}): the running version stays, the next check tries again"
+            ),
             Error::Command(e) | Error::Io(e) | Error::Config(e) => write!(f, "{e}"),
             Error::TestKey => write!(f, "the channel sheet key file holds a test key"),
         }
@@ -507,6 +516,8 @@ pub trait System {
     fn boot_complete(&mut self) -> Result<bool, Error>;
     fn boot_info(&mut self) -> Result<BootInfo, Error>;
     fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error>;
+    /// The machine has no network now (no link up with an address), as systemd-networkd sees it.
+    fn offline(&mut self) -> bool;
     /// Prepares `image_ref` for the next boot, without applying it (`bootc switch`).
     fn stage(&mut self, image_ref: &str) -> Result<(), Error>;
     /// Discards a staged deployment and swaps the boot order (`bootc rollback`): the rollback
@@ -654,6 +665,18 @@ pub fn offered_rollback<'a>(
     })
 }
 
+/// A download that failed while the machine has no network (a laptop offline, the link lost in
+/// the middle of a pull) is [`Error::Offline`]: nothing is wrong with the server or the version.
+/// Only the machine's own link state counts: a server or a network that stops answering while the
+/// link is up stays an error.
+fn when_offline(sys: &mut impl System, e: Error) -> Error {
+    if sys.offline() {
+        Error::Offline(Box::new(e))
+    } else {
+        e
+    }
+}
+
 /// One update check (see the crate documentation). `now`: Unix seconds.
 pub fn check(
     sys: &mut impl System,
@@ -712,7 +735,9 @@ pub fn check(
     };
 
     // Rule 2: verify, then persist the sequence and the retractions before acting.
-    let envelope = sys.fetch_sheet(&cfg.sheet_url())?;
+    let envelope = sys
+        .fetch_sheet(&cfg.sheet_url())
+        .map_err(|e| when_offline(sys, e))?;
     let key = cfg.sheet_key();
     let last = state.sheets.get(&key).cloned();
     let sheet = verify(
@@ -854,7 +879,8 @@ fn stage_target(
 ) -> Result<Outcome, Error> {
     state.pending = Some(target.digest.clone());
     store.save(state)?;
-    sys.stage(&cfg.image_ref(&target.digest))?;
+    sys.stage(&cfg.image_ref(&target.digest))
+        .map_err(|e| when_offline(sys, e))?;
     let after = sys.status()?;
     let staged = Status::digest(&after.staged)
         .unwrap_or_default()

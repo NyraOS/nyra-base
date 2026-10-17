@@ -125,6 +125,9 @@ struct Fake {
     healthy: bool,
     boot: BootInfo,
     sheet: Vec<u8>,
+    fetch_error: Option<Error>,
+    /// The machine has no network ([`System::offline`]).
+    offline: bool,
     stage_error: Option<Error>,
     /// What bootc ends up staging, if not the digest it was asked for.
     stage_digest: Option<String>,
@@ -150,6 +153,8 @@ impl Fake {
                 counted: true,
             },
             sheet,
+            fetch_error: None,
+            offline: false,
             stage_error: None,
             stage_digest: None,
             calls: Vec::new(),
@@ -178,7 +183,13 @@ impl System for Fake {
     }
     fn fetch_sheet(&mut self, url: &str) -> Result<Vec<u8>, Error> {
         self.calls.push(format!("fetch {url}"));
-        Ok(self.sheet.clone())
+        match self.fetch_error.clone() {
+            Some(e) => Err(e),
+            None => Ok(self.sheet.clone()),
+        }
+    }
+    fn offline(&mut self) -> bool {
+        self.offline
     }
     fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
         self.calls.push(format!("stage {image_ref}"));
@@ -479,6 +490,58 @@ fn a_timed_out_stage_is_retried_at_the_next_check() {
     fake.stage_error = None;
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
     assert!(!dir.store().load().unwrap().failed.contains(C));
+}
+
+// --- no network (rule 1) ---------------------------------------------------------------------
+
+#[test]
+fn a_check_without_a_network_says_so_and_stages_once_the_network_is_back() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    let unreachable = Error::Command("curl failed: Network is unreachable".into());
+    fake.offline = true;
+    fake.fetch_error = Some(unreachable.clone());
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Offline(Box::new(unreachable)))
+    );
+    assert!(fake.staged().is_empty());
+    fake.offline = false;
+    fake.fetch_error = None;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+}
+
+#[test]
+fn a_pull_cut_off_by_a_lost_network_marks_nothing_failed() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.offline = true;
+    fake.stage_error = Some(Error::Timeout("bootc".into()));
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Offline(Box::new(Error::Timeout("bootc".into()))))
+    );
+    assert_eq!(fake.status.staged, None);
+    fake.offline = false;
+    fake.stage_error = None;
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert!(dir.store().load().unwrap().failed.is_empty());
+}
+
+#[test]
+fn only_a_failed_download_without_a_network_counts_as_offline() {
+    // A server that stops answering on a working link stays an error.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.stage_error = Some(Error::Timeout("bootc".into()));
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Timeout("bootc".into()))
+    );
+    // Without a network, a sheet that does not verify is still refused for what it is.
+    let mut fake = Fake::new(&dir, A, b"<html>captive portal</html>".to_vec());
+    fake.offline = true;
+    assert!(matches!(run_check(&mut fake, &dir), Err(Error::Sheet(_))));
 }
 
 // --- rule 2: sequence persisted before acting -------------------------------------------------

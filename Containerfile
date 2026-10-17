@@ -98,6 +98,18 @@ RUN systemctl preset chronyd-restricted.service chrony.service chrony-wait.servi
     test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = chronyd-restricted.service && \
     chronyd -p -f /usr/lib/nyra/chrony/chrony.conf | grep -c ' nts$' | grep -qx 2
 
+# Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
+# (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
+RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
+    test "$(systemctl is-enabled udisks2.service)" = disabled && \
+    test "$(systemctl is-enabled polkit-agent-helper.socket)" = disabled && \
+    test -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service && \
+    test -f /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \
+    test -x /usr/lib/nyra/media/trusted && test -f /usr/lib/udev/rules.d/90-nyra-udisks.rules && \
+    test -f /usr/share/polkit-1/rules.d/49-nyra.rules && test -f /usr/share/polkit-1/rules.d/50-default.rules && \
+    grep -q pam_systemd /etc/pam.d/common-session && \
+    test "$(/usr/lib/nyra/media/trusted)" = NYRA_MEDIA_TRUSTED=0
+
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
 # signature; the policy and the Sigstore trust roots live in /usr. containers/image only reads
 # /etc/containers, so /etc gets symlinks and nothing else: the content still updates with the image.
@@ -173,7 +185,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     ln -s ../nyra-tpm-retire.service boot-complete.target.wants/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer nyra-tpm-retire.service \
-      nyra-etc-copy.service nyra-etc-copy.timer \
+      nyra-etc-copy@daily.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
@@ -228,10 +240,11 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
 RUN f=/usr/lib/systemd/system/local-fs.target && grep -qx 'OnFailure=emergency.target' "$f" && \
     sed -i '/^OnFailure/d' "$f" && ! grep -q '^OnFailure' "$f"
 
-# bootc root filesystem layout: state lives in /var, /usr is read-only, composefs on.
-RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt /var && \
+# bootc root filesystem layout: state lives in /var, /usr is read-only, composefs on. /media, where
+# udisks2 mounts removable media (docs/DEFAULTS.md), is /run/media: the root itself is read-only.
+RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt /media /var && \
     mkdir -p /sysroot /boot /usr/lib/ostree /var && \
-    ln -sT sysroot/ostree /ostree && ln -sT var/roothome /root && ln -sT var/srv /srv && \
+    ln -sT sysroot/ostree /ostree && ln -sT var/roothome /root && ln -sT var/srv /srv && ln -sT run/media /media && \
     ln -sT var/opt /opt && ln -sT var/mnt /mnt && ln -sT var/home /home && ln -sT ../var/usrlocal /usr/local && \
     printf 'd /var/%s 0755 root root -\n' opt home srv mnt usrlocal > /usr/lib/tmpfiles.d/bootc-base-dirs.conf && \
     printf 'd /var/roothome 0700 root root -\nd /run/media 0755 root root -\n' >> /usr/lib/tmpfiles.d/bootc-base-dirs.conf && \

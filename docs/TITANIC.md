@@ -25,10 +25,10 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 |---|---|---|---|
 | T1 | Immutability | `/usr` read-only (first boot of `install-boot`), `tools/vm/tampered-object.sh` (a composefs object changed on the disk: a read error), signature policy (`tools/signing/test-policy.sh`), refused UKIs (`tools/vm/secure-boot.sh`) | full |
 | T2 | Power cuts | `tools/titanic/power-cuts.sh` (random moments), `tools/vm/updates.sh` (`nyra-updated` after cuts at fixed and at random moments) | full |
-| T3 | Broken version | `tools/vm/boot-counting.sh`, `tools/vm/updates.sh` (failed health check: back within 3 boots, not offered again; a good version with the settings broken after it was staged: back within 3 boots, but not marked failed, since the older version fails too; offered again once the settings are repaired), `tools/vm/soft-reboot-network.sh` (the network after every soft reboot and full boot of an update, 20 rounds a night), `tools/vm/updates.sh` (a kernel panic: no usable initramfs) | partial: no graphical session, dead network not tested yet |
+| T3 | Broken version | `tools/vm/boot-counting.sh`, `tools/vm/updates.sh` (failed health check: back within 3 boots, not offered again; a good version with the settings broken after it was staged: back within 3 boots, but not marked failed, since the older version fails too; offered again once the settings are repaired), `tools/vm/soft-reboot-network.sh` (the network after every soft reboot and full boot of an update, 20 rounds a night), `tools/vm/updates.sh` (a kernel panic: no usable initramfs; a dead network: the link down before a check and in the middle of a download, then back) | full; the graphical session is left for the desktop (below) |
 | T4 | Signatures and versions | `tools/signing/test-policy.sh`, `tools/vm/secure-boot.sh`, `tools/vm/updates.sh` | full |
 | T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
-| T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
+| T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | full; the message for the user is left for the desktop (below) |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh`, `tools/signing/tpm-unlock.sh` (the signed PCR policy unlocks the disk only in the initrd, swtpm) | full |
 | T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot, and does Restore earlier settings repair it? Then all of it at once, Recovery without the system accounts, Restore earlier settings, and, broken again, Reset settings, with Secure Boot) | full |
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
@@ -36,7 +36,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T11 | Version jumps and channels | `tools/vm/channels.sh` (a jump over several versions with a retracted one between, refused sheets on the way and a retraction below the floor the jump raised; versions that change the sheet key, the default channel and the repository; a channel chosen on the machine, which survives a rollback; beta to stable back to stable's older version only with a sheet issued after the change, once, never below the floor, staged afresh with today's `/etc` even when it is the rollback deployment) | full |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | full |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
-| T14 | Removable media pulled out | none: needs removable media support | not implemented |
+| T14 | Removable media pulled out | `tools/vm/removable-media.sh` (USB sticks pulled out during a write, during an update and during the boot; a stick with ESP, root, swap and /home partitions at boot; trusted, untrusted and refused sticks; a user's loop device) | full |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates), `tools/signing/tpm-unlock.sh` (the TPM releases the disk key only in the initrd, swtpm; no NvPCR definitions in the image) | full |
 
 A test passes only if every step that runs it succeeded; a test that covers only part of its
@@ -46,6 +46,17 @@ test. The mapping from workflow steps to tests is in
 renaming it there too.
 
 A test that fails sometimes is a bug, never something to run again until it passes.
+
+## Left for the desktop
+
+Two scenarios need a graphical session, which the base does not have. They are not part of the
+base's results: T3 and T6 pass when every scenario without a desktop passes. They are criteria of the
+desktop's gate instead, tested once there is a desktop:
+
+| # | Scenario | Expected |
+|---|---|---|
+| T3 | an update to a version whose graphical session does not start, and the version the machine falls back to | the broken version falls back like any version that fails its health check; the session of the version fallen back to starts |
+| T6 | the disk full during an update | the desktop tells the user that the update failed, why, and what to do |
 
 ## Power cuts at random moments
 
@@ -160,7 +171,8 @@ the image's:
 | 9 | that boot: `RESET`, then the normal boot | `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; healthy (below) |
 
 **Repaired** means: `/etc/fstab`, `/etc/passwd` (but the user's line, which comes from the current
-`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the copy's; and
+`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are as in `/etc` when
+the copy was made (the copy holds only what differed from the image; the rest is the image's); and
 **healthy**: running; the user logs in with their password, a wrong one is refused; the network
 works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the
 firewall, AppArmor, the update timer); Secure Boot and the lockdown on.
@@ -189,6 +201,35 @@ The password check is `su` through PAM, run as nobody (by number: the broken `/e
 such account) so that it has to ask; the network check is a file served by the runner, which the guest
 reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
 the state `/etc`, through a bind mount of `/` alone.
+
+## Removable media pulled out
+
+[`tools/vm/removable-media.sh`](../tools/vm/removable-media.sh), in the `install-boot` job, follows a
+copy of the installed disk with USB sticks on QEMU's USB controller. QEMU plugs them in and pulls them
+out without asking the guest (`vm-boot.py --qmp`, `device_del` and `device_add`), as a hand does.
+How the base mounts them is in docs/DEFAULTS.md, "Removable media".
+
+| Boot | What | Expected |
+|---|---|---|
+| 1 | two FAT sticks and a squashfs stick plugged in | nothing mounted, udisks2 not even started |
+| 1 | `udisksctl mount` of the squashfs stick, and of a FAT stick with `-t squashfs` | neither mounted; squashfs's module not even loaded |
+| 1 | one stick put in `/etc/nyra/trusted-media` | udev marks it trusted; with the list writable by others, it is not |
+| 1 | `udisksctl mount` with `exec`, `suid`, `dev` | refused |
+| 1 | both mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other); udisks2 runs with its hardening drop-in |
+| 1 | the untrusted stick written without a pause (32 MiB, flushed, again and again), pulled out 2 s in | the writer stops on its own, `sync` returns, the stick and its mount are gone within 30 s, the trusted stick still reads, the system `running` |
+| 1 | plugged in again | not mounted until asked; then mounts `noexec` |
+| 1 | a user logged in on a virtual console (an autologin on tty5, made the foreground console): an active local session on seat0 | polkit lets them mount a stick, but `loop-setup` and `modify-device` need an administrator: `udisksctl loop-setup` refused, no loop device; polkit loaded the rules without an error |
+| 1 | shutdown with the trusted stick mounted | clean |
+| 2 | a stick mounted and written, `bootc switch` to a test version, the stick pulled out half a second into the switch | the switch was still running, then succeeds with exactly the test version staged; clean shutdown, which finalizes it |
+| 3 | a boot with a stick that has an ESP, a root (x86-64), a swap and a /home partition, by their Discoverable Partitions types, and the FAT stick | the test version runs; the root, the ESP and `/dev/gpt-auto-root` are on the boot disk; no swap; nothing mounted from the sticks |
+| 4-6 | the same stick pulled out 3, 6 and 10 s after QEMU starts (the firmware, the kernel and its initrd, the start of the system) | each boot reaches the login prompt and `running`, no job waits; the kernel log says when the stick went; clean shutdown |
+
+Every boot ends with a clean shutdown: it fails on a file system left mounted (`Failed unmounting`) and
+on a shutdown longer than 60 s.
+
+Why the system stick is not used: systemd-gpt-auto-generator uses only the disk the boot came from,
+and there only the root and the ESP (the image policy on the sealed command line, docs/BOOT.md,
+"Disk encryption"). A boot from the stick itself (its ESP) is up to the firmware and Secure Boot.
 
 ## Results
 
