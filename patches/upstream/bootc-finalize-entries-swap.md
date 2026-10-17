@@ -1,7 +1,6 @@
 # bootc: keep a bootable entry while the staged entries are swapped in (systemd-boot, ESP on FAT)
 
-Status: kept here, not sent upstream yet (an upstream change needs the project's approval and a check
-that it does not break other distributions). Worked around in nyra-base by a fallback UKI that does
+Status: kept here, not sent upstream (we keep our changes as our own patches; this one is public domain, see README.md). Worked around in nyra-base by a fallback UKI that does
 not depend on `loader/entries` (`esp-sync`, docs/BOOT.md "The fallback").
 
 Upstream: bootc-dev/bootc, checked at v1.16.13 (`fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60`).
