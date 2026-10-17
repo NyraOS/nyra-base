@@ -113,7 +113,7 @@ addon() { # addon add NAME FILE | addon remove NAME: an add-on for every UKI, on
   if [ "$1" = add ]; then sudo cp "$3" "$mnt/loader/addons/$2"; else sudo rm "$mnt/loader/addons/$2"; fi
   sudo umount "$mnt" && sudo losetup -d "$loop" && loop=""
 }
-journal() { # nyra-tpm-enroll's lines in the disk's journal (all boots), read with the recovery key
+journal() { # nyra-tpm-enroll's and systemd-cryptsetup's lines in the disk's journal (all boots), read with the recovery key
   loop="$(sudo losetup -P --show -f "$work/disk.raw")"
   for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 || true; sleep 0.2; done
   timeout 600 sudo podman run --rm -i --privileged --network none -e DM_DISABLE_UDEV=1 -v /dev:/dev -v "$secrets:/secrets:ro" "$image" \
@@ -247,6 +247,11 @@ check "the enrollment with the new TPM" new "$(if [ "$(policy)" != "$before" ]; 
 blind new-tpm-after "TPM 17: then the disk unlocks by itself (nothing typed)" --tpm "$tpm" || fail=1
 lines="$(journal)"
 printf '%s\n' "$lines"
+# The control: the unit's own lines are in $lines (a renamed unit or a wrong -u would read nothing).
+# Not an exact count: a boot cut short (rows 5 and 9) may not leave its initrd's lines on the disk.
+unlocked="$(printf '%s\n' "$lines" | grep -c -E 'Finished .{0,80}Cryptography Setup for root\.' || true)"
+check "unlocks by systemd-cryptsetup@root.service in the disk's journal ($unlocked)" found "$(if [ "$unlocked" -gt 0 ]; then echo found; else echo none; fi)"
+check "\"Could not extend PCR/NvPCR\" in the disk's journal (rows 1 to 17)" 0 "$(printf '%s\n' "$lines" | grep -c 'Could not extend' || true)"
 check "re-enrollments in the disk's journal (rows 12, 14, 16)" 3 "$(printf '%s\n' "$lines" | grep -c 'enrolled with the TPM again, after the TPM refused' || true)"
 expect_slots "at the end" "systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12"
 

@@ -61,9 +61,10 @@ a private key anyone knows: `nyra-updated` refuses it as a trusted key.
 
 `nyra-updated check` (a timer, after `boot-complete.target`) learns what became of the last update,
 fetches and verifies the sheet, and stages the version it picks, pinned by digest, without applying
-it: the reboot stays the user's choice. Right before it stages (`bootc switch`) it makes a copy of
-`/etc` (`/usr/lib/nyra/etc-copy update`, docs/BOOT.md, "Restore earlier settings"); a copy that fails
-is logged as a warning and does not hold the update back (`tools/vm/updates.sh`, boot 5).
+it: the reboot stays the user's choice. Right before it stages (`bootc switch`) or goes back to the
+other version (`bootc rollback`) it makes a copy of `/etc` (`nyra-etc-copy@update.service` or
+`@rollback`, docs/BOOT.md, "Restore earlier settings"); a copy that fails is logged as a warning and
+does not hold the change back (`tools/vm/updates.sh`, boots 5 and 12).
 `nyra-updated health-failed` (`OnFailure=` of the health checks)
 reboots fully while a new version is on trial, so systemd-boot's boot counting can fall back
 (`docs/BOOT.md`); otherwise the system stays up and says how to reset the settings (below). Each

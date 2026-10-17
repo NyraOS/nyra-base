@@ -31,8 +31,8 @@ jobs:
           shellcheck -S warning "${scripts[@]}"
       - name: Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)
         run: tools/vm/security-defaults.sh --self-test
-      - name: Which copies of /etc a run removes, whatever the clock (tools/vm/test-etc-copy.sh)
-        run: tools/vm/test-etc-copy.sh
+      - name: The copies of /etc, their restore, and which a run removes (tools/vm/test-etc-copy.sh)
+        run: sudo tools/vm/test-etc-copy.sh
       - name: Offline test of the network health check (tools/vm/test-network-health.sh)
         run: tools/vm/test-network-health.sh
       - name: Self-test of the console matching (tools/vm/vm-boot.py)

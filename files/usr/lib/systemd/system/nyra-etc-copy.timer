@@ -6,6 +6,7 @@ Description=Nyra: a daily copy of the system settings (/etc)
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
 
 [Timer]
+Unit=nyra-etc-copy@daily.service
 OnCalendar=daily
 Persistent=true
 RandomizedDelaySec=1h

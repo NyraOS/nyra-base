@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A copy of /etc for "Nyra OS Restore earlier settings" (docs/BOOT.md): nyra-etc-copy@daily from
+# nyra-etc-copy.timer, nyra-etc-copy@update and @rollback from nyra-updated, before the next boot
+# changes version.
+[Unit]
+Description=Nyra: a copy of the system settings (/etc), %i
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/etc-copy %i
+# It reads /etc and the image's /etc, and writes only its copies (/var/lib/nyra/etc-copies, 0700).
+# The image's /etc is under the bind mount of /etc: a bind mount of / alone (not recursive) shows it.
+# One directory per instance: systemd removes it when that instance stops.
+RuntimeDirectory=nyra-etc-copy/%i
+BindReadOnlyPaths=/:/run/nyra-etc-copy/%i/image:norbind
+StateDirectory=nyra/etc-copies
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+# Root, but only what a copy with owners, modes and ACLs needs (CAP_DAC_OVERRIDE reads every file).
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_FSETID
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+Nice=19
+IOSchedulingClass=idle
