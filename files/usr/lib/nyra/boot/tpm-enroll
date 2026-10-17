@@ -150,7 +150,10 @@ else
       sed -n 's/^Key slot \([0-9]*\) unlocked\.$/\1/p')"
     [ -n "$opened" ] || continue
     # The old enrollments: the slots in the record, except the one the typed key opens.
-    old="$(sed -n 's/^\([0-9][0-9]*\) .*/\1/p' "$record" | grep -vxF "$opened" | tr '\n' ',' | sed 's/,$//' || true)"
+    # Only those still there: a boot cut off between removing them and writing the record leaves a
+    # record that lists slots that are gone, and systemd-cryptenroll fails on those.
+    old="$(sed -n 's/^\([0-9][0-9]*\) .*/\1/p' "$record" | grep -vxF "$opened" | grep -xF "$(slots)" |
+      tr '\n' ',' | sed 's/,$//' || true)"
     gone="$(grep '^retired ' "$record" || true)"
     if [ -n "$old" ]; then
       systemd-cryptenroll --wipe-slot="$old" "$dev" >&2 || { why="the old enrollments could not be removed"; break; }

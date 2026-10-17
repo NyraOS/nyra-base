@@ -17,8 +17,11 @@
 #   d. after a refusal, on a version whose key (C) was retired: not enrolled again, nothing removed;
 #   e. tpm-retire, on a version signed with B whose next key is C: the enrollment of A is removed and A
 #      recorded as retired; and nothing at all when the record has no enrollment for B; on a fallback
-#      to A (next key B) confirmed good, the newer enrollment for C stays.
-# Checks a, b, d and e are proven: the same case run on a copy of the script without the check it
+#      to A (next key B) confirmed good, the newer enrollment for C stays;
+#   f. a run cut off between removing slots and writing the record (a power cut): tpm-retire and the
+#      re-enrollment leave out the slots that are gone; and when the record cannot be written (a full
+#      /var), tpm-retire removes nothing.
+# Checks a, b, d, e and f (but the full /var) are proven: the same case run on a copy of the script without the check it
 # relies on must fail. The namespace: unshare -rm (a user namespace) where allowed, else sudo unshare -m.
 #   tools/vm/test-tpm-enroll.sh
 set -euo pipefail
@@ -66,7 +69,8 @@ case "$*" in
     echo "$n tpm2" >> "$T/slots" ;;
   --wipe-slot=*)
     w="${1#--wipe-slot=}"; echo "wipe $w" >> "$T/calls"
-    for n in ${w//,/ }; do sed -i "/^$n /d" "$T/slots"; done ;;
+    # Removing a slot that is not there fails, as with systemd-cryptenroll.
+    for n in ${w//,/ }; do grep -q "^$n " "$T/slots" || exit 1; sed -i "/^$n /d" "$T/slots"; done ;;
   *) echo "SLOT TYPE"; sed 's/^/   /' "$T/slots" ;;
 esac
 EOF
@@ -167,6 +171,20 @@ case_next() { # case_next SCRIPT
 $(fp KEY-B)" ] || { echo "the keys kept: $(cat "$d/root/run/nyra-tpm2-keep")"; return; }
   echo ok
 }
+# b, after a boot cut off before it wrote the record: the record lists slot 2, which is gone.
+case_stale() { # case_stale SCRIPT
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" typed
+  local st="$d/root/state"
+  mkdir -p "$d/root/sysroot/var/lib/nyra"
+  printf '0 %s\n2 %s\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$d/root/$record"
+  run "$1" "$d"
+  [ "$(grep '^wipe' "$st/calls")" = "wipe 0" ] || { echo "removed: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  grep -qx 'enroll KEY-A' "$st/calls" && grep -qx 'enroll KEY-B' "$st/calls" ||
+    { echo "not enrolled again: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  echo ok
+}
 # d. A refusal on a version signed with C, which the record says was retired.
 case_retired() { # case_retired SCRIPT
   local d
@@ -181,15 +199,38 @@ case_retired() { # case_retired SCRIPT
 }
 # e. tpm-retire on a version signed with B, whose next key is C, and the record of A, B and C; or on
 #    version A (next B) after a fallback.
-case_retire() { # case_retire SCRIPT with-B|without-B|fallback
+case_retire() { # case_retire SCRIPT with-B|without-B|fallback|interrupted|full
   local d
   d="$(mktemp -d -p "$t")"
   setup "$d" tpm
   local st="$d/root/state" r="$d/root/var/lib/nyra/tpm2-slots"
   printf '%s\n%s\n' "$(fp KEY-B)" "$(fp KEY-C)" > "$d/root/run/nyra-tpm2-keep"
+  if [ "$2" = interrupted ] || [ "$2" = full ]; then
+    printf '0 %s\n1 %s\n2 %s\n' "$(fp KEY-A)" "$(fp KEY-B)" "$(fp KEY-C)" > "$r"
+    if [ "$2" = interrupted ]; then
+      # A's slot (0) already removed by a run cut off before it wrote the record.
+      printf '1 tpm2\n2 tpm2\n3 recovery\n' > "$st/slots"
+    else
+      mkdir "$r.new" # the new record cannot be written (as on a full /var)
+    fi
+    local before
+    before="$(cat "$r")"
+    run "$1" "$d"
+    grep -q '^wipe' "$st/calls" && { echo "removed: $(cat "$st/calls") $(cat "$d/out")"; return; }
+    if [ "$2" = full ]; then
+      [ "$(cat "$r")" = "$before" ] || { echo "the record changed: $(cat "$r")"; return; }
+    else
+      [ "$(cat "$r")" = "1 $(fp KEY-B)
+2 $(fp KEY-C)
+retired $(fp KEY-A)" ] || { echo "the record: $(cat "$r") $(cat "$d/out")"; return; }
+    fi
+    echo ok
+    return
+  fi
   if [ "$2" = fallback ]; then
     printf '%s\n%s\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$d/root/run/nyra-tpm2-keep"
     printf '0 %s\n1 %s\n2 %s\n' "$(fp KEY-A)" "$(fp KEY-B)" "$(fp KEY-C)" > "$r"
+    printf '0 tpm2\n1 tpm2\n2 tpm2\n3 recovery\n' > "$st/slots"
     run "$1" "$d"
     grep -q '^wipe' "$st/calls" && { echo "removed a newer enrollment: $(cat "$st/calls")"; return; }
     echo ok
@@ -236,6 +277,9 @@ check "a retired key not enrolled again" ok "$(case_retired "$enroll")"
 check "the old key's enrollment retired" ok "$(case_retire "$retire" with-B)"
 check "nothing retired without an enrollment for the booted key" ok "$(case_retire "$retire" without-B)"
 check "a newer key's enrollment kept on a fallback" ok "$(case_retire "$retire" fallback)"
+check "tpm-retire after a run cut off before it wrote the record" ok "$(case_retire "$retire" interrupted)"
+check "tpm-retire removes nothing when the record cannot be written" ok "$(case_retire "$retire" full)"
+check "after a refusal, a slot the record lists but that is gone" ok "$(case_stale "$enroll")"
 
 # The same cases without the checks they rely on must fail.
 mutant no-inroot "$enroll" 's/inroot && //g'
@@ -247,6 +291,10 @@ mutant no-retired "$enroll" 's/^elif retired "\$curfp"; then$/elif false; then/'
 check "without the retired-key check" fails "$(case_retired "$t/no-retired")"
 mutant no-current "$retire" 's/^grep -q "^\[0-9\]\[0-9\]\* \$current\\\$" "\$record" || exit 0$/true/'
 check "tpm-retire without the booted key's check" fails "$(case_retire "$t/no-current" without-B)"
+mutant no-present "$retire" 's/ | grep -xF "\${now:--}"//'
+check "tpm-retire without leaving out the slots that are gone" fails "$(case_retire "$t/no-present" interrupted)"
+mutant no-present-enroll "$enroll" 's/ | grep -xF "\$(slots)" |/ |/'
+check "without leaving out the slots that are gone, after a refusal" fails "$(case_stale "$t/no-present-enroll")"
 mutant no-order "$retire" 's/^old="\$(sed -n .*$/old="$(grep "^[0-9][0-9]* " "$record" | grep -v -F -f "$keep" || true)"/'
 check "tpm-retire without the order of the record" fails "$(case_retire "$t/no-order" fallback)"
 

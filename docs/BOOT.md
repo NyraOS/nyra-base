@@ -252,7 +252,11 @@ A rotation is a release signed with that next key only:
   boot used, and only the enrollments made before it (the record keeps them in the order they were
   made): a fallback to the previous release that is confirmed good keeps the next key's enrollment,
   which the newer release still needs. Removing a key slot needs no key and no TPM, so it runs in the
-  booted system;
+  booted system. It writes the new record first, so a full `/var` removes nothing, and removes only
+  slots that are still there; the re-enrollment after a refusal too: a run cut off between removing
+  slots and writing the record (a power cut) leaves a record that lists slots that are gone, and
+  systemd-cryptenroll fails on those, which would otherwise stop every later retirement and
+  re-enrollment;
 - so a fallback to the previous version before that confirmation (a release that does not get
   healthy) still unlocks by itself, and after it, versions signed only with the old key ask for the
   recovery key and are never enrolled again;
@@ -336,11 +340,12 @@ health check fails), `rot-d` (D, next E).
 |---|---|
 | rot-a's first boot | unlocks by itself; the record: A, B |
 | rot-b1 (a rotation that never gets healthy) | unlocks by itself (B), its initrd enrolls C; A stays (the record: A, B, C) |
-| The fallback to rot-a (`bootc rollback`), confirmed good | unlocks by itself; nothing removed, C stays |
+| The fallback to rot-a (`bootc rollback`), confirmed good | unlocks by itself; `nyra-tpm-retire` runs and removes nothing, C stays |
 | rot-b2, confirmed good | unlocks by itself, nothing enrolled; A's enrollment removed, A retired in the record |
-| rot-a again, after that | the recovery key unlocks the disk; not enrolled again |
+| rot-a again, after that, without the test console add-on (no login) | the recovery key unlocks the disk; not enrolled again, because A was retired (the reason in the journal) |
+| The same with the add-on (to switch to rot-d) | the recovery key unlocks the disk; not enrolled again |
 | rot-d (a machine that missed the rotation to C), without the test console add-on, no login | the recovery key once, then enrolled again for D and E; the next boot unlocks by itself |
-| Read offline | the recovery key slot and two TPM2 enrollments; the record: A retired, D and E; one next-key enrollment, one retirement, one re-enrollment in the journal; the recovery key nowhere |
+| Read offline | the recovery key slot and two TPM2 enrollments; the record: A retired, D and E; one next-key enrollment, one retirement, one refusal for the retired key, one re-enrollment in the journal; the recovery key nowhere |
 
 **What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
 systemd-gpt-auto-generator found (no `/etc/crypttab` in the initramfs, no `rd.luks.*` on the sealed
@@ -394,9 +399,11 @@ with stand-ins at the paths they use and stand-ins for cryptsetup, systemd-crypt
 - a version whose key was retired is not enrolled again;
 - `tpm-retire` removes only the enrollment of the key that is neither current nor next, records it as
   retired, removes nothing when the record has no enrollment for the key this boot used, and keeps
-  a newer key's enrollment on a fallback to an older release.
+  a newer key's enrollment on a fallback to an older release;
+- after a run cut off before it wrote the record, `tpm-retire` and the re-enrollment leave out the
+  slots that are gone; when the record cannot be written, `tpm-retire` removes nothing.
 
-Each check but the rotation's fails on a copy of the script without it.
+Each check but the plain rotation's and the full `/var`'s fails on a copy of the script without it.
 
 Not covered yet: updates through nyra-updated on an encrypted disk, the first boot without a TPM or
 with Secure Boot off (checked by hand only, with swtpm), the PIN.

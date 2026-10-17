@@ -25,10 +25,15 @@ old="$(sed -n "/^[0-9][0-9]* $current\$/q; /^[0-9][0-9]* /p" "$record" | grep -v
 [ -n "$old" ] || exit 0
 dev="$(cryptsetup status root | sed -n 's/^ *device: *//p')"
 [ -n "$dev" ] || { log "the encrypted root's device was not found"; exit 1; }
-systemd-cryptenroll --wipe-slot="$(echo "$old" | sed 's/ .*//' | tr '\n' ',' | sed 's/,$//')" "$dev"
+# Only the slots that are still there: a run cut off after removing them and before writing the record
+# (a power cut) leaves a record that lists slots that are gone, and systemd-cryptenroll fails on those.
+now="$(systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p')"
+wipe="$(echo "$old" | sed 's/ .*//' | grep -xF "${now:--}" | tr '\n' ',' | sed 's/,$//' || true)"
+# The new record is written first: if it cannot be (a full /var), nothing is removed.
 {
-  grep -v -x -F "$old" "$record"
+  grep -v -x -F "$old" "$record" || true
   echo "$old" | sed 's/^[0-9]* /retired /'
 } > "$record.new"
+[ -z "$wipe" ] || systemd-cryptenroll --wipe-slot="$wipe" "$dev"
 mv "$record.new" "$record"
 log "removed the enrollments of retired policy keys: $(echo "$old" | sed 's/ .*//' | tr '\n' ' ')"

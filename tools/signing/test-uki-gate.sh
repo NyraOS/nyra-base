@@ -9,7 +9,8 @@
 #     image signed with test keys never gets a release signature;
 #   - refused with a certificate that did not sign it, and with a policy key that did not sign its
 #     policy; refused when the image's next policy key (RUN_NEXT_KEY, which it carries) is not the one
-#     given, and when the next key given is the current one;
+#     given, when the next key given is the current one, when the image carries none, and when none is
+#     given;
 #   - refused, even when signed with the trusted key: an add-on in place of the UKI, the UKI with
 #     another command line, a second UKI, an add-on next to the UKI, the UKI without its Nyra SBAT
 #     component, without its PCR policy, with a policy signature that does not verify, and with the
@@ -85,6 +86,7 @@ refused "\\.pcrpkey is not" "$t/image" "$run_cert" "$t/other-pcr.pem"
 refused "the image's next PCR policy key is not" "$t/image" "$run_cert" "$run_pcr" "$t/other-pcr.pem"
 refused "the next PCR policy key is the current one" "$t/image" "$run_cert" "$run_pcr" "$run_pcr" "$run_pcr"
 refused "the image carries no next PCR policy key" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/none.pem"
+refused "no next Nyra PCR policy public key" "$t/image" "$run_cert" "$run_pcr" "$t/none.pem"
 
 # The image's UKI signed with the "gate" key instead: accepted with its certificate (the control).
 cp "$t/image/$uki" "$t/unsigned.efi"

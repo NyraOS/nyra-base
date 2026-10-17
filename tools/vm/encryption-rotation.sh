@@ -20,10 +20,12 @@
 #      switch to rot-b2;
 #   4. rot-b2 unlocks by itself, nothing to enroll; confirmed good: A's enrollment removed, A retired
 #      in the record; bootc rollback;
-#   5. rot-a, after that confirmation: the disk asks for its recovery key, which unlocks it; not
-#      enrolled again; switch to rot-d;
-#   6. without the test console add-on (PCR 12 as a machine measures it), no login: rot-d asks for the
-#      recovery key once, and its initrd enrolls the disk again for D and E;
+#   5. rot-a, after that confirmation, without the test console add-on (PCR 12 as a machine measures
+#      it, so only the retired key stops a new enrollment), no login: the disk asks for its recovery
+#      key, which unlocks it; not enrolled again, because A was retired (read in the journal at the end);
+#   5b. with the add-on back, the same with a login: switch to rot-d;
+#   6. without the add-on again, no login: rot-d asks for the recovery key once, and its initrd
+#      enrolls the disk again for D and E;
 #   7. then rot-d unlocks by itself.
 # Read offline at the end: the recovery key slot and two TPM2 enrollments, the record (A retired, D and
 # E) and the units' lines in the disk's journal.
@@ -153,6 +155,8 @@ running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl
 unhealthy_boot='s="$(systemctl is-system-running --wait)"; echo "system: $s"; test "$s" = degraded && ! systemctl is-active --quiet boot-complete.target'
 enrolled='journalctl -b -o cat -u nyra-tpm-enroll.service | grep nyra-tpm-enroll:'
 retired='journalctl -b -o cat -u nyra-tpm-retire.service | grep nyra-tpm-retire:'
+# nyra-tpm-retire.service ran in this boot (systemd's own line about it).
+retire_ran='journalctl -b -o cat -u nyra-tpm-retire.service | grep "^Finished nyra-tpm-retire.service"'
 is() { echo "test \"\$(cat /usr/lib/nyra-test-version)\" = $1 && echo 'version: $1'"; }
 # The record's enrollments, as their keys' identities in order, and its retired keys.
 record() { echo "r=/var/lib/nyra/tpm2-slots; cat \$r; test \"\$(sed -n 's/^[0-9][0-9]* //p' \$r | tr '\n' ' ')\" = \"$1\" && test \"\$(sed -n 's/^retired //p' \$r | tr '\n' ' ')\" = \"$2\""; }
@@ -187,7 +191,8 @@ vm b1 "Rotation 2: rot-b1 (signed with B) unlocks by itself, enrolls C; not conf
   --command "$(record "$fa $fb $fc " "")" --command 'bootc rollback' || fail=1
 by_itself b1
 vm a-fallback "Rotation 3: the fallback to rot-a unlocks by itself; confirmed good, it keeps the newer C" \
-  --command "$(is rot-a)" --command "$running" --command "! $enrolled && ! $retired && echo 'nothing enrolled or removed'" \
+  --command "$(is rot-a)" --command "$running" --command "$retire_ran" \
+  --command "! $enrolled && ! $retired && echo 'nothing enrolled or removed'" \
   --command "$(record "$fa $fb $fc " "")" --command "$(switch rot-b2)" || fail=1
 by_itself a-fallback
 vm b2 "Rotation 4: rot-b2 unlocks by itself; confirmed good, A's enrollment removed" \
@@ -195,12 +200,16 @@ vm b2 "Rotation 4: rot-b2 unlocks by itself; confirmed good, A's enrollment remo
   --command "$retired | grep 'removed the enrollments of retired policy keys'" \
   --command "$(record "$fb $fc " "$fa ")" --command 'bootc rollback' || fail=1
 by_itself b2
-vm a-retired "Rotation 5: rot-a after the confirmation: the recovery key unlocks the disk, not enrolled again" \
+# Without the test console add-on: PCR 12 as a machine measures it, so only the retired key stops a
+# new enrollment.
+esp remove
+blind a-retired "Rotation 5: rot-a after the confirmation, without the add-on: the recovery key, not enrolled again" \
+  --chat "$ask=>$key" || fail=1
+esp add
+vm a-retired-login "Rotation 5b: the same with the add-on, to switch to rot-d" \
   --chat "$ask=>$key" --chat-then-login --command "$(is rot-a)" --command "$running" \
   --command "$enrolled | grep 'not enrolled with the TPM again'" --command "$(record "$fb $fc " "$fa ")" \
   --command "$(switch rot-d)" || fail=1
-
-# Without the test console add-on: PCR 12 as a machine measures it, so a new enrollment can be made.
 esp remove
 blind d "Rotation 6: rot-d (D, a missed rotation): the recovery key once, the disk enrolled for D and E" \
   --chat "$ask=>$key" || fail=1
@@ -230,6 +239,7 @@ check "The record at the end" "retired $fa|$fd|$fe" \
   "$(printf '%s\n' "$inside" | sed -n 's/^record: //p' | sed 's/^[0-9][0-9]* //' | tr '\n' '|' | sed 's/|$//')"
 check "Next keys enrolled (row 2)" 1 "$(printf '%s\n' "$inside" | grep -c 'enrolled the next policy key' || true)"
 check "Retirements (row 4)" 1 "$(printf '%s\n' "$inside" | grep -c 'removed the enrollments of retired policy keys' || true)"
+check "Refusals for the retired key A (row 5)" 1 "$(printf '%s\n' "$inside" | grep -c 'not enrolled with the TPM again: the policy key of this version was retired' || true)"
 check "Re-enrollments (row 6)" 1 "$(printf '%s\n' "$inside" | grep -c 'enrolled with the TPM again, after the TPM refused' || true)"
 
 # The recovery key nowhere outside the user's hands.
