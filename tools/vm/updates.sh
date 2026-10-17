@@ -70,9 +70,9 @@
 #  37  v16: the retraction to the forgiven v13 deletes its deployment and stages it afresh
 #  38  v13 boots counted and is blessed; the shipped signature policy linked again; then the secure
 #      defaults check (T15)
-#  39  v13, the test policy again; a dead network (T3): the link down before a check, then cut while
-#      v17 downloads: reported, the unit not failed, nothing staged or marked failed; the link back: v17
-#      staged
+#  39  v13, the test policy again; a dead network (T3): the link down before a check (it waits for the
+#      network), then cut while v17 downloads: reported, the unit not failed, nothing staged or marked
+#      failed; the link back: v17 staged
 #  40  v17 boots counted and is blessed
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -664,13 +664,16 @@ cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-u
 
 # A dead network (T3): the guest's network link goes down (tools/vm/updates-guest.sh, network), as a
 # cable pulled out or a lost Wi-Fi would take it, first before a check, then while nyra-updated pulls
-# v17 on a throttled link (the pull fails, or hangs until its time limit: 90 s here). Each time the
-# running version stays, nothing is staged, nothing is marked failed and the unit does not fail: the
-# check reports "no network connection" as a warning. With the link back, the next check stages v17,
-# which boots counted and is blessed. The test policy comes back first: boot 38 linked the shipped one.
+# v17 on a throttled link (the pull fails, or hangs until its time limit: 90 s here). A check started
+# without a network waits for it (nyra-updated-wait-online.service; tools/vm/no-network.sh shows that
+# it runs once the link is back): it has not started after 20 s, and is cancelled here, so the pull
+# below starts when the test says. Each time the running version stays, nothing is staged, nothing is
+# marked failed and nothing fails; the cut pull reports "no network connection" as a warning. With the
+# link back, the next check stages v17, which boots counted and is blessed. The test policy comes back
+# first: boot 38 linked the shipped one.
 vm "v13: a dead network, before a check and in the middle of the download of v17; the link back: v17 staged" --poweroff \
   --command "$lib; expect booted $d13 && running && ln -sfn /etc/nyra-test/policy.json /etc/containers/policy.json" \
-  --command "$lib; select_sheet s17 && network down && run_check && offline_reported $d17 && expect staged none && expect booted $d13" \
+  --command "$lib; select_sheet s17 && network down && systemctl start --no-block nyra-updated.service && sleep 20 && test \"\$(systemctl show -P ExecMainStartTimestampMonotonic nyra-updated.service)\" = 0 && systemctl list-jobs --no-legend --no-pager nyra-updated.service | grep -w start && systemctl stop nyra-updated.service && expect staged none && expect booted $d13 && running" \
   --command "$lib; network up && curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 10 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && network down && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; offline_reported $d17; }" \
   --command "$lib; expect staged none && expect booted $d13 && network up && curl -fsS https://updates.nyraos.com/_test/rate/0 && outcome s17 Staged && expect staged $d17 && running"
 vm "v17 boots counted and is blessed" --poweroff \

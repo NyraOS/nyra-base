@@ -2,6 +2,11 @@
 # Nyra presets, applied in the image build and again by systemd at the first boot (docs/DEFAULTS.md).
 # Time: ntpd-rs, our only time client (never root, only CAP_SYS_TIME).
 enable ntpd-rs.service
+# Nothing in the base waits for network-online.target at boot (docs/DEFAULTS.md, "Without a
+# network"). Debian enables these two in default.target; they are blocked, but their
+# Wants=network-online.target would still start systemd-networkd-wait-online at every boot.
+disable podman-restart.service
+disable podman-auto-update.service
 # Removable media (docs/DEFAULTS.md): udisks2 and polkitd start through D-Bus when a user asks to
 # mount something, never at boot (Debian enables udisks2.service in graphical.target). The socket of
 # polkit's password helper waits until something asks users for a password through polkit.

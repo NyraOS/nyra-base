@@ -77,8 +77,10 @@ ConditionPathExists=
 (`systemctl edit <unit>` creates the same file.) The same goes for the other pairs:
 `podman-auto-update.timer` + `.service`, `netavark-dhcp-proxy.socket` + `.service`,
 `dpkg-db-backup.timer` + `.service`, `e2scrub_all.timer` + `e2scrub_all.service`; enable the
-socket or timer. `podman-restart.service` is on its own (Debian already enables it): once unblocked, it
-starts root's containers with `--restart=always` at every boot.
+socket or timer. `podman-restart.service` is on its own: unblocked and enabled
+(`systemctl enable podman-restart.service`; our preset disables it, see "Without a network"), it
+starts root's containers with `--restart=always` at every boot, after waiting for the network
+(`network-online.target`): a boot without a network then waits 2 minutes for it and ends `degraded`.
 
 Per systemd.unit(5), any `Condition…=` assigned the empty string resets the whole list, conditions
 of every kind, including any in the unit file itself (`systemctl cat <unit>` shows them). Drop-ins
@@ -175,6 +177,57 @@ time: ntpd-rs serves no time and has no network control port (see "Time").
   it. Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule.
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
+
+## Without a network
+
+A boot without any network (a laptop away from its Wi-Fi, the cable unplugged) is an ordinary boot:
+the system is `running`, no unit failed, and nothing waits for the network on the way to the login.
+
+**Nothing in the base pulls in `network-online.target`.** Its unit,
+`systemd-networkd-wait-online.service`, waits for the network and fails after 2 minutes without
+one: the system would be `degraded`, and everything ordered after the target, `graphical.target` with
+it, would wait those 2 minutes. Debian enables `podman-restart.service` and
+`podman-auto-update.service` in `default.target`, and both want the target. They are blocked (see
+"Units"), but a blocked unit still pulls in what it wants, so our preset also disables both
+(`/usr/lib/systemd/system-preset/80-nyra.preset`, applied in the image build and again at the first
+boot). A machine installed before keeps their links, since `/etc` is its own (docs/LESSONS.md,
+"Configuration"); `systemctl disable podman-restart.service podman-auto-update.service` removes them.
+wait-online keeps its defaults: with nothing pulling it in, a shorter time limit or `--any` would
+only change what a layer that needs it gets.
+
+**The update check waits for the network on its own.** `nyra-updated.service` wants and is ordered
+after `nyra-updated-wait-online.service`, which runs
+`systemd-networkd-wait-online --any --timeout=3600` before every check: it waits until
+systemd-networkd reports one link online (configured, DHCP included), for up to an hour, and does not
+stay active, so the next check waits again. A check that comes due without a network (the timer,
+15 minutes after boot and every 6 hours) waits as a queued start job, and runs as soon as a link is
+online instead of at the next timer run, up to 6 hours later; nothing retries or fails in the
+meantime. When the hour is over, or the wait fails, the check runs anyway (`-`) and reports what it
+finds: "no network connection" without a network (docs/UPDATES.md, "What a machine shows"), or the
+update itself on a machine that is online through a link networkd does not manage.
+
+The time limit is finite on purpose, and shorter than the timer's 6 hours (the image build fails
+otherwise): a check that never ran would write nothing and fail nothing, so a machine whose updates
+stopped, because its link never counts as online for networkd or because the local network keeps it
+from being configured, would show nothing. With the limit, every timer run ends in a check that
+reports.
+
+- `--any`: one link online is enough; a second port without a cable does not hold the check back.
+- Only links that systemd-networkd manages count (the wired ones in the base). When the desktop
+  brings its own network manager, this wait follows it.
+- Cost: while it waits, one process (the `systemd-networkd-wait-online` binary, run as a dynamic
+  user without capabilities or IP traffic, `IPAddressDeny=any`) that sleeps until a link or its state
+  changes or the hour is over; no polling. Its memory is printed by the test.
+- A check started by hand and waited for (`systemctl start nyra-updated.service`) waits that long
+  too: whatever starts a check on request, Settings later, starts it without waiting (`--no-block`).
+
+**Checked in the VM** (`tools/vm/no-network.sh`, on the installed disk): with the cable unplugged
+from the start (QEMU's link down before the CPU starts), the system is `running`, no unit failed,
+neither wait-online nor `network-online.target` started, and `graphical.target` came within 60 s; an
+update check started then is still waiting after 150 s (past wait-online's 2 minutes), with the
+shipped limit of an hour, and nothing failed; with the limit shortened to 20 s for the test, the check
+runs once it is over and succeeds, and nothing failed. With the network, the same holds at boot; with
+the link taken down a check waits, and once the link is up again it runs and succeeds within 90 s.
 
 ## Time
 

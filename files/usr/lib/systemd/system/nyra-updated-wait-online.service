@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Before every update check (nyra-updated.service wants it and is ordered after it): waits up to an
+# hour until systemd-networkd reports a link online. A check that comes due without a network runs as
+# soon as one is back within that hour, not at the next timer run (docs/UPDATES.md, "Without a
+# network"). Not network-online.target: once reached it stays active for the whole boot, and
+# systemd-networkd-wait-online.service fails after 2 minutes without a network, which leaves the
+# system degraded (docs/DEFAULTS.md, "Without a network").
+[Unit]
+Description=Nyra: wait for the network before an update check
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+# No RemainAfterExit: every check waits again. The time limit is finite and shorter than the timer's
+# 6 hours (the image build checks it): after it, or if the wait fails, the check runs anyway ("-") and
+# reports what it finds, "no network connection" included, so a machine whose network networkd does
+# not see as online (a link it does not manage) still checks. The system is never degraded by it.
+ExecStart=-/usr/lib/systemd/systemd-networkd-wait-online --any --timeout=3600
+TimeoutStartSec=infinity
+# It only reads the link state (rtnetlink and /run/systemd/netif), as an unprivileged user.
+DynamicUser=yes
+CapabilityBoundingSet=
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any

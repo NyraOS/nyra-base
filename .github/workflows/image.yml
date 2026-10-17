@@ -584,6 +584,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/vm/security-defaults.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      - name: Without a network (docs/DEFAULTS.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 15
+        run: tools/vm/no-network.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       # The signed PCR 11 policy unlocks the disk only in the initrd (docs/BOOT.md, "TPM2 unlock"):
       # swtpm and the image's own systemd 262 enroll a throwaway LUKS disk and check, for each boot
       # state, whether the TPM releases the key. No VM and no KVM: tools/signing/tpm-replay.py replays

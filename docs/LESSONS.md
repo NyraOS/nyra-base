@@ -88,6 +88,17 @@ Each line is something that broke or surprised us once.
 - **bootc's preset enables `bootc-fetch-apply-updates.timer`**, which reboots on its own after an update.
   It is blocked with a `/usr` drop-in. `xfs_healer@` (from `xfsprogs`) fails on a non-XFS root and is
   blocked the same way.
+- **A blocked unit still pulls in what it wants.** A condition only stops the unit itself: Debian
+  enables `podman-restart.service` and `podman-auto-update.service` in `default.target`, and though
+  both were blocked, their `Wants=network-online.target` started `systemd-networkd-wait-online` at
+  every boot. Without a network it fails after 2 minutes (`degraded`), and `graphical.target`, ordered
+  after them, waits those 2 minutes. Such a unit is disabled too, with a `disable` line in our preset:
+  systemd applies the presets again at the first boot, and a unit no preset line names is enabled
+  then, so a `systemctl disable` in the image build alone would not last.
+- **`network-online.target` stays reached for the whole boot.** Once
+  `systemd-networkd-wait-online.service` has passed, it stays active, so a later wait for the network
+  (an update check after the link was lost) does not wait. A unit that needs the network each time
+  runs `systemd-networkd-wait-online` itself, in a oneshot without `RemainAfterExit=`.
 - **A drop-in cannot remove a dependency.** `OnFailure=` (empty) in a `local-fs.target.d` drop-in leaves
   `OnFailure=emergency.target` in place (checked with systemd 262): a dependency goes away only with
   the unit file itself, so the image build edits `local-fs.target`. `OnFailureJobMode=fail` is no way
