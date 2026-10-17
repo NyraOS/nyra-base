@@ -251,7 +251,19 @@ it is made in the same signing step.
   `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`, and goes into the image
   (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`; in CI, a next key made for the run, whose private
   half is deleted at once). The release gate refuses an image whose next key is not that file, or is the
-  current key. Nothing is created yet.
+  current key (compared as DER, so not even in another encoding). Nothing is created yet.
+- **A key is known by the SHA-256 of its PEM file**, on every disk (the record of its enrollments). So
+  the release gate also requires the UKI's `.pcrpkey` to be the committed key's file byte for byte:
+  the same key in another encoding would leave the disk unable to tell that it is the key it was
+  enrolled for, and the old key would never be retired.
+- **Retired keys are listed** in `files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys` (one SHA-256
+  per line), which every image carries: a disk is never enrolled for them again, and once a version
+  is confirmed good, `nyra-tpm-retire` removes their enrollments and marks them retired on the disk.
+  A key goes there in the release after its rotation is confirmed, or at once when it is no longer
+  trusted (a next key that leaked before it signed anything, for example: an old image that carries it
+  as next would otherwise enroll it after a downgrade). The release gate refuses an image whose list
+  is not that file, has a line that is neither a comment nor a key's SHA-256, or lists the current or
+  the next key.
 - **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md, "Rotating the policy key"):
   **once a year, planned, and at once when a boot-chain vulnerability means old versions must lose
   unlock**. A machine's TPM enrollment names the key. Since the policy unlocks only in the initrd, the
@@ -263,7 +275,8 @@ it is made in the same signing step.
   2. **A rotation** is a release signed with the next key only, whose image carries a new next key,
      and whose `.pcrpkey` is byte for byte the previous image's next-key file (a key is known by the
      SHA-256 of its PEM file). It unlocks through the enrollment that was waiting for it. While that
-     release's initrd still runs (the `enter-initrd` phase, the disk open), it enrolls the new next key.
+     release's initrd still runs (the `enter-initrd` phase, the disk open), it enrolls the new next key
+     (on a disk with a PIN, with the PIN typed at that boot: docs/BOOT.md, "A PIN at boot").
   3. **Once that release is confirmed good** (its boot completes, as boot counting confirms it), the
      enrollment of the old key is removed. Until then a fallback to the previous version still unlocks
      by itself; after it, versions signed with the old key still boot, but ask for the disk password or

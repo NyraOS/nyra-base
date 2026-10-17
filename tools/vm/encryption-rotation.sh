@@ -29,12 +29,18 @@
 #   7. then rot-d unlocks by itself.
 # Read offline at the end: the recovery key slot and two TPM2 enrollments, the record (A retired, D and
 # E) and the units' lines in the disk's journal.
-#   tools/vm/encryption-rotation.sh IMAGE WORKDIR LOGDIR SUMMARY
+# With "pin", on a disk of its own: rot-a's first boot asks for a PIN (tpm-pin) and its second boot (1b)
+# enrolls A and B with it; every boot that unlocks with the TPM types it, rot-b1's initrd enrolls C
+# with the PIN typed in that boot (no prompt of its own), and rot-d, after the recovery key, asks for
+# a new PIN, which unlocks the next boot. Every enrollment in the record has a PIN.
+#   tools/vm/encryption-rotation.sh IMAGE WORKDIR LOGDIR SUMMARY [pin]
 set -euo pipefail
 
-image="$1" work="$2/encryption-rotation" logs="$3" summary="$4"
+mode="${5:-}" sfx=""
+[ "$mode" != pin ] || sfx="-pin"
+image="$1" work="$2/encryption-rotation$sfx" logs="$3" summary="$4"
 # swtpm's state under LOGDIR (RUNNER_TEMP): Ubuntu's AppArmor profile for swtpm allows no other place.
-tpm="$logs/encryption-rotation-state"
+tpm="$logs/encryption-rotation$sfx-state"
 secrets="$work/secrets" keys="$work/keys" ctx="$work/context"
 mnt="$work/esp"
 loop=""
@@ -115,7 +121,7 @@ tools/vm/install-encrypted.sh localhost/nyra-test:rot-a "$work" "$secrets" "$tpm
 key="$(cat "$secrets/recovery-key")"
 printf '%s\n' "$key" > "$secrets/patterns"
 {
-  echo "## Rotation of the TPM policy key (Titanic T10)"
+  echo "## Rotation of the TPM policy key${sfx:+ with a PIN} (Titanic T10)"
   echo
   echo "Four test versions (policy keys A to E), built, pushed and installed (rot-a, for a TPM) in $((SECONDS - start)) s; swtpm, Secure Boot on."
   echo
@@ -151,6 +157,16 @@ check() { # check WHAT EXPECTED GOT
 { echo "| Check | Result | |"; echo "|---|---|---|"; } >> "$summary"
 
 ask="Please enter (passphrase or )?recovery key for disk [^\r\n]*:"
+pinask="Please enter TPM2 PIN:"
+either="($pinask|$ask)"
+# The PINs: 20 random digits each (nothing else on the console looks like them).
+pin1="$(python3 -I -c 'import secrets; print("".join(secrets.choice("0123456789") for _ in range(20)))')"
+pin2="$(python3 -I -c 'import secrets; print("".join(secrets.choice("0123456789") for _ in range(20)))')"
+# What a boot that unlocks with the TPM types (nothing without a PIN), and the record's mark.
+unlock=() m=""
+if [ "$mode" = pin ]; then unlock=(--chat "$pinask=>$pin1" --chat-then-login); m=" pin"; fi
+# The PIN typed only at prompts (rows 6 and 7) must be nowhere either; the first one is in a command.
+[ "$mode" != pin ] || printf '%s\n' "$pin2" >> "$secrets/patterns"
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
 unhealthy_boot='s="$(systemctl is-system-running --wait)"; echo "system: $s"; test "$s" = degraded && ! systemctl is-active --quiet boot-complete.target'
 enrolled='journalctl -b -o cat -u nyra-tpm-enroll.service | grep nyra-tpm-enroll:'
@@ -159,7 +175,12 @@ retired='journalctl -b -o cat -u nyra-tpm-retire.service | grep nyra-tpm-retire:
 retire_ran='journalctl -b -o cat -u nyra-tpm-retire.service | grep "^Finished nyra-tpm-retire.service"'
 is() { echo "test \"\$(cat /usr/lib/nyra-test-version)\" = $1 && echo 'version: $1'"; }
 # The record's enrollments, as their keys' identities in order, and its retired keys.
-record() { echo "r=/var/lib/nyra/tpm2-slots; cat \$r; test \"\$(sed -n 's/^[0-9][0-9]* //p' \$r | tr '\n' ' ')\" = \"$1\" && test \"\$(sed -n 's/^retired //p' \$r | tr '\n' ' ')\" = \"$2\""; }
+# With a PIN (once it is enrolled), every enrollment has one; without, none.
+record() {
+  local pins="! grep -Eq '^[0-9]+ [0-9a-f]+ pin\$' \$r"
+  [ -z "$m" ] || pins="! grep -Eq '^[0-9]+ [0-9a-f]+\$' \$r"
+  echo "r=/var/lib/nyra/tpm2-slots; cat \$r; test \"\$(sed -n 's/^[0-9][0-9]* \([0-9a-f]*\).*/\1/p' \$r | tr '\n' ' ')\" = \"$1\" && test \"\$(sed -n 's/^retired //p' \$r | tr '\n' ' ')\" = \"$2\" && $pins"
+}
 switch() { echo "bootc switch --quiet 10.0.2.2/nyra-test:$1 && ls /boot/loader/entries.staged"; }
 registry='mkdir -p /etc/containers/registries.conf.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf'
 vm() { # vm NAME TITLE ARGS...
@@ -181,39 +202,60 @@ asked() { # asked NAME: did the console of that boot ask for the disk?
 }
 by_itself() { ! asked "$1" || { echo "::error::$1 asked for the disk"; fail=1; }; }
 
-vm a "Rotation 1: rot-a's first boot unlocks by itself and enrolls A and B" \
-  --command "$(is rot-a)" --command "$running" --command "$enrolled | grep 'enrolled with the TPM'" \
-  --command "$(record "$fa $fb " "")" --command "$registry" --command "$(switch rot-b1)" || fail=1
-by_itself a
+if [ "$mode" != pin ]; then
+  vm a "Rotation 1: rot-a's first boot unlocks by itself and enrolls A and B" \
+    --command "$(is rot-a)" --command "$running" --command "$enrolled | grep 'enrolled with the TPM'" \
+    --command "$(record "$fa $fb " "")" --command "$registry" --command "$(switch rot-b1)" || fail=1
+  by_itself a
+else
+  m="" # not yet
+  vm a "Rotation 1: rot-a's first boot unlocks by itself and enrolls A and B; a PIN asked for" \
+    --command "$(is rot-a)" --command "$running" --command "$enrolled | grep 'enrolled with the TPM'" \
+    --command "$(record "$fa $fb " "")" --command "echo $pin1 | /usr/lib/nyra/boot/tpm-pin set" || fail=1
+  by_itself a
+  m=" pin"
+  vm a-pin "Rotation 1b: rot-a unlocks by itself, and its initrd enrolls A and B with the PIN" \
+    --command "$(is rot-a)" --command "$running" --command "$enrolled | grep 'with the new PIN'" \
+    --command "$(record "$fa $fb " "")" --command "$registry" --command "$(switch rot-b1)" || fail=1
+  by_itself a-pin
+fi
 vm b1 "Rotation 2: rot-b1 (signed with B) unlocks by itself, enrolls C; not confirmed good, A stays" \
-  --command "$(is rot-b1)" --command "$unhealthy_boot" --command "$enrolled | grep 'enrolled the next policy key'" \
+  "${unlock[@]}" --command "$(is rot-b1)" --command "$unhealthy_boot" --command "$enrolled | grep 'enrolled the next policy key'" \
   --command "! $retired && echo 'nothing removed'" \
   --command "$(record "$fa $fb $fc " "")" --command 'bootc rollback' || fail=1
 by_itself b1
 vm a-fallback "Rotation 3: the fallback to rot-a unlocks by itself; confirmed good, it keeps the newer C" \
-  --command "$(is rot-a)" --command "$running" --command "$retire_ran" \
+  "${unlock[@]}" --command "$(is rot-a)" --command "$running" --command "$retire_ran" \
   --command "! $enrolled && ! $retired && echo 'nothing enrolled or removed'" \
   --command "$(record "$fa $fb $fc " "")" --command "$(switch rot-b2)" || fail=1
 by_itself a-fallback
 vm b2 "Rotation 4: rot-b2 unlocks by itself; confirmed good, A's enrollment removed" \
-  --command "$(is rot-b2)" --command "$running" --command "! $enrolled && echo 'nothing enrolled'" \
+  "${unlock[@]}" --command "$(is rot-b2)" --command "$running" --command "! $enrolled && echo 'nothing enrolled'" \
   --command "$retired | grep 'removed the enrollments of retired policy keys'" \
   --command "$(record "$fb $fc " "$fa ")" --command 'bootc rollback' || fail=1
 by_itself b2
+# With a PIN, it is asked first (for the enrollments of B and C, which do not apply), then the
+# recovery key; the second answer goes to whichever prompt comes (an empty recovery key is asked again).
+chat=(--chat "$ask=>$key")
+[ "$mode" != pin ] || chat=(--chat "$pinask=>$pin1" --chat "$either=>" --chat "$ask=>$key")
 # Without the test console add-on: PCR 12 as a machine measures it, so only the retired key stops a
 # new enrollment.
 esp remove
 blind a-retired "Rotation 5: rot-a after the confirmation, without the add-on: the recovery key, not enrolled again" \
-  --chat "$ask=>$key" || fail=1
+  "${chat[@]}" || fail=1
 esp add
 vm a-retired-login "Rotation 5b: the same with the add-on, to switch to rot-d" \
-  --chat "$ask=>$key" --chat-then-login --command "$(is rot-a)" --command "$running" \
+  "${chat[@]}" --chat-then-login --command "$(is rot-a)" --command "$running" \
   --command "$enrolled | grep 'not enrolled with the TPM again'" --command "$(record "$fb $fc " "$fa ")" \
   --command "$(switch rot-d)" || fail=1
 esp remove
+[ "$mode" != pin ] || chat=(--chat "$pinask=>$pin1" --chat "$either=>" --chat "$ask=>$key"
+  --chat "Choose a TPM2 PIN for the disk=>$pin2" --chat "Type the same PIN again:=>$pin2")
 blind d "Rotation 6: rot-d (D, a missed rotation): the recovery key once, the disk enrolled for D and E" \
-  --chat "$ask=>$key" || fail=1
-blind d-after "Rotation 7: then rot-d unlocks by itself" || fail=1
+  "${chat[@]}" || fail=1
+after=()
+[ "$mode" != pin ] || after=(--chat "$pinask=>$pin2")
+blind d-after "Rotation 7: then rot-d unlocks by itself" "${after[@]}" || fail=1
 by_itself d-after
 
 check "Key slots at the end" "1 systemd-recovery, 2 systemd-tpm2" \
@@ -235,12 +277,12 @@ EOF
 )"
 sudo losetup -d "$loop" && loop=""
 printf '%s\n' "$inside"
-check "The record at the end" "retired $fa|$fd|$fe" \
+check "The record at the end" "retired $fa|$fd$m|$fe$m" \
   "$(printf '%s\n' "$inside" | sed -n 's/^record: //p' | sed 's/^[0-9][0-9]* //' | tr '\n' '|' | sed 's/|$//')"
 check "Next keys enrolled (row 2)" 1 "$(printf '%s\n' "$inside" | grep -c 'enrolled the next policy key' || true)"
 check "Retirements (row 4)" 1 "$(printf '%s\n' "$inside" | grep -c 'removed the enrollments of retired policy keys' || true)"
 check "Refusals for the retired key A (row 5)" 1 "$(printf '%s\n' "$inside" | grep -c 'not enrolled with the TPM again: the policy key of this version was retired' || true)"
-check "Re-enrollments (row 6)" 1 "$(printf '%s\n' "$inside" | grep -c 'enrolled with the TPM again, after the TPM refused' || true)"
+check "Re-enrollments (row 6)" 1 "$(printf '%s\n' "$inside" | grep -c '^nyra-tpm-enroll: enrolled with the TPM again' || true)"
 
 # The recovery key nowhere outside the user's hands.
 found=""

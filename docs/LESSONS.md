@@ -583,6 +583,22 @@ Each line is something that broke or surprised us once.
   system is `degraded` with no `FAILED` line anywhere on the console. A wait in the background that the
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
+- **TPM2 PIN (systemd 262).** gpt-auto sets `tpm2-measure-pcr=yes`, which turns off libcryptsetup's
+  token plugin, so systemd-cryptsetup handles the PIN itself: up to five tries, then
+  the passphrase prompt; an empty PIN (with Argon2id) goes straight to it; a locked TPM
+  ("dictionary attack lock-out mode") too. It asks for the PIN before it unseals, so it asks even when
+  the PCRs no longer match (and the PIN typed is then never checked), and for a token of another policy
+  key; the next token takes the PIN from the kernel's cache (`tpm2-pin`), an empty one is asked again.
+  A correct PIN does not reset the TPM's failure counter: only time does.
+- systemd-cryptenroll takes `$PIN` (and `$NEWPIN`) once: the first TPM2 token it tries consumes it, and
+  for the next one it asks on the console. The credential `cryptenroll.tpm2-pin` (in
+  `$CREDENTIALS_DIRECTORY`) is read again for each token, and for each of its five tries: a wrong PIN
+  there counts five times against the TPM.
+- With a PIN, systemd-cryptenroll replaces an enrollment of the same policy (same key, same PCR values)
+  by itself, removing its slot after adding the new one; without a PIN it keeps it and does nothing.
+- swtpm (libtpms) locks after 3 wrong authorizations and forgives one every 1000 s of running time; a
+  shutdown that is not orderly also counts as one when a protected object was used. A test that needs
+  a known count copies the TPM state directory and puts it back.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test

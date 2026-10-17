@@ -1,0 +1,40 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The disk's TPM2 PIN, from the running system (docs/BOOT.md, "Disk encryption"; for Settings and First
+# Boot, and the tests). The TPM releases the disk's key only in the initrd, so a change is a request
+# that the initrd applies at the next restart (nyra-tpm-enroll), then removes at once:
+#   tpm-pin set      the new PIN, 6 to 20 digits, one line on standard input
+#   tpm-pin remove   no PIN any more
+#   tpm-pin status   "pin yes" or "pin no", then "requested pin" or "requested none" if a change waits
+# Only on a disk enrolled with the TPM (it has the record of its enrollments). The request is a file
+# that only root can read, inside the encrypted root. The initrd reads the keyboard as US: a PIN is
+# digits only, which are in the same place on the usual layouts (on AZERTY, the top row without Shift,
+# or the numeric keypad).
+set -eu
+
+dir=/var/lib/nyra
+record=$dir/tpm2-slots
+request=$dir/tpm2-pin-request
+fail() { echo "tpm-pin: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || fail "only root can change the disk's PIN"
+grep -q '^[0-9]' "$record" 2>/dev/null || fail "this disk is not unlocked with the TPM"
+case "${1:-}" in
+  set)
+    IFS= read -r pin || true
+    case "$pin" in *[!0-9]*|"") fail "a PIN is 6 to 20 digits" ;; esac
+    [ "${#pin}" -ge 6 ] && [ "${#pin}" -le 20 ] || fail "a PIN is 6 to 20 digits"
+    new="$pin" ;;
+  remove) new=none ;;
+  status)
+    if grep -Eq '^[0-9]+ [0-9a-f]+ pin$' "$record"; then echo "pin yes"; else echo "pin no"; fi
+    if [ -f "$request" ]; then
+      if [ "$(sed -n 1p "$request")" = none ]; then echo "requested none"; else echo "requested pin"; fi
+    fi
+    exit 0 ;;
+  *) fail "usage: tpm-pin set|remove|status" ;;
+esac
+umask 077
+printf '%s\n' "$new" > "$request.new"
+mv "$request.new" "$request"
+echo "tpm-pin: the change is made at the next restart"

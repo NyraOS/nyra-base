@@ -24,6 +24,8 @@ TPM_UNLOCK = ("install-boot", "TPM2 disk-unlock policy (docs/BOOT.md)")
 ENCRYPTION = ("install-boot", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
 ENCRYPTION_TPM = ("install-boot", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
 ROTATION = ("install-boot", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_PIN = ("install-boot", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)")
+ROTATION_PIN = ("install-boot", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)")
 SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
@@ -83,7 +85,7 @@ TESTS = {
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
            "request is sent, the update server's certificate and unsigned images are refused."),
-    "T10": ("Disk encryption", "partial", [ENCRYPTION, ENCRYPTION_TPM, ROTATION],
+    "T10": ("Disk encryption", "partial", [ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN],
             "Without a TPM: the password and the recovery key unlock the disk in the initrd (found by its "
             "partition type), a wrong password is asked again, the recovery key typed 120 s later and "
             "the password after three wrong ones (asked again) still unlock it. With a TPM and Secure "
@@ -93,13 +95,17 @@ TESTS = {
             "the TPM refused (a new Secure Boot database, a new TPM, a different PCR 12) the recovery key "
             "unlocks it and the disk is enrolled again, never with Secure Boot off or an add-on measured, "
             "nor a password disk with a forged TPM2 token; "
-            "the recovery profile asks for the disk. The policy key's rotation across test versions: the "
-            "next key enrolled in advance, the old one removed once the rotated release is confirmed "
-            "good (a fallback before that unlocks by itself, after it asks for the recovery key), a "
-            "machine that missed a rotation asks once and is enrolled again. No root partition: "
-            "emergency mode after 90 s. No secret in the logs, the ESP, the LUKS2 header or the root file "
-            "system. Not yet: updates through nyra-updated, the PIN; the first boot without a TPM or with "
-            "Secure Boot off is checked by hand only."),
+            "the recovery profile asks for the disk. With a PIN: asked for from the running system and "
+            "enrolled at the next boot, changed and removed the same way; a wrong PIN is asked again; an "
+            "empty one, and a TPM locked by wrong ones (the right PIN refused too), lead to the recovery "
+            "key, which unlocks the disk; after the TPM refused (PCR 12, a new TPM) a new PIN is chosen "
+            "in the initrd and unlocks the next boot. The policy key's rotation across test versions, "
+            "without and with a PIN: the next key enrolled in advance (with the PIN typed), the old one "
+            "removed once the rotated release is confirmed good (a fallback before that unlocks by "
+            "itself, after it asks for the recovery key), a machine that missed a rotation asks once and "
+            "is enrolled again (with a new PIN). No root partition: emergency mode after 90 s. No secret "
+            "in the logs, the ESP, the LUKS2 header or the root file system. Not yet: updates through "
+            "nyra-updated; the first boot without a TPM or with Secure Boot off is checked by hand only."),
     "T11": ("Version jumps and channels", "full", [CHANNELS],
             "A jump over several versions goes straight to the newest, the retracted one between never "
             "boots; a sheet with an untrusted key, an older sequence or a retracted version refused, "
@@ -154,7 +160,7 @@ def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
-                          ENCRYPTION, ENCRYPTION_TPM, ROTATION, CHANNELS}]
+                          ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN, CHANNELS}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T15")] == \
         ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass"], r

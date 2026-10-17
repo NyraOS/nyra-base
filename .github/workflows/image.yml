@@ -620,6 +620,27 @@ jobs:
         timeout-minutes: 40
         run: tools/vm/encryption-rotation.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      # The same with a PIN, set before the rotation: the next key enrolled with the PIN typed at the
+      # rotated release's first boot, and a new PIN chosen when the disk is enrolled again.
+      - name: Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        run: tools/vm/encryption-rotation.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY" pin
+
+      # Titanic T10, the TPM2 PIN (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM;
+      # a PIN asked for from the running system is enrolled at the next boot, a wrong PIN is asked again,
+      # an empty one and a TPM locked by wrong ones lead to the recovery key, which unlocks the disk; the
+      # PIN changed and removed; after the TPM refused, a new PIN is chosen in the initrd, never none.
+      - name: Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 50
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/encryption-pin.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY"
+
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
@@ -870,11 +891,13 @@ jobs:
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$WORK/image-retired"
           sudo podman rm -f "$cid" >/dev/null
-          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem"
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem" "$WORK/image-retired"
           tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
             files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
-            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem"
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem" \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys "$WORK/image-retired"
 
       - name: Install cosign
         run: |

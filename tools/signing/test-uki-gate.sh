@@ -9,8 +9,11 @@
 #     image signed with test keys never gets a release signature;
 #   - refused with a certificate that did not sign it, and with a policy key that did not sign its
 #     policy; refused when the image's next policy key (RUN_NEXT_KEY, which it carries) is not the one
-#     given, when the next key given is the current one, when the image carries none, and when none is
-#     given;
+#     given, when the next key given is the current one (also in another encoding), when the image
+#     carries none, and when none is given; refused when the policy key given is the one that signed
+#     but in another encoding (the .pcrpkey bytes differ); refused when the image's list of retired
+#     keys is not the committed one, when that list has a line that is not a key's SHA-256 or a
+#     comment, and when it lists the current or the next key;
 #   - refused, even when signed with the trusted key: an add-on in place of the UKI, the UKI with
 #     another command line, a second UKI, an add-on next to the UKI, the UKI without its Nyra SBAT
 #     component, without its PCR policy, with a policy signature that does not verify, and with the
@@ -38,12 +41,16 @@ t="$work/uki-gate-test"
 nyra_cert=files/usr/lib/nyra/secureboot/nyra.crt
 nyra_pcr=files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem
 nyra_next=files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem
+nyra_retired=files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys
 mkdir -p "$t"
 trap 'sudo rm -rf "$t"' EXIT
 
-# gate BOOT_DIR CERT [PCR_KEY [NEXT_KEY [IMAGE_NEXT_KEY]]]: this run's policy keys and the image's next
-# key unless given.
-gate() { tools/signing/uki-gate.sh "$1" "$2" "${3:-$run_pcr}" "${4:-$run_next}" "${5:-$t/image-next.pem}"; }
+# gate BOOT_DIR CERT [PCR_KEY [NEXT_KEY [IMAGE_NEXT_KEY [RETIRED [IMAGE_RETIRED]]]]]: this run's policy
+# keys, the image's next key and the committed and image's lists of retired keys unless given.
+gate() {
+  tools/signing/uki-gate.sh "$1" "$2" "${3:-$run_pcr}" "${4:-$run_next}" "${5:-$t/image-next.pem}" \
+    "${6:-$nyra_retired}" "${7:-$t/image-retired}"
+}
 # refused REASON BOOT_DIR CERT [PCR_KEY]: the gate must fail, and for REASON (an extended regular expression).
 refused() {
   local reason="$1" out
@@ -64,6 +71,7 @@ cid="$(sudo podman create -q "$image")"
 sudo podman cp "$cid:/boot" "$t/image"
 sudo podman cp "$cid:/usr/lib/systemd/boot/efi/addonx64.efi.stub" "$t/"
 sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$t/image-next.pem"
+sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$t/image-retired"
 sudo podman rm -f "$cid" >/dev/null
 sudo chown -R "$(id -u):$(id -g)" "$t"
 uki="$(cd "$t/image" && echo EFI/Linux/*.efi)"
@@ -87,6 +95,22 @@ refused "the image's next PCR policy key is not" "$t/image" "$run_cert" "$run_pc
 refused "the next PCR policy key is the current one" "$t/image" "$run_cert" "$run_pcr" "$run_pcr" "$run_pcr"
 refused "the image carries no next PCR policy key" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/none.pem"
 refused "no next Nyra PCR policy public key" "$t/image" "$run_cert" "$run_pcr" "$t/none.pem"
+# The same keys in another encoding (CRLF line ends): the same DER, other bytes, so another SHA-256.
+sed 's/$/\r/' "$run_pcr" > "$t/pcr-crlf.pem"
+refused "the next PCR policy key is the current one" "$t/image" "$run_cert" "$run_pcr" "$t/pcr-crlf.pem" "$t/pcr-crlf.pem"
+refused "\.pcrpkey of .* is not .* byte for byte" "$t/image" "$run_cert" "$t/pcr-crlf.pem"
+# The list of retired keys: not the committed one, a line that is not a key, the current and the next
+# key listed (the list given as both the committed and the image's).
+fpr() { sha256sum < "$1" | cut -c1-64; }
+{ cat "$nyra_retired"; fpr "$t/other-pcr.pem"; } > "$t/retired-other"
+refused "the image's list of retired PCR policy keys is not" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/image-next.pem" "$nyra_retired" "$t/retired-other"
+refused "the image carries no list of retired PCR policy keys" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/image-next.pem" "$nyra_retired" "$t/none"
+printf 'not a key\n' > "$t/retired-bad"
+refused "neither a comment nor a key" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/image-next.pem" "$t/retired-bad" "$t/retired-bad"
+fpr "$run_pcr" > "$t/retired-current"
+refused "is listed as retired" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/image-next.pem" "$t/retired-current" "$t/retired-current"
+fpr "$run_next" > "$t/retired-next"
+refused "is listed as retired" "$t/image" "$run_cert" "$run_pcr" "$run_next" "$t/image-next.pem" "$t/retired-next" "$t/retired-next"
 
 # The image's UKI signed with the "gate" key instead: accepted with its certificate (the control).
 cp "$t/image/$uki" "$t/unsigned.efi"

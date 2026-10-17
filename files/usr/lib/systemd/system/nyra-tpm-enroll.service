@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Initrd only: the TPM2 enrollments of an encrypted root, at its first boot, after the TPM refused and
-# after a policy key rotation (/usr/lib/nyra/boot/tpm-enroll). After the root disk is unlocked and bootc
-# set the root up (the record of the enrollments is in its /var, the next policy key in its /usr), and
-# done before the initrd ends: PCR 11 must still be at the signed enter-initrd value. A failure is
-# logged and the boot goes on (the disk then asks for its recovery key).
+# Initrd only: the TPM2 enrollments of an encrypted root, at its first boot, after the TPM refused,
+# after a policy key rotation and for a PIN asked for (/usr/lib/nyra/boot/tpm-enroll). After the root
+# disk is unlocked and bootc set the root up (the record of the enrollments is in its /var, the next
+# policy key in its /usr), and done before the initrd ends: PCR 11 must still be at the signed
+# enter-initrd value. A failure is logged and the boot goes on (the disk then asks for its recovery key).
 [Unit]
 Description=Nyra: enroll the root disk with the TPM
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
@@ -18,3 +18,6 @@ ExecStart=/usr/lib/nyra/boot/tpm-enroll
 # The key typed in this boot is in root's user keyring (systemd-cryptsetup put it there): link it
 # into this unit's session keyring, so that the script can use it and then remove it.
 KeyringMode=shared
+# After a refusal on a disk with a PIN, it asks for a new one (up to six prompts of 90 s each), and
+# each enrollment with a PIN costs Argon2id: more than the 90 s a unit gets by default.
+TimeoutStartSec=15min
