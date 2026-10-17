@@ -18,6 +18,8 @@ profile ntp-daemon /usr/bin/ntp-daemon {
   network inet6 dgram,
   network inet stream,
   network inet6 stream,
+  # The machine's own addresses, and their changes (route netlink).
+  network netlink raw,
   # The observation socket for ntp-ctl, systemd's notification socket, systemd-resolved.
   unix,
 

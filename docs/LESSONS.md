@@ -418,6 +418,9 @@ Each line is something that broke or surprised us once.
   verifier checks a chain at any other time; the handshake signature (`verify_tls13_signature`) does
   not depend on the time, and the connection keeps the chain (`peer_certificates()`). That is how our
   ntpd-rs patch checks a certificate at the time the server gives.
+- ntp-daemon (1.9.0) opens a netlink socket at startup (the machine's addresses and their changes):
+  with `RestrictAddressFamilies=` without `AF_NETLINK` it exits with status 1 right after "using
+  config file", and upstream's binary prints no error. Our build's `ntp-daemon` prints it.
 - ntpd-rs's selection already wants a majority: the largest set of sources that agree must be more
   than half of the usable ones, and at least `minimum-agreeing-sources` (default 3).
 - ntpd's build script asks git for a commit and its date; outside a git checkout `git diff-index`
