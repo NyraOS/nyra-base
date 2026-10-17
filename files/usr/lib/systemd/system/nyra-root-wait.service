@@ -8,7 +8,10 @@ ConditionPathExists=/etc/initrd-release
 After=systemd-udevd.service
 
 [Service]
-Type=oneshot
+# A wait in the background, stopped when the initrd ends: the root may appear just after a check, and
+# then the initrd ends during the next second's sleep. For Type=simple that stop (SIGTERM) is a clean
+# end; a Type=oneshot unit stopped this way fails, and the running system starts "degraded".
+Type=simple
 ExecStart=/usr/lib/nyra/boot/root-wait
 # Its message (no root partition) is also on the console, before emergency mode reboots.
 StandardError=journal+console

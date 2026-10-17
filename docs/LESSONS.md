@@ -517,6 +517,12 @@ Each line is something that broke or surprised us once.
   key included, on stderr: keep stderr out of the logs.
 - systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
   echoed. A test that types a secret on a console waits a moment after the prompt.
+- **A `Type=oneshot` unit that is still running when the initrd ends fails.** initrd-cleanup's isolate
+  stops it with SIGTERM, and for a oneshot only exit status 0 is a clean end (`Result=signal`). The
+  console shows only "Stopped", the failed state crosses the switch to the real root, and the running
+  system is `degraded` with no `FAILED` line anywhere on the console. A wait in the background that the
+  initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
+  root wait checked once a second, and the initrd took about as long after the root appeared.
 
 ## Testing in CI
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for

@@ -197,7 +197,9 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   once its passphrase is typed, and a recovery key read off paper can take longer than systemd's 90 s
   for a device, after which the initrd would end in emergency mode and restart;
 - a root partition, plain or encrypted, must still appear within 90 s (`nyra-root-wait.service`), or
-  the initrd goes to emergency mode as before ("Finding the root partition");
+  the initrd goes to emergency mode as before ("Finding the root partition"). It checks once a second,
+  in the background: when the initrd ends between two checks, it is stopped there, which is not a
+  failure (`tools/vm/boot-repeat.sh` boots with it still waiting; the system must be `running`);
 - after three wrong passphrases systemd-cryptsetup gives up; it is started again
   (`systemd-cryptsetup@root.service.d`), so the prompt comes back as long as it takes, without a
   restart.
