@@ -7,7 +7,10 @@
 # fallback to them before this confirmation still did. The keys to keep come from this boot's initrd
 # (/run/nyra-tpm2-keep, nyra-tpm-enroll); the enrollments, by key slot number, from the disk's record.
 # Removing a key slot needs no key and no TPM. Only when an enrollment for the key this version booted
-# with is in the record, so that the disk always keeps one that works.
+# with is in the record, so that the disk always keeps one that works, and only the enrollments
+# recorded before it: the record lists them in the order they were made, so a fallback to an older
+# release that is confirmed good never removes the enrollment of a newer key (it still unlocks the
+# newer release, which may be tried again).
 set -eu
 
 record=/var/lib/nyra/tpm2-slots
@@ -17,8 +20,8 @@ log() { echo "nyra-tpm-retire: $*"; }
 [ -f "$record" ] && [ -f "$keep" ] || exit 0
 current="$(sed -n 1p "$keep")"
 grep -q "^[0-9][0-9]* $current\$" "$record" || exit 0
-# The record's enrollments for keys that are not kept.
-old="$(grep '^[0-9][0-9]* ' "$record" | grep -v -F -f "$keep" || true)"
+# The record's enrollments made before the current key's, for keys that are not kept.
+old="$(sed -n "/^[0-9][0-9]* $current\$/q; /^[0-9][0-9]* /p" "$record" | grep -v -F -f "$keep" || true)"
 [ -n "$old" ] || exit 0
 dev="$(cryptsetup status root | sed -n 's/^ *device: *//p')"
 [ -n "$dev" ] || { log "the encrypted root's device was not found"; exit 1; }

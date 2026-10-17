@@ -249,7 +249,10 @@ A rotation is a release signed with that next key only:
   counting, and removes the record's enrollments for keys that this boot neither signed with nor
   carries as next (from `/run/nyra-tpm2-keep`, written by this boot's initrd), by their slot numbers,
   then marks those keys retired in the record. Only if the record has an enrollment for the key this
-  boot used. Removing a key slot needs no key and no TPM, so it runs in the booted system;
+  boot used, and only the enrollments made before it (the record keeps them in the order they were
+  made): a fallback to the previous release that is confirmed good keeps the next key's enrollment,
+  which the newer release still needs. Removing a key slot needs no key and no TPM, so it runs in the
+  booted system;
 - so a fallback to the previous version before that confirmation (a release that does not get
   healthy) still unlocks by itself, and after it, versions signed only with the old key ask for the
   recovery key and are never enrolled again;
@@ -323,6 +326,22 @@ enrolled state.
 | A disk set up with a password, whose header got a forged TPM2 token (a copy of the enrollment above, pointing at the password's key slot), booted on this machine with its TPM and Secure Boot | the password unlocks it; not enrolled (no record inside it); its key slots and tokens unchanged |
 | The recovery key, searched for | as above |
 
+The rotation (`tools/vm/encryption-rotation.sh`): test versions of the image, each with its UKI built
+and signed as `ci/build-image.sh` does it, with policy keys and a Secure Boot key (a MOK) made in the
+step and deleted once the versions are built, served by a registry on the runner; `rot-a` (key A, next
+B) installed for the VM's swtpm, `rot-b1` and `rot-b2` (B, next C; `rot-b1` never confirmed good, a
+health check fails), `rot-d` (D, next E).
+
+| Check | Result |
+|---|---|
+| rot-a's first boot | unlocks by itself; the record: A, B |
+| rot-b1 (a rotation that never gets healthy) | unlocks by itself (B), its initrd enrolls C; A stays (the record: A, B, C) |
+| The fallback to rot-a (`bootc rollback`), confirmed good | unlocks by itself; nothing removed, C stays |
+| rot-b2, confirmed good | unlocks by itself, nothing enrolled; A's enrollment removed, A retired in the record |
+| rot-a again, after that | the recovery key unlocks the disk; not enrolled again |
+| rot-d (a machine that missed the rotation to C), without the test console add-on, no login | the recovery key once, then enrolled again for D and E; the next boot unlocks by itself |
+| Read offline | the recovery key slot and two TPM2 enrollments; the record: A retired, D and E; one next-key enrollment, one retirement, one re-enrollment in the journal; the recovery key nowhere |
+
 **What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
 systemd-gpt-auto-generator found (no `/etc/crypttab` in the initramfs, no `rd.luks.*` on the sealed
 command line) and `nyra-tpm-enroll` for the same partition. A copy of the enrollment (it is in the
@@ -374,12 +393,13 @@ with stand-ins at the paths they use and stand-ins for cryptsetup, systemd-crypt
   is enrolled;
 - a version whose key was retired is not enrolled again;
 - `tpm-retire` removes only the enrollment of the key that is neither current nor next, records it as
-  retired, and removes nothing when the record has no enrollment for the key this boot used.
+  retired, removes nothing when the record has no enrollment for the key this boot used, and keeps
+  a newer key's enrollment on a fallback to an older release.
 
 Each check but the rotation's fails on a copy of the script without it.
 
-Not covered yet: updates, the first boot without a TPM or with Secure Boot off (checked by hand only,
-with swtpm), the policy key's rotation in a VM (releases signed with the next key), the PIN.
+Not covered yet: updates through nyra-updated on an encrypted disk, the first boot without a TPM or
+with Secure Boot off (checked by hand only, with swtpm), the PIN.
 
 ## TPM2 unlock: the signed PCR policy
 

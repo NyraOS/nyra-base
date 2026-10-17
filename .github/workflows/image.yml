@@ -609,6 +609,17 @@ jobs:
           tools/vm/encryption-tpm.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
             "$GITHUB_STEP_SUMMARY"
 
+      # Titanic T10, the rotation of the TPM policy key (docs/BOOT.md, "Rotating the policy key"): test
+      # versions signed with policy keys made in this step (deleted once they are built), installed on
+      # their own disk for a TPM and switched between through a registry on the runner: the next key
+      # enrolled in advance, the old one removed only once the rotated release is confirmed good, a
+      # fallback before that unlocks by itself and after it asks for the recovery key, and a machine
+      # that missed a rotation asks once, then is enrolled again.
+      - name: Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        run: tools/vm/encryption-rotation.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:

@@ -573,6 +573,10 @@ Each line is something that broke or surprised us once.
   key included, on stderr: keep stderr out of the logs.
 - systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
   echoed. A test that types a secret on a console waits a moment after the prompt.
+- "Remove every enrollment for a key this boot neither uses nor carries as next" is wrong on a
+  fallback: the previous release, confirmed good, would remove the newer key's enrollment (and mark it
+  retired, so it is never enrolled again). Found while writing the rotation test in a VM; the record
+  keeps enrollments in the order they were made, and only older ones are removed.
 - **A `Type=oneshot` unit that is still running when the initrd ends fails.** initrd-cleanup's isolate
   stops it with SIGTERM, and for a oneshot only exit status 0 is a clean end (`Result=signal`). The
   console shows only "Stopped", the failed state crosses the switch to the real root, and the running

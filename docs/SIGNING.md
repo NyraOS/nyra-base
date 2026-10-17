@@ -267,7 +267,8 @@ it is made in the same signing step.
   3. **Once that release is confirmed good** (its boot completes, as boot counting confirms it), the
      enrollment of the old key is removed. Until then a fallback to the previous version still unlocks
      by itself; after it, versions signed with the old key still boot, but ask for the disk password or
-     the recovery key, and are never enrolled again.
+     the recovery key, and are never enrolled again. A fallback to the previous release that is
+     confirmed good removes nothing newer than its own key.
 
   A machine that never booted a release of one rotation before the next rotation came has neither
   enrollment and asks for the recovery key once; with a rotation a year, that is a machine off for
