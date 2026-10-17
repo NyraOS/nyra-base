@@ -42,15 +42,18 @@
 #      the system;
 #   15. the reset with that /etc/fstab; the normal boot after it runs, without those lines;
 #   16. "Nyra OS Restore earlier settings" (nyra-restore.CONF, profile 2) is in the menu between
-#      Recovery and Reset settings; the daily copy timer waits; the daily copy: /etc with every
+#      Recovery and Reset settings; the daily copy timer waits; root given a password; the daily
+#      copy: /etc with every
 #      file's owner and mode, /etc/shadow the same, the copies' directory root's (0700), nobody
-#      cannot enter it, and its size printed; then the administrator's password changed, another
+#      cannot enter it, and its size printed; then root locked again, the administrator's password
+#      changed, another
 #      administrator added, the settings broken as in boot 1; the restore entry picked for the next boot;
 #      (copies the daily timer may have made at midnight are removed before each restore entry);
 #   17. the restore entry lists the copy ("daily copy"); 1, with a power cut as it switches to the
 #      copy; 18. /etc is whole (all old or all restored);
 #   19. the copy restored, then the normal boot: the breakage gone, /etc/fstab, /etc/systemd/system
-#      and the system accounts are the copy's; the password set after the copy and the
+#      and the system accounts are the copy's; root stays locked (no password comes from a copy,
+#      not even a system account's); the password set after the copy and the
 #      administrator added after it are kept (accounts are never taken from a copy); /home kept,
 #      the previous /etc as etc.nyra-old (0700);
 #   20. /etc emptied, then a power cut; 21. the normal boot (not the reset entry): a first boot, so
@@ -228,14 +231,16 @@ copies=/var/lib/nyra/etc-copies
 only_copy="c=\"\$(cat $before/copy)\"; for x in \$(ls $copies); do test \"\$x\" = \"\$c\" || rm -rf \"$copies/\$x\"; done; ls $copies; test \"\$(ls $copies)\" = \"\$c\""
 restore_oneshot='bootctl set-oneshot nyra-restore.CONF && echo "next boot: restore entry"'
 restore_answer='\(daily copy\)(.|\n)*Type the number of the copy to restore, anything else or Control-D to boot normally: '
-pw2="$(openssl rand -hex 12)"
+pw2="$(openssl rand -hex 12)" pwroot="$(openssl rand -hex 12)"
 meta="find . -xdev -printf '%m %U %G %y %p %l\\n' | sort"
 vm --poweroff --log "$logs/serial-reset-settings-16.log" \
   --title "Reset settings 16: the restore entry before the reset entry; a copy of /etc, then accounts changed and settings broken" \
   --command "$running" \
   --command "cat /boot/loader/entries/nyra-restore.CONF; grep -qx 'profile 2' /boot/loader/entries/nyra-restore.CONF && t=\"\$(bootctl list --no-pager | sed -n 's/^ *title: //p' | grep -E '^Nyra OS (Recovery|Restore earlier settings|Reset settings)\$' | head -n 3 | paste -sd '|')\" && echo \"menu: \$t\" && test \"\$t\" = 'Nyra OS Recovery|Nyra OS Restore earlier settings|Nyra OS Reset settings'" \
   --command 'systemctl list-timers --no-pager nyra-etc-copy.timer; systemctl is-active nyra-etc-copy.timer' \
+  --command "printf 'root:%s\\n' '$pwroot' | chpasswd && passwd -S root | grep -q ' P ' && echo 'before the copy: root has a password'" \
   --command "systemctl start nyra-etc-copy.service && c=\"\$(ls $copies | grep -- '-daily\$' | sort | tail -n 1)\" && echo \$c > $before/copy && ls -la $copies && test \"\$(stat -c '%a %U' $copies)\" = '700 root' && (cd /etc && $meta) > /run/meta-etc && (cd $copies/\$c && $meta) > /run/meta-copy && diff /run/meta-etc /run/meta-copy && cmp /etc/shadow $copies/\$c/shadow && stat -c '%a %U %G %n' /etc/shadow $copies/\$c/shadow && echo 'the copy has every file with its owner and mode' && ! setpriv --reuid=65534 --regid=65534 --clear-groups ls $copies && echo 'only root can enter the copies' && echo \"nyra-space: one copy of /etc takes \$(du -sk $copies/\$c | cut -f1) KiB, \$(find $copies/\$c | wc -l) files\"" \
+  --command "grep -q '^root:\\\$' $copies/\$(cat $before/copy)/shadow && usermod -p '!*' root && passwd -S root | grep -q ' L ' && grep '^root:' /etc/shadow > $before/root-after && echo 'after the copy: root locked again (its password is still in the copy)'" \
   --command "printf 'nyra-admin:%s\\n' '$pw2' | chpasswd && grep '^nyra-admin:' /etc/shadow > $before/shadow-after && useradd -m -G sudo -s /bin/bash nyra-later && echo 'after the copy: a new password, a new administrator'" \
   --command 'echo "garbage line, not a mount" >> /etc/fstab && echo broken-line >> /etc/passwd && systemctl mask systemd-resolved.service && rm -f /etc/resolv.conf && echo junk > /etc/nyra-test-junk' \
   --command "$only_copy" \
@@ -255,6 +260,7 @@ vm --poweroff --log "$logs/serial-reset-settings-19.log" --chat-then-login --cha
   --command "$running" \
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
   --command "c=$copies/\$(cat $before/copy); f=0; for p in fstab systemd/system; do if test -e \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p; then echo \"/etc/\$p is not in the copy\"; f=1; fi; done; grep -v '^nyra-' \$c/passwd > /run/p1 && grep -v '^nyra-' /etc/passwd > /run/p2 && diff /run/p1 /run/p2 && test \$f = 0 && echo '/etc/fstab, /etc/systemd/system and the system accounts are as in the copy'" \
+  --command "grep '^root:' /etc/shadow | cmp - $before/root-after && passwd -S root | grep -q ' L ' && echo 'root stays locked: no password comes from the copy'" \
   --command "grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow-after && id -nG nyra-admin | grep -qw sudo && id -nG nyra-later | grep -qw sudo && test \"\$(grep -c '^nyra-admin:' /etc/shadow)\" = 1 && echo 'the password set after the copy and the administrator added after it are kept'" \
   --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && $state; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test -e \$s/etc.nyra-old/nyra-test-junk && echo '/home kept; the previous /etc kept as etc.nyra-old (0700)'"
 

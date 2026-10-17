@@ -16,6 +16,8 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
 NoNewPrivileges=yes
+# Root, but only what a copy with owners, modes and ACLs needs.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_FSETID
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

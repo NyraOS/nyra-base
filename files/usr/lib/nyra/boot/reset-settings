@@ -7,7 +7,8 @@
 # (the same profile; systemd-boot names the entry it started), to a copy of /etc that the user picks
 # by its date (/usr/lib/nyra/etc-copy makes them). The accounts in a copy are not used: only its
 # system accounts and groups (IDs outside 1000-59999), and only their names in its lists of group
-# members. Kept, in both cases:
+# members; and no password: those of system accounts and groups are the current ones, or locked.
+# Kept, in both cases:
 #   /etc/machine-id                    the machine's identity (journal, DHCP client ID)
 #   /etc/hostname                      its name on the network
 #   regular users (UID and primary     their lines in passwd, shadow, subuid and subgid, their own
@@ -52,8 +53,9 @@ if [ "$entry" = nyra-restore.conf ]; then
 	cat <<EOF
 
 Nyra OS: restore earlier settings.
-Everything in /etc goes back to a copy made on the date you choose. Kept: user accounts and their
-passwords, the machine ID and the host name. Files in /home are not touched.
+Everything in /etc goes back to a copy made on the date you choose. Kept as they are now: user
+accounts, every password (system accounts' too), the machine ID and the host name. Files in /home
+are not touched.
 EOF
 	n=0
 	for c in $list; do
@@ -135,7 +137,9 @@ uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
 # go, then its lines in shadow, subuid and subgid of anything that is not an account left in passwd,
 # its gshadow lines of anything that is not a group left in group, and, in the lists of group members
 # (group; administrators and members in gshadow), every name that is not an account left in passwd.
-# The current accounts are added below, as for a reset.
+# No password comes from a copy: in its passwd, the password field is "x"; in its shadow and
+# gshadow, it is the current one for the same name when the current file has exactly one well-formed
+# line for it, otherwise locked ("!*", "!"). The current accounts are added below, as for a reset.
 # only FILE passwd|group|"" FIELDS: in $new/FILE, the lines whose first field is an account in
 # $new/passwd or a group in $new/group (every line for ""), with only accounts of $new/passwd in the
 # comma lists of FIELDS ("4", "3 4").
@@ -161,6 +165,18 @@ only() {
 	cat "$new/$1.nyra-tmp" > "$new/$1"
 	rm "$new/$1.nyra-tmp"
 }
+# current_password FILE FIELDS LOCK: in $new/FILE, the password (second field) of each line becomes
+# that of the same name in the current /etc, if FILE has exactly one line for it there and that line
+# has FIELDS fields; otherwise LOCK.
+current_password() {
+	[ -f "$new/$1" ] || return 0
+	awk -F: -v OFS=: -v nf="$2" -v lock="$3" '
+		FILENAME == ARGV[1] { n[$1]++; if (NF == nf) p[$1] = $2; next }
+		NF >= 2 { $2 = (n[$1] == 1 && ($1 in p)) ? p[$1] : lock }
+		{ print }' "$(or_null "$old/$1")" "$new/$1" > "$new/$1.nyra-tmp"
+	cat "$new/$1.nyra-tmp" > "$new/$1"
+	rm "$new/$1.nyra-tmp"
+}
 if [ "$src" != "$image/etc" ]; then
 	for f in passwd group; do
 		[ -f "$new/$f" ] || continue
@@ -173,6 +189,11 @@ if [ "$src" != "$image/etc" ]; then
 	only subgid passwd ""
 	only group "" 4
 	only gshadow group "3 4"
+	awk -F: -v OFS=: 'NF >= 2 { $2 = "x" } { print }' "$new/passwd" > "$new/passwd.nyra-tmp"
+	cat "$new/passwd.nyra-tmp" > "$new/passwd"
+	rm "$new/passwd.nyra-tmp"
+	current_password shadow 9 '!*'
+	current_password gshadow 4 '!'
 fi
 
 # The line of NAME in FILE (exact match of the first field).

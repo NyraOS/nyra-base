@@ -888,6 +888,12 @@ reset (above), with the copy in place of the image's `/etc`:
   names of those system accounts. A password changed since the copy, an account added or removed
   since, an administrator added or demoted since: all stay as they are now. `/home` and `/var` are not
   touched, the copies neither.
+- **Passwords, system accounts' included, stay the current ones.** No password comes from a copy: in
+  its `passwd` the password field becomes `x`; in its `shadow` and `gshadow` it becomes the current
+  one for the same name when the current file has exactly one well-formed line for it, otherwise the
+  account or group is locked (`!*`, `!`). A root password removed since the copy, a second UID 0
+  account deleted since, or a system group's password do not come back with their old passwords;
+  with a broken or missing current `shadow`, root stays locked, as in the image.
 - **Atomic:** the same marker, the same `mv --exchange` and the same handling of an interrupted run
   as the reset, so a power cut leaves either the whole old `/etc` or the whole copy. The previous
   `/etc` is kept as `etc.nyra-old` (`0700`), and the machine restarts into the normal boot.
@@ -899,18 +905,24 @@ reset (above), with the copy in place of the image's `/etc`:
   profile, so `ci/uki-cmdline.txt`, the PCR 11 policy and their tests are unchanged.
 - **Another system version's `/etc`.** A copy made before an update holds the previous version's
   defaults; restored on the new version, files the update changed in `/etc` go back to how they were
-  then. Nyra keeps its defaults in `/usr`, so `/etc` holds little of them.
+  then (Debian's files there, such as the AppArmor profiles in `/etc/apparmor.d` or PAM's). bootc's
+  three-way merge then counts them as the user's changes, so they stay in their old form at the
+  following updates too, until a reset. Nyra keeps its defaults in `/usr`, so `/etc` holds little of
+  them.
 
 The entry is just as reachable from the keyboard as the reset, and what a copy brings back is limited
-to what `/etc` held in the last 30 days: settings, not accounts or passwords.
+to what `/etc` held in the last 30 days: settings, not accounts or passwords. Those settings include
+access rights: a restore brings back access rights revoked in the last 30 days (`sudoers.d`, polkit
+rules, PAM, an autologin drop-in, SSH host keys). The copies also keep old secrets from `/etc` (old
+password hashes, Wi-Fi keys) for up to 30 days, readable only by root.
 
 CI (`tools/vm/reset-settings.sh`, boots 16-19): the restore entry is in the menu between Recovery and
 Reset settings, with `profile 2`; the daily timer waits; the daily copy has every file of `/etc` with
 its owner and mode and the same `/etc/shadow`, and only root can enter the copies; after the copy the
 administrator's password changes, another administrator is added and the settings break as in boot 1.
 The restore entry lists the copy; a power cut as it switches leaves `/etc` whole; the restore then
-brings back the copy's `/etc/fstab`, `/etc/systemd/system` and system accounts, keeps the new password
-and the new administrator, `/home`, and the previous `/etc` as `etc.nyra-old`. The copy before an
+brings back the copy's `/etc/fstab`, `/etc/systemd/system` and system accounts, keeps root locked
+(it had a password when the copy was made), the new password and the new administrator, `/home`, and the previous `/etc` as `etc.nyra-old`. The copy before an
 update: `tools/vm/updates.sh`, boot 5. Titanic T8 restores a copy after each breakage.
 
 ## Mounts from /etc/fstab
