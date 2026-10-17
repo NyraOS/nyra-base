@@ -164,13 +164,14 @@ RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
 RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
     ln -s ../nyra-updated.timer ../nyra-etc-copy.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
-    ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
+    ln -s ../nyra-health-system.service ../nyra-health-bootc.service ../nyra-health-network.service \
+      boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-etc-copy.service nyra-etc-copy.timer \
-      nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
+      nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service nyra-health-network.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
-    test -x /usr/lib/nyra/health/notice && /usr/libexec/nyra-updated check-config && \
+    test -x /usr/lib/nyra/health/notice && test -x /usr/lib/nyra/health/network && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf
 
 # keyutils without its request-key upcall (mkosi/mkosi.conf, RemoveFiles=): only keyctl.
