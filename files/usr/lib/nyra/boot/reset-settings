@@ -5,9 +5,11 @@
 # version's /etc (bootc keeps it in /sysroot/state/deploy/<digest>/etc and bind-mounts it on /etc)
 # goes back to the /etc in the image, or, from the boot entry "Nyra OS Restore earlier settings"
 # (the same profile; systemd-boot names the entry it started), to a copy of /etc that the user picks
-# by its date (/usr/lib/nyra/etc-copy makes them). The accounts in a copy are not used: only its
-# system accounts and groups (IDs outside 1000-59999), and only their names in its lists of group
-# members; and no password: those of system accounts and groups are the current ones, or locked.
+# by its date (/usr/lib/nyra/etc-copy makes them), laid over the /etc in the image: a copy holds
+# only what differed from the image's /etc then, and the list of what was removed. The accounts in
+# a copy are not used: only its system accounts and groups (IDs outside 1000-59999), and only their
+# names in its lists of group members; and no password: those of system accounts and groups are the
+# current ones, or locked.
 # Kept, in both cases:
 #   /etc/machine-id                    the machine's identity (journal, DHCP client ID)
 #   /etc/hostname                      its name on the network
@@ -25,7 +27,7 @@
 # to it, until the next reset or restore replaces it or bootc removes this version.
 set -eu
 trap '' INT QUIT TSTP
-# Files this script makes are for root only (the marker, the temporary copies of group and gshadow);
+# Files this script makes are for root only (the marker, the account files' temporary copy);
 # the new /etc gets the image's modes, and the kept files below get theirs explicitly.
 umask 077
 # /usr/bin/awk is a Debian alternatives link through /etc/alternatives, which the broken (or empty)
@@ -44,8 +46,10 @@ fi
 
 src=""
 if [ "$entry" = nyra-restore.conf ]; then
-	# Newest first, numbered from 1.
-	list="$(find "$copies" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update)$' | sort -r || true)"
+	# Newest first, numbered from 1. Only complete copies (etc-copy renames one once it is) in the
+	# format laid over the image (with the list of what was removed).
+	list="$(find "$copies" -mindepth 2 -maxdepth 2 -name removed -type f -printf '%P\n' 2>/dev/null | sed 's|/removed$||' |
+		grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update|rollback)$' | sort -r || true)"
 	if [ -z "$list" ]; then
 		echo "Nyra OS: there is no copy of the system settings yet. Continuing the normal boot."
 		exec systemctl --job-mode=fail --no-block default
@@ -53,15 +57,19 @@ if [ "$entry" = nyra-restore.conf ]; then
 	cat <<EOF
 
 Nyra OS: restore earlier settings.
-Everything in /etc goes back to a copy made on the date you choose. Kept as they are now: user
-accounts, every password (system accounts' too), the machine ID and the host name. Files in /home
-are not touched.
+What was changed in /etc goes back to how it was on the date you choose; the rest is this system
+version's defaults. Kept as they are now: user accounts, every password (system accounts' too), the
+machine ID and the host name. Files in /home are not touched.
 EOF
 	n=0
 	for c in $list; do
 		n=$((n + 1))
 		when="$(date -d "${c%Z-*}Z" '+%a %e %b %Y, %H:%M %Z' 2>/dev/null || echo "${c%-*}")"
-		case "$c" in *-update) why="before an update" ;; *) why="daily copy" ;; esac
+		case "$c" in
+		*-update) why="before an update" ;;
+		*-rollback) why="before a version change" ;;
+		*) why="daily copy" ;;
+		esac
 		printf '%4d  %s (%s)\n' "$n" "$when" "$why"
 	done
 	printf 'Type the number of the copy to restore, anything else or Control-D to boot normally: '
@@ -73,11 +81,6 @@ EOF
 	esac
 	if [ -z "$src" ]; then
 		echo "Nothing changed. Continuing the normal boot."
-		exec systemctl --job-mode=fail --no-block default
-	fi
-	# Its system accounts are needed (and read below): a copy without them is not restored.
-	if [ ! -f "$copies/$src/passwd" ]; then
-		echo "This copy has no /etc/passwd and cannot be restored. Nothing changed. Continuing the normal boot."
 		exec systemctl --job-mode=fail --no-block default
 	fi
 	echo "reset-settings: restoring the copy $src"
@@ -100,6 +103,8 @@ fi
 
 old="$state/etc" new="$state/etc.nyra-new" prev="$state/etc.nyra-old" image=/run/nyra-image-root
 tmp="$state/etc.nyra-tmp"
+# The account files' temporary copy, outside the new /etc: a link in a restored copy cannot catch it.
+scratch="$state/etc.nyra-scratch"
 mount -o remount,rw /sysroot
 # Every /etc a reset builds carries the marker .nyra-reset-new until it is in place; it is made in
 # etc.nyra-tmp and only renamed to etc.nyra-new with the marker inside, so an etc.nyra-new a reset
@@ -120,22 +125,38 @@ if [ -d "$new" ]; then
 fi
 
 echo "reset-settings: building the new /etc"
-if [ -z "$src" ]; then
-	# The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
-	mkdir -p "$image"
-	mount --bind / "$image"
-	mount -o remount,bind,ro "$image"
-	src="$image/etc"
-fi
+# The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
+mkdir -p "$image"
+mount --bind / "$image"
+mount -o remount,bind,ro "$image"
 mkdir -m 0700 "$tmp"
 echo "reset-settings: preparing the new /etc"
 : > "$tmp/.nyra-reset-new"
 sync
 mv -T "$tmp" "$new"
-cp -a "$src/." "$new/"
-chmod --reference="$src" "$new"
-chown --reference="$src" "$new"
-if [ "$src" = "$image/etc" ]; then umount "$image"; fi
+cp -a "$image/etc/." "$new/"
+chmod --reference="$image/etc" "$new"
+chown --reference="$image/etc" "$new"
+umount "$image"
+if [ -n "$src" ]; then
+	# What the copy lists as removed goes, then what it holds replaces what is at the same path.
+	/usr/lib/nyra/etc-copy apply "$src" "$new"
+	# Its system accounts are needed (and read below), and the account files are rewritten in place,
+	# which a link would lead outside: a copy without /etc/passwd, or with an account file that is
+	# not a regular file, is not restored.
+	ok=yes
+	[ -f "$new/passwd" ] || ok=no
+	for f in passwd shadow group gshadow subuid subgid; do
+		if [ -L "$new/$f" ] || { [ -e "$new/$f" ] && [ ! -f "$new/$f" ]; }; then ok=no; fi
+	done
+	if [ "$ok" = no ]; then
+		rm -rf "$new"
+		sync
+		mount -o remount,ro /sysroot || true
+		echo "This copy cannot be restored: its account files (/etc/passwd and the others) are missing or not plain files. Nothing changed. Continuing the normal boot."
+		exec systemctl --job-mode=fail --no-block default
+	fi
+fi
 
 uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
 # A copy's accounts are not used (the image has none): its regular users and groups (ID 1000-59999)
@@ -166,9 +187,9 @@ only() {
 				$f[i] = l
 			}
 			print
-		}' "$(or_null "$new/passwd")" $keys "$new/$1" > "$new/$1.nyra-tmp"
-	cat "$new/$1.nyra-tmp" > "$new/$1"
-	rm "$new/$1.nyra-tmp"
+		}' "$(or_null "$new/passwd")" $keys "$new/$1" > "$scratch"
+	cat "$scratch" > "$new/$1"
+	rm "$scratch"
 }
 # current_password FILE FIELDS LOCK: in $new/FILE, the password (second field) of each line becomes
 # that of the same name in the current /etc, if FILE has exactly one line for it there and that line
@@ -178,25 +199,25 @@ current_password() {
 	awk -F: -v OFS=: -v nf="$2" -v lock="$3" '
 		FILENAME == ARGV[1] { n[$1]++; if (NF == nf) p[$1] = $2; next }
 		NF >= 2 { $2 = (n[$1] == 1 && ($1 in p)) ? p[$1] : lock }
-		{ print }' "$(or_null "$old/$1")" "$new/$1" > "$new/$1.nyra-tmp"
-	cat "$new/$1.nyra-tmp" > "$new/$1"
-	rm "$new/$1.nyra-tmp"
+		{ print }' "$(or_null "$old/$1")" "$new/$1" > "$scratch"
+	cat "$scratch" > "$new/$1"
+	rm "$scratch"
 }
-if [ "$src" != "$image/etc" ]; then
+if [ -n "$src" ]; then
 	for f in passwd group; do
 		[ -f "$new/$f" ] || continue
-		awk -F: "!($uid_ok)" "$new/$f" > "$new/$f.nyra-tmp"
-		cat "$new/$f.nyra-tmp" > "$new/$f"
-		rm "$new/$f.nyra-tmp"
+		awk -F: "!($uid_ok)" "$new/$f" > "$scratch"
+		cat "$scratch" > "$new/$f"
+		rm "$scratch"
 	done
 	only shadow passwd ""
 	only subuid passwd ""
 	only subgid passwd ""
 	only group "" 4
 	only gshadow group "3 4"
-	awk -F: -v OFS=: 'NF >= 2 { $2 = "x" } { print }' "$new/passwd" > "$new/passwd.nyra-tmp"
-	cat "$new/passwd.nyra-tmp" > "$new/passwd"
-	rm "$new/passwd.nyra-tmp"
+	awk -F: -v OFS=: 'NF >= 2 { $2 = "x" } { print }' "$new/passwd" > "$scratch"
+	cat "$scratch" > "$new/passwd"
+	rm "$scratch"
 	current_password shadow 9 '!*'
 	current_password gshadow 4 '!'
 fi
@@ -253,9 +274,9 @@ for f in group gshadow; do
 				if (index(users, " " m[i] " ") && index("," $4 ",", "," m[i] ",") == 0)
 					$4 = ($4 == "" ? m[i] : $4 "," m[i])
 		}
-		{ print }' "$old/$f" "$new/$f" > "$new/$f.nyra-tmp"
-	cat "$new/$f.nyra-tmp" > "$new/$f"
-	rm "$new/$f.nyra-tmp"
+		{ print }' "$old/$f" "$new/$f" > "$scratch"
+	cat "$scratch" > "$new/$f"
+	rm "$scratch"
 done
 
 sync

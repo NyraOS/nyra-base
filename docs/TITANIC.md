@@ -175,7 +175,8 @@ the image's:
 | 9 | that boot: `RESET`, then the normal boot | `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; healthy (below) |
 
 **Repaired** means: `/etc/fstab`, `/etc/passwd` (but the user's line, which comes from the current
-`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the copy's; and
+`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are as in `/etc` when
+the copy was made (the copy holds only what differed from the image; the rest is the image's); and
 **healthy**: running; the user logs in with their password, a wrong one is refused; the network
 works; the basic services are active (journald, D-Bus, logind, networkd, resolved, ntpd-rs, the
 firewall, AppArmor, the update timer); Secure Boot and the lockdown on.
