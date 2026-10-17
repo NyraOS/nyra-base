@@ -16,6 +16,7 @@ it is something the user switches on, not off), and how CI proves it.
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
 signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
@@ -255,3 +256,25 @@ For developer tools, use apt in a Distrobox container: distrobox create, then di
 The message is help, not the protection: `/usr` stays read-only for dpkg itself too. Titanic T12
 (docs/TITANIC.md) checks both: the message from all three commands, and "Read-only file system" from
 `/usr/lib/nyra/dpkg -i`, with `/usr` unchanged.
+
+## Rust components
+
+Some of Debian's tools are replaced with rewrites in Rust, where the rewrite does what the base
+needs. Each was tried against the scripts and tests of the base; what failed stays Debian's, with
+the reason below.
+
+### su
+
+`su` is the one from [sudo-rs](https://github.com/trifectatechfoundation/sudo-rs) (Debian's
+`sudo-rs` package), moved to `/usr/bin/su` over util-linux's and setuid root like it (the package's
+script sets the mode; `ci/setuid.txt` still lists `/usr/bin/su`). The rest of the package goes in
+the Containerfile: there is no `sudo`, `sudoedit` or `visudo` on the desktop. It uses the same PAM
+services as util-linux's (`/etc/pam.d/su`, and `su-l` for a login shell).
+
+Two differences matter for the base, both handled in recovery (docs/BOOT.md, "Recovery"):
+- sudo-rs asks for the password up to three times; recovery reads it once itself and gives it to `su`
+  on its input, so a wrong one is one try, as before.
+- sudo-rs refuses to run for a calling user it cannot look up ("user 'current user' not found"),
+  where util-linux's ran as UID 65534 without a `nobody` line in `/etc/passwd`. Recovery therefore
+  runs `su` as the administrator who logs in, by UID, instead of `nobody`.
+

@@ -196,8 +196,8 @@ shell: on boots 3 and 7 it failed, on the line that is not an account (its journ
 others, the normal boots after the restores and the reset included, it ran and succeeded. A failure anywhere else, or for
 another reason, fails the test; `systemctl --failed` is not filtered.
 
-The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
-such account) so that it has to ask; the network check is a file served by the runner, which the guest
+The password check is `su` through PAM, run as the user who logs in (by UID: sudo-rs's `su` refuses
+to run for a user it cannot look up, and the broken `/etc/passwd` has no `nobody`) so that it has to ask; the network check is a file served by the runner, which the guest
 reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
 the state `/etc`, through a bind mount of `/` alone.
 

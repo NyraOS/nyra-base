@@ -70,6 +70,14 @@ RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/ny
 # user adds rules in /etc/udev/hwdb.d.
 RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /etc/udev/hwdb.bin
 
+# su from sudo-rs (docs/DEFAULTS.md, "su") in place of util-linux's, setuid root like it (its package
+# script set the mode). Nothing else of sudo-rs stays: no sudo, sudoedit or visudo on the desktop.
+RUN test "$(stat -c '%a %U %G' /usr/lib/cargo/bin/su)" = '4755 root root' && test -f /etc/pam.d/su && \
+    mv -f /usr/lib/cargo/bin/su /usr/bin/su && \
+    rm /usr/lib/cargo/bin/sudo /usr/lib/cargo/bin/visudo /usr/bin/su-rs /usr/bin/sudo-rs /usr/bin/sudoedit-rs \
+      /usr/bin/visudo-rs && rmdir /etc/sudoers.d && \
+    su --version 2>&1 | grep -q '^su-rs ' && ! command -v sudo && ! command -v sudoedit && ! command -v visudo
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password

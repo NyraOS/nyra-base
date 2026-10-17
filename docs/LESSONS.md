@@ -382,6 +382,13 @@ Each line is something that broke or surprised us once.
 - chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
   resolves to another address starts with a new key exchange.
 
+## Rust components (docs/DEFAULTS.md)
+
+- sudo-rs's `su` (0.2.15) asks for the password up to three times, also when its input is not a
+  terminal; with the password on its input and nothing after it, the second read ends the attempt.
+  It also refuses a calling UID that has no `/etc/passwd` line ("user 'current user' not found"),
+  where util-linux's `su` only needs the target account.
+
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
   `bootc container ukify` (it needs `ukify` in the image: `systemd-ukify`). A UKI in

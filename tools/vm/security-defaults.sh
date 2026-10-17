@@ -103,6 +103,9 @@ filesystems='modprobe --showconfig | grep -x "blacklist f2fs" && ! modprobe --sh
 # it writable, in a mount namespace of its own).
 esp='m="$(findmnt -rn -t vfat -o TARGET,OPTIONS)"; echo "$m"; e="$(touch /boot/nyra-probe 2>&1)"; echo "touch: $e"; test "$(echo "$m" | wc -l)" = 1 && test "${m%% *}" = /boot && echo "${m#* }" | tr , "\n" | grep -qx ro && test -f /boot/EFI/BOOT/BOOTX64.EFI && echo "$e" | grep -q "Read-only file system" && test ! -e /boot/nyra-probe && echo "the ESP is read-only at /boot"'
 
+# Rust components (docs/DEFAULTS.md): su is sudo-rs's, setuid root, and there is no sudo.
+rust='su --version 2>&1 | grep "^su-rs " && test "$(stat -c "%a %U" /usr/bin/su)" = "4755 root" && ! command -v sudo && echo "su: sudo-rs, setuid root; no sudo"'
+
 python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
@@ -117,4 +120,5 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$filesystems" \
   --command "$time_client" \
   --command "$time_switch" \
-  --command "$esp"
+  --command "$esp" \
+  --command "$rust"
