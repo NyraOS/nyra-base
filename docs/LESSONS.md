@@ -338,10 +338,10 @@ Each line is something that broke or surprised us once.
   about 3 MiB to tens of KiB.
 - **Comparing two files with their ACLs and extended attributes without `getfattr`:** archive each as
   a one-member tar (`--no-recursion --format=posix --numeric-owner --acls --xattrs
-  --xattrs-include='*' --mtime=@0`) and compare the bytes. Two settings make equal files give equal
-  archives: `--pax-option=delete=atime,delete=ctime`, and `exthdr.name=%d/PaxHeaders/%f`, since the
-  default extended header name holds tar's PID. In GNU tar 1.35, `--xattrs-include` alone already
-  turns on `--xattrs`.
+  --xattrs-include='*' --mtime=@0 --pax-option=delete=atime,delete=ctime`) and compare the bytes:
+  without the `delete`, equal files give different archives. Older GNU tars put their PID in the
+  extended header name (`PaxHeaders.<pid>`); 1.35's default, `%d/PaxHeaders/%f`, does not. In GNU
+  tar 1.35, `--xattrs-include` alone already turns on `--xattrs`.
 - **GNU `cp -a` writes a file through a link at the destination** (it refuses only a dangling link,
   and a directory over a link), and `cp -a SRC/. DST/` gives an existing `DST` directory (and every
   existing directory under it) the source's mode and owner. Laying one tree over another therefore

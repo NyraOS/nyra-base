@@ -931,7 +931,9 @@ later; nothing here depends on it.
     entries that are as in the image are then removed from that copy, so all of it is `/etc` at one
     moment. Two entries are compared as one-member tar archives of each (`--numeric-owner --acls
     --xattrs`, times left out): the image has no `getfattr` or `getfacl`, and tar compares
-    everything a copy keeps.
+    everything a copy keeps. An entry under a link in the image's `/etc` (such as a link to a
+    directory in `/usr/share` that the user replaced with a directory) is always kept: tar would
+    compare it with what the link leads to, which a restore does not have.
   - `removed`: the paths of the image's `/etc` that `/etc` did not have, one per NUL byte, so that
     a file or directory the user deleted stays deleted after a restore.
 
@@ -983,10 +985,13 @@ everything works as the reset (above), with the copy laid over the image's `/etc
 - **Laid over the running version's defaults:** the new `/etc` starts as the image's `/etc`, as for
   the reset. The paths in `removed` go, then every entry of the copy replaces what is at its path
   (where both are directories, their contents merge and the copy's owner and mode apply). A path is
-  removed only when every directory on the way to it is a directory of the new `/etc`, not a link,
-  and whatever the copy replaces is removed before it is copied, parents first: a link in the
-  image's `/etc` that points outside it is replaced, never written through. A copy whose result has
-  no `/etc/passwd` is not restored (nothing changes; the normal boot continues).
+  removed only when it is a plain relative path (no `..`, `.`, empty name or trailing slash) and
+  every directory on the way to it is a directory of the new `/etc`, not a link, and whatever the
+  copy replaces is removed before it is copied, parents first: a link in the image's `/etc` that
+  points outside it is replaced, never written through. A copy whose result has no `/etc/passwd`, or
+  has one of `passwd`, `shadow`, `group`, `gshadow`, `subuid` and `subgid` that is not a regular
+  file (the restore rewrites them in place, through a temporary file outside the new `/etc`), is not
+  restored (nothing changes, `/sysroot` is read-only again, and the normal boot continues).
 
 - **Kept from the current `/etc`, never from the copy:** the regular users (their lines in `passwd`,
   `shadow`, `subuid` and `subgid`, their groups and their membership in the system groups, `sudo`

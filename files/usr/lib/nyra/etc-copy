@@ -59,8 +59,7 @@ to_remove() {
 # they are the same for a copy.
 entry() {
 	tar -C "$1" --create --file=- --no-recursion --format=posix --numeric-owner --acls --xattrs \
-		--xattrs-include='*' --mtime=@0 \
-		--pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' -- "$2" 2>/dev/null
+		--xattrs-include='*' --mtime=@0 --pax-option=delete=atime,delete=ctime -- "$2" 2>/dev/null
 }
 
 # make_copy IMAGE ETC COPY
@@ -112,10 +111,13 @@ removed)
 	;;
 prune)
 	# prune IMAGE COPY PATH...: the PATHs (of COPY/etc) that are as in IMAGE go; a directory only
-	# once empty.
+	# once empty. A PATH stays when a directory on the way to it in IMAGE is a link: tar would
+	# compare with what the link leads to, which the restore does not have.
 	i="$2" c="$3"
 	shift 3
 	for p; do
+		d="$(dirname -- "$p")"
+		[ "$d" = . ] || [ "$(realpath -e -- "$i/$d" 2>/dev/null)" = "$i/${d#./}" ] || continue
 		# Not in the image (or not read there): it stays.
 		entry "$i" "$p" > "$c/.entry" || continue
 		if entry "$c/etc" "$p" | cmp -s - "$c/.entry"; then
@@ -135,7 +137,9 @@ unlink)
 	n="$2"
 	shift 2
 	for p; do
-		case "/$p/" in */../* | */./* | //*) continue ;; esac
+		# Only plain relative paths: no "..", ".", empty name or trailing slash (rm -rf would
+		# follow a link named with one).
+		case "/$p/" in */../* | */./* | *//*) continue ;; esac
 		d="$(dirname -- "$p")"
 		if [ "$d" = . ] || [ "$(realpath -e -- "$n/$d" 2>/dev/null)" = "$n/$d" ]; then
 			rm -rf -- "${n:?}/$p"

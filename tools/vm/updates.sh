@@ -381,7 +381,7 @@ vm "v1 after the power cut: v2 staged again; power cut before finalization" --po
 
 vm "v1 after the power cut: v2 staged again, after a copy of /etc" --poweroff \
   --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\""
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\""
 
 vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 
@@ -428,7 +428,7 @@ vm "v5: hostile network, downgrade, replay; soft reboot into v6" --poweroff \
 vm "v6, first full boot: retraction below the floor refused; retraction to v5 by bootc rollback" --poweroff \
   --command "$lib; expect booted $d6 && running && blessed" \
   --command "$lib; refused floor 'below the version floor'" \
-  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$'); outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$') && echo \"copies of /etc made before a rollback: \$n, then \$m\" && test \"\$m\" -gt \"\$n\"" \
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$'); outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$') && echo \"copies of /etc made before a rollback: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-rollback\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\"" \
   --command "$lib; outcome retract6 WaitingForReboot && expect rollback $d5 && test \"\$(queued)\" = true" \
   --command 'bootc status --format json'
 

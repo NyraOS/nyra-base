@@ -27,7 +27,7 @@
 # to it, until the next reset or restore replaces it or bootc removes this version.
 set -eu
 trap '' INT QUIT TSTP
-# Files this script makes are for root only (the marker, the temporary copies of group and gshadow);
+# Files this script makes are for root only (the marker, the account files' temporary copy);
 # the new /etc gets the image's modes, and the kept files below get theirs explicitly.
 umask 077
 # /usr/bin/awk is a Debian alternatives link through /etc/alternatives, which the broken (or empty)
@@ -103,6 +103,8 @@ fi
 
 old="$state/etc" new="$state/etc.nyra-new" prev="$state/etc.nyra-old" image=/run/nyra-image-root
 tmp="$state/etc.nyra-tmp"
+# The account files' temporary copy, outside the new /etc: a link in a restored copy cannot catch it.
+scratch="$state/etc.nyra-scratch"
 mount -o remount,rw /sysroot
 # Every /etc a reset builds carries the marker .nyra-reset-new until it is in place; it is made in
 # etc.nyra-tmp and only renamed to etc.nyra-new with the marker inside, so an etc.nyra-new a reset
@@ -139,11 +141,19 @@ umount "$image"
 if [ -n "$src" ]; then
 	# What the copy lists as removed goes, then what it holds replaces what is at the same path.
 	/usr/lib/nyra/etc-copy apply "$src" "$new"
-	# Its system accounts are needed (and read below): a copy without /etc/passwd is not restored.
-	if [ -L "$new/passwd" ] || [ ! -f "$new/passwd" ]; then
+	# Its system accounts are needed (and read below), and the account files are rewritten in place,
+	# which a link would lead outside: a copy without /etc/passwd, or with an account file that is
+	# not a regular file, is not restored.
+	ok=yes
+	[ -f "$new/passwd" ] || ok=no
+	for f in passwd shadow group gshadow subuid subgid; do
+		if [ -L "$new/$f" ] || { [ -e "$new/$f" ] && [ ! -f "$new/$f" ]; }; then ok=no; fi
+	done
+	if [ "$ok" = no ]; then
 		rm -rf "$new"
 		sync
-		echo "This copy has no /etc/passwd and cannot be restored. Nothing changed. Continuing the normal boot."
+		mount -o remount,ro /sysroot || true
+		echo "This copy cannot be restored: its account files (/etc/passwd and the others) are missing or not plain files. Nothing changed. Continuing the normal boot."
 		exec systemctl --job-mode=fail --no-block default
 	fi
 fi
@@ -177,9 +187,9 @@ only() {
 				$f[i] = l
 			}
 			print
-		}' "$(or_null "$new/passwd")" $keys "$new/$1" > "$new/$1.nyra-tmp"
-	cat "$new/$1.nyra-tmp" > "$new/$1"
-	rm "$new/$1.nyra-tmp"
+		}' "$(or_null "$new/passwd")" $keys "$new/$1" > "$scratch"
+	cat "$scratch" > "$new/$1"
+	rm "$scratch"
 }
 # current_password FILE FIELDS LOCK: in $new/FILE, the password (second field) of each line becomes
 # that of the same name in the current /etc, if FILE has exactly one line for it there and that line
@@ -189,25 +199,25 @@ current_password() {
 	awk -F: -v OFS=: -v nf="$2" -v lock="$3" '
 		FILENAME == ARGV[1] { n[$1]++; if (NF == nf) p[$1] = $2; next }
 		NF >= 2 { $2 = (n[$1] == 1 && ($1 in p)) ? p[$1] : lock }
-		{ print }' "$(or_null "$old/$1")" "$new/$1" > "$new/$1.nyra-tmp"
-	cat "$new/$1.nyra-tmp" > "$new/$1"
-	rm "$new/$1.nyra-tmp"
+		{ print }' "$(or_null "$old/$1")" "$new/$1" > "$scratch"
+	cat "$scratch" > "$new/$1"
+	rm "$scratch"
 }
 if [ -n "$src" ]; then
 	for f in passwd group; do
 		[ -f "$new/$f" ] || continue
-		awk -F: "!($uid_ok)" "$new/$f" > "$new/$f.nyra-tmp"
-		cat "$new/$f.nyra-tmp" > "$new/$f"
-		rm "$new/$f.nyra-tmp"
+		awk -F: "!($uid_ok)" "$new/$f" > "$scratch"
+		cat "$scratch" > "$new/$f"
+		rm "$scratch"
 	done
 	only shadow passwd ""
 	only subuid passwd ""
 	only subgid passwd ""
 	only group "" 4
 	only gshadow group "3 4"
-	awk -F: -v OFS=: 'NF >= 2 { $2 = "x" } { print }' "$new/passwd" > "$new/passwd.nyra-tmp"
-	cat "$new/passwd.nyra-tmp" > "$new/passwd"
-	rm "$new/passwd.nyra-tmp"
+	awk -F: -v OFS=: 'NF >= 2 { $2 = "x" } { print }' "$new/passwd" > "$scratch"
+	cat "$scratch" > "$new/passwd"
+	rm "$scratch"
 	current_password shadow 9 '!*'
 	current_password gshadow 4 '!'
 fi
@@ -264,9 +274,9 @@ for f in group gshadow; do
 				if (index(users, " " m[i] " ") && index("," $4 ",", "," m[i] ",") == 0)
 					$4 = ($4 == "" ? m[i] : $4 "," m[i])
 		}
-		{ print }' "$old/$f" "$new/$f" > "$new/$f.nyra-tmp"
-	cat "$new/$f.nyra-tmp" > "$new/$f"
-	rm "$new/$f.nyra-tmp"
+		{ print }' "$old/$f" "$new/$f" > "$scratch"
+	cat "$scratch" > "$new/$f"
+	rm "$scratch"
 done
 
 sync

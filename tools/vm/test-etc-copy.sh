@@ -8,13 +8,15 @@
 #      /etc, the user's /etc made from it (a file edited; others with another mode, owner, ACL or
 #      extended attribute; a file and a directory removed; a directory turned into a file and a file
 #      into a directory; a link pointed elsewhere; a new setgid directory; a new file in a directory
-#      of the image; a name with a space and a newline), and a newer image's /etc (a default changed,
-#      one added, two directories turned into links to directories outside it, the edited file into
-#      a link to a file outside it). The copy holds only
+#      of the image; a name with a space and a newline; the image's link to a directory outside
+#      turned into a directory with the same file and one of the user's), and a newer image's /etc (a
+#      default changed, one added, two directories turned into links to directories outside it, the
+#      edited file into a link to a file outside it). The copy holds only
 #      what differs and lists what was removed; laid over the newer image, it gives that image's
 #      defaults plus exactly the user's changes, with every owner, mode, ACL and extended attribute,
 #      and writes nothing outside through those links. A copy of an unchanged /etc gives the newer
-#      image as it is, and a copy with the image's /etc as /etc itself is refused.
+#      image as it is, and a copy with the image's /etc as /etc itself is refused. A list of what was
+#      removed that names links with a trailing slash removes nothing through them.
 #      Each check of etc-copy is proven: the same case run on a copy of the script without it fails.
 #      Needs root, with any user and group IDs (sudo, or podman unshare), and python3 (to set and read
 #      an ACL and extended attributes).
@@ -133,13 +135,15 @@ EOF
 }
 
 # The trees, in $t/w: old (an older image's /etc), live (the user's /etc on it), new (a newer
-# image's /etc), outside and outside2 (directories outside /etc that new links to).
+# image's /etc), outside and outside2 (directories outside /etc that new links to), shared (a
+# directory outside /etc that old and new link to, as to /usr/share).
 build() {
   local w="$t/w"
   rm -rf --one-file-system -- "$w"
-  mkdir -p "$w/old" "$w/outside" "$w/outside2"
+  mkdir -p "$w/old" "$w/outside" "$w/outside2" "$w/shared"
   echo kept > "$w/outside2/x"
   echo kept > "$w/outside/file"
+  echo x > "$w/shared/x"
   (
     cd "$w/old"
     chmod 0755 .
@@ -152,6 +156,7 @@ build() {
     echo cfg > ssh/ssh_config
     echo x > escape2/x
     echo u > unchanged/deep/file
+    ln -s "$w/shared" linkdir
   )
   cp -a "$w/old" "$w/live"
   (
@@ -175,6 +180,10 @@ build() {
     echo u > escape/user.conf
     rm escape2/x
     echo n > "$nl"
+    rm linkdir
+    mkdir linkdir
+    cp -a "$w/shared/x" linkdir/
+    echo mine > linkdir/mine
   )
   cp -a "$w/old" "$w/new"
   (
@@ -190,7 +199,7 @@ build() {
   cp -a "$w/new" "$w/expect"
   (
     cd "$w/expect"
-    for p in edited.conf mode.conf owner.conf acl.conf xattr.conf dir2file file2dir link.conf sgid ssh/user_key "$nl"; do
+    for p in edited.conf mode.conf owner.conf acl.conf xattr.conf dir2file file2dir link.conf sgid ssh/user_key "$nl" linkdir; do
       rm -rf -- "$p"
       cp -a "$w/live/$p" "$p"
     done
@@ -201,29 +210,40 @@ build() {
   )
 }
 
+# outside_before, outside_same: the directories outside /etc are as they were at outside_before.
+outside_before() { for d in outside outside2 shared; do listing "$t/w/$d" meta > "$t/w/$d.before"; done; }
+outside_same() { for d in outside outside2 shared; do diff "$t/w/$d.before" <(listing "$t/w/$d" meta) || return 1; done; }
+
 # scenario SCRIPT: the copy of live over old, laid over new; prints each check, fails if one does.
 scenario() {
   local e="$1" w="$t/w" bad=0 got want
   build
   sh "$e" make "$w/old" "$w/live" "$w/copy" || { echo "FAIL: make"; return 1; }
   got="$(listing "$w/copy/etc")"
-  want="$(names . acl.conf dir2file edited.conf escape escape/user.conf file2dir file2dir/x link.conf mode.conf "$nl" \
-    owner.conf sgid sgid/f ssh ssh/user_key xattr.conf)"
+  want="$(names . acl.conf dir2file edited.conf escape escape/user.conf file2dir file2dir/x link.conf linkdir linkdir/mine \
+    linkdir/x mode.conf "$nl" owner.conf sgid sgid/f ssh ssh/user_key xattr.conf)"
   if [ "$got" = "$want" ]; then echo "ok: the copy holds only what differs from the image"; else
     echo "FAIL: the copy holds only what differs from the image"; diff <(echo "$want") <(echo "$got") || true; bad=1; fi
   got="$(removed "$w/copy")"
   want="$(names gone.conf gonedir gonedir/a dir2file/inner escape2/x)"
   if [ "$got" = "$want" ]; then echo "ok: the copy lists what the user removed"; else
     echo "FAIL: the copy lists what the user removed"; diff <(echo "$want") <(echo "$got") || true; bad=1; fi
-  listing "$w/outside" meta > "$w/outside.before"
-  listing "$w/outside2" meta > "$w/outside2.before"
+  outside_before
   if ! sh "$e" apply "$w/copy" "$w/new"; then echo "FAIL: apply"; return 1; fi
   if diff <(listing "$w/expect" meta) <(listing "$w/new" meta); then
     echo "ok: restored over a newer image: its defaults, the user's changes with their metadata, nothing removed comes back"
   else echo "FAIL: restored over a newer image"; bad=1; fi
-  if diff "$w/outside.before" <(listing "$w/outside" meta) && diff "$w/outside2.before" <(listing "$w/outside2" meta); then
+  if outside_same; then
     echo "ok: nothing written or removed outside, through links in the newer image"
   else echo "FAIL: something written or removed outside, through links in the newer image"; bad=1; fi
+  # A list of what was removed with the newer image's links to directories, ended by a slash.
+  build
+  mkdir -p "$w/copy4/etc"
+  printf 'escape/\0escape2/\0linkdir/\0' > "$w/copy4/removed"
+  outside_before
+  if sh "$e" apply "$w/copy4" "$w/new" && outside_same; then
+    echo "ok: a removed path with a trailing slash removes nothing through a link"
+  else echo "FAIL: a removed path with a trailing slash removes something through a link"; bad=1; fi
   # An unchanged /etc: the copy gives the newer image as it is.
   build
   cp -a "$w/old" "$w/same"
@@ -257,6 +277,8 @@ the comparison with the image (unchanged files kept)|s|^\t\t\t\trm -f -- "\$c/et
 ACLs and extended attributes in the comparison|s/ --acls --xattrs \\$/ \\/;s/--xattrs-include='\*' //
 the list of what was removed|s|printf '%s\\0' "\${p#./}"|:|
 removing what the list names|/xargs -0 -r sh "\$self" unlink/d
+the check of the directories on the way to a path in the image|\#realpath -e -- "\$i/\$d"#d
+the refusal of a removed path ended by a slash|s#\*//\*) continue#//*) continue#
 the check of the directories on the way to a removed path|s|if \[ "\$d" = . \] .*; then|if true; then|
 clearing what the copy replaces|/find . -mindepth 1 -exec sh "\$self" clear/d
 the check that the image's /etc is not /etc|s/ || \[ "\$(stat -L -c %d:%i -- "\$1")" = "\$(stat -L -c %d:%i -- "\$2")" \]//
