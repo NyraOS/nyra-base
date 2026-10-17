@@ -44,7 +44,7 @@ file.
 | `systemd-pcrlock-*.service` (7), `systemd-pcrlock.socket`, `systemd-sysupdate-notify-pcrlock.socket` | systemd-pcrlock writes a TPM policy (an NV index) at every boot; Nyra unlocks with the signed PCR policy instead (docs/BOOT.md, "TPM2 unlock") |
 | `systemd-sysupdate-notify-bootctl.socket` | lets `systemd-sysupdate` ask `bootctl` (as root) to link a UKI it installed into the boot menu; Nyra updates through bootc, not `systemd-sysupdate`, and only `esp-sync` and bootc write boot entries (docs/BOOT.md, "The ESP is read-only") |
 | `systemd-tpm2-clear.service` | asks the firmware to clear the TPM on `factory-reset.target`, which Nyra does not use |
-| `systemd-pcrextend.socket` | a Varlink API to extend PCRs; the phase units run the tool directly. On an encrypted root, systemd-cryptsetup calls it to measure the volume key (PCR 15) and the key slot (NvPCR), which therefore does not happen (an error line per boot; docs/BOOT.md, "Disk encryption") |
+| `systemd-pcrextend.socket` | a Varlink API to extend PCRs; the phase units run the tool directly. On an encrypted root, systemd-cryptsetup calls it to measure the volume key (PCR 15) and the key slot (NvPCR), which the image turns off instead (docs/BOOT.md, "PCR 15, not measured") |
 | `systemd-pcrmachine.service`, `systemd-pcrproduct.service`, `systemd-pcrnvdone.service`, `systemd-pcrfs-root.service` | measure the machine ID, the product ID and the root file system into PCR 15 and NvPCRs, which the Nyra policy does not use |
 | `systemd-pcrlogin@.service` (`allow-pcrlogin`) | measures each login into the NvPCR `login`; the image has no NvPCRs (see "TPM measurement units that stay") |
 | `tpm-udev.path` | TPM device permissions inside containers only |
