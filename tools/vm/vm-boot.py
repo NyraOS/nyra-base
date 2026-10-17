@@ -122,7 +122,7 @@ def clean(buf):
     return ANSI.sub(b"", KERNEL_LINE.sub(b"", buf))
 
 
-def qmp_commands(path, *commands):
+def qmp_now(path, *commands):
     """Send QMP commands (dicts) to QEMU's QMP socket, in order; each must succeed."""
     with socket.socket(socket.AF_UNIX) as s:
         for _ in range(50):
@@ -677,7 +677,7 @@ def main():
             qmp.start()
         try:
             if a.no_carrier:
-                qmp_commands(f"{tmp}/qmp.sock", {"execute": "set_link", "arguments": {"name": "net0", "up": False}},
+                qmp_now(f"{tmp}/qmp.sock", {"execute": "set_link", "arguments": {"name": "net0", "up": False}},
                     {"execute": "cont"})
                 rows.append(("Network", "no carrier: the NIC's link down from the start"))
             if a.expect_reboot:
