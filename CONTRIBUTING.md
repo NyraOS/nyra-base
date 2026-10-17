@@ -8,6 +8,11 @@ strict but short.
   Every change to the base is reviewed before it is merged (`.github/CODEOWNERS`).
 - **One change per pull request**, small and with a clear reason. Prefer the simplest solution that
   works; no options or abstractions "for later".
+- **Code rules** (for everyone, people and agents alike; reviews check them):
+  - **Rust:** the code must be easy to read, without needless complication. A reader who knows
+    Rust understands a function without jumping through five files; names say what a thing is;
+    generics, traits, macros or `unsafe` only when really needed, with the reason written next to
+    them; plain code instead of an abstraction used once; comments say why, not what.
 - **Never weaken or skip a test to make it pass.** A flaky test is a bug: fix it or report it.
 - **No secrets.** No keys, tokens or passwords in the repository, its history or CI logs; gitleaks
   scans every push. Test keys are generated in CI and deleted at the end (`tools/vm/secure-boot.sh`).
