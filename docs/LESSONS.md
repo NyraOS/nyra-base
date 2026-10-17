@@ -320,6 +320,10 @@ Each line is something that broke or surprised us once.
 - systemd-boot orders entries by `sort-key` first: numbered keys (`nyra-1-recovery`,
   `nyra-2-restore`, `nyra-3-reset`) keep our entries in the order we want, after bootc's
   (`bootc-…`); with names alone, `nyra-reset` would sort before `nyra-restore`.
+- A timer that runs at boot (`Persistent=true`) sees the hardware clock, which may be years off until
+  chronyd corrects it, and `time-sync.target` does not wait for chronyd here (`chrony-wait` is off).
+  Anything that deletes by date must not trust that clock: count back from the newest existing item
+  not in the future, and remove future-dated ones only once `NTPSynchronized` is `yes`.
 - **A copy of `/etc` on ext4:** the image's `/etc` is 971 files and 734 KiB of data, but 2.9 MiB on
   disk, since each small file takes a 4 KiB block. On a booted system it was 16 MiB:
   `systemd-hwdb-update.service` writes udev's 14 MB `hwdb.bin` to `/etc/udev` at the first boot

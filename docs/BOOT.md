@@ -856,9 +856,16 @@ later; nothing here depends on it.
   mode, ACLs and extended attributes as in `/etc` (`/etc/shadow` stays `0640 root:shadow`, inside a
   directory only root can enter). A copy is made under a temporary name and renamed once complete, so
   an interrupted copy is never offered, and the next run removes it. One run at a time (`flock`).
-- **How long:** copies older than 30 days are removed at each new copy, except the three newest, so a
-  machine that was off for a month still has the copies from before it. Dates compare as text; a copy
-  dated in the future (made with a wrong clock) stays until it is 30 days old by the clock.
+- **How long:** at each new copy, those older than 30 days go, except the three newest, so a machine
+  that was off for a month still has the copies from before it. The 30 days are counted back from the
+  newest earlier copy that is not dated after now, never from the copy just made: a clock set far
+  ahead (a new copy dated 2099) removes nothing a right clock would not, and with a clock behind every
+  copy nothing goes. A copy dated after now (made with a wrong clock) goes only once the clock is
+  synchronised (`timedatectl`'s `NTPSynchronized`: the kernel's flag, which chronyd sets once NTS
+  corrected it; when that cannot be read, it counts as not synchronised); until then it is listed
+  first. `tools/vm/test-etc-copy.sh` checks these cases (CI, the shellcheck workflow). The timer does
+  not wait for the clock (`chrony-wait` is off, docs/DEFAULTS.md), so a copy can be named from a wrong
+  clock; only the removal depends on it.
 - **Space**, measured on the image: its `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4
   gives each small file a 4 KiB block). A real copy on a booted test system, as
   `tools/vm/reset-settings.sh` prints it: 2,992 KiB, 972 files.
