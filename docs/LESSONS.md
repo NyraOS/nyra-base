@@ -749,6 +749,11 @@ Each line is something that broke or surprised us once.
   with all the passing boots of the same run (the serial log artifact). The flaky root partition
   showed up only that way: a one-second stall of one CPU right when the boot disk was probed, in
   the two failed boots and in none of the 182 others.
+- A kernel message can land in the middle of a prompt on the serial console ("Please enter
+  rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then "overy key for disk
+  root:"), when the runner is busy. A pattern that must match the whole prompt is matched in the
+  console without kernel messages (`clean()` in `vm-boot.py`), as the status lines already were.
+  `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
