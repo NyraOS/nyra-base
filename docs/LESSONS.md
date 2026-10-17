@@ -427,6 +427,10 @@ Each line is something that broke or surprised us once.
   `Type=exec` needs no notification.
 - `ps -o user=` shows a `DynamicUser=` service's UID as a number, not the unit's name: compare it
   with `systemctl show -P UID <unit>`.
+- AppArmor checks the resolved path: on the image `/usr/local` links to `/var/usrlocal`, so a CA
+  added with update-ca-certificates is read as `/var/usrlocal/share/ca-certificates/...`, which the
+  `ssl_certs` abstraction does not name (it allows `/usr/local/share/ca-certificates/`). Seen with
+  the update tests' CA: every read of the CA directory by ntp-daemon was denied.
 - ntpd-rs's selection already wants a majority: the largest set of sources that agree must be more
   than half of the usable ones, and at least `minimum-agreeing-sources` (default 3).
 - ntpd's build script asks git for a commit and its date; outside a git checkout `git diff-index`

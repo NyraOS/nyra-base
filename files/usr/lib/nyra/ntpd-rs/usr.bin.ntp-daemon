@@ -11,6 +11,9 @@ profile ntp-daemon /usr/bin/ntp-daemon {
   include <abstractions/base>
   include <abstractions/nameservice>
   include <abstractions/ssl_certs>
+  # The administrator's own CAs (update-ca-certificates): /usr/local is a link to /var/usrlocal on a
+  # bootc system, and AppArmor checks the resolved path, which ssl_certs does not name.
+  /var/usrlocal/share/ca-certificates/{,**} r,
 
   capability sys_time,
 
