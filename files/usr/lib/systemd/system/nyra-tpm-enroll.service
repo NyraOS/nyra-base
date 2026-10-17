@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Initrd only: the TPM2 enrollment of an encrypted root, at its first boot and after the TPM refused
-# (/usr/lib/nyra/boot/tpm-enroll). After the root disk is unlocked and mounted at /sysroot (the record
-# of the enrollment is inside it), before bootc sets the root up, and done before the initrd ends: PCR
-# 11 must still be at the signed enter-initrd value. A failure is logged and the boot goes on (the disk
-# then asks for its recovery key).
+# Initrd only: the TPM2 enrollments of an encrypted root, at its first boot, after the TPM refused and
+# after a policy key rotation (/usr/lib/nyra/boot/tpm-enroll). After the root disk is unlocked and bootc
+# set the root up (the record of the enrollments is in its /var, the next policy key in its /usr), and
+# done before the initrd ends: PCR 11 must still be at the signed enter-initrd value. A failure is
+# logged and the boot goes on (the disk then asks for its recovery key).
 [Unit]
 Description=Nyra: enroll the root disk with the TPM
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
 DefaultDependencies=no
 ConditionPathExists=/etc/initrd-release
-After=cryptsetup.target systemd-cryptsetup@root.service initrd-root-device.target sysroot.mount
-Before=bootc-root-setup.service initrd-root-fs.target initrd.target initrd-switch-root.target
+After=cryptsetup.target systemd-cryptsetup@root.service initrd-root-device.target sysroot.mount bootc-root-setup.service
+Before=initrd.target initrd-switch-root.target
 
 [Service]
 Type=oneshot

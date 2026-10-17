@@ -247,24 +247,32 @@ it is made in the same signing step.
   every boot with that PCR value until the key is rotated, so a wrong one cannot be taken back.
 - **Only the public half is committed**, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`
   next to `nyra.crt`; the release gate refuses any other. Nothing is created yet.
-- **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md): a new key per release line,
-  or sooner when an old version must lose unlock. A machine's TPM enrollment names the key. Since the
-  policy unlocks only in the initrd, the running system cannot open the TPM enrollment to add a key.
-  So **the next key is enrolled in advance**, next to the current one, so that a rotation never needs
-  the recovery key:
-  1. **At install,** the disk gets two TPM2 enrollments: the current key and the next one (two
-     key pairs exist at any time; the next one has signed nothing yet). The image carries the public
-     halves of both.
-  2. **A rotation** is a release signed with the next key only. It unlocks through the enrollment
-     that was waiting for it. While that release's initrd still runs (the `enter-initrd` phase, the
-     disk open), it enrolls the key after it as the new "next" and removes the enrollment of the old
-     key.
-  3. Versions signed with the old key still boot, but ask for the disk password or the recovery
-     key.
+- **The next key's public half is committed too**, as
+  `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`, and goes into the image
+  (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`; in CI, a next key made for the run, whose private
+  half is deleted at once). The release gate refuses an image whose next key is not that file, or is the
+  current key. Nothing is created yet.
+- **Rotation** is how an old UKI stops unlocking the disk (docs/BOOT.md, "Rotating the policy key"):
+  **once a year, planned, and at once when a boot-chain vulnerability means old versions must lose
+  unlock**. A machine's TPM enrollment names the key. Since the policy unlocks only in the initrd, the
+  running system cannot open the TPM enrollment to add a key. So **the next key is enrolled in
+  advance**, next to the current one, so that a rotation never needs the recovery key:
+  1. **At the first boot** (and at every re-enrollment), the disk gets two TPM2 enrollments: the
+     current key and the next one (two key pairs exist at any time; the next one has signed nothing
+     yet).
+  2. **A rotation** is a release signed with the next key only, whose image carries a new next key,
+     and whose `.pcrpkey` is byte for byte the previous image's next-key file (a key is known by the
+     SHA-256 of its PEM file). It unlocks through the enrollment that was waiting for it. While that
+     release's initrd still runs (the `enter-initrd` phase, the disk open), it enrolls the new next key.
+  3. **Once that release is confirmed good** (its boot completes, as boot counting confirms it), the
+     enrollment of the old key is removed. Until then a fallback to the previous version still unlocks
+     by itself; after it, versions signed with the old key still boot, but ask for the disk password or
+     the recovery key, and are never enrolled again. A fallback to the previous release that is
+     confirmed good removes nothing newer than its own key.
 
   A machine that never booted a release of one rotation before the next rotation came has neither
-  enrollment and asks for the recovery key once. The schedule, and the enrollment in the initrd,
-  come with the encryption work.
+  enrollment and asks for the recovery key once; with a rotation a year, that is a machine off for
+  about a year.
 
 ## Trust roots
 

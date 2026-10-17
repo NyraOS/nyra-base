@@ -543,6 +543,12 @@ Each line is something that broke or surprised us once.
   `--one-file-system`.
 - An initrd that writes into the root's `/var` (the running system's, so its root's) must not follow
   symbolic links there: check every component of the path before reading or writing.
+- `systemd-cryptenroll --tpm2-signature=` checks a new enrollment by unsealing it, which needs a
+  signature by the enrolled key for the current PCR 11: a next policy key, which has signed nothing
+  yet, can only be enrolled without that check.
+- In the initrd, after bootc's `bootc-root-setup.service`, `/sysroot` is the composed root: `/usr` the
+  composefs image (pinned by the digest on the sealed command line, so a file read from it is the
+  image's), `/var` the shared `/var`; before it, `/sysroot` is the physical root.
 - `cryptsetup open --test-passphrase -v` says which key slot a key opens ("Key slot N unlocked.") on
   stderr.
 - **`systemd-cryptenroll` does nothing when the same policy is already enrolled** (it compares the
@@ -567,6 +573,10 @@ Each line is something that broke or surprised us once.
   key included, on stderr: keep stderr out of the logs.
 - systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
   echoed. A test that types a secret on a console waits a moment after the prompt.
+- "Remove every enrollment for a key this boot neither uses nor carries as next" is wrong on a
+  fallback: the previous release, confirmed good, would remove the newer key's enrollment (and mark it
+  retired, so it is never enrolled again). Found while writing the rotation test in a VM; the record
+  keeps enrollments in the order they were made, and only older ones are removed.
 - **A `Type=oneshot` unit that is still running when the initrd ends fails.** initrd-cleanup's isolate
   stops it with SIGTERM, and for a oneshot only exit status 0 is a clean end (`Result=signal`). The
   console shows only "Stopped", the failed state crosses the switch to the real root, and the running

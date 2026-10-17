@@ -183,16 +183,19 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   password, the TPM2 enrollment of "TPM2 unlock" below. It is made by the installed system in its
   initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's, after
   the separator. The installer leaves a temporary TPM2 enrollment without any policy, so that the first
-  boot unlocks by itself; `nyra-tpm-enroll.service` (`/usr/lib/nyra/boot/tpm-enroll`, initrd only)
-  then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11 signed for the initrd with the
-  reference `initrd`, and PCR 7 and 12, checks it by unsealing it, and removes the temporary one. It
+  boot unlocks by itself; `nyra-tpm-enroll.service` (`/usr/lib/nyra/boot/tpm-enroll`, initrd only,
+  after bootc set the root up) then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11
+  signed for the initrd with the reference `initrd`, and PCR 7 and 12, checks it by unsealing it,
+  enrolls it the same way for the next policy key (in the image's `/usr`, "Rotating the policy key"
+  below), and removes the temporary one. It
   does that only with Secure Boot on (not in setup mode) and a TPM; otherwise it removes the temporary
   enrollment, and the disk asks for its recovery key. If that removal itself fails (a write error on
   the header), the temporary enrollment stays until the next boot, which tries again; until then it
   opens the disk without any policy, even from the running system. Failing closed instead would loop
   on reboots. It reads the LUKS2 header (as data), what systemd-stub put in `/.extra` from the UKI,
-  the Secure Boot variables, PCR 12, the kernel's password cache and, only through a path that has no
-  symbolic link and stays in the root's `/var`, the record below; nothing else from `/etc` or `/var`.
+  the image's next policy key (`/usr`, checked through composefs), the Secure Boot variables, PCR 12,
+  the kernel's password cache and, only through a path that has no symbolic link and stays in the
+  root's `/var`, the record below; nothing else from `/etc` or `/var`.
   The recovery key stays in every case.
 
 **Enrolled again after the TPM refused.** When the TPM refuses the enrollment (a firmware update of
@@ -203,15 +206,17 @@ unlock by themselves:
 - **only a disk enrolled for the TPM.** The LUKS2 header cannot tell: its tokens are not
   authenticated, and anyone with the disk can add a TPM2 token to a disk set up with a password. The
   first enrollment (which only the temporary enrollment, unsealed by the TPM, can make) writes the key
-  slot numbers of the disk's TPM2 enrollment to a record inside the encrypted root,
-  `/var/lib/nyra/tpm2-slots` (`/sysroot/state/os/default/var/...` in the initrd, read after the root is
-  mounted and before bootc sets it up). Only a disk with that record is enrolled again, and only when a
+  slot numbers of the disk's TPM2 enrollments, each with its policy key (the SHA-256 of the key's PEM
+  file), to a record inside the encrypted root, `/var/lib/nyra/tpm2-slots` (`/sysroot/var/...` in the
+  initrd, after bootc set the root up). Only a disk with that record is enrolled again, and only when a
   key was typed in this boot. Root in the running system could write the record too, and gain nothing
   from it: the secret stays in the TPM, released only in the initrd. Since that `/var` is the running
   system's, the initrd uses the record only if no component of its path is a symbolic link and the
   path stays in the root's `/var`; otherwise it reads and writes nothing there;
 - only with Secure Boot on (not in setup mode) and a TPM: with Secure Boot off the old enrollment stays,
   and it unlocks again once Secure Boot is back on;
+- never for a policy key the record says was retired: a version signed only with an old key keeps
+  asking for the recovery key;
 - only when PCR 12 is clean: its value after nothing but systemd's `os-separator`, so no add-on,
   credentials, command line from outside the UKI or confext was measured in this boot. An enrollment
   never takes in such a boot (PCR 12 is bound because a signed add-on can change the command line);
@@ -231,6 +236,32 @@ keyutils, without its `request-key` upcall, which the image does not ship) befor
 starts, also when it is stopped by a signal, where systemd would otherwise keep it for
 150 s, readable by root. The same holds on a disk set up with a password: another encrypted disk in the
 running system cannot use the password typed at boot without asking for it again.
+
+**Rotating the policy key** (docs/SIGNING.md, "The PCR policy key"). The image carries the next
+policy key's public half (`/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`), and every disk
+is enrolled for it in advance, next to the current key, at the first boot and at every re-enrollment.
+A rotation is a release signed with that next key only:
+- its first boot unlocks through the enrollment that was waiting for it, with no prompt. In that
+  initrd, `nyra-tpm-enroll` enrolls the release's own next key with the TPM (the current key's
+  enrollment unseals while PCR 11 is at the signed `enter-initrd` value) and adds it to the record;
+- the enrollment of the old key stays until this release is confirmed good: `nyra-tpm-retire.service`
+  (`/usr/lib/nyra/boot/tpm-retire`) runs after `boot-complete.target`, the same confirmation as boot
+  counting, and removes the record's enrollments for keys that this boot neither signed with nor
+  carries as next (from `/run/nyra-tpm2-keep`, written by this boot's initrd), by their slot numbers,
+  then marks those keys retired in the record. Only if the record has an enrollment for the key this
+  boot used, and only the enrollments made before it (the record keeps them in the order they were
+  made): a fallback to the previous release that is confirmed good keeps the next key's enrollment,
+  which the newer release still needs. Removing a key slot needs no key and no TPM, so it runs in the
+  booted system. It writes the new record first, so a full `/var` removes nothing, and removes only
+  slots that are still there; the re-enrollment after a refusal too: a run cut off between removing
+  slots and writing the record (a power cut) leaves a record that lists slots that are gone, and
+  systemd-cryptenroll fails on those, which would otherwise stop every later retirement and
+  re-enrollment;
+- so a fallback to the previous version before that confirmation (a release that does not get
+  healthy) still unlocks by itself, and after it, versions signed only with the old key ask for the
+  recovery key and are never enrolled again;
+- a machine that booted no release of one rotation before the next one came has neither enrollment:
+  it asks for the recovery key once, and is then enrolled again for the current and next keys.
 
 **Never locked out.** In the initrd (all three in the initramfs):
 - the root device has no time limit (`dev-gpt\x2dauto\x2droot.device.d`): an encrypted root appears only
@@ -299,6 +330,23 @@ enrolled state.
 | A disk set up with a password, whose header got a forged TPM2 token (a copy of the enrollment above, pointing at the password's key slot), booted on this machine with its TPM and Secure Boot | the password unlocks it; not enrolled (no record inside it); its key slots and tokens unchanged |
 | The recovery key, searched for | as above |
 
+The rotation (`tools/vm/encryption-rotation.sh`): test versions of the image, each with its UKI built
+and signed as `ci/build-image.sh` does it, with policy keys and a Secure Boot key (a MOK) made in the
+step and deleted once the versions are built, served by a registry on the runner; `rot-a` (key A, next
+B) installed for the VM's swtpm, `rot-b1` and `rot-b2` (B, next C; `rot-b1` never confirmed good, a
+health check fails), `rot-d` (D, next E).
+
+| Check | Result |
+|---|---|
+| rot-a's first boot | unlocks by itself; the record: A, B |
+| rot-b1 (a rotation that never gets healthy) | unlocks by itself (B), its initrd enrolls C; A stays (the record: A, B, C) |
+| The fallback to rot-a (`bootc rollback`), confirmed good | unlocks by itself; `nyra-tpm-retire` runs and removes nothing, C stays |
+| rot-b2, confirmed good | unlocks by itself, nothing enrolled; A's enrollment removed, A retired in the record |
+| rot-a again, after that, without the test console add-on (no login) | the recovery key unlocks the disk; not enrolled again, because A was retired (the reason in the journal) |
+| The same with the add-on (to switch to rot-d) | the recovery key unlocks the disk; not enrolled again |
+| rot-d (a machine that missed the rotation to C), without the test console add-on, no login | the recovery key once, then enrolled again for D and E; the next boot unlocks by itself |
+| Read offline | the recovery key slot and two TPM2 enrollments; the record: A retired, D and E; one next-key enrollment, one retirement, one refusal for the retired key, one re-enrollment in the journal; the recovery key nowhere |
+
 **What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
 systemd-gpt-auto-generator found (no `/etc/crypttab` in the initramfs, no `rd.luks.*` on the sealed
 command line) and `nyra-tpm-enroll` for the same partition. A copy of the enrollment (it is in the
@@ -339,14 +387,26 @@ initrd ever opens another volume.
   prompt of their own and take the passphrase (encryption without attestation cannot tell). With a TPM,
   the disk unlocks only for the measured, signed boot ("TPM2 unlock").
 
-Offline (`tools/vm/test-tpm-enroll.sh`, in the shellcheck workflow): the real `tpm-enroll`,
-unchanged (it has no test hook), runs in a mount namespace, chrooted into a directory with stand-ins
-at the paths it uses and stand-ins for cryptsetup, systemd-cryptenroll and keyctl. A symbolic link on the record's path makes it write
-nothing outside the root's `/var` and remove no key slot, and the slot the typed key opens is never
-removed even when the record lists it; each case fails on a copy of the script without that check.
+Offline (`tools/vm/test-tpm-enroll.sh`, in the shellcheck workflow): the real `tpm-enroll` and
+`tpm-retire`, unchanged (they have no test hook), run in a mount namespace, chrooted into a directory
+with stand-ins at the paths they use and stand-ins for cryptsetup, systemd-cryptenroll and keyctl:
+- a symbolic link on the record's path makes `tpm-enroll` write nothing outside the root's `/var` and
+  remove no key slot;
+- the slot the typed key opens is never removed, even when the record lists it, and the disk is
+  enrolled again for the current and next keys;
+- after a rotation (unlocked by the TPM, the record without the image's next key), only the next key
+  is enrolled;
+- a version whose key was retired is not enrolled again;
+- `tpm-retire` removes only the enrollment of the key that is neither current nor next, records it as
+  retired, removes nothing when the record has no enrollment for the key this boot used, and keeps
+  a newer key's enrollment on a fallback to an older release;
+- after a run cut off before it wrote the record, `tpm-retire` and the re-enrollment leave out the
+  slots that are gone; when the record cannot be written, `tpm-retire` removes nothing.
 
-Not covered yet: updates, the first boot without a TPM or with Secure Boot off (checked by hand only,
-with swtpm), the policy key's rotation, the PIN.
+Each check but the plain rotation's and the full `/var`'s fails on a copy of the script without it.
+
+Not covered yet: updates through nyra-updated on an encrypted disk, the first boot without a TPM or
+with Secure Boot off (checked by hand only, with swtpm), the PIN.
 
 ## TPM2 unlock: the signed PCR policy
 
