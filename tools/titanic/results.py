@@ -94,8 +94,8 @@ TESTS = {
             "nor a password disk with a forged TPM2 token; "
             "the recovery profile asks for the disk. No root partition: emergency mode after 90 s. No "
             "secret in the logs, the ESP, the LUKS2 header or the root file system. Not yet: updates, the "
-            "policy key's rotation, the PIN; the first boot without a TPM or with Secure Boot off is "
-            "checked by hand only."),
+            "policy key's rotation in a VM (checked offline), the PIN; the first boot without a TPM or "
+            "with Secure Boot off is checked by hand only."),
     "T11": ("Version jumps and channels", "full", [CHANNELS],
             "A jump over several versions goes straight to the newest, the retracted one between never "
             "boots; a sheet with an untrusted key, an older sequence or a retracted version refused, "

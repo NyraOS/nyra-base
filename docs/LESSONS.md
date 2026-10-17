@@ -543,6 +543,12 @@ Each line is something that broke or surprised us once.
   `--one-file-system`.
 - An initrd that writes into the root's `/var` (the running system's, so its root's) must not follow
   symbolic links there: check every component of the path before reading or writing.
+- `systemd-cryptenroll --tpm2-signature=` checks a new enrollment by unsealing it, which needs a
+  signature by the enrolled key for the current PCR 11: a next policy key, which has signed nothing
+  yet, can only be enrolled without that check.
+- In the initrd, after bootc's `bootc-root-setup.service`, `/sysroot` is the composed root: `/usr` the
+  composefs image (pinned by the digest on the sealed command line, so a file read from it is the
+  image's), `/var` the shared `/var`; before it, `/sysroot` is the physical root.
 - `cryptsetup open --test-passphrase -v` says which key slot a key opens ("Key slot N unlocked.") on
   stderr.
 - **`systemd-cryptenroll` does nothing when the same policy is already enrolled** (it compares the

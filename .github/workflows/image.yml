@@ -316,7 +316,7 @@ jobs:
         run: |
           sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
-            "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK"
+            "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/pcr-next/tpm2-pcr-public-key-next.pem" "$WORK"
 
       # The PCR policy signing and its check on a UKI that ci/ukify.sh builds with a policy key of the
       # test: only the main profile's enter-initrd policy is signed, computed independently (systemd-
@@ -858,10 +858,12 @@ jobs:
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
           sudo podman rm -f "$cid" >/dev/null
-          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot"
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem"
           tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
-            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem"
 
       - name: Install cosign
         run: |

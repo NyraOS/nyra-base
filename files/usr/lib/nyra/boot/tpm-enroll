@@ -1,26 +1,37 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Initrd only (nyra-tpm-enroll.service), after the root disk is unlocked and its file system mounted at
+# Initrd only (nyra-tpm-enroll.service), after the root disk is unlocked and bootc set the root up at
 # /sysroot, before the initrd ends, while PCR 11 is still at the signed enter-initrd value: the TPM2
-# enrollment of an encrypted root (docs/BOOT.md, "Disk encryption"). It always binds the signed PCR 11
-# policy of the UKI's key with the reference "initrd", plus PCR 7 and 12 as they are now (after the
-# separator), and checks the new enrollment by unsealing it before it is kept. Two cases:
+# enrollments of an encrypted root (docs/BOOT.md, "Disk encryption"). An enrollment always binds the
+# signed PCR 11 policy of a policy key with the reference "initrd", plus PCR 7 and 12 as they are now
+# (after the separator); one for the current key is checked by unsealing it before it is kept. The disk is enrolled for two
+# keys: the one that signed the booted UKI (.pcrpkey, in /.extra) and the next one, which the image
+# carries in /usr (composefs, checked against the sealed command line) and which a later release will
+# sign with (docs/SIGNING.md, "The PCR policy key"). Three cases:
 #
 #   - The first boot of a disk installed for a TPM: the installer left a temporary TPM2 enrollment
 #     without any policy, so that this boot unlocked by itself. It is replaced, and it does not stay:
-#     without the new enrollment the disk asks for its recovery key. The disk's record of its TPM2
-#     enrollment is written inside the encrypted root (its /var), where nobody can write it without a
-#     key of the disk: the LUKS2 header can be changed by anyone who has the disk.
+#     without the new enrollments the disk asks for its recovery key.
 #   - The user typed the recovery key in this boot (the TPM refused: a firmware update changed PCR 7,
-#     the TPM was cleared or replaced) on a disk with that record: the disk is enrolled again with the
-#     key the user typed, which systemd-cryptsetup left in the kernel's cache. Never after a boot that
-#     measured an add-on, credentials or another command line into PCR 12. The old enrollment is
-#     removed by the key slot numbers in the record, never the slot that the typed key opens.
+#     the TPM was cleared or replaced) on a disk with a record: the disk is enrolled again with the key
+#     the user typed, which systemd-cryptsetup left in the kernel's cache. Never after a boot that
+#     measured an add-on, credentials or another command line into PCR 12, and never for a key that
+#     was retired. The old enrollments are removed by the key slot numbers in the record, never the
+#     slot that the typed key opens.
+#   - The TPM unlocked this boot (nothing typed), and the image's next key has no enrollment yet: the
+#     first boot of a release signed with what was the next key. That key is enrolled, with the TPM.
+#     The enrollment of the old key goes once this release is confirmed good (nyra-tpm-retire.service).
 #
-# Both only with Secure Boot on (not in setup mode) and a TPM. Whatever happens, the typed key leaves
-# the kernel's cache before the running system starts. What it reads: the LUKS2 header (as data), the
-# record (only through a path without symbolic links), the kernel's password cache, the UKI's policy
-# key and signature that systemd-stub put in /.extra, the Secure Boot variables and PCR 12.
+# The disk's record of its TPM2 enrollments (one "SLOT KEY" line per enrollment, KEY the SHA-256 of
+# the key's PEM file, and "retired KEY" for retired keys) is inside the encrypted root, in its /var,
+# where nobody can write it without a key of the disk: the LUKS2 header can be changed by anyone who
+# has the disk. The keys this boot keeps go to /run/nyra-tpm2-keep for nyra-tpm-retire.service.
+#
+# Enrolling only with Secure Boot on (not in setup mode) and a TPM. Whatever happens, the typed key
+# leaves the kernel's cache before the running system starts. What it reads: the LUKS2 header (as
+# data), the record (only through a path without symbolic links), the kernel's password cache, the
+# UKI's policy key and signature that systemd-stub put in /.extra, the image's next key, the Secure Boot
+# variables and PCR 12.
 set -eu
 
 dev=/dev/gpt-auto-root-luks
@@ -29,15 +40,17 @@ global=8be4df61-93ca-11d2-aa0d-00e098032b8c
 # PCR 12 after only systemd-pcrextend's "os-separator": SHA-256 of 32 zero bytes and SHA-256("os-separator").
 clean12=3345a4e7857aa5ae65e97702ade84a3755fd6144724779536b5773128676c99c
 zero=0000000000000000000000000000000000000000000000000000000000000000
-# The key slots of the disk's TPM2 enrollment, in its /var (the root is mounted, bootc not set up yet).
-# That /var belongs to the running system, whose root could put symbolic links there: every component
-# of the path must be a real directory or file inside it (inroot), or nothing is read or written.
-rootvar=/sysroot/state/os/default/var
+current=/.extra/tpm2-pcr-public-key.pem
+next=/sysroot/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem
+keep=/run/nyra-tpm2-keep
+# The record, in the root's /var as bootc mounted it. That /var belongs to the running system, whose
+# root could put symbolic links there: every component of the path must be a real directory or file
+# (inroot), or nothing is read or written.
+rootvar=/sysroot/var
 record=$rootvar/lib/nyra/tpm2-slots
 log() { echo "nyra-tpm-enroll: $*"; }
 inroot() { # the record's path has no symbolic link and stays in the root's /var
-  for p in /sysroot/state /sysroot/state/os /sysroot/state/os/default "$rootvar" "$rootvar/lib" "$rootvar/lib/nyra" \
-      "$record" "$record.new"; do
+  for p in "$rootvar" "$rootvar/lib" "$rootvar/lib/nyra" "$record" "$record.new"; do
     if [ -L "$p" ]; then log "a symbolic link in the record's path ($p): not used" >&2; return 1; fi
   done
   case "$(readlink -f "$rootvar")/" in
@@ -45,6 +58,7 @@ inroot() { # the record's path has no symbolic link and stays in the root's /var
     *) log "the root's /var is not at $rootvar: the record is not used" >&2; return 1 ;;
   esac
 }
+fp() { sha256sum < "$1" | sed 's/ .*//'; } # a key's identity: the SHA-256 of its PEM file
 
 # The key typed in this boot, if any (root's user keyring, linked here by KeyringMode=shared).
 cached="$(keyctl search @u user cryptsetup 2>/dev/null || true)"
@@ -52,15 +66,25 @@ forget() { [ -z "$cached" ] || keyctl invalidate "$cached" 2>/dev/null || true; 
 trap forget EXIT
 trap 'exit 1' INT TERM HUP
 
-[ -e "$dev" ] || exit 0
+[ -e "$dev" ] && [ -f "$current" ] || exit 0
+curfp="$(fp "$current")"
+nextfp=""
+if [ -f "$next" ] && [ ! -L "$next" ]; then nextfp="$(fp "$next")"; fi
+printf '%s\n' "$curfp" $nextfp > "$keep"
 # The temporary enrollment is the TPM2 token without any policy (only a systemd-tpm2 token has a
 # tpm2-policy-hash).
 if cryptsetup luksDump --dump-json-metadata "$dev" | grep -q "\"tpm2-policy-hash\": *\"$zero\""; then
-  first=yes
-elif [ -n "$cached" ] && inroot && [ -f "$record" ]; then
-  first=""
+  case=first
+elif inroot && [ -f "$record" ]; then
+  if [ -n "$cached" ]; then
+    case=again
+  elif [ -n "$nextfp" ] && ! grep -q " $nextfp\$" "$record"; then
+    case=next
+  else
+    exit 0 # every other boot stops here
+  fi
 else
-  exit 0 # every other boot stops here
+  exit 0
 fi
 
 var() { # the value byte of an EFI global variable, or nothing
@@ -69,33 +93,53 @@ var() { # the value byte of an EFI global variable, or nothing
 slots() { # the disk's key slot numbers, one per line
   systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p'
 }
-enroll() { # enroll OPTION...: a new TPM2 enrollment; prints its key slot number
+enroll() { # enroll KEY OPTION...: a new TPM2 enrollment for the policy key KEY; prints its key slot
+  key="$1"
+  shift
+  # Checked by unsealing it with this UKI's signature, which exists only for the current key: the next
+  # key has signed nothing yet.
+  check=""
+  [ "$key" != "$current" ] || check=--tpm2-signature=/.extra/tpm2-pcr-signature.json
   slots_before="$(slots)"
   systemd-cryptenroll "$@" --tpm2-device=auto \
-    --tpm2-public-key=/.extra/tpm2-pcr-public-key.pem --tpm2-public-key-pcrs=11 \
-    --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12 \
-    --tpm2-signature=/.extra/tpm2-pcr-signature.json "$dev" >&2 || return 1
+    --tpm2-public-key="$key" --tpm2-public-key-pcrs=11 \
+    --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12 $check "$dev" >&2 || return 1
   slots | grep -vxF "$slots_before" || { log "no new key slot" >&2; return 1; }
 }
-remember() { # remember SLOT...: the record of the enrollment
+remember() { # remember LINE...: the record of the enrollments
   inroot && mkdir -p "${record%/*}" && inroot && printf '%s\n' "$@" > "$record.new" && mv "$record.new" "$record"
 }
+retired() { [ -f "$record" ] && grep -qx "retired $1" "$record"; } # retired KEY
+
 if [ "$(var SecureBoot)" != 1 ] || [ "$(var SetupMode)" != 0 ]; then
   why="Secure Boot is off"
 elif [ ! -e /dev/tpmrm0 ]; then
   why="no TPM"
-elif [ -n "$first" ]; then
+elif [ "$case" = first ]; then
   # The temporary enrollment goes in the same step (--wipe-slot keeps the new one).
-  if new="$(enroll --unlock-tpm2-device=auto --wipe-slot=tpm2)"; then
-    remember $new || log "could not write the record of the enrollment (it will not be enrolled again)"
+  if new="$(enroll "$current" --unlock-tpm2-device=auto --wipe-slot=tpm2)"; then
+    lines="$new $curfp"
+    if [ -n "$nextfp" ]; then
+      if n="$(enroll "$next" --unlock-tpm2-device=auto)"; then lines="$lines
+$n $nextfp"; else log "the next policy key was not enrolled"; fi
+    fi
+    remember "$lines" || log "could not write the record of the enrollments (they will not be enrolled again)"
     log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); temporary enrollment removed"
     exit 0
   fi
   why="the enrollment failed"
+elif [ "$case" = next ]; then
+  # The TPM unlocked with the current key in this initrd, so it can be used to enroll the next one.
+  if n="$(enroll "$next" --unlock-tpm2-device=auto)"; then
+    remember "$(cat "$record")" "$n $nextfp" && log "enrolled the next policy key" && exit 0
+  fi
+  why="the next policy key could not be enrolled"
 # PCR 12 must be what it is when nothing but the OS separator was measured into it: no add-on, no
 # credentials, no command line from outside the UKI, no confext.
 elif [ "$(tr 'A-F' 'a-f' < /sys/class/tpm/tpm0/pcr-sha256/12 2>/dev/null)" != "$clean12" ]; then
   why="this boot measured an add-on, credentials or another command line into PCR 12"
+elif retired "$curfp"; then
+  why="the policy key of this version was retired"
 else
   why="the key typed in this boot does not open the disk"
   # The cache holds what was typed, separated by NUL; the one that opens a key slot is the key.
@@ -105,14 +149,18 @@ else
     opened="$(printf %s "$pw" | cryptsetup open --test-passphrase -v --key-file=- "$dev" 2>&1 |
       sed -n 's/^Key slot \([0-9]*\) unlocked\.$/\1/p')"
     [ -n "$opened" ] || continue
-    # The old enrollment: the slots in the record, except the one the typed key opens.
-    old="$(grep -vxF "$opened" "$record" | grep -x '[0-9][0-9]*' | tr '\n' ',' | sed 's/,$//' || true)"
+    # The old enrollments: the slots in the record, except the one the typed key opens.
+    old="$(sed -n 's/^\([0-9][0-9]*\) .*/\1/p' "$record" | grep -vxF "$opened" | tr '\n' ',' | sed 's/,$//' || true)"
+    gone="$(grep '^retired ' "$record" || true)"
     if [ -n "$old" ]; then
-      systemd-cryptenroll --wipe-slot="$old" "$dev" >&2 || { why="the old enrollment could not be removed"; break; }
-      remember
+      systemd-cryptenroll --wipe-slot="$old" "$dev" >&2 || { why="the old enrollments could not be removed"; break; }
+      remember "$gone"
     fi
-    if new="$(PASSWORD="$pw" enroll)"; then
-      remember $new
+    if new="$(PASSWORD="$pw" enroll "$current")"; then
+      lines="$new $curfp"
+      if [ -n "$nextfp" ] && n="$(PASSWORD="$pw" enroll "$next")"; then lines="$lines
+$n $nextfp"; fi
+      remember "$gone" "$lines"
       log "enrolled with the TPM again, after the TPM refused and the disk was unlocked by hand"
       exit 0
     fi
@@ -122,10 +170,11 @@ else
 $typed
 EOF
 fi
-if [ -n "$first" ]; then
-  log "not enrolled with the TPM: $why; the disk will ask for its recovery key"
-  systemd-cryptenroll --wipe-slot=tpm2 "$dev" && log "temporary enrollment removed" ||
-    log "could not remove the temporary enrollment"
-else
-  log "not enrolled with the TPM again: $why"
-fi
+case "$case" in
+  first)
+    log "not enrolled with the TPM: $why; the disk will ask for its recovery key"
+    systemd-cryptenroll --wipe-slot=tpm2 "$dev" && log "temporary enrollment removed" ||
+      log "could not remove the temporary enrollment" ;;
+  next) log "$why" ;;
+  *) log "not enrolled with the TPM again: $why" ;;
+esac
