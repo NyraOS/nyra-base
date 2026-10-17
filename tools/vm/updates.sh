@@ -33,8 +33,8 @@
 #  11  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
 #      into v6: not blessed, system not degraded
 #  12  v6, first full boot: signed retraction below the version floor refused; retraction to the
-#      local rollback deployment (v5) uses bootc rollback, and a second check before the reboot
-#      does not run it again
+#      local rollback deployment (v5) uses bootc rollback, after a copy of /etc, and a second check
+#      before the reboot does not run it again
 #  13  v5, registry down: refused, nothing staged
 #  14  v5, a corrupted layer of v7 in the registry: refused, nothing staged
 #  15  v5, a valid layer of the same size with other content served for v7's: refused (digest)
@@ -69,9 +69,9 @@
 #  37  v16: the retraction to the forgiven v13 deletes its deployment and stages it afresh
 #  38  v13 boots counted and is blessed; the shipped signature policy linked again; then the secure
 #      defaults check (T15)
-#  39  v13, the test policy again; a dead network (T3): the link down before a check, then cut while
-#      v17 downloads: reported, the unit not failed, nothing staged or marked failed; the link back: v17
-#      staged
+#  39  v13, the test policy again; a dead network (T3): the link down before a check (it waits for the
+#      network), then cut while v17 downloads: reported, the unit not failed, nothing staged or marked
+#      failed; the link back: v17 staged
 #  40  v17 boots counted and is blessed
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -381,7 +381,7 @@ vm "v1 after the power cut: v2 staged again; power cut before finalization" --po
 
 vm "v1 after the power cut: v2 staged again, after a copy of /etc" --poweroff \
   --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\""
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\""
 
 vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 
@@ -428,7 +428,7 @@ vm "v5: hostile network, downgrade, replay; soft reboot into v6" --poweroff \
 vm "v6, first full boot: retraction below the floor refused; retraction to v5 by bootc rollback" --poweroff \
   --command "$lib; expect booted $d6 && running && blessed" \
   --command "$lib; refused floor 'below the version floor'" \
-  --command "$lib; outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true" \
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$'); outcome retract6 RolledBack && expect rollback $d5 && test \"\$(queued)\" = true && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-rollback\$') && echo \"copies of /etc made before a rollback: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-rollback\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\"" \
   --command "$lib; outcome retract6 WaitingForReboot && expect rollback $d5 && test \"\$(queued)\" = true" \
   --command 'bootc status --format json'
 
@@ -662,13 +662,16 @@ cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-u
 
 # A dead network (T3): the guest's network link goes down (tools/vm/updates-guest.sh, network), as a
 # cable pulled out or a lost Wi-Fi would take it, first before a check, then while nyra-updated pulls
-# v17 on a throttled link (the pull fails, or hangs until its time limit: 90 s here). Each time the
-# running version stays, nothing is staged, nothing is marked failed and the unit does not fail: the
-# check reports "no network connection" as a warning. With the link back, the next check stages v17,
-# which boots counted and is blessed. The test policy comes back first: boot 38 linked the shipped one.
+# v17 on a throttled link (the pull fails, or hangs until its time limit: 90 s here). A check started
+# without a network waits for it (nyra-updated-wait-online.service; tools/vm/no-network.sh shows that
+# it runs once the link is back): it has not started after 20 s, and is cancelled here, so the pull
+# below starts when the test says. Each time the running version stays, nothing is staged, nothing is
+# marked failed and nothing fails; the cut pull reports "no network connection" as a warning. With the
+# link back, the next check stages v17, which boots counted and is blessed. The test policy comes back
+# first: boot 38 linked the shipped one.
 vm "v13: a dead network, before a check and in the middle of the download of v17; the link back: v17 staged" --poweroff \
   --command "$lib; expect booted $d13 && running && ln -sfn /etc/nyra-test/policy.json /etc/containers/policy.json" \
-  --command "$lib; select_sheet s17 && network down && run_check && offline_reported $d17 && expect staged none && expect booted $d13" \
+  --command "$lib; select_sheet s17 && network down && systemctl start --no-block nyra-updated.service && sleep 20 && test \"\$(systemctl show -P ExecMainStartTimestampMonotonic nyra-updated.service)\" = 0 && systemctl list-jobs --no-legend --no-pager nyra-updated.service | grep -w start && systemctl stop nyra-updated.service && expect staged none && expect booted $d13 && running" \
   --command "$lib; network up && curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 10 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && network down && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; offline_reported $d17; }" \
   --command "$lib; expect staged none && expect booted $d13 && network up && curl -fsS https://updates.nyraos.com/_test/rate/0 && outcome s17 Staged && expect staged $d17 && running"
 vm "v17 boots counted and is blessed" --poweroff \
