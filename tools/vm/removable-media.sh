@@ -110,6 +110,8 @@ sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
 printf 'FROM localhost/nyra-test:removable-rootfs\nCOPY --from=uki . /boot/EFI/Linux/\n' |
   sudo podman build -q -t localhost/nyra-test:removable --build-context uki="$media/uki" -f - "$media/context" >/dev/null
 sudo podman rm -f nyra-test-registry >/dev/null 2>&1 || true # the one of an earlier step
+# The next steps start a registry of the same name: this one goes, whatever happens here.
+trap 'sudo podman rm -f nyra-test-registry >/dev/null 2>&1 || true' EXIT
 tools/signing/local-registry.sh "$media"
 sudo podman push -q --tls-verify=false --digestfile "$media/new.digest" localhost/nyra-test:removable \
   docker://other.test/nyra-test:removable
@@ -135,7 +137,7 @@ trust='u="$(lsblk -no UUID '"$T"')" && s="$(udevadm info -q property --property=
 # exec, suid and dev cannot be asked for; then both mounted, with their options.
 mount2='a=; for o in exec suid dev; do e="$(udisksctl mount -b '"$U"' -o "$o" 2>&1)"; echo "$e"; echo "$e" | grep -q "not allowed" || a=1; done; has() { echo "$1" | tr , "\n" | grep -qx "$2"; } && test -z "$a" && ! findmnt --source '"$U"' >/dev/null && udisksctl mount -b '"$U"' && udisksctl mount -b '"$T"' && mu="$(findmnt -rno TARGET --source '"$U"')" && mt="$(findmnt -rno TARGET --source '"$T"')" && ou="$(findmnt -rno OPTIONS --source '"$U"')" && ot="$(findmnt -rno OPTIONS --source '"$T"')" && echo "untrusted: $mu $ou" && echo "trusted: $mt $ot" && has "$ou" nosuid && has "$ou" nodev && has "$ou" noexec && has "$ot" nosuid && has "$ot" nodev && ! has "$ot" noexec'
 # udisks2 runs with Nyra's hardening (udisks2.service.d/10-nyra.conf).
-hardening='p="$(systemctl show -P RestrictAddressFamilies udisks2.service)"; n="$(systemctl show -P NoNewPrivileges udisks2.service)"; echo "udisks2: RestrictAddressFamilies=$p NoNewPrivileges=$n"; systemctl -q is-active udisks2.service && test "$p" = "AF_UNIX AF_NETLINK" && test "$n" = yes'
+hardening='p="$(systemctl show -P RestrictAddressFamilies udisks2.service)"; n="$(systemctl show -P NoNewPrivileges udisks2.service)"; echo "udisks2: RestrictAddressFamilies=$p NoNewPrivileges=$n"; systemctl -q is-active udisks2.service && test "$p" = "AF_NETLINK AF_UNIX" && test "$n" = yes'
 # A program on each (FAT shows .exe files as executable): it runs from the trusted stick only.
 run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/true.exe" && echo "from the trusted stick: runs" && e="$("$mu/true.exe" 2>&1)"; echo "from the other one: $e"; echo "$e" | grep -q "Permission denied"'
 # Written without a pause (32 MiB at a time, each flushed) until the stick is pulled out; 2 minutes
@@ -143,11 +145,12 @@ run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/
 write_unplug='echo "writing to $mu"; timeout 120 sh -c "while dd if=/dev/zero of=\"\$1/t14-write\" bs=1M count=32 conv=fsync status=none; do :; done" sh "$mu" & w=$!; sleep 2; echo "@@UNPLUG""-WRITE@@"; wait $w; rc=$?; echo "writer: exit $rc"; test $rc = 0'
 gone='for i in $(seq 30); do test -e '"$U"' || break; sleep 1; done; ! test -e '"$U"' && echo "the stick is gone" && timeout 60 sync && echo "sync: returned" && for i in $(seq 30); do findmnt "$mu" >/dev/null || break; sleep 1; done; findmnt "$mu"; ! findmnt "$mu" >/dev/null && echo "its mount is gone" && ls "$mt" && journalctl -k -b --no-pager | grep -iE "disconnect|I/O error" | tail -5; '"$running"
 replug='echo "@@REPLUG""-1@@"; for i in $(seq 30); do test -e '"$U"' && break; sleep 1; done; test -e '"$U"' && udevadm settle && sleep 5 && ! findmnt --source '"$U"' && echo "plugged in again: not mounted" && udisksctl mount -b '"$U"' && findmnt -rno TARGET,OPTIONS --source '"$U"' && findmnt -rno OPTIONS --source '"$U"' | tr , "\n" | grep -qx noexec && udisksctl unmount -b '"$U"''
-# A user in an active local session (seatless, so active: a logind session through PAM): polkit
+# A user in an active local session (seatless, so active: a logind session through PAM; systemd-run
+# must not expand the $ of the shell's own variables): polkit
 # lets them mount a stick, but asks an administrator before a file becomes a loop device or a disk
 # is changed (49-nyra.rules); without anyone to answer, udisksctl loop-setup is refused. polkit loaded the
 # rules without an error.
-loop='id t14user >/dev/null 2>&1 || useradd -m t14user; truncate -s 16M /var/tmp/t14-loop.img && mkfs.vfat /var/tmp/t14-loop.img >/dev/null && chmod 644 /var/tmp/t14-loop.img && out="$(systemd-run --wait --pipe -q -p PAMName=login --uid=t14user sh -c "loginctl show-session \"\$XDG_SESSION_ID\" -p Active -p Remote; pkcheck --action-id org.freedesktop.udisks2.filesystem-mount --process \$\$; echo mount: \$?; pkcheck --action-id org.freedesktop.udisks2.loop-setup --process \$\$; echo loop-setup: \$?; pkcheck --action-id org.freedesktop.udisks2.modify-device --process \$\$; echo modify-device: \$?; udisksctl loop-setup --no-user-interaction -f /var/tmp/t14-loop.img; echo udisksctl: \$?" 2>&1)"; echo "$out"; journalctl -b -u polkit.service -o cat --no-pager | tail -5; echo "$out" | grep -qx "Active=yes" && echo "$out" | grep -qx "mount: 0" && echo "$out" | grep -qx "loop-setup: 2" && echo "$out" | grep -qx "modify-device: 2" && echo "$out" | grep -qx "udisksctl: 1" && ! losetup -j /var/tmp/t14-loop.img | grep -q . && ! journalctl -b -u polkit.service -o cat --no-pager | grep -qiE "error (compiling|evaluating|loading)" && echo "loop-setup: refused without an administrator"'
+loop='id t14user >/dev/null 2>&1 || useradd -m t14user; truncate -s 16M /var/tmp/t14-loop.img && mkfs.vfat /var/tmp/t14-loop.img >/dev/null && chmod 644 /var/tmp/t14-loop.img && out="$(systemd-run --wait --pipe -q --expand-environment=no -p PAMName=login --uid=t14user sh -c "loginctl show-session \"\$XDG_SESSION_ID\" -p Active -p Remote; pkcheck --action-id org.freedesktop.udisks2.filesystem-mount --process \$\$; echo mount: \$?; pkcheck --action-id org.freedesktop.udisks2.loop-setup --process \$\$; echo loop-setup: \$?; pkcheck --action-id org.freedesktop.udisks2.modify-device --process \$\$; echo modify-device: \$?; udisksctl loop-setup --read-only --no-user-interaction -f /var/tmp/t14-loop.img; echo udisksctl: \$?" 2>&1)"; echo "$out"; journalctl -b -u polkit.service -o cat --no-pager | tail -5; echo "$out" | grep -qx "Active=yes" && echo "$out" | grep -qx "mount: 0" && echo "$out" | grep -qx "loop-setup: 2" && echo "$out" | grep -qx "modify-device: 2" && echo "$out" | grep -qx "udisksctl: 1" && echo "$out" | grep -qi "not authorized" && ! losetup -j /var/tmp/t14-loop.img | grep -q . && ! journalctl -b -u polkit.service -o cat --no-pager | grep -qiE "error (compiling|evaluating|loading)" && echo "loop-setup: refused without an administrator"'
 # The update while the stick is written, pulled out half a second after the switch starts.
 reg='mkdir -p /etc/containers/registries.conf.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf && sync'
 digest() { # digest booted|staged: sets d to that deployment's image digest, or "none" (as in tools/vm/updates-guest.sh)
@@ -191,5 +194,4 @@ for t in 3 6 10; do
   n=$((n + 1))
 done
 
-sudo podman rm -f nyra-test-registry >/dev/null
 rm -f "$ov" "$media"/*.raw

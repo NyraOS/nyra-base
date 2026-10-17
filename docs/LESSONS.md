@@ -605,7 +605,8 @@ Each line is something that broke or surprised us once.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
   needed and nobody can answer it), which tells a policy apart without an agent. A logind session
   without a seat (`systemd-run -p PAMName=login --uid=USER`) is active and local, like a console
-  login on a seat.
+  login on a seat. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  a shell script passed to it needs `--expand-environment=no`.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
