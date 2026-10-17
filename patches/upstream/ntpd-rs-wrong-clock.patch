@@ -41,10 +41,10 @@ index 0b4c03c..90b6594 100644
          // Test that there only is sufficient overlap in the below set when
 diff --git a/ntp-proto/src/bootstrap.rs b/ntp-proto/src/bootstrap.rs
 new file mode 100644
-index 0000000..9990d0e
+index 0000000..26a02a5
 --- /dev/null
 +++ b/ntp-proto/src/bootstrap.rs
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,351 @@
 +// SPDX-License-Identifier: Unlicense
 +//! Correcting a clock that is far off (Nyra OS: ntpd-rs-wrong-clock.patch, public domain).
 +//!
@@ -54,8 +54,8 @@ index 0000000..9990d0e
 +//! 1. a key exchange checks the server's certificate (chain, name and dates) not at the handshake,
 +//!    but at the time the server then gives: that time counts only if the certificate was valid then.
 +//!    The handshake still proves that the server holds the certificate's key;
-+//! 2. no time counts below the floor: the image's build time or the last clock update, whichever is
-+//!    later;
++//! 2. no time counts below the floor: the image's date (the modification time of
++//!    /usr/lib/clock-epoch) or the last clock update, whichever is later;
 +//! 3. the clock moves only when enough sources agree (`minimum-agreeing-sources` in the
 +//!    configuration, with NTS servers of different operators), as without this patch.
 +//!
@@ -79,8 +79,8 @@ index 0000000..9990d0e
 +
 +use crate::tls_utils::{Certificate, PlatformVerifier, ServerName};
 +
-+/// Its modification time is the image's build time (systemd's convention, see systemd(1)).
-+const BUILD_TIME_FILE: &str = "/usr/lib/clock-epoch";
++/// Its modification time is the image's date (systemd's convention, see systemd(1)).
++const IMAGE_DATE_FILE: &str = "/usr/lib/clock-epoch";
 +/// Written at every clock update: its modification time is the last good time, its content the
 +/// boot ID of that update.
 +const LAST_UPDATE_FILE: &str = "/var/lib/ntpd-rs/last-clock-update";
@@ -110,15 +110,20 @@ index 0000000..9990d0e
 +    }
 +}
 +
-+/// The earliest time a source may give until the first clock update: the image's build time or the
-+/// last clock update. None afterwards, when the last update can be a few milliseconds ahead of a
-+/// source that is just as good.
++/// The earliest time a source may give until the first clock update: the image's date or the last
++/// clock update. None afterwards, when the last update can be a few milliseconds ahead of a source
++/// that is just as good.
 +pub(crate) fn floor() -> SystemTime {
 +    if clock_updated() {
 +        return UNIX_EPOCH;
 +    }
-+    [BUILD_TIME_FILE, LAST_UPDATE_FILE]
-+        .into_iter()
++    latest_modification(&[IMAGE_DATE_FILE, LAST_UPDATE_FILE])
++}
++
++/// The latest modification time of these files; a missing file does not count.
++fn latest_modification(files: &[&str]) -> SystemTime {
++    files
++        .iter()
 +        .filter_map(|file| fs::metadata(file).and_then(|m| m.modified()).ok())
 +        .max()
 +        .unwrap_or(UNIX_EPOCH)
@@ -144,7 +149,7 @@ index 0000000..9990d0e
 +    certificate: Option<&CertificateCheck>,
 +) -> Result<(), &'static str> {
 +    if time < floor {
-+        return Err("below the image's build time or the last clock update");
++        return Err("below the image's date or the last clock update");
 +    }
 +    if certificate.is_some_and(|c| !c.valid_at(time)) {
 +        return Err("the server's certificate is not valid at that time");
@@ -329,6 +334,58 @@ index 0000000..9990d0e
 +        assert!(!updated_this_boot(other_boot, boot));
 +        assert!(!updated_this_boot(None, boot));
 +        assert!(!updated_this_boot(None, None));
++    }
++
++    #[test]
++    fn self_signed_certificate_refused_at_any_time() {
++        // For the right name and valid at that time, but from no trusted CA.
++        let certificate = |pem: &[u8]| {
++            let chain = tls_utils::pemfile::certs(&mut &pem[..])
++                .collect::<Result<Vec<_>, _>>()
++                .unwrap();
++            let roots = tls_utils::pemfile::certs(
++                &mut include_bytes!("../test-keys/testca.pem").as_slice(),
++            )
++            .collect::<Result<Vec<_>, _>>()
++            .unwrap();
++            let provider = tls_utils::client_config_builder().crypto_provider().clone();
++            let verifier = PlatformVerifier::new_with_extra_roots(roots)
++                .unwrap()
++                .with_provider(provider);
++            let name = ServerName::try_from("localhost").unwrap();
++            CertificateCheck::new(Arc::new(verifier), name, &chain)
++        };
++        let self_signed = certificate(include_bytes!("../test-keys/self-signed.pem"));
++        let from_the_test_ca = certificate(include_bytes!("../test-keys/end.fullchain.pem"));
++        assert!(!self_signed.valid_at(date(IN_ITS_VALIDITY)));
++        assert!(!self_signed.valid_at(date(AFTER_ITS_VALIDITY)));
++        assert!(from_the_test_ca.valid_at(date(IN_ITS_VALIDITY)));
++    }
++
++    #[test]
++    fn floor_is_the_latest_of_the_image_date_and_the_last_update() {
++        let dir = std::env::temp_dir().join(format!("ntp-proto-floor-{}", std::process::id()));
++        fs::create_dir_all(&dir).unwrap();
++        let image_date = dir.join("clock-epoch");
++        let last_update = dir.join("last-clock-update");
++        let missing = dir.join("missing");
++        fs::File::create(&image_date)
++            .unwrap()
++            .set_modified(date(BEFORE_ITS_VALIDITY))
++            .unwrap();
++        fs::File::create(&last_update)
++            .unwrap()
++            .set_modified(date(IN_ITS_VALIDITY))
++            .unwrap();
++        let path = |p: &std::path::Path| p.to_str().unwrap().to_owned();
++        let floor =
++            latest_modification(&[&path(&image_date), &path(&last_update), &path(&missing)]);
++        assert_eq!(floor, date(IN_ITS_VALIDITY));
++        assert_eq!(latest_modification(&[&path(&missing)]), UNIX_EPOCH);
++        // A time between the image's date and the last update is refused.
++        let between = date(BEFORE_ITS_VALIDITY) + Duration::from_secs(3600);
++        assert!(check_time(between, floor, None).is_err());
++        fs::remove_dir_all(&dir).unwrap();
 +    }
 +
 +    #[test]
@@ -517,3 +574,20 @@ index 19dd8d6..48b05d5 100644
              self.system
                  .update_used_sources(used_sources.iter().map(|v| {
                      self.sources.get(v).and_then(|snapshot| *snapshot).expect(
+diff --git a/ntp-proto/test-keys/self-signed.pem b/ntp-proto/test-keys/self-signed.pem
+new file mode 100644
+index 0000000..52ef0f5
+--- /dev/null
++++ b/ntp-proto/test-keys/self-signed.pem
+@@ -0,0 +1,11 @@
++-----BEGIN CERTIFICATE-----
++MIIBqDCCAU2gAwIBAgIUUOayNhSWgrQBgyv3S0ka/O2YWdMwCgYIKoZIzj0EAwIw
++FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI1MDEwMTAwMDAwMFoYDzIxMjUwMTAx
++MDAwMDAwWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
++PQMBBwNCAASddEU0mimCOMR1jZEN6fNzyMN2zeIhUGYbei2+nK/qQLtC2OLwaq+D
++EAHyswoLbiSQhjkM9P7oSc/J4y3M04gdo3sweTAdBgNVHQ4EFgQUAyl/U6/QPSaG
++2n7Zk6muHmHO7WIwHwYDVR0jBBgwFoAUAyl/U6/QPSaG2n7Zk6muHmHO7WIwFAYD
++VR0RBA0wC4IJbG9jYWxob3N0MAwGA1UdEwEB/wQCMAAwEwYDVR0lBAwwCgYIKwYB
++BQUHAwEwCgYIKoZIzj0EAwIDSQAwRgIhANQqMzS4UozxAa5FIXV1+L36Zfjh1eIr
++zS6FCM6uoF/qAiEA3AvyAOzaYWM1UMLKrr7TJatmb7EId+e9/3mVRgL/eiY=
++-----END CERTIFICATE-----

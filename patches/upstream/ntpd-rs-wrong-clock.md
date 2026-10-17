@@ -30,8 +30,9 @@ Until the first clock update since boot (`ntp-proto/src/bootstrap.rs`):
    the measured offset) counts only if the same verifier accepts the chain for that name *at that
    time*. A time at which the certificate was expired or not yet valid, a chain to no trusted CA,
    or a certificate for another name: the measurement is dropped.
-2. **A floor.** No time counts below the image's build time (the modification time of
-   `/usr/lib/clock-epoch`, systemd's convention) or the last clock update, whichever is later. Every
+2. **A floor.** No time counts below the image's date (the modification time of
+   `/usr/lib/clock-epoch`, systemd's convention; in nyra-base the Debian snapshot date,
+   `SOURCE_DATE_EPOCH`) or the last clock update, whichever is later. Every
    clock update writes `/var/lib/ntpd-rs/last-clock-update`: its modification time is the time of
    the update, its content the boot ID. After the first update the floor is dropped: right after an
    update, a source as good as the others can be a few milliseconds behind it.
@@ -44,11 +45,13 @@ upstream. "Since boot": a daemon restarted in the same boot finds this boot's ID
 `last-clock-update` and starts in the strict mode. Sources whose key exchange happened before the
 first update keep the check at the times they give, which are then the local time.
 
-Tests (in the patch): a certificate expired at the time the server gives is refused, and one not yet
-valid; a certificate for another name is refused at any time; after the first clock update a key
-exchange with a wrong name fails at the handshake and records no later check, and a restart in the
-same boot stays strict; a time below the floor is refused; one source alone, two, or two of four
-that agree are not enough, three that agree are.
+Tests (in the patch): a certificate expired or not yet valid at the time the server gives is
+refused; a certificate for another name, and a self-signed one for the right name, are refused at
+any time; after the first clock update a key exchange with a wrong name fails at the handshake and
+records no later check, and a restart in the same boot stays strict; the floor is the later of the
+two files' times, and a time below it is refused; one source alone, two, or two of four that agree
+are not enough, three that agree are. In nyra-base's update tests (T9) the guest also refuses a
+real NTS server with an untrusted certificate, whose key exchange and time otherwise work.
 
 ## Limits
 
@@ -60,12 +63,12 @@ that agree are not enough, three that agree are.
 - Before the first update, ntpd-rs completes the key exchange with a server whose certificate it has
   not checked yet, and sends that server NTS requests (nothing secret in them); none of its times is
   used until the certificate is valid at them.
-- The floor trusts the build time and the saved time. A clock update that three operators agreed
+- The floor trusts the image's date and the saved time. A clock update that three operators agreed
   on but that was wrong would raise the floor too.
 - The paths (`/usr/lib/clock-epoch`, `/var/lib/ntpd-rs/last-clock-update`) are constants.
 
 ## Effect
 
-A clock in 2035, or one before the image's build time, is corrected at boot by NTS alone. A time
+A clock in 2035, or one before the image's date, is corrected at boot by NTS alone. A time
 from a server whose certificate does not fit that time, or below the floor, is ignored with a
 warning in the log ("Ignoring the time of the source: …").
