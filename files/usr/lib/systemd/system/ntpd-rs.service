@@ -17,7 +17,8 @@ ConditionVirtualization=!container
 Type=exec
 ExecStart=/usr/bin/ntp-daemon --config /usr/lib/nyra/ntpd-rs/ntp.toml
 # ntp-daemon ends itself when a step of more than 1000 s is suggested after its first one (someone
-# set the clock by hand, for example); started again, it corrects the clock as at boot.
+# set the clock by hand, for example). Started again in the same boot, it corrects the clock if the
+# new time is within the certificates' validity (docs/DEFAULTS.md, "Time").
 Restart=on-failure
 RestartSec=30s
 # Without a network it tries each server again every second and logs every failure.

@@ -186,9 +186,9 @@ Security, RFC 8915): a TLS key exchange with the server (NTS-KE, TCP 4460), then
 
 | What | How |
 |---|---|
-| Client | [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) (`ntp-daemon`, version in `ntpd-rs/Cargo.lock`), built in the image build from its crates with our patch (below) |
+| Client | [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) (`ntp-daemon`, version in `ntpd-rs/Cargo.lock`), built in the image build from its crates with our patch (below); the licence notices of every crate in it are in `/usr/share/doc/ntpd-rs/third-party` (`ci/crate-licenses.sh`) |
 | Sources | `time.cloudflare.com`, `nts.netnod.se`, `ptbtime1.ptb.de` (PTB, Germany's metrology institute) and `nts.time.nl` (SIDN Labs), all NTS; no pool, no servers from DHCP, no unauthenticated fallback. `minimum-agreeing-sources = 3`: the clock moves only when at least three servers agree and are the majority of those that answer (ntpd-rs's selection), so one or two compromised or impersonated servers cannot move it, and one operator out of reach does not stop it |
-| Configuration | `/usr/lib/nyra/ntpd-rs/ntp.toml`, passed with `--config` by `ntpd-rs.service`. At startup a step of any size is allowed (`startup-step-panic-threshold`), bounded by the patch; later a step of more than 1000 s ends the daemon (upstream's default, for a clock set by hand, for example), and systemd starts it again 30 s later, which corrects the clock as at boot. Offline it tries each server every second and logs each failure: the journal takes at most 1000 of its messages an hour |
+| Configuration | `/usr/lib/nyra/ntpd-rs/ntp.toml`, passed with `--config` by `ntpd-rs.service`. At startup a step of any size is allowed (`startup-step-panic-threshold`), bounded by the patch; later a step of more than 1000 s ends the daemon (upstream's default, for a clock set by hand, for example), and systemd starts it again 30 s later. That restart is in the same boot, so it checks certificates strictly (below): a clock moved by hand to within the certificates' validity is corrected then, one moved outside it (to 2035, say) only at the next boot. Offline it tries each server every second and logs each failure: the journal takes at most 1000 of its messages an hour |
 | Service | our `ntpd-rs.service` (`Type=exec`): a dynamic user (no account in `/etc/passwd`), `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state and runtime directories only, no devices, kernel tunables, modules, logs or control groups, Internet, local and route netlink sockets only (it does not start without netlink: it follows the machine's own addresses), a system call allow list (`@system-service @clock`, without `@resources`), no writable and executable memory, and its AppArmor profile in enforce mode (`/etc/apparmor.d/usr.bin.ntp-daemon`, kept in `/usr/lib/nyra/apparmor.d` like the others) (`systemd-analyze security`: exposure 1.9, "OK", as chronyd-restricted's before it). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it, and systemd applies presets again at the first boot. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it |
 | State | `/var/lib/ntpd-rs/last-clock-update`, written at every clock update: its time is the last good time (the floor below), its content the boot ID of that update |
 | Control | `ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status` as root, over the Unix socket `/run/ntpd-rs/observe` (mode 0600); no network control port |
@@ -206,8 +206,10 @@ domain, not sent upstream). Until the first clock update since boot:
 1. a key exchange still proves that the server holds the key of the certificate it presents, but
    the certificate (chain to a trusted CA, server name, dates) is checked at each time the server
    then gives, not at the local clock's time: a time counts only if the certificate was valid then;
-2. no time counts below the floor: the image's build time (`/usr/lib/clock-epoch`, which systemd
-   also uses to move a clock that starts before it) or the last clock update, whichever is later;
+2. no time counts below the floor: the image's date, which is the date of its Debian snapshot
+   (`SOURCE_DATE_EPOCH`, the time of `/usr/lib/clock-epoch`, which systemd also uses to move a
+   clock that starts before it; an image built from an old snapshot has an old floor), or the last
+   clock update, whichever is later;
 3. the clock moves only when three servers of different operators agree (above).
 
 After the first clock update, and after a restart of the daemon in the same boot, a key exchange
@@ -228,6 +230,12 @@ What `minimum-agreeing-sources = 3` costs: if two of the four operators cannot b
 is not updated at all and runs on the hardware clock until three answer again. The first update
 after boot can take a few minutes: ntpd-rs uses a server once it has enough answers from it (up to
 eight, asked every 16 s).
+
+**A floor raised by a wrong time.** Should three operators ever agree on a time in the future, its
+update would raise the floor, and every right time after it would be refused: `journalctl -u
+ntpd-rs` shows "Ignoring the time of the source: below the image's date or the last clock update".
+As root: `rm /var/lib/ntpd-rs/last-clock-update`, then `systemctl restart ntpd-rs` or a reboot.
+Reset settings does not help here: it brings back `/etc`, and the file is in `/var`.
 
 **Local changes**: the unit and the configuration are in `/usr`. To use other servers, copy the
 configuration to `/etc/ntpd-rs/ntp.toml` and point the service at it with a drop-in in `/etc`

@@ -25,7 +25,7 @@ address = "nts.time.nl"
 minimum-agreeing-sources = 3
 # A wrong clock is corrected at startup however far off it is, in either direction: what a server
 # can make it is bounded by our patch (patches/upstream/ntpd-rs-wrong-clock.md: the certificate valid
-# at the time it gives, never below the image's build time or the last clock update). After that, a
+# at the time it gives, never below the image's date or the last clock update). After that, a
 # single step of more than 1000 s ends the daemon (upstream's default); ntpd-rs.service starts it
 # again.
 startup-step-panic-threshold = { forward = "inf", backward = "inf" }

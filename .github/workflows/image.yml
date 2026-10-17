@@ -250,6 +250,9 @@ jobs:
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
           echo "uki_cert=$(base64 -w0 "$WORK/uki/uki.crt")" >> "$GITHUB_OUTPUT"
+          # The floor of the clock (docs/DEFAULTS.md, "Time"): /usr/lib/clock-epoch dated SOURCE_DATE_EPOCH.
+          e="$(sudo podman run --rm localhost/nyra-base:ci stat -c %Y /usr/lib/clock-epoch)"
+          [ "$e" = "$SOURCE_DATE_EPOCH" ] || { echo "::error::/usr/lib/clock-epoch is dated $e, not $SOURCE_DATE_EPOCH"; exit 1; }
 
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the

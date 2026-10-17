@@ -873,7 +873,7 @@ Each line is something that broke or surprised us once.
   may write there) make every read of that block fail with `Input/output error`, through `/usr` and
   on the object itself. Drop the page cache first (`sync`, `blockdev --flushbufs`, `drop_caches`),
   or the old pages are served. The same write on a plain file in `/var` is the control.
-- systemd sets the clock at boot to the image's build time (the time of `/usr/lib/clock-epoch`, the
+- systemd sets the clock at boot to the image's date (the time of `/usr/lib/clock-epoch`, the
   snapshot date; without that file, systemd's own build time) when the hardware clock is before it
   **or more than about 15 years after it**: an RTC in 1970 and one in 2099 both start there, still
   before the real time. A clock that is wrong but within that range
