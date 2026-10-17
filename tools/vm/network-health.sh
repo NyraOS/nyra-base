@@ -230,13 +230,13 @@ vm "g1: the link recorded with its address; b2 (broken network) staged" \
 vm "b2 gets no address three times, back on g1 by itself" --boots 4 --timeout 600 \
   --command "$lib; expect booted $g1 && running && test \"\$(queued)\" = true" \
   --command "$said | grep -F 'a routable address as before' && ! test -e /var/lib/nyra-updated/network-failed" \
-  --command "$lib; outcome s2 RollbackUndone && test \"\$(queued)\" = false && expect rollback $b2 && $(state "'$b2' in s['failed']")" \
+  --command "$lib; outcome s2 RollbackUndone && test \"\$(queued)\" = false && expect rollback $b2 && $(state "\"$b2\" in s[\"failed\"]")" \
   --command "$lib; refused s2 'this machine fell back from it' && expect staged none" \
   --command "$lib; outcome s3 Staged && expect staged $b3"
 l="$logs/serial-network-health-$n.log"
 grep -a -e 'no routable address after' -e 'nyra-updated health-failed:' "$l" || true
-echo "kernel starts: $(grep -c 'Linux version' "$l"), network checks failed: $(grep -ac 'no routable address after 60 s' "$l"), full reboots by nyra-updated: $(grep -ac 'nyra-updated health-failed: Reboot' "$l")"
-[ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'no routable address after 60 s' "$l")" = 3 ] &&
+echo "kernel starts: $(grep -ac 'Linux version' "$l"), network checks failed: $(grep -ac 'no routable address after 60 s' "$l"), full reboots by nyra-updated: $(grep -ac 'nyra-updated health-failed: Reboot' "$l")"
+[ "$(grep -ac 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'no routable address after 60 s' "$l")" = 3 ] &&
   [ "$(grep -ac 'nyra-updated health-failed: Reboot' "$l")" = 3 ]
 
 # Without a carrier systemd-networkd-wait-online may fail (degraded): not this test's concern.
@@ -245,4 +245,4 @@ vm "b3 without a cable: not judged, healthy and blessed" --no-carrier \
   --command "$lib; expect booted $b3 && blessed && systemctl is-active boot-complete.target" \
   --command 'networkctl list --no-legend --no-pager && networkctl list --no-legend --no-pager | grep -w no-carrier' \
   --command "$said | grep -F 'not judged' && test \"\$(systemctl show -P Result nyra-health-network.service)\" = success" \
-  --command "$(state "'$b3' not in s['failed'] and '$b2' in s['failed']")"
+  --command "$(state "\"$b3\" not in s[\"failed\"] and \"$b2\" in s[\"failed\"]")"
