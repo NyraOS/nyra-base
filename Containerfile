@@ -64,6 +64,12 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
 RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/nyra && \
     mv /usr/bin/dpkg /usr/lib/nyra/dpkg
 
+# udev's hardware database (hwdb.bin, 14 MB) in /usr, built from the image's hwdb.d (the same bytes
+# every build): without it, systemd-hwdb-update writes it to /etc at the first boot, and every copy
+# of /etc would carry it (docs/BOOT.md, "Restore earlier settings"). It still goes to /etc when the
+# user adds rules in /etc/udev/hwdb.d.
+RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /etc/udev/hwdb.bin
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password

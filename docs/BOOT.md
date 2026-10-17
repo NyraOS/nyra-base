@@ -861,6 +861,8 @@ later; nothing here depends on it.
   dated in the future (made with a wrong clock) stays until it is 30 days old by the clock.
 - **Space**, measured on the image: its `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4
   gives each small file a 4 KiB block; `tools/vm/reset-settings.sh` prints the size of a real copy).
+  udev's hardware database (`hwdb.bin`, 14 MB) is built into `/usr` by the image build; otherwise
+  `systemd-hwdb-update` writes it to `/etc` at the first boot, and each copy would take 16 MiB.
   A month is 30 daily copies and one per update, about 35 copies or 100 MiB and 35,000 inodes, more if
   the user's own files in `/etc` are large. The copies share nothing (ext4 has no reflinks), and an
   unchanged `/etc` is copied all the same (simpler, and every copy keeps its own date). An update

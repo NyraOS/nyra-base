@@ -321,7 +321,11 @@ Each line is something that broke or surprised us once.
   `nyra-2-restore`, `nyra-3-reset`) keep our entries in the order we want, after bootc's
   (`bootc-…`); with names alone, `nyra-reset` would sort before `nyra-restore`.
 - **A copy of `/etc` on ext4:** the image's `/etc` is 971 files and 734 KiB of data, but 2.9 MiB on
-  disk, since each small file takes a 4 KiB block. coreutils 9 `cp` reflinks by default
+  disk, since each small file takes a 4 KiB block. On a booted system it was 16 MiB:
+  `systemd-hwdb-update.service` writes udev's 14 MB `hwdb.bin` to `/etc/udev` at the first boot
+  when the image has no `/usr/lib/udev/hwdb.bin`. `systemd-hwdb update --usr` in the image build
+  puts it there instead (the same bytes on every build); the service then writes `/etc` only when
+  the user adds rules in `/etc/udev/hwdb.d`. coreutils 9 `cp` reflinks by default
   (`--reflink=auto`), which would make copies nearly free on btrfs or XFS, not on ext4.
 
 ## Secure defaults (docs/DEFAULTS.md)
