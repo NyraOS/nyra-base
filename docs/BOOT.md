@@ -295,7 +295,7 @@ enrolled state.
 | PCR 12 no longer the enrolled one | enrolled again (a new enrollment in the header); the next boot unlocks by itself |
 | A new Secure Boot database (PCR 7, Secure Boot still on) | the same |
 | A new TPM (a new swtpm state) | the same: the old enrollment of the same policy removed first |
-| The disk's journal | three re-enrollments, and the reasons for the refusals above |
+| The disk's journal | three re-enrollments, and the reasons for the refusals above; no "Could not extend PCR/NvPCR" line ("PCR 15, not measured" below) |
 | A disk set up with a password, whose header got a forged TPM2 token (a copy of the enrollment above, pointing at the password's key slot), booted on this machine with its TPM and Secure Boot | the password unlocks it; not enrolled (no record inside it); its key slots and tokens unchanged |
 | The recovery key, searched for | as above |
 
@@ -306,11 +306,22 @@ header, which anyone with the disk can read) put on another LUKS2 volume, such a
 else's on this disk or on a USB stick that boots the signed chain, would be unsealed there, but the
 secret only opens the key slot it was made for, on this disk: nothing comes out of it.
 
-**PCR 15, evaluated and not bound.** gpt-auto asks systemd-cryptsetup to measure the opened volume's
-key into PCR 15 (`tpm2-measure-pcr=yes`, and the key slot into an NvPCR). It does that through
-systemd-pcrextend's Varlink socket, which the image blocks (docs/DEFAULTS.md), so today nothing is
-measured and each encrypted boot logs "Could not extend PCR" and "Could not extend NvPCR": PCR 15
-stays at its initial value. Binding the enrollment to PCR 15's initial value would let the TPM release
+**PCR 15, not measured.** gpt-auto asks systemd-cryptsetup to measure the opened volume's key into
+PCR 15 (`tpm2-measure-pcr=yes`) and the key slot into an NvPCR (`tpm2-measure-keyslot-nvpcr=yes`).
+systemd 262 does both through systemd-pcrextend's Varlink socket, which the image blocks
+(docs/DEFAULTS.md), and the image has no NvPCRs, so neither can happen; each boot with a TPM logged
+"Could not extend PCR" and "Could not extend NvPCR" for nothing. The measurement is therefore turned
+off, by design: `systemd-cryptsetup@root.service.d` (in the initramfs) sets `SYSTEMD_FORCE_MEASURE=0`,
+which systemd-cryptsetup checks before each of the two measurements and nowhere else, so PCR 15 stays
+at its initial value, the unlock is unchanged, and the journal has neither line (checked in the disk's
+journal by `tools/vm/encryption-tpm.sh`). The other ways were worse: gpt-auto takes these options from
+nowhere, so `tpm2-measure-pcr=no` would mean replacing the `ExecStart=` it generates (a copy of its
+logic to keep in step), and with no measurement asked for systemd-cryptsetup may unlock through
+libcryptsetup's token plugins instead, another path; `systemd.tpm2_measured_os=0` on the sealed command
+line would also stop the TPM2 unlock and the boot phases measured into PCR 11.
+
+**PCR 15, not bound.** The TPM2 enrollment binds PCR 11 (signed), 7 and 12 only, so not measuring
+PCR 15 changes no policy. Binding the enrollment to PCR 15's initial value would let the TPM release
 the key only before any volume was opened in that boot, which needs that measurement. It is not bound: the first-boot
 enrollment checks the new enrollment by unsealing it after the disk is open, and the policy key's
 rotation will enroll the next key from the initrd after the disk is open (docs/SIGNING.md), both of

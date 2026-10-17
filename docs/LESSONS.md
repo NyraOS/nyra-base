@@ -519,6 +519,13 @@ Each line is something that broke or surprised us once.
   (`dev-mapper-root.device`) no time limit, but the root mount waits for `/dev/gpt-auto-root`, whose job
   times out after 90 s: a passphrase typed later ends in emergency mode. And systemd-cryptsetup gives up
   after three wrong passphrases (`tries=3`), which gpt-auto offers no way to change.
+- **gpt-auto's measurement of the root cannot be turned off through its options either** (systemd 262,
+  from the sources): it writes `tpm2-measure-pcr=yes,tpm2-measure-keyslot-nvpcr=yes` into the unit when
+  the stub measured the boot. systemd-cryptsetup sends both through systemd-pcrextend's socket and only
+  logs an error when that fails; `SYSTEMD_FORCE_MEASURE=0` in the unit's environment skips both, and
+  nothing else in systemd-cryptsetup reads it. Setting `tpm2-measure-pcr=no` and
+  `tpm2-measure-keyslot-nvpcr=no` instead (with no `fixate-volume-key=`) would also let it use
+  libcryptsetup's token plugins (`use_token_plugins()`): it avoids them only while it needs the volume key.
 - **bootc points `/run/systemd/volatile-root` at `/dev/gpt-auto-root`**, which for an encrypted root is
   the opened volume. systemd's `blockdev_get_root()` takes that link as it is (it traces dm-crypt to the
   partition only without the link), so gpt-auto in the running system finds no disk and mounts no ESP
