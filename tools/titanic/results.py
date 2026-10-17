@@ -73,10 +73,11 @@ TESTS = {
            "With Secure Boot on: /etc/fstab (a line that is not a mount, a disk that is not "
            "connected), /etc/passwd (the system accounts deleted), the network settings and "
            "/etc/systemd/system (emptied, services masked), each broken on its own: the system boots to "
-           "a login prompt; all of it at once: Recovery opens for the administrator without the system "
-           "accounts; then Reset settings: the broken files are the image's, "
-           "the file in /home is the same, the user logs in with their password, the network and the "
-           "basic services work."),
+           "a login prompt, and Restore earlier settings with the copy of /etc from before repairs it; "
+           "all of it at once: Recovery opens for the administrator without the system accounts, and "
+           "the copy from before repairs it; all of it broken again, then Reset settings: the broken "
+           "files are the image's, the file in /home is the same, the user logs in with their password, "
+           "the network and the basic services work."),
     "T9": ("Wrong clock", "full", [UPDATES],
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "

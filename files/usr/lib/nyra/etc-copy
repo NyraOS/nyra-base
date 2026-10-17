@@ -1,0 +1,70 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: a copy of the system settings (/etc), for "Nyra OS Restore earlier settings" in the boot
+# menu (docs/BOOT.md, "Restore earlier settings").
+#   etc-copy daily    nyra-etc-copy.timer, once a day
+#   etc-copy update   nyra-updated, before it stages an update
+#   etc-copy to-remove NOW NEW SYNCED
+#                     prints the copies a run would remove, of the names read on stdin, with the
+#                     clock at NOW, NEW the copy just made and SYNCED yes when the clock is
+#                     synchronised (tools/vm/test-etc-copy.sh)
+# Each copy is /var/lib/nyra/etc-copies/<date and time, UTC>-<daily|update>, made with cp -a (every
+# file's owner, mode, ACLs and extended attributes as in /etc), inside a directory only root can
+# enter (0700). It is made under a temporary name and renamed once complete, so an interrupted copy
+# is never offered; the next run removes it.
+# What goes: copies older than 30 days, counted back from the newest earlier copy that is not dated
+# after now, and never the three newest. The copy just made never sets that point, so a clock set
+# far ahead (2099) removes nothing more than a right one would; with a clock behind every copy, the
+# point is missing and nothing goes. Copies dated after now go only while the clock is synchronised
+# (NTS): they were made with a wrong clock, and would stay first in the list for good.
+set -eu
+umask 077
+dir=/var/lib/nyra/etc-copies
+copy='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update)$'
+
+# to_remove NOW NEW SYNCED, the names on stdin.
+to_remove() {
+	names="$(grep -E "$copy" | sort -r || true)"
+	if [ "$3" = yes ]; then
+		printf '%s\n' "$names" | mawk -v now="$1" 'substr($0, 1, 20) > now'
+		names="$(printf '%s\n' "$names" | mawk -v now="$1" 'substr($0, 1, 20) <= now')"
+	fi
+	ref="$(printf '%s\n' "$names" | grep -vx -- "$2" | mawk -v now="$1" 'substr($0, 1, 20) <= now' |
+		grep -E "$copy" | head -n 1 || true)"
+	[ -n "$ref" ] || return 0
+	s="$(date -u -d "${ref%%Z-*}Z" +%s)"
+	old="$(date -u -d "@$((s - 30 * 86400))" +%Y-%m-%dT%H:%M:%SZ)"
+	printf '%s\n' "$names" | grep -E "$copy" | tail -n +4 | mawk -v old="$old" 'substr($0, 1, 20) < old'
+}
+
+case "${1:-}" in
+daily | update) ;;
+to-remove)
+	to_remove "$2" "$3" "$4"
+	exit 0
+	;;
+*) echo "usage: etc-copy daily|update" >&2; exit 2 ;;
+esac
+(umask 022 && mkdir -p /var/lib/nyra)
+mkdir -p "$dir"
+chmod 0700 "$dir"
+# One run at a time (the daily copy and an update can meet): each removes the other's leftovers.
+exec 9> "$dir/.lock"
+flock 9
+rm -rf "$dir"/.new-*
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+name="$now-$1"
+if ! cp -a --one-file-system /etc "$dir/.new-$name" || ! sync; then
+	rm -rf "$dir/.new-$name"
+	echo "etc-copy: could not copy /etc to $dir" >&2
+	exit 1
+fi
+mv -T "$dir/.new-$name" "$dir/$name"
+sync
+echo "etc-copy: /etc copied to $dir/$name"
+synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo no)"
+find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | to_remove "$now" "$name" "$synced" | grep -E "$copy" |
+	while read -r c; do
+		rm -rf "${dir:?}/$c"
+		echo "etc-copy: $c removed"
+	done

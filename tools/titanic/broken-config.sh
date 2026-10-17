@@ -4,8 +4,9 @@
 # system on a copy of the installed test disk, with Secure Boot on (tools/titanic/secure-boot-system.sh):
 #   1    a user, an administrator with a password, and a file in their home; control: the user logs
 #        in with the password (su through PAM, run as nobody so that it has to ask), a wrong one is
-#        refused, and the network works (a file served by the runner, through QEMU's 10.0.2.2)
-#   2-5  each of these on its own, on a copy of that system (QEMU snapshot), then a reboot:
+#        refused, and the network works (a file served by the runner, through QEMU's 10.0.2.2); then
+#        the daily copy of /etc (nyra-etc-copy.service)
+#   2-5  each of these on its own, then a reboot:
 #          2  /etc/fstab: a line that is not a mount, and a disk that is not connected
 #          3  /etc/passwd: every system account deleted (root and the user kept), a line that is not
 #             an account
@@ -16,18 +17,26 @@
 #        Expected: the system boots to a login prompt. What happens is in the step summary and the
 #        serial logs: the system state, the failed units, the basic services, the network, whether the
 #        user can log in, the notice a failed health check leaves on the console, and the warnings of
-#        the boot. A boot that does not reach the login prompt fails the step.
-#   6    all four at once on the system itself; the "Nyra OS Recovery" entry is picked for the next
-#        boot (bootctl set-oneshot, as a user would in the boot menu)
+#        the boot. A boot that does not reach the login prompt fails the step. Then the
+#        "Nyra OS Restore earlier settings" entry is picked for the next boot (bootctl set-oneshot, as
+#        a user would in the boot menu), which offers the copy from boot 1; 1 restores it, and the
+#        normal boot after it must be healthy: /etc/fstab, /etc/passwd (but the user's line), the
+#        network settings, /etc/resolv.conf and /etc/systemd/system are the copy's, the user logs in
+#        with their password (a wrong one is refused), the network works, the basic services are
+#        active, the shadow sync ran and succeeded, Secure Boot and the lockdown on (serial logs
+#        serial-broken-config-<n>-restore.log). The next breakage starts from that system.
+#   6    all four at once; the "Nyra OS Recovery" entry is picked for the next boot
 #   7    that boot: recovery asks for an administrator although /etc/passwd has no nobody (the
 #        password is checked as UID 65534); a wrong password gives no shell, the right one a root
-#        shell in rescue.target; the shadow sync failed on the line that is not an account; then the
-#        "Nyra OS Reset settings" entry is picked for the next boot
-#   8    that boot: RESET; the system restarts by itself into the normal boot: running; /etc/fstab,
+#        shell in rescue.target; the shadow sync failed on the line that is not an account; then
+#        "Nyra OS Restore earlier settings" is picked for the next boot
+#   8    that boot: the copy from boot 1 restored; the normal boot after it is healthy (as above) and
+#        the file in /home is the same; then all four broken again, "Nyra OS Reset settings" picked
+#   9    that boot: RESET; the system restarts by itself into the normal boot: /etc/fstab,
 #        /etc/passwd (plus the user's line), the network settings, /etc/resolv.conf and
-#        /etc/systemd/system are the image's; the file in /home is the same; the user logs in with
-#        their password (a wrong one is refused); the network works; the basic services are active;
-#        the shadow sync ran and succeeded; Secure Boot and the lockdown on.
+#        /etc/systemd/system are the image's; the file in /home is the same; healthy (as above).
+# Before each restore entry, copies the daily timer may have made since boot 1 (at midnight, of a
+# broken /etc) are removed, so that the one offered is boot 1's.
 # One unit is checked on every boot with a shell: bootc's shadow sync
 # (bootc-sysusers-shadow-sync.service) failed on 3 and 7, where /etc/passwd has a line it cannot
 # parse, for that reason; it ran and succeeded on all the others.
@@ -74,19 +83,33 @@ observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system
 # bind mount of / alone, as the reset itself does), /etc/passwd with the user's line added.
 image_etc="i=/run/nyra-t8-image; f=0; mkdir -p \$i && mount --bind / \$i && mount -o remount,bind,ro \$i || f=1; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' /etc/passwd | diff \$i/etc/passwd - || f=1; elif test -e \$i/etc/\$p || test -L \$i/etc/\$p; then diff -r --no-dereference \$i/etc/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the image\"; f=1; fi; done; umount \$i; test \$f = 0 && echo '/etc/fstab, /etc/passwd (plus the user), the network settings, /etc/resolv.conf and /etc/systemd/system are the image'\"'\"'s'"
 
+# /etc after "Restore earlier settings": the broken paths are those of the copy made in boot 1
+# (/etc/passwd without the user's line: accounts come from the current /etc, not from the copy).
+copies=/var/lib/nyra/etc-copies
+copy_etc="c=$copies/\$(cat /var/nyra-t8-copy); f=0; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' \$c/passwd > /run/nyra-t8-p1; grep -v '^$user:' /etc/passwd | diff /run/nyra-t8-p1 - || f=1; elif test -e \$c/\$p || test -L \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the copy\"; f=1; fi; done; test \$f = 0 && echo '/etc/fstab, /etc/passwd, the network settings, /etc/resolv.conf and /etc/systemd/system are the copy'\"'\"'s'"
+# The daily timer may make a copy of a broken /etc at a boot after midnight: before each restore,
+# every copy but boot 1's is removed, so that the one offered is boot 1's.
+only_copy="c=\"\$(cat /var/nyra-t8-copy)\"; for x in \$(ls $copies); do test \"\$x\" = \"\$c\" || rm -rf \"$copies/\$x\"; done; ls $copies; test \"\$(ls $copies)\" = \"\$c\""
+restore_next='bootctl set-oneshot nyra-restore.CONF && echo "next boot: Restore earlier settings (as picked in the boot menu)"'
+restore_answer='\(daily copy\)(.|\n)*Type the number of the copy to restore, anything else or Control-D to boot normally: '
+# What the restore (and the reset) must bring back.
+healthy=(--command "$running" --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused'" --command "$net && echo 'the network works: the runner answers'" --command "systemctl is-active $units" --command "$shadow_ok" --command "$secure")
+
 answer='Type RESET to reset, anything else or Control-D to boot normally: '
 fail=0
 
 vm --poweroff --log "$logs/serial-broken-config-1.log" \
-  --title "Broken configuration 1: a user with a password and a file in /home" \
+  --title "Broken configuration 1: a user with a password and a file in /home; a copy of /etc" \
   --command "$running" \
   --command "$shadow_ok" \
   --command "$secure" \
   --command "useradd -m -G sudo -s /bin/bash $user && printf '$user:%s\\n' '$pw' | chpasswd && echo $token > /home/$user/keep.txt && chown $user: /home/$user/keep.txt && ls -l /home/$user" \
   --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused (control)'" \
-  --command "$net && echo 'the network works: the runner answers (control)'" || fail=1
+  --command "$net && echo 'the network works: the runner answers (control)'" \
+  --command "systemctl start nyra-etc-copy.service && ls $copies | grep -- '-daily\$' | sort | tail -n 1 > /var/nyra-t8-copy && echo \"the daily copy: \$(cat /var/nyra-t8-copy)\"" || fail=1
 
-# Each breakage on its own, on a copy of that system: does it boot?
+# Each breakage on its own: does it boot? Then "Restore earlier settings" with the copy from boot 1,
+# which must repair it, so that the next breakage starts from a healthy system again.
 rows=""
 n=2
 for what in fstab passwd network services; do
@@ -98,13 +121,21 @@ for what in fstab passwd network services; do
   esac
   shadow="$shadow_ok"
   [ "$what" != passwd ] || shadow="$shadow_refused"
-  if python3 -B tools/vm/vm-boot.py --secure-boot "$t8/vars.fd" --disk "$t8/disk.raw" --autologin --timeout 240 \
-      --summary "$summary" --log "$logs/serial-broken-config-$n.log" \
-      --title "Broken configuration $n: $title; the next boot" \
-      --command "$b" --command '@reboot systemctl reboot' --command "$observe" --command "$shadow"; then
-    rows+="| $title | boots to a login prompt |"$'\n'
+  if vm --poweroff --log "$logs/serial-broken-config-$n.log" \
+      --title "Broken configuration $n: $title; the next boot; Restore earlier settings picked" \
+      --command "$b" --command '@reboot systemctl reboot' --command "$observe" --command "$shadow" \
+      --command "$only_copy" --command "$restore_next"; then
+    row="| $title | boots to a login prompt |"
   else
-    rows+="| $title | **does not boot to a login prompt, or the shadow sync is not as expected** (serial-broken-config-$n.log) |"$'\n'
+    row="| $title | **does not boot to a login prompt, or the shadow sync is not as expected** (serial-broken-config-$n.log) |"
+    fail=1
+  fi
+  if vm --poweroff --log "$logs/serial-broken-config-$n-restore.log" --chat "$restore_answer=>1" --chat-then-login \
+      --title "Broken configuration $n: Restore earlier settings (the copy from boot 1), then the normal boot" \
+      --command "$copy_etc" "${healthy[@]}"; then
+    rows+="$row the copy from before repairs it |"$'\n'
+  else
+    rows+="$row **the copy from before does not repair it** (serial-broken-config-$n-restore.log) |"$'\n'
     fail=1
   fi
   n=$((n + 1))
@@ -124,43 +155,57 @@ again='Wrong user name or password, or not an administrator\.(.|\n)*Administrato
 if vm --poweroff --log "$logs/serial-broken-config-7.log" \
     --chat "Administrator user name: =>$user" --chat "Password: =>wrong-$token" \
     --chat "$again=>$user" --chat "Password: =>$pw" \
-    --title "Broken configuration 7: Recovery without the system accounts; Reset settings picked for the next boot" \
+    --title "Broken configuration 7: Recovery without the system accounts; Restore earlier settings picked for the next boot" \
     --command 'id; test "$(id -u)" = 0 && grep -q "systemd.unit=rescue.target" /proc/cmdline && systemctl is-active rescue.target' \
     --command '! grep "^nobody:" /etc/passwd && echo "/etc/passwd has no nobody"' \
     --command "$shadow_refused" \
-    --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"'; then
+    --command "$only_copy" \
+    --command "$restore_next"; then
   recovery="recovery asks for an administrator and opens a root shell for the right password, without the system accounts"
 else
   recovery="**recovery did not work without the system accounts** (serial-broken-config-7.log)"
   fail=1
 fi
 
-if vm --poweroff --log "$logs/serial-broken-config-8.log" --chat "$answer=>RESET" --chat-then-login \
-    --title "Broken configuration 8: Reset settings, then the normal boot" \
-    --command "$running" \
+if vm --poweroff --log "$logs/serial-broken-config-8.log" --chat "$restore_answer=>1" --chat-then-login \
+    --title "Broken configuration 8: Restore earlier settings, the normal boot; then all of it broken again, Reset settings picked" \
+    --command "$copy_etc" \
+    --command "test \"\$(cat /home/$user/keep.txt)\" = $token && test \"\$(stat -c %U /home/$user/keep.txt)\" = $user && echo 'the file in /home is the same'" \
+    "${healthy[@]}" \
+    --command "$break_services" \
+    --command "$break_network" \
+    --command "$break_passwd" \
+    --command "$break_fstab" \
+    --command 'bootctl set-oneshot nyra-reset.CONF && echo "next boot: Reset settings (as picked in the boot menu)"'; then
+  restore="the copy from before repairs all of it: the system runs, the user logs in, the network works"
+else
+  restore="**the copy from before did not repair all of it** (serial-broken-config-8.log)"
+  fail=1
+fi
+
+if vm --poweroff --log "$logs/serial-broken-config-9.log" --chat "$answer=>RESET" --chat-then-login \
+    --title "Broken configuration 9: Reset settings, then the normal boot" \
     --command "$image_etc" \
     --command "test \"\$(cat /home/$user/keep.txt)\" = $token && test \"\$(stat -c %U /home/$user/keep.txt)\" = $user && echo 'the file in /home is the same'" \
-    --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused'" \
-    --command "$net && echo 'the network works: the runner answers'" \
-    --command "systemctl is-active $units" \
-    --command "$shadow_ok" \
-    --command "$secure"; then
+    "${healthy[@]}"; then
   reset="the reset brings the image's settings back: the system runs, the user logs in, the network works"
 else
-  reset="**the reset did not bring the system back** (serial-broken-config-8.log)"
+  reset="**the reset did not bring the system back** (serial-broken-config-9.log)"
   fail=1
 fi
 
 {
   echo "### Configuration broken by the user (Titanic T8)"
   echo
-  echo "| Broken | Before the reset |"
-  echo "|---|---|"
+  echo "| Broken | Before the restore | Restore earlier settings |"
+  echo "|---|---|---|"
   printf '%s' "$rows"
   echo
   echo "All of it at once, then Recovery: $recovery."
   echo
-  echo "Then Reset settings: $reset."
+  echo "Then Restore earlier settings: $restore."
+  echo
+  echo "All of it broken again, then Reset settings: $reset."
   echo
 } >> "$summary"
 

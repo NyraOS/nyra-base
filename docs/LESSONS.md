@@ -312,6 +312,25 @@ Each line is something that broke or surprised us once.
   mounted root filesystem from the host, so the same code runs on the image and on the control.
 - A service with `StandardOutput=inherit` on the console (a prompt that needs the console at once)
   writes nothing to the journal: check its effects, not its log, in tests.
+- **One UKI profile can serve two boot menu entries.** An entry only picks the profile, and
+  systemd-boot puts the ID of the entry it started in `LoaderEntrySelected`, which the booted system
+  reads. A second action on the same sealed command line (Restore earlier settings next to Reset
+  settings) needs no new profile, so no new PCR 11 value, no new sealed command line and no change
+  to the signed policy. Which entry was picked grants nothing: both are in the same menu.
+- systemd-boot orders entries by `sort-key` first: numbered keys (`nyra-1-recovery`,
+  `nyra-2-restore`, `nyra-3-reset`) keep our entries in the order we want, after bootc's
+  (`bootc-…`); with names alone, `nyra-reset` would sort before `nyra-restore`.
+- A timer that runs at boot (`Persistent=true`) sees the hardware clock, which may be years off until
+  chronyd corrects it, and `time-sync.target` does not wait for chronyd here (`chrony-wait` is off).
+  Anything that deletes by date must not trust that clock: count back from the newest existing item
+  not in the future, and remove future-dated ones only once `NTPSynchronized` is `yes`.
+- **A copy of `/etc` on ext4:** the image's `/etc` is 971 files and 734 KiB of data, but 2.9 MiB on
+  disk, since each small file takes a 4 KiB block. On a booted system it was 16 MiB:
+  `systemd-hwdb-update.service` writes udev's 14 MB `hwdb.bin` to `/etc/udev` at the first boot
+  when the image has no `/usr/lib/udev/hwdb.bin`. `systemd-hwdb update --usr` in the image build
+  puts it there instead (the same bytes on every build); the service then writes `/etc` only when
+  the user adds rules in `/etc/udev/hwdb.d`. coreutils 9 `cp` reflinks by default
+  (`--reflink=auto`), which would make copies nearly free on btrfs or XFS, not on ext4.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
@@ -525,6 +544,9 @@ Each line is something that broke or surprised us once.
   root wait checked once a second, and the initrd took about as long after the root appeared.
 
 ## Testing in CI
+- In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
+  exits 0 whatever happens. Pass the input as an argument (or use `lastpipe`), and prove a test can
+  fail by running it against changed copies of the code (mutants) that must make it exit non-zero.
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for
   good: the kernel shrinks the receiving socket's buffer below one segment, the window it offers is
   smaller than the sender's MSS, and silly window avoidance keeps the sender waiting (podman push

@@ -64,6 +64,12 @@ RUN for u in bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service; 
 RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/nyra && \
     mv /usr/bin/dpkg /usr/lib/nyra/dpkg
 
+# udev's hardware database (hwdb.bin, 14 MB) in /usr, built from the image's hwdb.d (the same bytes
+# every build): without it, systemd-hwdb-update writes it to /etc at the first boot, and every copy
+# of /etc would carry it (docs/BOOT.md, "Restore earlier settings"). It still goes to /etc when the
+# user adds rules in /etc/udev/hwdb.d.
+RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /etc/udev/hwdb.bin
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password
@@ -148,17 +154,19 @@ RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
       > /usr/lib/systemd/system/systemd-networkd.service.d/10-nyra-firewall.conf
 
 # Updates (docs/UPDATES.md): the check timer, and the health checks that boot-complete.target requires,
-# with the target pulled in on every boot (not only on counted ones). The build fails if a unit does
+# with the target pulled in on every boot (not only on counted ones); the daily copy of /etc
+# (docs/BOOT.md, "Restore earlier settings"). The build fails if a unit does
 # not verify (these, and the shutdown ones: console hangup, journal flush; docs/LESSONS.md), or if
 # the configuration is invalid or trusts a test key, or the notice health-failed runs is missing.
 # The image's default channel must be stable: every machine without a channel of its own follows
 # it, and the same image is promoted from one channel to the next (docs/UPDATES.md, "Channels").
 # (systemd-analyze writes to /run, which must stay empty in the image.)
 RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
-    ln -s ../nyra-updated.timer timers.target.wants/ && \
+    ln -s ../nyra-updated.timer ../nyra-etc-copy.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
+      nyra-etc-copy.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \

@@ -16,6 +16,8 @@ const LOADER_BOOT_COUNT_PATH: &str =
     "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 /// The time limit of every call but a pull (and the deletion of a deployment, which collects).
 pub const SHORT: Duration = Duration::from_secs(60);
+/// Makes a copy of /etc (docs/BOOT.md, "Restore earlier settings").
+const ETC_COPY: &str = "/usr/lib/nyra/etc-copy";
 /// Most output read from a command (bootc status is a few KiB); the rest is not read.
 const MAX_OUTPUT: u64 = 1024 * 1024;
 
@@ -280,6 +282,11 @@ impl System for Real {
     }
 
     fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
+        // A copy of /etc before every update, for "Restore earlier settings" (docs/BOOT.md). It
+        // never holds the update back: a copy that fails (the disk full) is only logged.
+        if let Err(e) = run_ok(Command::new(ETC_COPY).arg("update"), SHORT) {
+            eprintln!("<4>nyra-updated: no copy of /etc before this update: {e}");
+        }
         run_ok(
             Command::new("bootc").args(["switch", "--quiet", "--", image_ref]),
             self.stage_limit,

@@ -675,7 +675,7 @@ The image's UKI has three profiles (a multi-profile UKI, systemd 257 and later),
 |---|---|---|
 | 0 | Nyra OS | the one bootc writes: `<kargs.d> composefs=<digest>` |
 | 1 | Nyra OS Recovery | the same plus `systemd.unit=rescue.target` |
-| 2 | Nyra OS Reset settings | the same plus `systemd.unit=nyra-reset-settings.target fstab=no` (see "Reset system settings") |
+| 2 | Nyra OS Reset settings | the same plus `systemd.unit=nyra-reset-settings.target fstab=no` (see "Reset system settings"; the "Restore earlier settings" entry starts it too) |
 
 bootc computes the composefs digest, so `ci/ukify.sh` runs `bootc container ukify` once to read
 the command line, makes the recovery profile PE file with `ukify build --profile --cmdline`, and runs
@@ -685,7 +685,7 @@ the stub ignores any command line from the boot loader, and the only thing a boo
 the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in `StubProfile`).
 
 - **The menu entry** `loader/entries/nyra-recovery.CONF` (`title Nyra OS Recovery`, `uki` = a
-  bootc UKI, `profile 1`, `sort-key nyra-recovery`, after bootc's `bootc-<os>-0/1` in the menu) is
+  bootc UKI, `profile 1`, `sort-key nyra-1-recovery`, after bootc's `bootc-<os>-0/1` in the menu) is
   written by `nyra-boot-repair` at every boot, for the running system's UKI once that version is
   blessed (until then it stays on the version it points at, if that is still on the ESP). If that
   UKI is gone and the running one has no recovery profile, the entry is removed rather than left
@@ -733,9 +733,9 @@ When a user's changes in `/etc` break the system (`/etc/fstab`, `/etc/passwd`, t
 or deleted services), the boot menu offers **"Nyra OS Reset settings"**. When a health check fails
 on a version that is not on trial, the login console and the message after a login point there
 (`docs/UPDATES.md`, "The version or the settings"). It is profile 2 of the same signed
-UKI, with an entry `loader/entries/nyra-reset.CONF` kept by `nyra-boot-repair` exactly like the
-recovery entry (written for the running blessed version, carried across updates, invisible to
-bootc). A third profile needs no new key and keeps the command line sealed; it boots straight into
+UKI, with an entry `loader/entries/nyra-reset.CONF` (`sort-key nyra-3-reset`, the last of the
+three) kept by `nyra-boot-repair` exactly like the recovery entry (written for the running blessed
+version, carried across updates, invisible to bootc). A third profile needs no new key and keeps the command line sealed; it boots straight into
 `nyra-reset-settings.target`, like `rescue.target`. Its `fstab=no` makes systemd ignore `/etc/fstab`,
 in the initramfs too: whatever the user wrote there, the reset's question comes at once, and the image
 mounts nothing from it (its `/etc` has no `fstab`).
@@ -828,8 +828,9 @@ root is locked (a drop-in passed as a credential prints the unit's state and roo
 `/etc/shadow` on the console, so the check does not depend on a login with `/etc` emptied).
 
 Titanic T8 (docs/TITANIC.md, "Configuration broken by the user") breaks `/etc/fstab`, `/etc/passwd`,
-the network and `/etc/systemd/system` the way a user could, checks that each still boots, then breaks
-all of it at once, opens Recovery without the system accounts in `/etc/passwd`, and resets it.
+the network and `/etc/systemd/system` the way a user could, checks that each still boots and that
+"Restore earlier settings" (below) repairs it, then breaks all of it at once, opens Recovery without
+the system accounts in `/etc/passwd`, restores the copy, breaks all of it again and resets it.
 While `/etc/passwd` has a line that is not an account, bootc's `bootc-sysusers-shadow-sync.service`
 fails without changing anything (docs/TITANIC.md); after the reset it runs and succeeds again.
 
@@ -837,6 +838,101 @@ What the installer and later work must still decide: other system data a user ex
 networks once NetworkManager is in the image), and a "reset everything" that also clears `/var` and
 `/home` (the factory reset). After `/etc` is emptied no administrator is left, so recovery has no one
 to authenticate.
+
+## Restore earlier settings
+
+The reset loses the good settings with the broken ones. So `/etc` is copied every day and before
+every update, and the boot menu offers **"Nyra OS Restore earlier settings"**, just before "Nyra OS
+Reset settings", to go back to one of those copies. The settings screen will use the same command
+later; nothing here depends on it.
+
+**The copies** (`/usr/lib/nyra/etc-copy`):
+
+- **When:** once a day (`nyra-etc-copy.timer`, `OnCalendar=daily`, `Persistent=true`: a day the
+  machine was off is made up at the next boot), and by `nyra-updated` right before it stages an
+  update (`bootc switch`). A copy that fails before an update (the disk full) is logged and does not
+  hold the update back.
+- **Where:** `/var/lib/nyra/etc-copies/<date and time, UTC>-daily` or `-update`, on the root file
+  system, so on the same disk as `/etc` (encrypted with it, once the disk is). The directory is
+  root's, `0700`: no one else can even list it. Each copy is `cp -a` of `/etc`: every file's owner,
+  mode, ACLs and extended attributes as in `/etc` (`/etc/shadow` stays `0640 root:shadow`, inside a
+  directory only root can enter). A copy is made under a temporary name and renamed once complete, so
+  an interrupted copy is never offered, and the next run removes it. One run at a time (`flock`).
+- **How long:** at each new copy, those older than 30 days go, except the three newest, so a machine
+  that was off for a month still has the copies from before it. The 30 days are counted back from the
+  newest earlier copy that is not dated after now, never from the copy just made: a clock set far
+  ahead (a new copy dated 2099) removes nothing a right clock would not, and with a clock behind every
+  copy nothing goes. A copy dated after now (made with a wrong clock) goes only once the clock is
+  synchronised (`timedatectl`'s `NTPSynchronized`: the kernel's flag, which chronyd sets once NTS
+  corrected it; when that cannot be read, it counts as not synchronised); until then it is listed
+  first. `tools/vm/test-etc-copy.sh` checks these cases (CI, the shellcheck workflow). The timer does
+  not wait for the clock (`chrony-wait` is off, docs/DEFAULTS.md), so a copy can be named from a wrong
+  clock; only the removal depends on it.
+- **Space**, measured on the image: its `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4
+  gives each small file a 4 KiB block). A real copy on a booted test system, as
+  `tools/vm/reset-settings.sh` prints it: 2,992 KiB, 972 files.
+  udev's hardware database (`hwdb.bin`, 14 MB) is built into `/usr` by the image build; otherwise
+  `systemd-hwdb-update` writes it to `/etc` at the first boot, and each copy would take 16 MiB.
+  A month is 30 daily copies and one per update, about 35 copies or 100 MiB and 35,000 inodes, more if
+  the user's own files in `/etc` are large. The copies share nothing (ext4 has no reflinks), and an
+  unchanged `/etc` is copied all the same (simpler, and every copy keeps its own date). An update
+  whose download keeps failing is tried every 6 hours, with a copy each time: up to four a day, about
+  12 MiB, until it succeeds; 30 days of that would be about 450 MiB.
+- The unit runs sandboxed: everything read-only but its own directory (`StateDirectory=`), no
+  network, idle I/O priority.
+
+**The restore.** `loader/entries/nyra-restore.CONF` (`sort-key nyra-2-restore`, between Recovery
+and Reset settings) starts **the reset profile** (profile 2) of the same signed UKI. It is written,
+carried across updates and kept out of bootc's sight like the other two entries (see "Recovery").
+`reset-settings` reads which entry systemd-boot started (`LoaderEntrySelected` = `nyra-restore.conf`)
+and, from this one, lists the copies on the console, newest first, numbered, with their date and
+whether each was a daily copy or made before an update. Typing a number restores that copy; anything
+else, or Control-D, continues the normal boot and changes nothing. Then everything works as the
+reset (above), with the copy in place of the image's `/etc`:
+
+- **Kept from the current `/etc`, never from the copy:** the regular users (their lines in `passwd`,
+  `shadow`, `subuid` and `subgid`, their groups and their membership in the system groups, `sudo`
+  included), the machine ID and the host name, with the reset's rules. From the copy only its system
+  accounts and groups come back (IDs outside 1000-59999), and in its lists of group members only
+  names of those system accounts. A password changed since the copy, an account added or removed
+  since, an administrator added or demoted since: all stay as they are now. `/home` and `/var` are not
+  touched, the copies neither.
+- **Passwords, system accounts' included, stay the current ones.** No password comes from a copy: in
+  its `passwd` the password field becomes `x`; in its `shadow` and `gshadow` it becomes the current
+  one for the same name when the current file has exactly one well-formed line for it, otherwise the
+  account or group is locked (`!*`, `!`). A root password removed since the copy, a second UID 0
+  account deleted since, or a system group's password do not come back with their old passwords;
+  with a broken or missing current `shadow`, root stays locked, as in the image.
+- **Atomic:** the same marker, the same `mv --exchange` and the same handling of an interrupted run
+  as the reset, so a power cut leaves either the whole old `/etc` or the whole copy. The previous
+  `/etc` is kept as `etc.nyra-old` (`0700`), and the machine restarts into the normal boot.
+- **The same rules as the reset:** `fstab=no` (it is the reset profile), no first-boot questions, no
+  password (see "No password"; when Family or organization policies come, the password they require
+  applies to both entries, since it is the same service). Under Secure Boot the command line is the
+  reset profile's, sealed and unchanged; on a disk unlocked by the TPM it asks for the disk's password
+  or recovery key, like the reset ("TPM2 unlock": only the main profile is signed). No new UKI
+  profile, so `ci/uki-cmdline.txt`, the PCR 11 policy and their tests are unchanged.
+- **Another system version's `/etc`.** A copy made before an update holds the previous version's
+  defaults; restored on the new version, files the update changed in `/etc` go back to how they were
+  then (Debian's files there, such as the AppArmor profiles in `/etc/apparmor.d` or PAM's). bootc's
+  three-way merge then counts them as the user's changes, so they stay in their old form at the
+  following updates too, until a reset. Nyra keeps its defaults in `/usr`, so `/etc` holds little of
+  them.
+
+The entry is just as reachable from the keyboard as the reset, and what a copy brings back is limited
+to what `/etc` held in the last 30 days: settings, not accounts or passwords. Those settings include
+access rights: a restore brings back access rights revoked in the last 30 days (`sudoers.d`, polkit
+rules, PAM, an autologin drop-in, SSH host keys). The copies also keep old secrets from `/etc` (old
+password hashes, Wi-Fi keys) for up to 30 days, readable only by root.
+
+CI (`tools/vm/reset-settings.sh`, boots 16-19): the restore entry is in the menu between Recovery and
+Reset settings, with `profile 2`; the daily timer waits; the daily copy has every file of `/etc` with
+its owner and mode and the same `/etc/shadow`, and only root can enter the copies; after the copy the
+administrator's password changes, another administrator is added and the settings break as in boot 1.
+The restore entry lists the copy; a power cut as it switches leaves `/etc` whole; the restore then
+brings back the copy's `/etc/fstab`, `/etc/systemd/system` and system accounts, keeps root locked
+(it had a password when the copy was made), the new password and the new administrator, `/home`, and the previous `/etc` as `etc.nyra-old`. The copy before an
+update: `tools/vm/updates.sh`, boot 5. Titanic T8 restores a copy after each breakage.
 
 ## Mounts from /etc/fstab
 

@@ -28,6 +28,7 @@ listening='s="$(ss -Htulnp)" && test -n "$s" && l="$(echo "$s" | awk '"'"'{p=$7;
 # sockets are checked above; systemd's own sockets are local (AF_UNIX, varlink), and userdbd and
 # hostnamed are started through them on demand (user lookups at login, hostname queries). getty and
 # user@ come from the console login. chronyd-restricted keeps the clock right (NTS, outbound only).
+# nyra-etc-copy.timer makes the daily copy of /etc (docs/BOOT.md, "Restore earlier settings").
 # Anything new needs a reason and a line here, or a block in the Containerfile.
 read -r -d '' units_allowed <<'EOF' || true
 dbus\.(service|socket)
@@ -36,7 +37,7 @@ systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed)\.service
 systemd-[a-z0-9-]+\.socket
 (serial-)?getty@[a-zA-Z0-9]+\.service
 user@[0-9]+\.service
-(fstrim|systemd-tmpfiles-clean|nyra-updated)\.timer
+(fstrim|systemd-tmpfiles-clean|nyra-updated|nyra-etc-copy)\.timer
 EOF
 units='s="$(systemctl list-units --type=service,timer,socket --state=running,waiting,listening --no-legend --plain)" && test -n "$s" && u="$(echo "$s" | awk "{print \$1}")" && echo "$u" && x="$(echo "$u" | grep -vxE "'"${units_allowed//$'\n'/|}"'" || true)" && { test -z "$x" || { echo "undeclared units: $x"; false; }; }'
 # The units blocked in the Containerfile ("no purpose in the base") are all exactly "inactive"

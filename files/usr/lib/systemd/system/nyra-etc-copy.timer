@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A copy of /etc once a day (docs/BOOT.md, "Restore earlier settings"); after a day the machine was
+# off, at the next boot.
+[Unit]
+Description=Nyra: a daily copy of the system settings (/etc)
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

@@ -30,7 +30,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
 | T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh`, `tools/signing/tpm-unlock.sh` (the signed PCR policy unlocks the disk only in the initrd, swtpm) | full |
-| T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot? Then all of it at once, Recovery without the system accounts, and Reset settings, with Secure Boot) | full |
+| T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot, and does Restore earlier settings repair it? Then all of it at once, Recovery without the system accounts, Restore earlier settings, and, broken again, Reset settings, with Secure Boot) | full |
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | `tools/vm/encryption.sh` (without a TPM: the password and the recovery key unlock the disk in the initrd, a wrong password is asked again, the recovery key typed 120 s later and the password after three wrong ones still unlock it, no root partition ends in emergency mode after 90 s, neither secret in the logs or on the disk outside LUKS), `tools/vm/encryption-tpm.sh` (with a TPM and Secure Boot: the first boot unlocks by itself and enrolls the disk with the signed PCR policy, the next ones unlock by themselves, without the TPM the recovery key unlocks it, a TPM that stops answering before `leave-initrd` forces a reboot); the signed TPM unlock policy is tested under T7 and T15 (`tools/signing/tpm-unlock.sh`) | partial: not yet updates, Secure Boot off, a changed PCR 7, a cleared TPM, an add-on, the recovery profile, the policy key's rotation, the PIN |
 | T11 | Version jumps and channels | `tools/vm/channels.sh` (a jump over several versions with a retracted one between, refused sheets on the way and a retraction below the floor the jump raised; versions that change the sheet key, the default channel and the repository; a channel chosen on the machine, which survives a rollback; beta to stable back to stable's older version only with a sheet issued after the change, once, never below the floor, staged afresh with today's `/etc` even when it is the rollback deployment) | full |
@@ -143,35 +143,46 @@ no reset can bring back.
 [`tools/titanic/broken-config.sh`](../tools/titanic/broken-config.sh) follows one installed system
 with Secure Boot on, set up as for the hostile root (the shared part is
 [`tools/titanic/secure-boot-system.sh`](../tools/titanic/secure-boot-system.sh)). Root breaks `/etc`
-the way a user can; the system must still boot, and "Reset settings" (docs/BOOT.md, "Reset system
-settings") must bring the image's settings back:
+the way a user can; the system must still boot, "Restore earlier settings" (docs/BOOT.md) must bring
+back the settings of a copy made before, and "Reset settings" (docs/BOOT.md, "Reset system settings")
+the image's:
 
 | Boot | What | Expected |
 |---|---|---|
-| 1 | a user, an administrator with a password, and a file in their home | control: the user logs in with the password, a wrong one is refused, the network works |
-| 2 | `/etc/fstab`: a line that is not a mount, and a disk that is not connected (`LABEL=nyra-t8-data`, without `nofail`) | the system boots to a login prompt |
+| 1 | a user, an administrator with a password, and a file in their home; then the daily copy of `/etc` | control: the user logs in with the password, a wrong one is refused, the network works |
+| 2 | `/etc/fstab`: a line that is not a mount, and a disk that is not connected (`LABEL=nyra-t8-data`, without `nofail`) | the system boots to a login prompt; then "Nyra OS Restore earlier settings" (`bootctl set-oneshot`, as in the boot menu) with the copy from boot 1 repairs it (below) |
 | 3 | `/etc/passwd`: every system account deleted (root and the user kept), a line that is not an account | the same |
 | 4 | the network: the wired network's settings replaced in `/etc/systemd/network` with a wrong static address, `/etc/resolv.conf` replaced with a wrong name server | the same |
 | 5 | `/etc/systemd/system`: everything deleted (what the image enables there), then systemd-resolved, chronyd, the firewall and the update timer masked | the same |
-| 6 | all four at once; "Nyra OS Recovery" picked for the next boot (`bootctl set-oneshot`, as in the boot menu) | |
-| 7 | that boot: Recovery without the system accounts | it asks for an administrator although `/etc/passwd` has no `nobody`; a wrong password gives no shell, the right one a root shell in `rescue.target`; "Nyra OS Reset settings" picked for the next boot |
-| 8 | that boot: `RESET`, then the normal boot | running; `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; the user logs in with their password, a wrong one is refused; the network works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the firewall, AppArmor, the update timer); Secure Boot and the lockdown on |
+| 6 | all four at once; "Nyra OS Recovery" picked for the next boot | |
+| 7 | that boot: Recovery without the system accounts | it asks for an administrator although `/etc/passwd` has no `nobody`; a wrong password gives no shell, the right one a root shell in `rescue.target`; "Nyra OS Restore earlier settings" picked for the next boot |
+| 8 | that boot: the copy from boot 1, then the normal boot | repaired (below), the file in `/home` is the same; then all four broken again, "Nyra OS Reset settings" picked |
+| 9 | that boot: `RESET`, then the normal boot | `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; healthy (below) |
 
-Boots 2-5 each break a copy of the system after boot 1 (QEMU snapshot), then reboot it, so that each
-breakage shows what it does on its own. What happens is in the step summary and the serial logs
-(`serial-broken-config-<boot>.log` in `titanic-stress-serial-log`): the system state, the failed
-units, the basic services, the network, whether the user can log in, the boot's warnings. A boot that
-does not reach the login prompt fails the test: the expected result is that the system boots. The
-summary ends with one line per breakage and the result of the reset.
+**Repaired** means: `/etc/fstab`, `/etc/passwd` (but the user's line, which comes from the current
+`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the copy's; and
+**healthy**: running; the user logs in with their password, a wrong one is refused; the network
+works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the
+firewall, AppArmor, the update timer); Secure Boot and the lockdown on.
+
+Boots 2-5 each break the system, reboot it, so that each breakage shows what it does on its own, then
+restore the copy, which must leave a healthy system for the next one. Before each restore, copies the
+daily timer may have made since boot 1 (at midnight, of a broken `/etc`) are removed, so that the
+one offered is boot 1's. What happens is in the step summary and the serial logs
+(`serial-broken-config-<boot>.log` and `serial-broken-config-<boot>-restore.log` in
+`titanic-stress-serial-log`): the system state, the failed units, the basic services, the network,
+whether the user can log in, the boot's warnings. A boot that does not reach the login prompt fails
+the test: the expected result is that the system boots. The summary ends with one line per breakage
+and the results of the restore and of the reset.
 
 **One failed unit is expected, and only there.** bootc's `bootc-sysusers-shadow-sync.service` runs
 on every boot before `systemd-sysusers` and removes the lines of `/etc/shadow` and `/etc/gshadow`
 whose account is gone. It reads `/etc/passwd` first, and when a line there is not an account it stops
-with an error before it changes anything: the unit fails. On boots 3 and 7 (and on boot 8 before the
-reset) that is what it should do. It is harmless: `systemd-sysusers` runs only when `/etc` needs an
+with an error before it changes anything: the unit fails. On boots 3 and 7 (and on boots 8 and 9
+before the restore and the reset) that is what it should do. It is harmless: `systemd-sysusers` runs only when `/etc` needs an
 update, which these boots do not, and nothing else waits for it. T8 checks it on every boot with a
 shell: on boots 3 and 7 it failed, on the line that is not an account (its journal); on all the
-others, the reset's normal boot included, it ran and succeeded. A failure anywhere else, or for
+others, the normal boots after the restores and the reset included, it ran and succeeded. A failure anywhere else, or for
 another reason, fails the test; `systemctl --failed` is not filtered.
 
 The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
