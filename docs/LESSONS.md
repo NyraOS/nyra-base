@@ -605,8 +605,9 @@ Each line is something that broke or surprised us once.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
   needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
   session as local only when it has a seat: a logind session without one (`systemd-run -p
-  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer. With
-  `-p TTYPath=/dev/tty1` (the foreground virtual console) pam_systemd puts it on seat0, active. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
+  `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
+  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
   a shell script passed to it needs `--expand-environment=no`.
 
 ## Testing in CI
