@@ -86,6 +86,23 @@ RUN test "$(stat -c '%a %U %G' /usr/lib/cargo/bin/su)" = '4755 root root' && tes
       /usr/bin/visudo-rs && rmdir /etc/sudoers.d && \
     su --version 2>&1 | grep -q '^su-rs ' && ! command -v sudo && ! command -v sudoedit && ! command -v visudo
 
+# uutils coreutils (docs/DEFAULTS.md, "Core utilities"): every GNU coreutils command that uutils has
+# becomes a link to its multi-call binary, which runs the command its link is named after; the rest
+# of the build (dracut, the initramfs) already uses them. GNU's basenc, factor and stty stay (uutils
+# has none in Debian's build); the build fails when that list changes.
+RUN cd /usr/lib/cargo/bin/coreutils && for u in *; do \
+      for d in /usr/bin /usr/sbin; do \
+        [ -e "$d/$u" ] || continue; \
+        grep -q 'GNU coreutils' "$d/$u" || { echo "$d/$u is not GNU's" >&2; exit 1; }; \
+        if [ "$d" = /usr/bin ]; then ln -sf coreutils "$d/$u"; else ln -sf ../bin/coreutils "$d/$u"; fi || exit 1; \
+      done; \
+    done && cd / && rm -r /usr/lib/cargo/bin/coreutils && \
+    gnu="$(for f in /usr/bin/* /usr/sbin/*; do \
+      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" != /usr/bin/coreutils ] && grep -q 'GNU coreutils' "$f"; then echo "${f##*/}"; fi; \
+    done | tr '\n' ' ')" && \
+    { [ "$gnu" = 'basenc factor stty ' ] || { echo "GNU coreutils left: $gnu" >&2; exit 1; }; } && \
+    ls --version | grep -q '(uutils coreutils)' && test "$(readlink /usr/sbin/chroot)" = ../bin/coreutils
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password

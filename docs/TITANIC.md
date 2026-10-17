@@ -128,7 +128,11 @@ only if the action fails for another reason:
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file; the ESP's (at `/boot`) covers the same, taken right before and after `rm`, so
 that even a partial delete fails the test, which the next boot's repair would otherwise hide. The
-ESP as `rm` left it is listed in the step summary.
+ESP as `rm` left it is listed in the step summary. The files are hashed through `find -exec`, not
+`xargs`: after `rm` there is no `/dev/null`, xargs then starts its command with standard input
+closed, and a Rust program such as uutils' `sha256sum` aborts on that (docs/DEFAULTS.md, "Core
+utilities"). Any command of the checksum that fails fails the check (`pipefail`), so a missing hash
+can never pass as one.
 
 apt and dpkg: the message is help, not the protection, so both are tested: what the commands say,
 and Debian's dpkg itself, past the message, against the read-only `/usr`.

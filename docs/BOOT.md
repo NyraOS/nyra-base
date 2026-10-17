@@ -640,11 +640,11 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     and a fallback pointing to a deleted image could not boot at all. The running version has at
     least booted to the point of shutting down cleanly; once a later version is blessed, the
     fallback moves to it.
-  - **Space on the ESP.** One UKI is about 63 MB (kernel and initramfs). At most these sit on the ESP
+  - **Space on the ESP.** One UKI is about 68 MB (kernel and initramfs). At most these sit on the ESP
     at once: bootc's UKIs for the booted, the rollback and a staged version, the fallback, and,
     for a moment, a second fallback (the new copy is written before the old one is removed): five
-    UKIs, about 315 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`
-    creates, that leaves about 700 MB. When the ESP is full anyway, the copy fails before anything
+    UKIs, about 340 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`
+    creates, that leaves about 680 MB. When the ESP is full anyway, the copy fails before anything
     is replaced (a new file next to the old one, then a rename), the old fallback stays: at boot
     `esp-sync repair` fails visibly (the unit fails, the system shows as degraded); at shutdown the
     move only logs the failure, so the shutdown and bootc's swap go on.

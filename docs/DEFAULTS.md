@@ -300,3 +300,50 @@ Checked before: Python's `zlib` and `gzip` modules (compression levels -1 to 9, 
 streams, data from both libraries decompressed by the other) and curl's `--compressed`. Size: about
 500 KB against Debian's 120 KB.
 
+### Core utilities
+
+The commands of GNU coreutils are those of [uutils coreutils](https://github.com/uutils/coreutils)
+(Debian's `rust-coreutils`): `/usr/bin/<command>` (and `/usr/sbin/chroot`) is a link to its
+multi-call binary `/usr/bin/coreutils`, which runs the command its link is named after. GNU's
+`basenc`, `factor` and `stty` stay: Debian's build of uutils has none of them. GNU coreutils stays
+installed for them; the build fails when that list changes. The image build itself (dracut, the
+initramfs) already runs with uutils.
+
+Checked against GNU before, on the same input, for what the base's scripts and tests use: `mv -T
+--exchange` (the switch of Reset settings), `cp -a` (modes with setuid, setgid and sticky bits, owners,
+times, links, hard links, FIFOs, ACLs, extended attributes, `cp -a SRC/. DEST/`,
+`--one-file-system`), `chmod` and `chown --reference`, `install -m` and `-D`, `date` (`-d` with ISO
+and `@seconds`, `+FORMAT`, `-u`), `sort` (`-r`, `-V`, `-u`, `-z`, the C locale), `stat -c` (`%a`,
+`%U`, `%G`, `%s`, `%t %T`) and `stat -f`, `head`, `tail` (`-c +N`, `-n +N`, `-1`), `cut`, `tr`, `od
+-An -tu1 -N5` (the TPM enrollment in the initramfs: not `-j`, below), `seq -w`, `id -nG`, `readlink -f`,
+`mktemp -d`, `truncate`, `du`, `base64`, `sha256sum -c`, `ln -sT` and `-sfn`, `mkdir -m`, `tee -a`,
+`timeout`, `dd ... conv=fsync status=none`: same output and exit codes. The initramfs stays
+reproducible.
+
+Cost, measured in CI against main (the three Rust components together, uutils' share by far the
+largest): the image (OCI archive) 24 MB larger (+4.2%); the UKI 4.9 MB larger, the initramfs in it
+12.6 MB larger uncompressed (the multi-call binary, about 13.8 MB, instead of the few GNU commands it
+needs); no measurable difference in boot time.
+
+Every Rust program, uutils' commands among them, aborts at its start (SIGABRT, exit 134) when it is
+started with standard input, output or error closed and `/dev/null` cannot be opened: Rust's runtime
+opens `/dev/null` in place of a closed descriptor and aborts if it cannot. GNU's commands run on.
+That needs both a closed descriptor and no `/dev/null`: systemd always gives services open
+descriptors, and recovery and Reset settings start on a fresh devtmpfs, which has `/dev/null`. It
+happened in Titanic T12, after `rm -rf /`: GNU xargs, unable to open `/dev/null`, started
+`sha256sum` with standard input closed (the test now hashes with `find -exec`, docs/TITANIC.md). In a
+shell where `/dev/null` was deleted, `mknod -m 666 /dev/null c 1 3` brings it back.
+
+One difference was found only in a VM: `od -j N` skips by the size the file system reports, and
+efivarfs in the initramfs reported less than the variable holds, so `od -An -tu1 -j4 -N1` on
+`SecureBoot` failed and the TPM enrollment took Secure Boot for off. GNU reads to skip. The enrollment
+now reads the first five bytes (`od -N5`) and takes the fifth, which both do the same.
+
+### What stays Debian's
+
+| Component | Why it is not replaced (yet) |
+|---|---|
+| chrony, not ntpd-rs (1.9.0) | ntpd-rs checks the NTS server's certificate against the system clock, with no way to skip the dates until the first clock update (chrony's `nocerttimecheck`, see "Time"). A clock in 2035 or 2099 therefore never gets corrected: every key exchange fails with an expired certificate (tried with the clock moved, against `time.cloudflare.com` and `nts.netnod.se`), and the update tests (T9) need that correction |
+| GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
+| GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
+

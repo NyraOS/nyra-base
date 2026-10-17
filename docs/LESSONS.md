@@ -393,6 +393,26 @@ Each line is something that broke or surprised us once.
   is a static library linked with `cc -shared` and zlib's version script (`--undefined-version`, since
   the script names functions the build leaves out). Its `gzprintf` feature needs a nightly compiler
   (`c_variadic`); a stable build simply lacks `gzprintf` and `gzvprintf`.
+- uutils (coreutils 0.12.0, findutils 0.10.0, diffutils 0.5.0) differs from GNU where it is not
+  obvious: `find -newermt` refuses every date form (dracut's `clamp_mtimes` relies on `@SECONDS`),
+  `find -printf %m` prints the mode without the setuid, setgid and sticky bits, and `diff` has no
+  `-r`. Compare a command's output with GNU's on the same input before relying on it; a listing made
+  with uutils `find` can hide a difference of `cp` (it looked as if `cp -a` dropped the setgid bit).
+- uutils `od -j N` skips by the size `stat` reports, also on its standard input, and fails ("cannot
+  skip past end of combined input") where that size is smaller than the content: procfs files, and
+  efivarfs in the initrd, where the TPM enrollment read `SecureBoot` as missing and gave up ("Secure
+  Boot is off"). GNU reads to skip. `od -N 5` and the fifth number, or a pipe, work with both.
+- A Rust program started with fd 0, 1 or 2 closed reopens it on `/dev/null`, and aborts (SIGABRT)
+  when it cannot: with `/dev/null` gone (`rm -rf /` in Titanic T12), uutils' `sha256sum` died at
+  once. GNU xargs starts its command with standard input closed when it cannot open `/dev/null`, so
+  `find | xargs -0 sha256sum` hashed nothing and printed the hash of an empty input, which looked
+  like a changed `/usr`. `find -exec cmd {} +` passes the shell's own descriptors; `set -o pipefail`
+  inside the command substitution turns such a failure into a failed check instead of a wrong hash.
+- GNU strings are no test for GNU binaries: uutils' multi-call binary contains "GNU coreutils" too.
+- ntpd-rs (1.9.0) checks NTS-KE certificates with rustls against the system clock and has no option
+  to skip the dates, so it cannot correct a clock outside their validity by itself. libfaketime
+  (`FAKETIME=@2035-06-01 00:00:00`) with `ntp-ctl force-sync` shows it without root: `ExpiredContext`
+  on every key exchange.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
