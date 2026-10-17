@@ -538,6 +538,9 @@ Each line is something that broke or surprised us once.
   echoed. A test that types a secret on a console waits a moment after the prompt.
 
 ## Testing in CI
+- In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
+  exits 0 whatever happens. Pass the input as an argument (or use `lastpipe`), and prove a test can
+  fail by running it against changed copies of the code (mutants) that must make it exit non-zero.
 - On the CI runner's loopback (64 KiB MTU) a large upload to the throwaway registry can stall for
   good: the kernel shrinks the receiving socket's buffer below one segment, the window it offers is
   smaller than the sender's MSS, and silly window avoidance keeps the sender waiting (podman push

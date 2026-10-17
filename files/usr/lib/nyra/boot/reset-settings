@@ -75,6 +75,11 @@ EOF
 		echo "Nothing changed. Continuing the normal boot."
 		exec systemctl --job-mode=fail --no-block default
 	fi
+	# Its system accounts are needed (and read below): a copy without them is not restored.
+	if [ ! -f "$copies/$src/passwd" ]; then
+		echo "This copy has no /etc/passwd and cannot be restored. Nothing changed. Continuing the normal boot."
+		exec systemctl --job-mode=fail --no-block default
+	fi
 	echo "reset-settings: restoring the copy $src"
 	src="$copies/$src"
 else
