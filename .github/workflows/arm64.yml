@@ -234,6 +234,7 @@ jobs:
             sudo udevadm settle
           fi
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then kvm=true timeout=300; else kvm=false timeout=1800; fi
+          echo "kvm=$kvm ($(ls -l /dev/kvm 2>&1))"
           echo "kvm=$kvm" >> "$GITHUB_OUTPUT"
           echo "BOOT_TIMEOUT=$timeout" >> "$GITHUB_ENV"
           {
@@ -248,10 +249,11 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ipxe-qemu: the virtio NIC's option ROM file, which QEMU must find (only recommended on arm64).
       - name: Install QEMU and edk2 (AAVMF)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-arm qemu-utils qemu-efi-aarch64 \
+          sudo apt-get install -y -q --no-install-recommends qemu-system-arm qemu-utils qemu-efi-aarch64 ipxe-qemu \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           qemu-system-aarch64 --version | head -1
           ls -l /usr/share/AAVMF

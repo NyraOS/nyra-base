@@ -85,10 +85,11 @@ OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 OVMF_CODE_SECBOOT = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
 SERIAL = "ttyS0"
-# aarch64: one firmware for both (Secure Boot is on when the variable store has keys); no SMM on ARM.
+# aarch64: Ubuntu's AAVMF_CODE.fd is the build without Secure Boot; no SMM on ARM.
 ARM64 = platform.machine() == "aarch64"
 if ARM64:
-    OVMF_CODE = OVMF_CODE_SECBOOT = "/usr/share/AAVMF/AAVMF_CODE.fd"
+    OVMF_CODE = "/usr/share/AAVMF/AAVMF_CODE.fd"
+    OVMF_CODE_SECBOOT = "/usr/share/AAVMF/AAVMF_CODE.secboot.fd"
     OVMF_VARS = "/usr/share/AAVMF/AAVMF_VARS.fd"
     SERIAL = "ttyAMA0"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "

@@ -41,6 +41,8 @@ publishes nothing. Its artifacts: the image (`nyra-base-arm64-oci-archive`), the
 The `boot` job installs the image as the installer does (`tools/vm/install-disk.sh`, then
 `esp-sync install`) and boots it with QEMU's `virt` machine and edk2 (Ubuntu's `qemu-efi-aarch64`,
 AAVMF), with KVM when the runner has it and emulated (TCG) otherwise; its summary says which.
+GitHub's arm64 runners (`ubuntu-24.04-arm`) have no `/dev/kvm` (October 2026), so the boots are
+emulated.
 `tools/vm/arm64-boot.sh`:
 
 1. without Secure Boot, with a TPM (swtpm): the system starts with no failed unit, it runs the
