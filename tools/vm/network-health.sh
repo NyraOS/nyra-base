@@ -15,9 +15,10 @@
 # The boots:
 #   1    installed image: test trust set up; switch to g1 by its channel tag
 #   2    g1: the network check has nothing recorded yet; an update check records the link with its
-#        address; b2 staged
+#        address; a link recorded before but not there now is dropped at the next check; b2 staged
 #   3-6  b2 gets no address within 60 s and fails the network check, three times; systemd-boot
 #        falls back to g1, which checks the network too (the boot after a failed trial) and passes;
+#        b2 failed only the network check, so it may be tried once more a day later (not here);
 #        b2 is marked failed and refused; b3 staged
 #   7    b3 with the cable unplugged (no carrier): the network check does not judge it, the boot is
 #        healthy and blessed, b3 is not marked failed
@@ -225,12 +226,13 @@ vm "g1: the link recorded with its address; b2 (broken network) staged" \
   --command 'systemctl show -p PrivateNetwork -p RestrictAddressFamilies -p CapabilityBoundingSet nyra-health-network.service && test "$(systemctl show -P PrivateNetwork nyra-health-network.service)" = no && test "$(systemctl show -P RestrictAddressFamilies nyra-health-network.service | tr " " "\n" | sort | xargs)" = "AF_NETLINK AF_UNIX" && test -z "$(systemctl show -P CapabilityBoundingSet nyra-health-network.service)"' \
   --command "$lib; outcome s1 UpToDate" \
   --command 'cat /var/lib/nyra-updated/network-links && test -s /var/lib/nyra-updated/network-links && (for l in $(cat /var/lib/nyra-updated/network-links); do networkctl list --no-legend --no-pager "$l" | grep -w routable || exit 1; done)' \
+  --command "echo gone0 >> /var/lib/nyra-updated/network-links && $lib && outcome s1 UpToDate && cat /var/lib/nyra-updated/network-links && ! grep -x gone0 /var/lib/nyra-updated/network-links && test -s /var/lib/nyra-updated/network-links && ! test -e /var/lib/nyra-updated/network-links.new" \
   --command "$lib; outcome s2 Staged && expect staged $b2"
 
 vm "b2 gets no address three times, back on g1 by itself" --boots 4 --timeout 600 \
   --command "$lib; expect booted $g1 && running && test \"\$(queued)\" = true" \
-  --command "$said | grep -F 'a routable address as before' && ! test -e /var/lib/nyra-updated/network-failed" \
-  --command "$lib; outcome s2 RollbackUndone && test \"\$(queued)\" = false && expect rollback $b2 && $(state "\"$b2\" in s[\"failed\"]")" \
+  --command "$said | grep -F 'a routable address as before' && ! test -e /var/lib/nyra-updated/network-failed && test -e /var/lib/nyra-updated/network-fallback" \
+  --command "$lib; outcome s2 RollbackUndone && test \"\$(queued)\" = false && expect rollback $b2 && ! test -e /var/lib/nyra-updated/network-fallback && $(state "\"$b2\" in s[\"failed\"] and s[\"network_retry\"][\"digest\"] == \"$b2\" and not s[\"network_retry\"][\"retried\"]")" \
   --command "$lib; refused s2 'this machine fell back from it' && expect staged none" \
   --command "$lib; outcome s3 Staged && expect staged $b3"
 l="$logs/serial-network-health-$n.log"
