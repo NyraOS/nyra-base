@@ -1,6 +1,6 @@
 # systemd: a failed read of LoaderDevicePartUUID leaves the initrd without its root
 
-Status: not sent upstream. nyra-base works around it in the image
+Status: not sent upstream (our own patch; public domain, see README.md). nyra-base works around it in the image
 (`files/usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules`, docs/BOOT.md, "Finding the root
 partition"); the change below would make that rule unnecessary.
 

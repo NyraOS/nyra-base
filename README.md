@@ -40,4 +40,5 @@ Every change goes through a pull request and must keep the test battery green. S
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE). Our patches to other projects, in [`patches/upstream/`](patches/upstream/), are public domain
+([Unlicense](patches/upstream/LICENSE)): anyone may take them, no questions asked.

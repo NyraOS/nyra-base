@@ -21,7 +21,8 @@ strict but short.
 - **Pin what CI runs:** actions by commit SHA, container images by digest, packages by version or
   hash.
 - **English** for code, comments, commit messages and documentation. New files carry an SPDX header
-  (`GPL-3.0-or-later`, the licence of this repository); contributions are accepted under it.
+  (`GPL-3.0-or-later`, the licence of this repository); contributions are accepted under it. Exception: our patches to other projects in `patches/upstream/` are public domain
+  (`Unlicense`, see `patches/upstream/README.md`).
 - **CI minutes are limited:** run shellcheck, actionlint and the offline tests locally before you
   push, and push once when the change is ready.
 
