@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# In the running system, systemd-gpt-auto-generator uses only the root partition (encrypted or not) and
+# the ESP of the root's disk, and ignores every other partition type on it (swap, /home, /srv, /var,
+# /var/tmp, ...): a partition someone adds to the disk is never swapped to or mounted, so nothing of an
+# encrypted system is written there in the clear (docs/BOOT.md, "Disk encryption"). Part of the
+# command line sealed in the UKI.
+kargs = ["systemd.image_policy=root=encrypted+unprotected+absent:esp=unprotected+absent:=ignore"]

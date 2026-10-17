@@ -148,17 +148,30 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
 # and the udev rule that probes the boot disk once more when its first probe could not read
-# LoaderDevicePartUUID (docs/BOOT.md, "Finding the root partition"). The 10 s device timeout of the
+# LoaderDevicePartUUID (docs/BOOT.md, "Finding the root partition"), and for an encrypted root: no time
+# limit for its device, the passphrase asked again after wrong ones, a root partition still required
+# within 90 s (nyra-root-wait.service), and the ESP found on its disk (nyra-luks-root.service;
+# docs/BOOT.md, "Disk encryption"). The 10 s device timeout of the
 # running system (dev-.device.d) must stay out of it: the root may take longer to appear.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
     test -f /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\ninstall_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules "\n' \
+    mkdir -p /usr/lib/systemd/system/initrd.target.wants && \
+    ln -s ../nyra-root-wait.service ../nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/ && \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
+    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service "' \
+      >> /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver" && \
     lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initrd.txt && \
     grep -q ' usr/lib/systemd/system/local-fs.target$' /tmp/initrd.txt && \
+    for f in usr/lib/nyra/boot/root-wait usr/lib/systemd/system/nyra-root-wait.service \
+      'usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service -> ' \
+      usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf \
+      'usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf' usr/lib/nyra/boot/luks-root \
+      usr/lib/systemd/system/nyra-luks-root.service 'usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service -> '; do \
+      grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 
 # Mounts from /etc/fstab (docs/BOOT.md): one that fails (a disk that is not connected, a wrong line)

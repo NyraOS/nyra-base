@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Initrd only (nyra-luks-root.service), for an encrypted root (docs/BOOT.md, "Disk encryption"). In the
+# running system, systemd-gpt-auto-generator mounts the ESP of the root's disk at /boot, and finds that
+# disk through /run/systemd/volatile-root. bootc points it at /dev/gpt-auto-root, which for an encrypted
+# root is the opened volume, whose disk systemd does not look for: the ESP would not be mounted. Point
+# it at the LUKS2 partition instead, as systemd itself finds the disk of an encrypted root file system;
+# bootc keeps a link that is already there.
+set -eu
+# shellcheck disable=SC2046 # two hexadecimal numbers
+set -- $(stat -L -c '%t %T' /dev/gpt-auto-root-luks)
+ln -sfn "/dev/block/$((0x$1)):$((0x$2))" /run/systemd/volatile-root
