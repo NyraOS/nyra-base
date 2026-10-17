@@ -1,0 +1,86 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS health check (nyra-health-network.service, docs/UPDATES.md, "The network"): a new version
+# brings up the network that the versions before it brought up. It fails only when that is clearly
+# the version's fault: a link systemd-networkd configured with a routable address on a healthy boot
+# before (the record) has carrier now, but no routable address within $wait seconds. A link without
+# carrier (no cable), waiting for authentication (dormant) or not there at all (a USB adapter
+# unplugged) is not judged, so a machine without a network never fails it.
+#
+#   network         the check: on a boot on trial (systemd-boot counts its tries), and on the boot
+#                   after a trial boot that failed it, the version fallen back to: if that one gets
+#                   no address either, the network or the settings are to blame (rule 12)
+#   network record  nyra-updated.service, before every update check, on a healthy boot: adds the
+#                   links configured with a routable address to the record
+set -fu
+dir=/var/lib/nyra-updated
+record="$dir/network-links"
+failed="$dir/network-failed"
+wait=60  # seconds a link with carrier has to get a routable address
+grace=20 # seconds a link has to show carrier (Ethernet negotiation) before it counts as unplugged
+
+links() { # one line per link: NAME OPERATIONAL-STATE SETUP-STATE
+	networkctl list --no-legend --no-pager 2>/dev/null | while read -r _ name _ oper setup _; do
+		echo "$name $oper $setup"
+	done
+}
+
+if [ "${1:-}" = record ]; then
+	systemctl is-active --quiet boot-complete.target || exit 0
+	new="$(links | while read -r name oper setup; do
+		[ "$oper $setup" = "routable configured" ] && echo "$name"
+	done)"
+	[ -n "$new" ] || exit 0
+	{ cat "$record" 2>/dev/null; echo "$new"; } | sort -u >"$record.new" && mv "$record.new" "$record"
+	exit
+fi
+
+# systemd-boot sets LoaderBootCountPath when it starts an entry that still counts its tries.
+if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]; then
+	trial=yes
+elif [ -e "$failed" ]; then
+	trial=no
+else
+	exit 0
+fi
+rm -f "$failed"
+if [ ! -s "$record" ]; then
+	echo "no link recorded with an address yet: nothing to compare"
+	exit 0
+fi
+
+read -r start _ </proc/uptime
+start="${start%.*}"
+while :; do
+	read -r up _ </proc/uptime
+	elapsed=$((${up%.*} - start))
+	seen="$(links)"
+	waiting="" unplugged="" fine=""
+	for name in $(cat "$record"); do
+		state="$(printf '%s\n' "$seen" | while read -r n oper setup; do
+			[ "$n" = "$name" ] && echo "$oper $setup"
+		done)"
+		case "$state" in
+		routable\ *) fine="$fine $name" ;;
+		"" | no-carrier\ * | dormant\ *)
+			if [ "$elapsed" -lt "$grace" ]; then
+				waiting="$waiting $name"
+			else
+				unplugged="$unplugged $name"
+			fi
+			;;
+		*) waiting="$waiting $name ($state)" ;;
+		esac
+	done
+	if [ -z "$waiting" ]; then
+		[ -z "$fine" ] || echo "a routable address as before:$fine"
+		[ -z "$unplugged" ] || echo "no carrier or no such link, not judged:$unplugged"
+		exit 0
+	fi
+	if [ "$elapsed" -ge "$wait" ]; then
+		echo "no routable address after $wait s, although the links had one before:$waiting"
+		[ "$trial" = no ] || : >"$failed"
+		exit 1
+	fi
+	sleep 1
+done

@@ -657,6 +657,11 @@ jobs:
         timeout-minutes: 30
         run: tools/vm/channels.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      - name: A version that breaks the network, Titanic T3 (docs/UPDATES.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 30
+        run: tools/vm/network-health.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Network across soft reboots (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 45

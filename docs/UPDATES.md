@@ -190,6 +190,7 @@ by hand is discarded with it.
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
+| `nyra-health-network.service` | a health check, on a version on trial: the links that had a routable address before get one again (below, "The network"); `/usr/lib/nyra/health/network`, which also keeps the record of those links (`/var/lib/nyra-updated/network-links`, before every check of `nyra-updated.service`) |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
@@ -243,6 +244,36 @@ Any failed health check on a boot that is not on trial shows the notice, with or
 a version that is not on trial passed its checks before, so what changed is the machine. The cost of
 not knowing at once: the new version's three tries before the fallback.
 
+**The network.** A version that breaks the network must fall back like any unhealthy one, but a
+machine without a network must not make a good version fall back. `nyra-health-network.service`
+judges only what is clearly the version's fault: a link that systemd-networkd configured with a
+routable address (IPv4, or IPv6 beyond link-local) on a healthy boot before now has carrier, but no
+routable address within 60 s. A link without carrier for 20 s (no cable; Ethernet takes a few
+seconds to negotiate), waiting for authentication (`dormant`) or not there at all (a USB adapter
+unplugged) is not judged. networkd or resolved not running is the core services check's.
+
+- **The record.** Before every update check (`ExecStartPre=` of `nyra-updated.service`: 15 minutes
+  after boot, then every 6 hours), on a healthy boot (`boot-complete.target` active), the links
+  networkd configured (setup state `configured`) with a routable address are added to
+  `/var/lib/nyra-updated/network-links`. Links are only added, never removed: a link that had an
+  address once is expected to get one again whenever it has carrier. Links networkd does not manage
+  (a container bridge) are left out. An update is staged by such a check, so the record holds the
+  link it came over before the new version first boots.
+- **When it judges.** Only on a boot on trial (systemd-boot started an entry that counts its tries:
+  `LoaderBootCountPath`), so a version that passed its checks never waits for an address at boot,
+  and a router that is down does not delay the login on it. And on the boot after a trial boot that
+  failed it (`/var/lib/nyra-updated/network-failed`), which is the version fallen back to: rule 12
+  needs to know whether that one gets an address. If it does, the new version is marked failed; if
+  it does not, the network or the settings are to blame, as for any check both versions fail: the
+  new version is forgiven, and the notice says to reset the settings.
+- **The cost.** A version on trial whose link has carrier but gets no address delays the login by
+  60 s; a version that breaks the network takes three times that longer to fall back.
+- **Not covered.** A link that a new version names differently (another naming scheme) is "not
+  there" and not judged, and a new kernel whose driver never reports carrier looks like a cable
+  unplugged: such a version keeps running without a network. A router that answers no DHCP during
+  all three tries, and again by the fallback boot, marks a good version failed; the next version is
+  offered as usual. Wi-Fi is not in the base yet.
+
 A broken kernel or initramfs never reaches the health checks: the sealed command line has `panic=10`
 (`/usr/lib/bootc/kargs.d/10-nyra-panic.toml`), so a kernel panic reboots instead of halting, and the
 version uses up its tries like any unhealthy one.
@@ -260,7 +291,8 @@ remounts `/sysroot` and the read-only ESP read-write there; `esp-sync discard` d
 `ProtectSystem=full`, `ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup
 protections and a list of address families (`systemd-analyze security`: 6.5). The health checks and
 `health-failed` only read state and ask systemd for a reboot: no network, no capabilities where
-possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutStartSec` is above that.
+possible. The network check sees the machine's links (no private network namespace), but opens no
+network socket (only `AF_UNIX` and `AF_NETLINK`). The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutStartSec` is above that.
 
 **What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
@@ -342,6 +374,17 @@ with its own update configuration (sheet key, repository, default channel, versi
 | 11 | 2026.11.11 from `nyra-next` | up to date |
 
 The versions the jump skips never boot: every boot checks which version runs.
+
+**A version that breaks the network** (`tools/vm/network-health.sh`, Titanic T3): on its own copy of
+the installed disk, set up the same way, with the test versions 2026.12.1 (good), 2026.12.2 and
+2026.12.3 (the image's wired network without DHCP and router advertisements: the link has carrier and
+only an IPv6 link-local address).
+
+| Boot | Scenario | Expected |
+|---|---|---|
+| 1-2 | 2026.12.1 boots on trial | the network check has no record yet and passes; the next update check records the link with its address; 2026.12.2 staged |
+| 3-6 | 2026.12.2 | no routable address within 60 s, three times: it reboots by itself and systemd-boot falls back to 2026.12.1, which checks the network too (the boot after a failed trial) and passes; 2026.12.2 is marked failed, bootc's order set right (`RollbackUndone`) and the version refused; 2026.12.3 staged |
+| 7 | 2026.12.3 with the cable unplugged (`vm-boot.py --no-carrier`: the NIC's link down from the start) | the link is not judged (no carrier), the boot is healthy and blessed, the version is not marked failed |
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
 disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft
