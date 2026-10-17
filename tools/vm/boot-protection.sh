@@ -107,7 +107,8 @@ loader() { # systemd-boot's own path, as the firmware or shim started it
   echo "l=\"\$(tail -c +5 /sys/firmware/efi/efivars/LoaderImageIdentifier-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tr -d '\\000')\"; echo \"systemd-boot: \$l\"; test \"\$l\" = '$1'"
 }
 first='efibootmgr; o="$(efibootmgr | sed -n "s/^BootOrder: //p")"; efibootmgr -v | grep -q "^Boot${o%%,*}\*\{0,1\} Nyra OS$(printf "\t")"'
-repair='s="$(systemctl is-system-running --wait)"; echo "system: $s"; journalctl -b -u nyra-boot-repair -o cat --no-pager; test "$s" = running'
+# A failed unit is named, with the end of its journal (this boot, the initrd included).
+repair='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; for u in $(systemctl --failed --plain --no-legend | cut -d " " -f 1); do journalctl -b -u "$u" -o short-monotonic --no-pager | tail -n 30; done; journalctl -b -u nyra-boot-repair -o cat --no-pager; test "$s" = running'
 # (Guest commands are typed into the login shell: no "exit" in them.)
 same='u=/usr/lib; cmp $u/shim/shimx64.efi.signed /boot/EFI/nyra/shimx64.efi && cmp $u/shim/shimx64.efi.signed /boot/EFI/BOOT/BOOTX64.EFI && cmp $u/systemd/boot/efi/systemd-bootx64.efi.signed /boot/EFI/nyra/grubx64.efi && cmp $u/systemd/boot/efi/systemd-bootx64.efi.signed /boot/EFI/BOOT/grubx64.efi && cmp $u/shim/mmx64.efi.signed /boot/EFI/nyra/mmx64.efi && cmp $u/shim/mmx64.efi.signed /boot/EFI/BOOT/mmx64.efi && echo "boot files as in /usr"'
 with_esp() { sudo mount "$esp" "$mnt"; "$@"; sudo umount "$mnt"; }

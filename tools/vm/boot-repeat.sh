@@ -7,13 +7,16 @@
 # level, as in the other boot tests: the boots that failed now and then in CI did so without debug
 # logging, never with it. The test add-on also turns the image's rd.emergency=reboot into a halt, so
 # that a boot that ends in the initrd's emergency mode does not start again (after its diagnostics).
-# First, three checks:
+# First, four checks:
 # - a boot whose root mount is made to fail in the initrd shows those diagnostics;
 # - a boot whose first probe of the boot disk cannot read LoaderDevicePartUUID (a test-only udev rule
 #   puts a 1-byte file over it for that probe only, inside systemd-udevd's own mount namespace)
 #   without the image's rule that probes the disk again (masked): the initrd waits for its root in
 #   vain, as in the boots that failed in CI;
-# - the same boot with that rule: the root partition is found and the system starts.
+# - the same boot with that rule: the root partition is found and the system starts;
+# - nyra-root-wait.service still waiting when the initrd ends (a drop-in makes it sleep first, as it
+#   does between two checks): it is stopped there without failing, and the system is "running", not
+#   "degraded".
 # install-boot runs these checks on every image (ROUNDS 0), so that a systemd or dracut update that
 # changes the order of the udev rules or what the initrd holds is caught.
 #   tools/vm/boot-repeat.sh IMAGE DISK UKI_CERT WORKDIR LOGDIR SUMMARY ROUNDS   (DISK: raw or qcow2)
@@ -78,6 +81,12 @@ fi
 boot --log "$logs/serial-boot-repeat-efivar-unread-probed-again.log" --credential "$fail_once" \
   --title "Repeated boots: the first probe of the boot disk cannot read LoaderDevicePartUUID, the second one can" \
   --command 'test -d /run/nyra-test-efivar-failed-once && echo "the first probe of the boot disk could not read LoaderDevicePartUUID; the system started"'
+
+# The initrd ends while nyra-root-wait.service sleeps: it stops there, and that is not a failure.
+boot --log "$logs/serial-boot-repeat-root-wait-stopped.log" \
+  --credential $'systemd.unit-dropin.nyra-root-wait.service=[Service]\nExecStart=\nExecStart=/bin/sh -c "sleep 60; exec /usr/lib/nyra/boot/root-wait"\n' \
+  --title "Repeated boots: the initrd ends while nyra-root-wait sleeps; the system is not degraded" \
+  --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; journalctl -b -u nyra-root-wait -o short-monotonic --no-pager; journalctl -b -u nyra-root-wait -o cat | grep -q "^Stopped nyra-root-wait.service" && echo "stopped in the initrd while it waited" && test "$s" = running'
 
 if [ "$rounds" = 0 ]; then exit 0; fi
 failed=()

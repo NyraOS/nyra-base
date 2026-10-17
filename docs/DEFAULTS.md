@@ -110,7 +110,7 @@ Nyra's own, in the initramfs only:
 
 | Unit | Why | Cost |
 |---|---|---|
-| `nyra-root-wait.service` | the initrd waits for an encrypted root without a time limit (its passphrase may take long), but a root partition must still appear within 90 s (docs/BOOT.md, "Disk encryption") | one-shot in the initrd: checks once a second whether the root partition is there, which it normally is within a second or two; nothing resident |
+| `nyra-root-wait.service` | the initrd waits for an encrypted root without a time limit (its passphrase may take long), but a root partition must still appear within 90 s (docs/BOOT.md, "Disk encryption") | a wait in the background in the initrd: checks once a second whether the root partition is there, which it normally is within a second or two, and is stopped when the initrd ends; nothing resident |
 | `nyra-luks-root.service` | with an encrypted root, the running system finds the ESP on the LUKS2 partition's disk (docs/BOOT.md, "Disk encryption") | one-shot in the initrd, only with an encrypted root: one symbolic link; nothing resident |
 | `nyra-tpm-enroll.service` | the first boot of a disk installed for a TPM enrolls it with the signed PCR policy (docs/BOOT.md, "Disk encryption") | one-shot in the initrd, after the disk is unlocked: on an encrypted disk it reads the LUKS2 tokens from the header (milliseconds) and stops there, except at that first boot (one enrollment, under a second); on a plain disk nothing; nothing resident. With it, the initramfs carries `systemd-cryptenroll`, `cryptsetup` and `od` |
 
