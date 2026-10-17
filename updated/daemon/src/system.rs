@@ -16,8 +16,6 @@ const LOADER_BOOT_COUNT_PATH: &str =
     "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 /// The time limit of every call but a pull (and the deletion of a deployment, which collects).
 pub const SHORT: Duration = Duration::from_secs(60);
-/// Makes a copy of /etc (docs/BOOT.md, "Restore earlier settings").
-const ETC_COPY: &str = "/usr/lib/nyra/etc-copy";
 /// Most output read from a command (bootc status is a few KiB); the rest is not read.
 const MAX_OUTPUT: u64 = 1024 * 1024;
 
@@ -215,6 +213,17 @@ pub fn esp_sync_discard() -> Command {
     cmd
 }
 
+/// A copy of /etc before the next boot changes version, for "Restore earlier settings"
+/// (docs/BOOT.md). The unit makes it: it sees the image's /etc, to keep only what differs. A copy
+/// that fails (the disk full) is only logged: it never holds the change back.
+fn copy_etc(kind: &str) {
+    let unit = format!("nyra-etc-copy@{kind}.service");
+    if let Err(e) = run_ok(Command::new("systemctl").args(["start", &unit]), SHORT) {
+        let e = crate::one_line(&e.to_string());
+        eprintln!("<4>nyra-updated: no copy of /etc before this {kind}: {e}");
+    }
+}
+
 /// Everything bootc wrote on disk before the result counts. bootc fsyncs only the ESP's top
 /// directory, so the new UKI and boot entries can still be in memory, and a power cut then damages
 /// the ESP, which is FAT and has no journal (seen in CI: orphaned clusters, a corrupted directory).
@@ -298,12 +307,7 @@ impl System for Real {
     }
 
     fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
-        // A copy of /etc before every update, for "Restore earlier settings" (docs/BOOT.md). It
-        // never holds the update back: a copy that fails (the disk full) is only logged.
-        if let Err(e) = run_ok(Command::new(ETC_COPY).arg("update"), SHORT) {
-            let e = crate::one_line(&e.to_string());
-            eprintln!("<4>nyra-updated: no copy of /etc before this update: {e}");
-        }
+        copy_etc("update");
         run_ok(
             Command::new("bootc").args(["switch", "--quiet", "--", image_ref]),
             self.stage_limit,
@@ -312,6 +316,8 @@ impl System for Real {
     }
 
     fn rollback(&mut self) -> Result<(), Error> {
+        // The other version boots with the /etc it had: today's settings stay in the copy.
+        copy_etc("rollback");
         run_ok(Command::new("bootc").arg("rollback"), SHORT)?;
         sync()
     }

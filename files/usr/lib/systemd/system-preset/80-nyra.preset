@@ -6,3 +6,8 @@
 enable chronyd-restricted.service
 disable chrony.service
 disable chrony-wait.service
+# Removable media (docs/DEFAULTS.md): udisks2 and polkitd start through D-Bus when a user asks to
+# mount something, never at boot (Debian enables udisks2.service in graphical.target). The socket of
+# polkit's password helper waits until something asks users for a password through polkit.
+disable udisks2.service
+disable polkit-agent-helper.socket

@@ -28,7 +28,7 @@ expires = 2027-01-07
 [[mitigation]]
 id = "CVE-2026-85498"
 package = "policykit-1"
-reason = "Stack buffer underflow in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd). polkitd is not in the image; only libpolkit-agent-1-0 and libpolkit-gobject-1-0 are, and they contain no helper."
+reason = "Stack buffer underflow in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd 128). The helper is not setuid in polkit 128: it runs as root only when started through polkit-agent-helper.socket, which the image disables (80-nyra.preset, docs/DEFAULTS.md), so no user can reach it; polkitd does not run it. Enable the socket only with the fixed version (upstream commit eea1729)."
 expires = 2027-01-07
 
 [[mitigation]]
@@ -98,13 +98,13 @@ expires = 2026-11-09
 [[mitigation]]
 id = "CVE-2019-19449"
 package = "linux"
-reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. Mounting needs root and the base image has no automounter (no udisks2). Follow-up: block autoloading of unused filesystems."
+reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. f2fs is not autoloaded (/usr/lib/modprobe.d/nyra-filesystems.conf), so mounting one fails, through udisks2 too (which mounts only when a user asks); loading the module needs root."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2019-19814"
 package = "linux"
-reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. Mounting needs root and the base image has no automounter (no udisks2). Follow-up: block autoloading of unused filesystems."
+reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. f2fs is not autoloaded (/usr/lib/modprobe.d/nyra-filesystems.conf), so mounting one fails, through udisks2 too (which mounts only when a user asks); loading the module needs root."
 expires = 2027-01-07
 
 [[mitigation]]
