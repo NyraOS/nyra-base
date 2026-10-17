@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# udev (90-nyra-udisks.rules): prints NYRA_MEDIA_TRUSTED=1 when the file system that udev is
+# processing is in the list of trusted media, else NYRA_MEDIA_TRUSTED=0 (docs/DEFAULTS.md,
+# "Removable media"). udisks2 then mounts it without noexec; nosuid and nodev stay in every case.
+#
+# The list, /etc/nyra/trusted-media: one file system per line, its UUID (ID_FS_UUID, as lsblk -o UUID
+# shows it), then optionally the drive's serial (ID_SERIAL, as udevadm info shows it); when a line
+# names a serial, both must match. Empty lines and lines starting with # are skipped. The list
+# counts only when root owns it and its directory, and nobody else can write either; otherwise
+# nothing is trusted. A UUID and a serial can be copied onto another stick: trust saves a question,
+# it does not prove which stick this is.
+list=/etc/nyra/trusted-media
+trusted=0
+ok() { # ok PATH: owned by root, not a link, not writable by group or others
+  [ ! -L "$1" ] && set -- "$(stat -c '%u %a' "$1" 2>/dev/null)" && [ "${1%% *}" = 0 ] &&
+    [ $((0${1#* } & 022)) = 0 ]
+}
+if [ -n "${ID_FS_UUID:-}" ] && [ -f "$list" ] && ok /etc/nyra && ok "$list"; then
+  while read -r uuid serial _; do
+    case "$uuid" in '' | '#'*) continue ;; esac
+    if [ "$uuid" = "$ID_FS_UUID" ] && { [ -z "$serial" ] || [ "$serial" = "${ID_SERIAL:-}" ]; }; then
+      trusted=1
+    fi
+  done < "$list"
+fi
+echo "NYRA_MEDIA_TRUSTED=$trusted"

@@ -34,6 +34,7 @@ FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
 EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
 HOSTILE_ROOT = ("stress", "Hostile root (Titanic T12)")
 BROKEN_CONFIG = ("stress", "Configuration broken by the user (Titanic T8)")
+REMOVABLE = ("install-boot", "Removable media pulled out, Titanic T14 (docs/TITANIC.md)")
 
 # id: (name, coverage "full" | "partial" | None, steps, note)
 TESTS = {
@@ -119,7 +120,12 @@ TESTS = {
             "An update while 8 busy loops run on 2 vCPUs, less than 200 MiB of memory is free and the "
             "disk is written without a pause: staged exactly or failed with nothing staged; the next "
             "boot runs, the update completes."),
-    "T14": ("Media removed", None, [], "Needs removable media support, which does not exist yet."),
+    "T14": ("Media removed", "full", [REMOVABLE],
+            "USB sticks pulled out during a write, during an update (staged exactly) and 3, 6 and 10 s "
+            "into the boot: the writer stops, sync returns, the mount goes away, nothing waits for the "
+            "stick, every shutdown is clean. A stick with ESP, root, swap and /home partitions at boot "
+            "is not used. Mounted only when asked (udisks2), nosuid and nodev, noexec unless the stick "
+            "is in the list of trusted media; a program runs from a trusted stick only."),
     "T15": ("Secure defaults", "full", [DEFAULTS, SECURE_BOOT, UPDATES, TPM_UNLOCK],
             "Secure Boot with a MOK, lockdown, AppArmor, firewall, listening sockets, running units and "
             "the signature policy checked after installation and again after updates. The TPM unlock "
@@ -152,10 +158,10 @@ def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
-                          ENCRYPTION, ENCRYPTION_TPM, CHANNELS}]
+                          ENCRYPTION, ENCRYPTION_TPM, CHANNELS, REMOVABLE}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass"], r
+    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15")] == \
+        ["pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass"], r
     assert r["T3"]["result"] == "pass", r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j

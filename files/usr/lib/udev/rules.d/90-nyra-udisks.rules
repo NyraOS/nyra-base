@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Mount options for what udisks2 mounts: sticks, SD cards, external disks, any file system that a
+# user mounts without /etc/fstab (docs/DEFAULTS.md, "Removable media"). udisks2 always adds nosuid
+# and nodev; Nyra adds noexec and does not let the caller ask for exec, suid or dev. A file system
+# in the list of trusted media (/etc/nyra/trusted-media, read by /usr/lib/nyra/media/trusted) is
+# mounted without noexec. udisks2 reads these properties when it mounts; after the list changes,
+# `udevadm trigger --action=change` on the device (or plugging it in again) applies it.
+# The allowed options are udisks2's own defaults without exec. A rule of the same name in
+# /etc/udev/rules.d replaces this one.
+ACTION=="remove", GOTO="nyra_udisks_end"
+SUBSYSTEM!="block", GOTO="nyra_udisks_end"
+ENV{ID_FS_USAGE}!="filesystem", GOTO="nyra_udisks_end"
+ENV{UDISKS_MOUNT_OPTIONS_DEFAULTS}="noexec"
+ENV{UDISKS_MOUNT_OPTIONS_ALLOW}="noexec,nodev,nosuid,atime,noatime,nodiratime,relatime,strictatime,lazytime,ro,rw,sync,dirsync,noload,acl,nosymfollow"
+IMPORT{program}="/usr/lib/nyra/media/trusted"
+ENV{NYRA_MEDIA_TRUSTED}=="1", ENV{UDISKS_MOUNT_OPTIONS_DEFAULTS}="exec", ENV{UDISKS_MOUNT_OPTIONS_ALLOW}="exec,noexec,nodev,nosuid,atime,noatime,nodiratime,relatime,strictatime,lazytime,ro,rw,sync,dirsync,noload,acl,nosymfollow"
+LABEL="nyra_udisks_end"

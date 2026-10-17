@@ -574,6 +574,22 @@ Each line is something that broke or surprised us once.
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
 
+## Removable media (docs/DEFAULTS.md)
+- **udisks2 needs polkitd, even for root.** It falls back to "root only" only when the polkit
+  library cannot be set up at all, and the library sets up fine without polkitd (a D-Bus proxy to a
+  name nobody owns); every check then fails. polkitd itself allows root everything.
+- udisks2 (2.10, 2.11) computes mount options from its built-in defaults, then
+  `/etc/udisks2/mount_options.conf`, then the device's udev properties `UDISKS_MOUNT_OPTIONS_*`, each
+  replacing the one before per key. It always puts `nodev,nosuid` first, and every option a caller
+  passes must be in the `allow` list: an `allow` without `exec` refuses `-o exec`.
+- Debian builds udisks2 to mount at `/media/<user>/<label>`. On a read-only root, `/media` must be a
+  link to a writable place (`/run/media`).
+- Debian's packages enable `udisks2.service` in `graphical.target` and polkit's
+  `polkit-agent-helper.socket` (polkit 127 and later: the password helper is socket-activated, no
+  longer setuid). Both work through D-Bus or the socket on request; a preset keeps them off at boot.
+- udisks2 2.11 with polkitd 128 adds 28 packages, about 15 MB installed (a snapshot of October
+  2026); the largest is NSS (5 MB), which its crypto plugin needs through `libvolume-key1`.
+
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
   exits 0 whatever happens. Pass the input as an argument (or use `lastpipe`), and prove a test can
@@ -719,6 +735,9 @@ Each line is something that broke or surprised us once.
   the two failed boots and in none of the 182 others.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
+- QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
+  cooperation (`usb-storage` on `qemu-xhci`). With its drive given as `-blockdev`, the drive stays
+  after the device is gone, so `device_add` plugs the same stick in again (`vm-boot.py --qmp`).
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
 - Right after `losetup -P --show`, the loop device's partition devices (`/dev/loopNp1`, ...) can
   be missing for a moment, for instance while udev rereads the partition table. A `"$loop"p*` glob

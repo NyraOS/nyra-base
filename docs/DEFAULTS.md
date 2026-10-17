@@ -15,6 +15,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
+| Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
@@ -231,6 +232,59 @@ each of the two sources every 64 to 1024 s and has no listening socket.
 type; `modprobe <name>` by an administrator still works. The list holds rare and legacy formats
 whose parsers face crafted disks and images (f2fs had CVE-2019-19449 and CVE-2019-19814, still
 unfixed upstream). Formats that people plug in stay loadable.
+
+## Removable media
+
+A USB stick, an SD card, an external disk, any file system that is not in `/etc/fstab`, is mounted
+only when a user asks for it: today root, with `udisksctl mount -b /dev/sdX1`; later the desktop,
+which mounts what is plugged in only for the user of the active, unlocked session. Nothing mounts a
+stick when it is plugged in, at boot, at the login screen or while the screen is locked. Mounting
+makes the kernel read the file system, and a crafted file system is a way to attack the kernel; an
+unattended machine reads nothing that is plugged into it.
+
+| What | How |
+|---|---|
+| Mounting | udisks2 (`udisksctl`, and later the desktop through D-Bus), at `/media/<user>/<label>`. `/media` is a link to `/run/media`, since the root file system is read-only. On unmount or removal udisks2 removes the mount point |
+| Options | udisks2 always adds `nosuid` and `nodev`. `90-nyra-udisks.rules` adds `noexec` and takes `exec`, `suid` and `dev` off the options a caller may ask for, so `udisksctl mount -o exec` is refused |
+| Trusted media | a file system in `/etc/nyra/trusted-media` is mounted without `noexec`; `nosuid` and `nodev` stay (below) |
+| File systems | only kernel drivers: vfat, exfat, NTFS (ntfs3, udisks2's first choice; ntfs-3g is not installed), ext4, btrfs, xfs, iso9660, udf. No FUSE drivers, no new checking tools. f2fs stays unloadable (see "Filesystems") |
+| Services | `udisks2.service` and `polkit.service` start through D-Bus on the first request, never at boot: our preset disables `udisks2.service`, which Debian enables in `graphical.target`. polkitd runs as its own user, sandboxed by its unit; it has no setuid helper |
+| Who may mount | root always (polkit allows root everything). Other users by udisks2's polkit policy: a removable file system from an active local session without a password; an internal disk with an administrator's password, which needs polkit's password helper. Its socket, `polkit-agent-helper.socket`, is disabled (our preset) until something in the base asks users for a password through polkit |
+
+Cost: 28 packages, about 15 MB installed (udisks2 with its libblockdev plugins and parted, polkitd,
+and NSS, 5 MB, for udisks2's crypto plugin). No resident process until a user asks to mount.
+
+udisks2 reads the options from udev properties of the device (`UDISKS_MOUNT_OPTIONS_DEFAULTS`,
+`UDISKS_MOUNT_OPTIONS_ALLOW`), which win over its own defaults and over
+`/etc/udisks2/mount_options.conf`. An administrator changes them with a rule of the same name in
+`/etc/udev/rules.d`, which replaces ours.
+
+**Trusted media.** The desktop will ask, the first time a stick is plugged in, whether it is
+trusted: a trusted stick can run programs, the others cannot; the question can be turned off in
+Settings. The base keeps the answers in `/etc/nyra/trusted-media`, read by
+`/usr/lib/nyra/media/trusted` when udev processes a device:
+
+```
+# a file system's UUID (lsblk -o UUID), then optionally the drive's serial (udevadm info: ID_SERIAL)
+1A2B-3C4D SanDisk_Cruzer_Blade_4C530001230101115355-0:0
+```
+
+When a line names a serial, both must match. The list counts only when root owns it and `/etc/nyra`,
+and nobody else can write either; otherwise nothing is trusted. A change applies when the stick is
+plugged in again, or at once with `udevadm trigger --action=change /dev/sdX1`. "Reset settings"
+empties `/etc`, and with it the list.
+
+**What trust is, and what `noexec` is.** A file system's UUID and a drive's serial are whatever the
+stick reports: FAT's UUID is a 32-bit number chosen when it is formatted (`mkfs.vfat -i`), and a
+prepared stick can copy both from a stick the user trusts. Trust therefore saves the user a
+question; it does not prove which stick is plugged in, and is not a security boundary. Neither is
+`noexec`: a user can still copy a program into their home folder and run it there, or run a script
+with `sh file`. What it stops is running a program straight from the stick, by a click or by
+mistake, and mapping code from it (`mmap` with `PROT_EXEC`). `nosuid` and `nodev` are the boundary,
+and they stay on every stick.
+
+Titanic T14 (docs/TITANIC.md) checks all of it, and that a stick pulled out at any moment leaves the
+system running.
 
 ## apt and dpkg
 
