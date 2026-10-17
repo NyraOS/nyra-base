@@ -1,0 +1,48 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Initrd only (nyra-tpm-enroll.service), after the root disk is unlocked and before the initrd ends:
+# the first boot of an encrypted disk installed for a TPM enrolls it with the TPM (docs/BOOT.md,
+# "Disk encryption").
+#
+# The installer leaves a temporary TPM2 enrollment without any policy, so that this first boot
+# unlocks by itself. Here, while the initrd runs (PCR 11 still at the signed enter-initrd value, PCR 7
+# and 12 as the installed system boots, after the separator), it is replaced by the enrollment bound to
+# the signed PCR 11 policy of the UKI's key with the reference "initrd", plus PCR 7 and 12. The
+# enrollment is checked by unsealing it before it is kept. Only with Secure Boot on (not in setup
+# mode) and a TPM. Whatever happens, the temporary enrollment does not stay: without the new one the
+# disk asks for its recovery key. The recovery key slot is never touched.
+#
+# What it reads: the disk's LUKS2 header (as data), the UKI's policy key and signature that
+# systemd-stub put in /.extra, and the Secure Boot variables. Nothing from /etc or /var.
+set -eu
+
+dev=/dev/gpt-auto-root-luks
+efi=/sys/firmware/efi/efivars
+global=8be4df61-93ca-11d2-aa0d-00e098032b8c
+zero=0000000000000000000000000000000000000000000000000000000000000000
+log() { echo "nyra-tpm-enroll: $*"; }
+
+[ -b "$dev" ] || exit 0
+# The temporary enrollment is the TPM2 token without any policy (only a systemd-tpm2 token has a
+# tpm2-policy-hash). One read of the header; on every other boot the script stops here.
+cryptsetup luksDump --dump-json-metadata "$dev" | grep -q "\"tpm2-policy-hash\": *\"$zero\"" || exit 0
+
+var() { # the value byte of an EFI global variable, or nothing
+  [ -r "$efi/$1-$global" ] && od -An -tu1 -j4 -N1 "$efi/$1-$global" | tr -d ' '
+}
+if [ "$(var SecureBoot)" != 1 ] || [ "$(var SetupMode)" != 0 ]; then
+  why="Secure Boot is off"
+elif [ ! -e /dev/tpmrm0 ]; then
+  why="no TPM"
+elif systemd-cryptenroll --unlock-tpm2-device=auto --tpm2-device=auto \
+    --tpm2-public-key=/.extra/tpm2-pcr-public-key.pem --tpm2-public-key-pcrs=11 \
+    --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12 \
+    --tpm2-signature=/.extra/tpm2-pcr-signature.json --wipe-slot=tpm2 "$dev"; then
+  log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); temporary enrollment removed"
+  exit 0
+else
+  why="the enrollment failed"
+fi
+log "not enrolled with the TPM: $why; the disk will ask for its recovery key"
+systemd-cryptenroll --wipe-slot=tpm2 "$dev" && log "temporary enrollment removed" ||
+  log "could not remove the temporary enrollment"

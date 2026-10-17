@@ -22,6 +22,7 @@ POLICY = ("build", "Test the signature policy (docs/SIGNING.md)")
 DEFAULTS = ("install-boot", "Secure defaults (docs/DEFAULTS.md)")
 TPM_UNLOCK = ("install-boot", "TPM2 disk-unlock policy (docs/BOOT.md)")
 ENCRYPTION = ("install-boot", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_TPM = ("install-boot", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
 SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
@@ -79,13 +80,16 @@ TESTS = {
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
            "request is sent, the update server's certificate and unsigned images are refused."),
-    "T10": ("Disk encryption", "partial", [ENCRYPTION],
+    "T10": ("Disk encryption", "partial", [ENCRYPTION, ENCRYPTION_TPM],
             "Without a TPM: the password and the recovery key unlock the disk in the initrd (found by its "
             "partition type), a wrong password is asked again, the recovery key typed 120 s later and "
-            "the password after three wrong ones (asked again) still unlock it; neither secret is in the "
-            "logs, the ESP, the LUKS2 header or the root file system. Not yet: unlock with a TPM (first "
-            "boot, updates, Secure Boot off, a changed PCR 7, a cleared or missing TPM, an add-on, the "
-            "recovery profile, a missed leave-initrd), the policy key's rotation, the PIN."),
+            "the password after three wrong ones (asked again) still unlock it. With a TPM and Secure "
+            "Boot: the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR "
+            "11 policy and PCR 7 and 12, the next boots unlock by themselves, without the TPM the "
+            "recovery key unlocks it; a TPM that stops answering before leave-initrd forces a reboot. No "
+            "root partition: emergency mode after 90 s. No secret in the logs, the ESP, the LUKS2 header "
+            "or the root file system. Not yet: updates, Secure Boot off, a changed PCR 7, a cleared TPM, "
+            "an add-on, the recovery profile, the policy key's rotation, the PIN."),
     "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
     "T12": ("Hostile root", "full", [HOSTILE_ROOT],
             "As root with Secure Boot on: apt, apt-get and dpkg -i cannot change /usr and say what to "
@@ -132,7 +136,7 @@ def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
-                          ENCRYPTION}]
+                          ENCRYPTION, ENCRYPTION_TPM}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T12", "T13", "T15")] == \
         ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "partial", "pass", "pass", "pass"], r

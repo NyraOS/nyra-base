@@ -179,9 +179,18 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   tries at the prompt (unlimited, below), so the installer must also require a minimum argon2id memory
   and a minimum password strength. The initrd reads the keyboard as US, since it has no user settings,
   so the installer accepts only password characters that sit in the same place on the user's layout;
-- **with a TPM (not yet):** the TPM2 enrollments of "TPM2 unlock" below, made by the installed system
-  in its initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's,
-  after the separator. The recovery key stays in every case.
+- **with a TPM** (and Secure Boot on; otherwise the installer uses a password, as without a TPM): no
+  password, the TPM2 enrollment of "TPM2 unlock" below. It is made by the installed system in its
+  initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's, after
+  the separator. The installer leaves a temporary TPM2 enrollment without any policy, so that the first
+  boot unlocks by itself; `nyra-tpm-enroll.service` (`/usr/lib/nyra/boot/tpm-enroll`, initrd only)
+  then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11 signed for the initrd with the
+  reference `initrd`, and PCR 7 and 12, checks it by unsealing it, and removes the temporary one. It
+  does that only with Secure Boot on (not in setup mode) and a TPM; whatever happens, the temporary
+  enrollment is removed, and without the new one the disk asks for its recovery key. It reads the LUKS2
+  header (as data), what systemd-stub put in `/.extra` from the UKI and the Secure Boot variables,
+  nothing from `/etc` or `/var`. The window: until that first boot, the disk opens on that machine
+  with any boot chain. The recovery key stays in every case.
 
 **Never locked out.** In the initrd (all three in the initramfs):
 - the root device has no time limit (`dev-gpt\x2dauto\x2droot.device.d`): an encrypted root appears only
@@ -217,8 +226,41 @@ its own disk as above, booted without a TPM, the passphrase prompt answered on t
 | The recovery key | unlocks in place of the password |
 | A wrong password, then the recovery key 120 s later | asked again; the late key still unlocks |
 | Three wrong passwords | asked again, without a restart; the password unlocks it |
+| No root partition (its type changed on a copy of the disk) | emergency mode after 90 s, from `nyra-root-wait` (its message on the console), then a reboot |
 | Unencrypted swap, `/var/tmp` and `/srv` partitions added to the disk | not swapped to, not mounted; the ESP still at `/boot`; the control: gpt-auto run with a command line without the image policy makes a swap unit for the added partition |
 | Both secrets, searched for | not in the serial logs or the job summary, not in the unencrypted part of the disk (ESP, LUKS2 header), not in the decrypted root file system (the journal included) |
+
+With a TPM (`tools/vm/encryption-tpm.sh`): its own disk, installed for a TPM with the VM's swtpm,
+booted with Secure Boot (Microsoft keys, the run's UKI certificate as a MOK) and one firmware variable
+store. A boot that should unlock by itself fails if the console ever asks for the disk. The test
+console add-on is measured into PCR 12 at every boot, the first one included, so it is part of the
+enrolled state.
+
+| Check | Result |
+|---|---|
+| The header after the installation | the recovery key slot and the temporary TPM2 enrollment, nothing else |
+| The first boot | unlocks by itself; the initrd enrolls the disk; no unit failed (the initrd included); afterwards the recovery key slot and one TPM2 enrollment, PCR 11 by key with the reference `initrd`, PCR 7 and 12 |
+| The next boot | unlocks by itself, nothing to enroll |
+| Without the TPM (as when it is turned off in the firmware) | the recovery key unlocks it; no unit failed |
+| With the TPM back | unlocks by itself again |
+| The TPM stops answering after the disk is unlocked (swtpm killed), before `leave-initrd` is measured | `systemd-pcrphase-initrd` fails and its `FailureAction=reboot-force` reboots at once: no login prompt, never a running system with PCR 11 at the signed value |
+| Then, with the TPM answering again | unlocks by itself |
+| The recovery key, searched for | as above |
+
+**What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
+systemd-gpt-auto-generator found (no `/etc/crypttab` in the initramfs, no `rd.luks.*` on the sealed
+command line) and `nyra-tpm-enroll` for the same partition. A copy of the enrollment (it is in the
+header, which anyone with the disk can read) put on another LUKS2 volume, such as a root of someone
+else's on this disk or on a USB stick that boots the signed chain, would be unsealed there, but the
+secret only opens the key slot it was made for, on this disk: nothing comes out of it.
+
+**PCR 15, evaluated and not bound.** systemd-cryptsetup measures the opened volume's key into PCR 15
+(gpt-auto sets `tpm2-measure-pcr=yes`). Binding the enrollment to PCR 15's initial value would let the
+TPM release the key only before any volume was opened in that boot. It is not bound: the first-boot
+enrollment checks the new enrollment by unsealing it after the disk is open, and the policy key's
+rotation will enroll the next key from the initrd after the disk is open (docs/SIGNING.md), both of
+which that binding would stop; and, as above, nothing else in the initrd asks the TPM. Revisit if the
+initrd ever opens another volume.
 
 **Known limits.**
 - The passphrase prompt is on the console until the graphical unlock screen comes: what is typed
@@ -233,16 +275,16 @@ its own disk as above, booted without a TPM, the passphrase prompt answered on t
   prompt of their own and take the passphrase (encryption without attestation cannot tell). With a TPM,
   the disk unlocks only for the measured, signed boot ("TPM2 unlock").
 
-Not covered yet: everything with a TPM (the first-boot enrollment, updates, Secure Boot turned off, a
-changed PCR 7 or 12, a cleared or missing TPM, the policy key's rotation, the PIN).
+Not covered yet: updates, Secure Boot turned off, a changed PCR 7 or 12, a cleared TPM, the recovery
+profile, the policy key's rotation, the PIN.
 
 ## TPM2 unlock: the signed PCR policy
 
 The disk will be encrypted (LUKS) and, on a machine with a TPM, unlock by itself at boot only when
 the Nyra UKI's main profile booted. This repository builds the signed policy into the UKI, checks
 it, and tests the unlock it authorizes with a software TPM (`tools/signing/tpm-unlock.sh`, "The
-software-TPM test" below); enrolling a user's disk comes later, from the installed system's initrd
-("Disk encryption" above).
+software-TPM test" below); a user's disk is enrolled by the installed system's initrd ("Disk
+encryption" above).
 
 **What is measured.** systemd-stub measures the UKI's sections into PCR 11 before it starts the
 kernel: `.linux`, `.osrel`, `.cmdline`, `.initrd`, `.uname`, `.sbat`, `.pcrpkey` and `.profile`,

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Initrd only: the first boot of a disk installed for a TPM enrolls it (/usr/lib/nyra/boot/tpm-enroll).
+# After the root disk is unlocked, and done before the initrd ends: PCR 11 must still be at the signed
+# enter-initrd value. A failure is logged and the boot goes on (the disk then asks for its recovery key).
+[Unit]
+Description=Nyra: enroll the root disk with the TPM
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+After=cryptsetup.target systemd-cryptsetup@root.service initrd-root-device.target
+Before=initrd.target initrd-switch-root.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/tpm-enroll
