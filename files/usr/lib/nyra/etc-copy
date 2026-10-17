@@ -2,16 +2,31 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra OS: a copy of the system settings (/etc), for "Nyra OS Restore earlier settings" in the boot
 # menu (docs/BOOT.md, "Restore earlier settings").
-#   etc-copy daily    nyra-etc-copy.timer, once a day
-#   etc-copy update   nyra-updated, before it stages an update
+#   etc-copy daily|update|rollback
+#            nyra-etc-copy@KIND.service: once a day (nyra-etc-copy.timer), and from nyra-updated
+#            before it stages an update or goes back to the other version
+#   etc-copy make IMAGE ETC COPY
+#            makes the copy COPY of ETC: what differs from IMAGE (the image's /etc)
+#   etc-copy apply COPY NEW
+#            lays the copy COPY over NEW, which holds the running version's /etc (reset-settings)
 #   etc-copy to-remove NOW NEW SYNCED
-#                     prints the copies a run would remove, of the names read on stdin, with the
-#                     clock at NOW, NEW the copy just made and SYNCED yes when the clock is
-#                     synchronised (tools/vm/test-etc-copy.sh)
-# Each copy is /var/lib/nyra/etc-copies/<date and time, UTC>-<daily|update>, made with cp -a (every
-# file's owner, mode, ACLs and extended attributes as in /etc), inside a directory only root can
-# enter (0700). It is made under a temporary name and renamed once complete, so an interrupted copy
-# is never offered; the next run removes it.
+#            prints the copies a run would remove, of the names read on stdin, with the clock at
+#            NOW, NEW the copy just made and SYNCED yes when the clock is synchronised
+# (make, apply and to-remove: tools/vm/test-etc-copy.sh.)
+# A copy is /var/lib/nyra/etc-copies/<date and time, UTC>-<kind>, inside a directory only root can
+# enter (0700), and holds only what differs from the image's /etc:
+#   etc/      every file, link and directory that the image's /etc does not have, or has with
+#             another content, link target, type, mode, owner, group, ACL or extended attribute,
+#             each as cp -a copies it (its owner, mode, ACLs and extended attributes as in /etc),
+#             and the directories leading to them
+#   removed   the paths in the image's /etc that /etc did not have, relative to /etc, each ended by
+#             a NUL byte
+# The restore starts from the running version's /etc, so the files the user never changed are that
+# version's, even in a copy made on an older one. The image's /etc is under the bind mount of /etc:
+# nyra-etc-copy@KIND.service gives this script a bind mount of / alone at
+# /run/nyra-etc-copy/KIND/image.
+# A copy is made under a temporary name and renamed once complete, so an interrupted copy is never
+# offered; the next run removes it.
 # What goes: copies older than 30 days, counted back from the newest earlier copy that is not dated
 # after now, and never the three newest. The copy just made never sets that point, so a clock set
 # far ahead (2099) removes nothing more than a right one would; with a clock behind every copy, the
@@ -20,7 +35,8 @@
 set -eu
 umask 077
 dir=/var/lib/nyra/etc-copies
-copy='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update)$'
+copy='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update|rollback)$'
+self="$(realpath -e -- "$0")"
 
 # to_remove NOW NEW SYNCED, the names on stdin.
 to_remove() {
@@ -37,13 +53,109 @@ to_remove() {
 	printf '%s\n' "$names" | grep -E "$copy" | tail -n +4 | mawk -v old="$old" 'substr($0, 1, 20) < old'
 }
 
+# entry DIR PATH: PATH (relative to DIR) as one archive member, with everything a copy keeps (type,
+# content or link target, mode, owner and group as numbers, ACLs, extended attributes) and nothing
+# else (no times, no names from /etc/passwd), so that two members are the same bytes exactly when
+# they are the same for a copy.
+entry() {
+	tar -C "$1" --create --file=- --no-recursion --format=posix --numeric-owner --acls --xattrs \
+		--xattrs-include='*' --mtime=@0 \
+		--pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' -- "$2" 2>/dev/null
+}
+
+# make_copy IMAGE ETC COPY
+make_copy() {
+	if [ ! -d "$1" ] || [ "$(stat -L -c %d:%i -- "$1")" = "$(stat -L -c %d:%i -- "$2")" ]; then
+		echo "etc-copy: the image's /etc was not found ($1)" >&2
+		return 1
+	fi
+	mkdir "$3" && cp -a --one-file-system "$2" "$3/etc" || return 1
+	i="$(realpath -e -- "$1")" c="$(realpath -e -- "$3")" || return 1
+	# From here on, only the copy is read: it is /etc at one moment.
+	(cd "$i" && find . -xdev -mindepth 1 -exec sh "$self" removed "$c/etc" {} +) > "$c/removed" ||
+		return 1
+	# Contents before their directory (-depth): a directory in which nothing differed is empty
+	# when it is reached.
+	(cd "$c/etc" && find . -depth -mindepth 1 -exec sh "$self" prune "$i" "$c" {} +)
+}
+
+# apply_copy COPY NEW
+apply_copy() {
+	c="$(realpath -e -- "$1")" new="$(realpath -e -- "$2")" &&
+		xargs -0 -r sh "$self" unlink "$new" < "$c/removed" &&
+		(cd "$c/etc" && find . -mindepth 1 -exec sh "$self" clear "$c/etc" "$new" {} +) &&
+		cp -a "$c/etc/." "$new/"
+}
+
 case "${1:-}" in
-daily | update) ;;
+daily | update | rollback) ;;
 to-remove)
 	to_remove "$2" "$3" "$4"
 	exit 0
 	;;
-*) echo "usage: etc-copy daily|update" >&2; exit 2 ;;
+make)
+	make_copy "$2" "$3" "$4"
+	exit
+	;;
+apply)
+	apply_copy "$2" "$3"
+	exit
+	;;
+removed)
+	# removed COPY PATH...: the PATHs (of the image's /etc) that COPY does not have.
+	c="$2"
+	shift 2
+	for p; do
+		[ -e "$c/$p" ] || [ -L "$c/$p" ] || printf '%s\0' "${p#./}"
+	done
+	exit 0
+	;;
+prune)
+	# prune IMAGE COPY PATH...: the PATHs (of COPY/etc) that are as in IMAGE go; a directory only
+	# once empty.
+	i="$2" c="$3"
+	shift 3
+	for p; do
+		# Not in the image (or not read there): it stays.
+		entry "$i" "$p" > "$c/.entry" || continue
+		if entry "$c/etc" "$p" | cmp -s - "$c/.entry"; then
+			if [ -d "$c/etc/$p" ] && [ ! -L "$c/etc/$p" ]; then
+				rmdir -- "$c/etc/$p" 2>/dev/null || true
+			else
+				rm -f -- "$c/etc/$p"
+			fi
+		fi
+	done
+	rm -f "$c/.entry"
+	exit 0
+	;;
+unlink)
+	# unlink NEW PATH...: each PATH in NEW goes, unless a directory on the way to it is a link
+	# (which would lead out of NEW) or is missing.
+	n="$2"
+	shift 2
+	for p; do
+		case "/$p/" in */../* | */./* | //*) continue ;; esac
+		d="$(dirname -- "$p")"
+		if [ "$d" = . ] || [ "$(realpath -e -- "$n/$d" 2>/dev/null)" = "$n/$d" ]; then
+			rm -rf -- "${n:?}/$p"
+		fi
+	done
+	exit 0
+	;;
+clear)
+	# clear COPY NEW PATH...: in NEW, what is at each PATH of COPY goes, unless both are directories
+	# (their contents merge). Parents come first (find), so the way to each PATH in NEW is made of
+	# directories only, or is missing.
+	c="$2" n="$3"
+	shift 3
+	for p; do
+		if [ -d "$c/$p" ] && [ ! -L "$c/$p" ] && [ -d "$n/$p" ] && [ ! -L "$n/$p" ]; then continue; fi
+		rm -rf -- "${n:?}/$p"
+	done
+	exit 0
+	;;
+*) echo "usage: etc-copy daily|update|rollback" >&2; exit 2 ;;
 esac
 (umask 022 && mkdir -p /var/lib/nyra)
 mkdir -p "$dir"
@@ -54,14 +166,14 @@ flock 9
 rm -rf "$dir"/.new-*
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 name="$now-$1"
-if ! cp -a --one-file-system /etc "$dir/.new-$name" || ! sync; then
+if ! make_copy "/run/nyra-etc-copy/$1/image/etc" /etc "$dir/.new-$name" || ! sync; then
 	rm -rf "$dir/.new-$name"
 	echo "etc-copy: could not copy /etc to $dir" >&2
 	exit 1
 fi
 mv -T "$dir/.new-$name" "$dir/$name"
 sync
-echo "etc-copy: /etc copied to $dir/$name"
+echo "etc-copy: /etc copied to $dir/$name ($(du -sk "$dir/$name" | cut -f1) KiB)"
 synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo no)"
 find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | to_remove "$now" "$name" "$synced" | grep -E "$copy" |
 	while read -r c; do

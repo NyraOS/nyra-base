@@ -5,7 +5,8 @@
 #   1    a user, an administrator with a password, and a file in their home; control: the user logs
 #        in with the password (su through PAM, run as nobody so that it has to ask), a wrong one is
 #        refused, and the network works (a file served by the runner, through QEMU's 10.0.2.2); then
-#        the daily copy of /etc (nyra-etc-copy.service)
+#        the daily copy of /etc (nyra-etc-copy@daily.service), and /etc as it was then, kept aside in
+#        /var to compare with
 #   2-5  each of these on its own, then a reboot:
 #          2  /etc/fstab: a line that is not a mount, and a disk that is not connected
 #          3  /etc/passwd: every system account deleted (root and the user kept), a line that is not
@@ -21,7 +22,8 @@
 #        "Nyra OS Restore earlier settings" entry is picked for the next boot (bootctl set-oneshot, as
 #        a user would in the boot menu), which offers the copy from boot 1; 1 restores it, and the
 #        normal boot after it must be healthy: /etc/fstab, /etc/passwd (but the user's line), the
-#        network settings, /etc/resolv.conf and /etc/systemd/system are the copy's, the user logs in
+#        network settings, /etc/resolv.conf and /etc/systemd/system are as when the copy was made
+#        (the copy holds only what differed from the image; the rest is the image's), the user logs in
 #        with their password (a wrong one is refused), the network works, the basic services are
 #        active, the shadow sync ran and succeeded, Secure Boot and the lockdown on (serial logs
 #        serial-broken-config-<n>-restore.log). The next breakage starts from that system.
@@ -83,10 +85,11 @@ observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system
 # bind mount of / alone, as the reset itself does), /etc/passwd with the user's line added.
 image_etc="i=/run/nyra-t8-image; f=0; mkdir -p \$i && mount --bind / \$i && mount -o remount,bind,ro \$i || f=1; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' /etc/passwd | diff \$i/etc/passwd - || f=1; elif test -e \$i/etc/\$p || test -L \$i/etc/\$p; then diff -r --no-dereference \$i/etc/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the image\"; f=1; fi; done; umount \$i; test \$f = 0 && echo '/etc/fstab, /etc/passwd (plus the user), the network settings, /etc/resolv.conf and /etc/systemd/system are the image'\"'\"'s'"
 
-# /etc after "Restore earlier settings": the broken paths are those of the copy made in boot 1
+# /etc after "Restore earlier settings": the broken paths are as when the copy was made in boot 1
 # (/etc/passwd without the user's line: accounts come from the current /etc, not from the copy).
 copies=/var/lib/nyra/etc-copies
-copy_etc="c=$copies/\$(cat /var/nyra-t8-copy); f=0; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' \$c/passwd > /run/nyra-t8-p1; grep -v '^$user:' /etc/passwd | diff /run/nyra-t8-p1 - || f=1; elif test -e \$c/\$p || test -L \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p is not in the copy\"; f=1; fi; done; test \$f = 0 && echo '/etc/fstab, /etc/passwd, the network settings, /etc/resolv.conf and /etc/systemd/system are the copy'\"'\"'s'"
+at_copy=/var/nyra-t8-etc-at-copy
+copy_etc="c=$at_copy; f=0; for p in fstab passwd systemd/system systemd/network resolv.conf; do if test \$p = passwd; then grep -v '^$user:' \$c/passwd > /run/nyra-t8-p1; grep -v '^$user:' /etc/passwd | diff /run/nyra-t8-p1 - || f=1; elif test -e \$c/\$p || test -L \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p || test -L /etc/\$p; then echo \"/etc/\$p was not there when the copy was made\"; f=1; fi; done; test \$f = 0 && echo '/etc/fstab, /etc/passwd, the network settings, /etc/resolv.conf and /etc/systemd/system are as when the copy was made'"
 # The daily timer may make a copy of a broken /etc at a boot after midnight: before each restore,
 # every copy but boot 1's is removed, so that the one offered is boot 1's.
 only_copy="c=\"\$(cat /var/nyra-t8-copy)\"; for x in \$(ls $copies); do test \"\$x\" = \"\$c\" || rm -rf \"$copies/\$x\"; done; ls $copies; test \"\$(ls $copies)\" = \"\$c\""
@@ -106,7 +109,7 @@ vm --poweroff --log "$logs/serial-broken-config-1.log" \
   --command "useradd -m -G sudo -s /bin/bash $user && printf '$user:%s\\n' '$pw' | chpasswd && echo $token > /home/$user/keep.txt && chown $user: /home/$user/keep.txt && ls -l /home/$user" \
   --command "$login_ok && $login_wrong && echo '$user logs in with the password, a wrong one is refused (control)'" \
   --command "$net && echo 'the network works: the runner answers (control)'" \
-  --command "systemctl start nyra-etc-copy.service && ls $copies | grep -- '-daily\$' | sort | tail -n 1 > /var/nyra-t8-copy && echo \"the daily copy: \$(cat /var/nyra-t8-copy)\"" || fail=1
+  --command "systemctl start nyra-etc-copy@daily.service && ls $copies | grep -- '-daily\$' | sort | tail -n 1 > /var/nyra-t8-copy && cp -a /etc $at_copy && echo \"the daily copy: \$(cat /var/nyra-t8-copy)\"" || fail=1
 
 # Each breakage on its own: does it boot? Then "Restore earlier settings" with the copy from boot 1,
 # which must repair it, so that the next breakage starts from a healthy system again.
