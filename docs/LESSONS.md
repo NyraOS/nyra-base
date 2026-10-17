@@ -31,6 +31,23 @@ Each line is something that broke or surprised us once.
   builds still compile bootc themselves, then compare the result with the cached build of the same key
   and fail on any difference. The image check above (`ci/check-reproducible.sh`) reuses one bootc build
   and runs on one runner, so it does not catch differences in bootc or ones that depend on the host.
+- **Download once, then build without network.** The reproducibility check builds the image a second
+  time with `--no-cache`, and cargo downloaded nyra-updated's crates from crates.io again, two minutes
+  after the first build: a 17 s network outage on the runner outlasted cargo's 3 retries (about 10 s
+  per request) and failed the job before any test. `ci/build-image.sh` now fetches the crates once
+  (`cargo fetch --locked`, 10 retries: over a minute per request), and both builds compile them in a
+  `RUN --network=none` step from that directory, mounted read-only.
+- **An offline cargo build trusts its cache and its index.** Cargo checks a crate against `Cargo.lock`
+  only when it downloads it: a `.crate` already in its cache is used as it is (checked: one with a
+  changed file compiled without a word), and the unpacked `registry/src` is not checked at all. The
+  features of a crate come from the registry index, which `Cargo.lock` does not pin: with `default`
+  emptied in libc's index entry, the build passed and the binary changed. Checking the `.crate` files
+  with `sha256sum` is not enough either if the check and cargo can look at different directories (a
+  second cache directory, checked instead of cargo's). So the `Containerfile` uses neither: it copies
+  each `.crate` that `Cargo.lock` lists, checks the copy against the lock's checksum, unpacks it into a
+  cargo directory source (`replace-with` for crates.io), and fails unless the context has exactly one
+  cache directory. The same edited index then gives the same binary; a changed or missing crate fails
+  the build. The binary differs from an online build only in the source paths in panic messages.
 - **Strip bootc.** Debug info makes it ~378 MB; stripped it is ~40 MB.
 - **mkosi installs only what is listed.** No `passwd`, `login`, `util-linux` unless named. The list in
   `mkosi/mkosi.conf` is the whole system.

@@ -12,9 +12,26 @@ ARG TOOLS=localhost/nyra-tools
 
 # nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
+# Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
+# first build), mounted read-only; the build has no network. Cargo does not check a crate already in
+# its download cache against Cargo.lock, and takes features from the registry index, which nothing
+# pins. So neither cargo's cache nor the index is used: each .crate the lock lists is copied, checked
+# against the lock's checksum, and unpacked into a directory source that replaces crates.io.
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
-RUN --mount=type=tmpfs,dst=/root cd /src && cargo build --release --locked -p nyra-updated && \
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    set -- /crates/registry/cache/*/ && \
+    { [ $# = 1 ] || { echo "expected one crate cache directory, found: $*" >&2; exit 1; }; } && \
+    c="$1" && mkdir -p /root/vendor /root/.cargo && \
+    awk -F'"' '/^name = /{n=$2} /^version = /{v=$2} /^checksum = /{print $2 " " n "-" v}' /src/Cargo.lock > /root/sums && \
+    test -s /root/sums && \
+    while read -r sum crate; do \
+      cp "$c$crate.crate" /root/x.crate && echo "$sum  /root/x.crate" | sha256sum --quiet --strict -c - && \
+      tar -xzf /root/x.crate -C /root/vendor && \
+      printf '{"files":{},"package":"%s"}' "$sum" > "/root/vendor/$crate/.cargo-checksum.json" || exit 1; \
+    done < /root/sums && \
+    printf '[source.crates-io]\nreplace-with = "checked"\n[source.checked]\ndirectory = "/root/vendor"\n' > /root/.cargo/config.toml && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
     strip target/release/nyra-updated
 
 FROM ${ROOTFS} AS base

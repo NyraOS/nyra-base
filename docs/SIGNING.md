@@ -5,17 +5,19 @@ from our registry that do not carry that signature.
 
 ## How an image is signed
 
-1. **Release build without cached content.** A push to `main` (or a manual run on `main`) builds the image
-   from scratch: bootc compiled from its pinned commit (its Cargo.lock moved to zlink 0.7.1 for a
-   reproducible build and pinned by hash, `ci/build-bootc.sh`), every Debian package downloaded from the
-   pinned snapshot. The caches (compiled bootc, downloaded packages) are used only by pull
-   requests, whose images are never signed. A cache is not trusted, so no job of a release unpacks
-   one: they only look caches up, to save one that is missing (`ci/check-release-cache.py` checks
-   this in CI). The release's bootc is compared with the build cached on `main` by a separate job,
-   `bootc-reproducible`, with no permissions and no checkout; a difference stops the `sign` job.
-   The jobs of a run can replace each other's artifacts, so every job that uses the image artifact
-   (`install-boot`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256
-   that `build` reported as a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
+1. **Release build without cached content.** A push to `main` (or a manual run on `main`) builds the
+   image from scratch: bootc compiled from its pinned commit (its Cargo.lock moved to zlink 0.7.1 for a
+   reproducible build and pinned by hash, `ci/build-bootc.sh`), every Debian package downloaded from
+   the pinned snapshot, nyra-updated's crates downloaded once, each checked against its `Cargo.lock`
+   and compiled from that checked copy, without the registry index (`ci/build-image.sh`,
+   `Containerfile`). The caches (compiled bootc, downloaded packages) are used only by pull requests,
+   whose images are never signed. A cache is not trusted, so no job of a release unpacks one: they only
+   look caches up, to save one that is missing (`ci/check-release-cache.py` checks this in CI). The
+   release's bootc is compared with the build cached on `main` by a separate job, `bootc-reproducible`,
+   with no permissions and no checkout; a difference stops the `sign` job. The jobs of a run can
+   replace each other's artifacts, so every job that uses the image artifact (`install-boot`,
+   `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
+   a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
    - GitHub issues an OIDC token for the workflow run;
