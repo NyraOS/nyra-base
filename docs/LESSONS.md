@@ -580,6 +580,13 @@ Each line is something that broke or surprised us once.
   (`dev-mapper-root.device`) no time limit, but the root mount waits for `/dev/gpt-auto-root`, whose job
   times out after 90 s: a passphrase typed later ends in emergency mode. And systemd-cryptsetup gives up
   after three wrong passphrases (`tries=3`), which gpt-auto offers no way to change.
+- **gpt-auto's measurement of the root cannot be turned off through its options either** (systemd 262,
+  from the sources): it writes `tpm2-measure-pcr=yes,tpm2-measure-keyslot-nvpcr=yes` into the unit when
+  the stub measured the boot. systemd-cryptsetup sends both through systemd-pcrextend's socket and only
+  logs an error when that fails; `SYSTEMD_FORCE_MEASURE=0` in the unit's environment skips both, and
+  nothing else in systemd-cryptsetup reads it. Setting `tpm2-measure-pcr=no` and
+  `tpm2-measure-keyslot-nvpcr=no` instead (with no `fixate-volume-key=`) would also let it use
+  libcryptsetup's token plugins (`use_token_plugins()`): it avoids them only while it needs the volume key.
 - **bootc points `/run/systemd/volatile-root` at `/dev/gpt-auto-root`**, which for an encrypted root is
   the opened volume. systemd's `blockdev_get_root()` takes that link as it is (it traces dm-crypt to the
   partition only without the link), so gpt-auto in the running system finds no disk and mounts no ESP
@@ -634,6 +641,43 @@ Each line is something that broke or surprised us once.
   system is `degraded` with no `FAILED` line anywhere on the console. A wait in the background that the
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
+
+## Removable media (docs/DEFAULTS.md)
+- **udisks2 needs polkitd, even for root.** It falls back to "root only" only when the polkit
+  library cannot be set up at all, and the library sets up fine without polkitd (a D-Bus proxy to a
+  name nobody owns); every check then fails. polkitd itself allows root everything.
+- udisks2 (2.10, 2.11) computes mount options from its built-in defaults, then
+  `/etc/udisks2/mount_options.conf`, then the device's udev properties `UDISKS_MOUNT_OPTIONS_*`, each
+  replacing the one before per key. It always puts `nodev,nosuid` first, and every option a caller
+  passes must be in the `allow` list: an `allow` without `exec` refuses `-o exec`.
+- Debian builds udisks2 to mount at `/media/<user>/<label>`. On a read-only root, `/media` must be a
+  link to a writable place (`/run/media`).
+- Debian's packages enable `udisks2.service` in `graphical.target` and polkit's
+  `polkit-agent-helper.socket` (polkit 127 and later: the password helper is socket-activated, no
+  longer setuid). Both work through D-Bus or the socket on request; a preset keeps them off at boot.
+- udisks2 2.11 with polkitd 128 adds 29 packages, about 15 MB installed (a snapshot of October
+  2026); the largest is NSS (5 MB), which its crypto plugin needs through `libvolume-key1`.
+  polkitd depends on `logind`, which `libpam-systemd` provides: its postinst puts `pam_systemd` into
+  `/etc/pam.d/common-session`, so every login gets a logind session, a user manager and a
+  `/run/user/UID` tmpfs (root's console login too, which it did not before).
+- **`run-user-UID.mount` has no order against the user manager.** At shutdown systemd unmounts it
+  next to stopping `user@UID.service` and `user-runtime-dir@UID.service` (whose stop unmounts it
+  anyway); once in CI the unmount came first, while the user manager still had files open there:
+  `Failed unmounting run-user-0.mount`. `After=run-user-%i.mount` in a `user-runtime-dir@.service`
+  drop-in stops the mount unit last.
+- udisks2 mounts only a device whose udev usage (`ID_FS_USAGE`) is `filesystem` (or not probed at
+  all). A file system type named by the caller (`-t`) is accepted from a list built into udisks2
+  (hfsplus, squashfs, erofs, f2fs and more) or from `/proc/filesystems`; nothing configures it away.
+- Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
+  signature and goes on to the next driver when the type is unknown.
+- polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
+  needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
+  session as local only when it has a seat: a logind session without one (`systemd-run -p
+  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
+  `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
+  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. A user
+  with a login has two sessions: the login's and their manager's (class `manager`, no TTY). systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  a shell script passed to it needs `--expand-environment=no`.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
@@ -785,6 +829,9 @@ Each line is something that broke or surprised us once.
   `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
+- QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
+  cooperation (`usb-storage` on `qemu-xhci`). With its drive given as `-blockdev`, the drive stays
+  after the device is gone, so `device_add` plugs the same stick in again (`vm-boot.py --qmp`).
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
 - Right after `losetup -P --show`, the loop device's partition devices (`/dev/loopNp1`, ...) can
   be missing for a moment, for instance while udev rereads the partition table. A `"$loop"p*` glob

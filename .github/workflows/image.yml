@@ -615,6 +615,14 @@ jobs:
           tools/vm/encryption-tpm.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
             "$GITHUB_STEP_SUMMARY"
 
+      # Titanic T14 (docs/TITANIC.md): USB sticks pulled out during a write, during an update and
+      # during the boot, a stick with ESP, root and swap partitions at boot, and the mount options of
+      # trusted and untrusted media (docs/DEFAULTS.md, "Removable media"). Its own copy of the disk.
+      - name: Removable media pulled out, Titanic T14 (docs/TITANIC.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 30
+        run: tools/vm/removable-media.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
