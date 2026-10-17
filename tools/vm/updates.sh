@@ -56,9 +56,9 @@
 #  29  v13: v14 staged (its initramfs is broken)
 #  30  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
 #      v14 is marked failed, bootc's order set right, and v14 refused
-#  31  v13, the hardware clock in 2099 (T9): chronyd corrects it through NTS; v15 staged
+#  31  v13, the hardware clock in 2099 (T9): ntpd-rs corrects it through NTS; v15 staged
 #  32  v15, the hardware clock in 1970: the same; v16 staged
-#  33  v16, the hardware clock in 2035: the same; up to date; chronyd's cost measured
+#  33  v16, the hardware clock in 2035: the same; up to date; ntpd-rs's cost measured
 #  34  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
 #      request sent), the sheet server refused, unsigned images refused; the real servers back:
 #      corrected, up to date
@@ -543,23 +543,26 @@ l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"
 [ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
 
-# A wrong clock (T9). The hardware clock in 2099 and in 1970: systemd sets the clock to its build time
-# at boot (a clock more than about 15 years after it counts as wrong too), still before the real time;
-# in 2035 systemd keeps it, years ahead, outside the validity of every certificate. Each time chronyd
-# corrects it through NTS by itself (nocerttimecheck: docs/DEFAULTS.md, "Time") and the update works,
+# A wrong clock (T9). The hardware clock in 2099 and in 1970: systemd sets the clock to the image's
+# build time at boot (/usr/lib/clock-epoch; a clock more than about 15 years after it counts as wrong
+# too), still before the real time;
+# in 2035 systemd keeps it, years ahead, outside the validity of every certificate. Each time ntpd-rs
+# corrects it through NTS by itself (our patch: docs/DEFAULTS.md, "Time") and the update works,
 # without anyone setting the clock. Then, with the clock in 2035 again, a hostile network: the NTS
 # servers' names point to the runner (as a spoofed DNS answer would), where a TLS server with a
-# certificate the guest does not trust answers on the NTS-KE port and an NTP server answers every
-# request, unauthenticated, with a time in 2001. The clock stays in 2035 and chronyd sends not one NTP
-# request (no unauthenticated fallback): the server counts exactly one, a probe the test sends itself
-# to show that UDP 123 reaches it from the guest and its answer comes back; the sheet server's certificate is refused (expired) and nothing
-# is staged; unsigned and wrongly signed images are still refused (image signatures do not depend on
-# the clock). With the real servers back (once name resolution no longer answers with the runner:
-# resolved can answer from its old copy of /etc/hosts right after the edit), chronyd is restarted,
+# certificate the guest does not trust answers on the NTS-KE port, ends each connection after the
+# handshake without keys, and an NTP server answers every request, unauthenticated, with a time in
+# 2001. The clock stays in 2035 and ntpd-rs sends not one NTP request (no unauthenticated fallback):
+# the server counts exactly one, a probe the test sends itself to show that UDP 123 reaches it from
+# the guest and its answer comes back; the sheet server's certificate is refused (expired) and
+# nothing is staged; unsigned and wrongly signed images are still refused (image signatures do not
+# depend on the clock). With the real servers back (once name resolution no longer answers with the runner:
+# resolved can answer from its old copy of /etc/hosts right after the edit), ntpd-rs is restarted,
 # corrects the clock and the system is up to date.
 # Each boot comes from a file system last mounted at another time.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=time.cloudflare.com \
-  -addext subjectAltName=DNS:time.cloudflare.com,DNS:nts.netnod.se -keyout "$u/time.key" -out "$u/time.crt" 2>/dev/null
+  -addext subjectAltName=DNS:time.cloudflare.com,DNS:nts.netnod.se,DNS:ptbtime1.ptb.de,DNS:nts.time.nl \
+  -keyout "$u/time.key" -out "$u/time.crt" 2>/dev/null
 cat >"$u/fake-time.py" <<'EOF'
 import socket, ssl, struct, sys, threading
 cert, key, log = sys.argv[1:4]
@@ -609,20 +612,20 @@ vm "v16, the hardware clock in 2035: corrected through NTS; up to date" --powero
   --rtc 2035-06-01T00:00:00 \
   --command "$lib; expect booted $d16 && running && blessed && synced $(date +%s)" \
   --command "$lib; outcome s16 UpToDate && expect staged none" \
-  --command 'p="$(systemctl show -P MainPID chronyd-restricted.service)" && ps -o rss=,vsz= -p "$p" && systemctl show -P MemoryCurrent chronyd-restricted.service && c() { awk "/ctxt_switches/ {s += \$2} END {print s}" "/proc/$p/status"; } && a="$(c)" && sleep 60 && echo "chronyd: $(( $(c) - a )) context switches in 60 s, CPU time $(systemctl show -P CPUUsageNSec chronyd-restricted.service) ns since start"' \
-  --command 'echo "10.0.2.2 time.cloudflare.com nts.netnod.se" >> /etc/hosts'
+  --command 'p="$(systemctl show -P MainPID ntpd-rs.service)" && ps -o rss=,vsz= -p "$p" && systemctl show -P MemoryCurrent ntpd-rs.service && c() { awk "/ctxt_switches/ {s += \$2} END {print s}" "/proc/$p/task/"*/status; } && a="$(c)" && sleep 60 && echo "ntpd-rs: $(( $(c) - a )) context switches in 60 s, CPU time $(systemctl show -P CPUUsageNSec ntpd-rs.service) ns since start"' \
+  --command 'echo "10.0.2.2 time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl" >> /etc/hosts'
 vm "v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong, certificate refused, unsigned refused; the real servers back: corrected, up to date" --poweroff \
   --rtc 2035-06-01T00:00:00 \
   --command "$lib; expect booted $d16 && running && not_synced && date -u && test \"\$(date +%Y)\" = 2035" \
   --command "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(bytes([0x23]) + bytes(47), (\"10.0.2.2\", 123)); print(\"NTP probe: answer of\", len(s.recv(512)), \"bytes\")'" \
   --command "$lib; refused s16 '$tls_time' && expect staged none" \
   --command "$lib; $unsigned" \
-  --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se && ! getent ahosts time.cloudflare.com nts.netnod.se | grep -q "^10\.0\.2\.2 " && systemctl restart chronyd-restricted.service' \
+  --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl && ! getent ahosts time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl | grep -q "^10\.0\.2\.2 " && systemctl restart ntpd-rs.service' \
   --command "$lib; synced $(date +%s) && outcome s16 UpToDate && expect staged none"
 ke="$(grep -c '^nts-ke$' "$u/fake-time.log" || true)" ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
-echo "spoofed time servers: $ke NTS-KE connections (refused by the guest), $ntp NTP requests (1 expected: the test's own probe)"
+echo "spoofed time servers: $ke NTS-KE connections (no keys given), $ntp NTP requests (1 expected: the test's own probe)"
 if [ "$ke" -lt 1 ] || [ "$ntp" != 1 ]; then
-  echo "::error::chronyd must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request; the probe must reach the NTP server"
+  echo "::error::ntpd-rs must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request; the probe must reach the NTP server"
   exit 1
 fi
 

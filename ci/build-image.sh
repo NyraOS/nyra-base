@@ -12,9 +12,10 @@
 #      them. Only one file is signed, and only if it is the sealed UKI (tools/signing/uki-check.py,
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check);
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
-# Before step 1, nyra-updated's crates are fetched into UKI_DIR/crates (cargo fetch --locked: the
-# checksums in updated/Cargo.lock), the only download of the build; the Containerfile checks each
-# one against Cargo.lock again and compiles them without network.
+# Before step 1, the crates of nyra-updated, zlib-rs and ntpd-rs are fetched into UKI_DIR/crates (cargo
+# fetch --locked: the checksums in the Cargo.lock of updated/, zlib/ and ntpd-rs/), the only download
+# of the build; the Containerfile checks each one against its Cargo.lock again and compiles them
+# without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
 #   ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
@@ -30,10 +31,12 @@ build() {
 # 10 retries instead of cargo's 3: these span over a minute for each request, cargo's about 10 s.
 if [ ! -d "$uki/crates" ]; then
   mkdir -p "$uki/crates"
-  sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$PWD/updated:/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
-    cargo fetch --locked --manifest-path /src/Cargo.toml
+  for src in updated zlib ntpd-rs; do
+    sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$PWD/$src:/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
+      cargo fetch --locked --manifest-path /src/Cargo.toml
+  done
 else
-  echo "build-image.sh: nyra-updated's crates are the ones fetched before ($uki/crates), nothing is downloaded" >&2
+  echo "build-image.sh: the crates are the ones fetched before ($uki/crates), nothing is downloaded" >&2
 fi
 
 # The first two targets do not use the "uki" context; it is given anyway (empty) so that nothing

@@ -1,3 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build outputs that must not go into the image build context.
 updated/target/
+zlib/target/
+ntpd-rs/target/

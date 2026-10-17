@@ -58,7 +58,8 @@ def fake_fetch(url, data=None):
     if url == sbom.TRACKER:
         return json.dumps(TRACKER).encode()
     if url.endswith("/querybatch"):
-        return json.dumps({"results": [{"vulns": [{"id": "RUSTSEC-2026-0001"}, {"id": "GHSA-aaaa-bbbb-cccc"}]}]}).encode()
+        baz = {"vulns": [{"id": "RUSTSEC-2026-0001"}, {"id": "GHSA-aaaa-bbbb-cccc"}]}
+        return json.dumps({"results": [baz if q["package"]["name"] == "baz" else {} for q in data["queries"]]}).encode()
     record = OSV.get(url.rsplit("/", 1)[1])
     return json.dumps(record).encode() if record else None
 
@@ -88,14 +89,14 @@ class Gate(unittest.TestCase):
             setattr(sbom, k, v)
         shutil.rmtree(self.dir)
 
-    def run_gate(self, *entries):
+    def run_gate(self, *entries, extra_locks=()):
         """Runs main() with these (id, package, days until expiry); returns (exit code, report)."""
         today = datetime.datetime.now(datetime.UTC).date()
         with open(self.path("mitigations.toml"), "w") as f:
             for vid, package, days in entries:
                 f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
                         f"expires = {today + datetime.timedelta(days=days)}\n")
-        sys.argv = ["sbom.py", self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json")]
+        sys.argv = ["sbom.py", self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
         out = io.StringIO()
         code = 0
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -144,6 +145,23 @@ class Gate(unittest.TestCase):
         self.assertIn("is listed twice", str(code))
         with open(self.path("sbom.json")) as f:
             self.assertEqual(len(json.load(f)["components"]), 4)  # bootc, 2 Debian packages, 1 crate
+
+    def test_more_cargo_locks(self):
+        # A second Cargo.lock: its crates are in the SBOM and scanned; one already listed counts once.
+        with open(self.path("other.lock"), "w") as f:
+            f.write('[[package]]\nname = "baz"\nversion = "0.1.0"\n'
+                    'source = "registry+https://github.com/rust-lang/crates.io-index"\ndependencies = ["qux"]\n\n'
+                    '[[package]]\nname = "qux"\nversion = "1.0.0"\n'
+                    'source = "registry+https://github.com/rust-lang/crates.io-index"\n\n'
+                    '[[package]]\nname = "local"\nversion = "0.0.0"\n')
+        code, report = self.run_gate(extra_locks=[self.path("other.lock")])
+        self.assertEqual(code, 1)
+        self.assertIn("(2 Debian packages, 2 Rust crates, bootc)", report)
+        self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
+        with open(self.path("sbom.json")) as f:
+            purls = [c.get("purl") for c in json.load(f)["components"]]
+        self.assertEqual(purls.count("pkg:cargo/baz@0.1.0"), 1)
+        self.assertIn("pkg:cargo/qux@1.0.0", purls)
 
     def test_invalid_file_still_writes_the_sbom(self):
         code, _ = self.run_gate(("CVE-2026-0001", "foo", 91))

@@ -31,7 +31,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | full; the message for the user is left for the desktop (below) |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh`, `tools/signing/tpm-unlock.sh` (the signed PCR policy unlocks the disk only in the initrd, swtpm) | full |
 | T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot, and does Restore earlier settings repair it? Then all of it at once, Recovery without the system accounts, Restore earlier settings, and, broken again, Reset settings, with Secure Boot) | full |
-| T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
+| T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: ntpd-rs corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
 | T10 | Disk encryption | `tools/vm/encryption.sh` (without a TPM: the password and the recovery key unlock the disk in the initrd, a wrong password is asked again, the recovery key typed 120 s later and the password after three wrong ones still unlock it, no root partition ends in emergency mode after 90 s, neither secret in the logs or on the disk outside LUKS), `tools/vm/encryption-tpm.sh` (with a TPM and Secure Boot: the first boot unlocks by itself and enrolls the disk with the signed PCR policy, the next ones unlock by themselves, without the TPM the recovery key unlocks it, a TPM that stops answering before `leave-initrd` forces a reboot; after the TPM refused because of a new Secure Boot database, a new TPM or a different PCR 12, the recovery key unlocks it and the disk is enrolled again, but never with Secure Boot off or an add-on measured, and never a disk set up with a password with a forged TPM2 token; the recovery profile asks for the disk); the signed TPM unlock policy is tested under T7 and T15 (`tools/signing/tpm-unlock.sh`) | partial: not yet updates, the policy key's rotation, the PIN; the first boot without a TPM or with Secure Boot off is checked by hand only |
 | T11 | Version jumps and channels | `tools/vm/channels.sh` (a jump over several versions with a retracted one between, refused sheets on the way and a retraction below the floor the jump raised; versions that change the sheet key, the default channel and the repository; a channel chosen on the machine, which survives a rollback; beta to stable back to stable's older version only with a sheet issued after the change, once, never below the floor, staged afresh with today's `/etc` even when it is the rollback deployment) | full |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | full |
@@ -128,7 +128,11 @@ only if the action fails for another reason:
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file; the ESP's (at `/boot`) covers the same, taken right before and after `rm`, so
 that even a partial delete fails the test, which the next boot's repair would otherwise hide. The
-ESP as `rm` left it is listed in the step summary.
+ESP as `rm` left it is listed in the step summary. The files are hashed through `find -exec`, not
+`xargs`: after `rm` there is no `/dev/null`, xargs then starts its command with standard input
+closed, and a Rust program such as uutils' `sha256sum` aborts on that (docs/DEFAULTS.md, "Core
+utilities"). Any command of the checksum that fails fails the check (`pipefail`), so a missing hash
+can never pass as one.
 
 apt and dpkg: the message is help, not the protection, so both are tested: what the commands say,
 and Debian's dpkg itself, past the message, against the read-only `/usr`.
@@ -164,7 +168,7 @@ the image's:
 | 2 | `/etc/fstab`: a line that is not a mount, and a disk that is not connected (`LABEL=nyra-t8-data`, without `nofail`) | the system boots to a login prompt; then "Nyra OS Restore earlier settings" (`bootctl set-oneshot`, as in the boot menu) with the copy from boot 1 repairs it (below) |
 | 3 | `/etc/passwd`: every system account deleted (root and the user kept), a line that is not an account | the same |
 | 4 | the network: the wired network's settings replaced in `/etc/systemd/network` with a wrong static address, `/etc/resolv.conf` replaced with a wrong name server | the same |
-| 5 | `/etc/systemd/system`: everything deleted (what the image enables there), then systemd-resolved, chronyd, the firewall and the update timer masked | the same |
+| 5 | `/etc/systemd/system`: everything deleted (what the image enables there), then systemd-resolved, ntpd-rs, the firewall and the update timer masked | the same |
 | 6 | all four at once; "Nyra OS Recovery" picked for the next boot | |
 | 7 | that boot: Recovery without the system accounts | it asks for an administrator although `/etc/passwd` has no `nobody`; a wrong password gives no shell, the right one a root shell in `rescue.target`; "Nyra OS Restore earlier settings" picked for the next boot |
 | 8 | that boot: the copy from boot 1, then the normal boot | repaired (below), the file in `/home` is the same; then all four broken again, "Nyra OS Reset settings" picked |
@@ -173,7 +177,7 @@ the image's:
 **Repaired** means: `/etc/fstab`, `/etc/passwd` (but the user's line, which comes from the current
 `/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the copy's; and
 **healthy**: running; the user logs in with their password, a wrong one is refused; the network
-works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the
+works; the basic services are active (journald, D-Bus, logind, networkd, resolved, ntpd-rs, the
 firewall, AppArmor, the update timer); Secure Boot and the lockdown on.
 
 Boots 2-5 each break the system, reboot it, so that each breakage shows what it does on its own, then
@@ -196,8 +200,8 @@ shell: on boots 3 and 7 it failed, on the line that is not an account (its journ
 others, the normal boots after the restores and the reset included, it ran and succeeded. A failure anywhere else, or for
 another reason, fails the test; `systemctl --failed` is not filtered.
 
-The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
-such account) so that it has to ask; the network check is a file served by the runner, which the guest
+The password check is `su` through PAM, run as the user who logs in (by UID: sudo-rs's `su` refuses
+to run for a user it cannot look up, and the broken `/etc/passwd` has no `nobody`) so that it has to ask; the network check is a file served by the runner, which the guest
 reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
 the state `/etc`, through a bind mount of `/` alone.
 

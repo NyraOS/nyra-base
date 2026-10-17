@@ -16,7 +16,8 @@ it is something the user switches on, not off), and how CI proves it.
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
-| Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| Authenticated time | ntpd-rs (Rust, built by us with our patch for a clock that is far off) with NTS only (Cloudflare, Netnod, PTB, SIDN Labs), run by `ntpd-rs.service` (never root, only `CAP_SYS_TIME`, sandboxed, AppArmor); configuration in `/usr/lib/nyra/ntpd-rs/ntp.toml`; no chrony, no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd` or chrony; the service active, ntp-daemon as its dynamic user with `CAP_SYS_TIME` as its only effective capability, no new privileges, its seccomp filter on and its AppArmor profile in enforce mode without a denial, our configuration with exactly the four NTS sources and every running source NTS, a systemd exposure of at most 1.9; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
 signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
@@ -91,7 +92,7 @@ only orders the two at boot.)
 
 Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
 (update checks, docs/UPDATES.md), `nyra-etc-copy.timer` (the daily copy of `/etc`, docs/BOOT.md,
-"Restore earlier settings"), `chronyd-restricted.service` (the clock, see "Time").
+"Restore earlier settings"), `ntpd-rs.service` (the clock, see "Time").
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.
@@ -159,9 +160,9 @@ answering before `leave-initrd`, and that way out (without the TPM, the recovery
 The ruleset (`inet nyra`, input hook only) lets in loopback, replies to connections this machine
 started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements, MLD queries) and
 DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
-Outbound and forwarded traffic is not filtered: chronyd's NTS key exchange (TCP 4460) and NTP
+Outbound and forwarded traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP
 queries (UDP 123) go out, and only their replies come back in (`established`). Nothing listens for
-time: chronyd opens no server port and no command port (see "Time").
+time: ntpd-rs serves no time and has no network control port (see "Time").
 
 - nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
   per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
@@ -185,46 +186,60 @@ Security, RFC 8915): a TLS key exchange with the server (NTS-KE, TCP 4460), then
 
 | What | How |
 |---|---|
-| Client | `chrony`, which conflicts with `systemd-timesyncd` (not installed) |
-| Sources | `time.cloudflare.com` and `nts.netnod.se`, both with `nts`; no pool, no servers from DHCP, no unauthenticated fallback. `minsources 2`: the clock is updated only when both operators are reachable and agree, so one compromised or impersonated server cannot move it |
-| Configuration | `/usr/lib/nyra/chrony/chrony.conf`, passed with `-f` by a drop-in of `chronyd-restricted.service`. Debian's `/etc/chrony/chrony.conf` (an unauthenticated pool and servers from DHCP) stays as the package left it and is not read |
-| Service | Debian's `chronyd-restricted.service`: started as `_chrony`, with `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state, runtime and log directories only, Debian's seccomp filter (`-F 1`, set in the drop-in) and AppArmor profile (enforce mode) (`systemd-analyze security`: exposure 1.9, "OK"). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it and disables `chrony.service` (chronyd started as root; the two units conflict) and `chrony-wait.service` (it asks chronyd over UDP 323, which the restricted client does not open, and would delay the boot). systemd applies presets again at the first boot, so the preset is what keeps them that way. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`, ahead of chrony's own list: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it, never `chrony.service` with Debian's configuration |
-| State | NTS cookies (`ntsdumpdir`) and the drift file in `/var/lib/chrony` |
-| Control | `chronyc` as root, over the Unix socket in `/run/chrony`; `cmdport 0`, so no UDP 323 |
-| Bootstrap | `nocerttimecheck 1`, see below |
+| Client | [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) (`ntp-daemon`, version in `ntpd-rs/Cargo.lock`), built in the image build from its crates with our patch (below) |
+| Sources | `time.cloudflare.com`, `nts.netnod.se`, `ptbtime1.ptb.de` (PTB, Germany's metrology institute) and `nts.time.nl` (SIDN Labs), all NTS; no pool, no servers from DHCP, no unauthenticated fallback. `minimum-agreeing-sources = 3`: the clock moves only when at least three servers agree and are the majority of those that answer (ntpd-rs's selection), so one or two compromised or impersonated servers cannot move it, and one operator out of reach does not stop it |
+| Configuration | `/usr/lib/nyra/ntpd-rs/ntp.toml`, passed with `--config` by `ntpd-rs.service`. At startup a step of any size is allowed (`startup-step-panic-threshold`), bounded by the patch; later a step of more than 1000 s ends the daemon (upstream's default, for a clock set by hand, for example), and systemd starts it again 30 s later, which corrects the clock as at boot. Offline it tries each server every second and logs each failure: the journal takes at most 1000 of its messages an hour |
+| Service | our `ntpd-rs.service` (`Type=exec`): a dynamic user (no account in `/etc/passwd`), `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state and runtime directories only, no devices, kernel tunables, modules, logs or control groups, Internet, local and route netlink sockets only (it does not start without netlink: it follows the machine's own addresses), a system call allow list (`@system-service @clock`, without `@resources`), no writable and executable memory, and its AppArmor profile in enforce mode (`/etc/apparmor.d/usr.bin.ntp-daemon`, kept in `/usr/lib/nyra/apparmor.d` like the others) (`systemd-analyze security`: exposure 1.9, "OK", as chronyd-restricted's before it). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it, and systemd applies presets again at the first boot. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it |
+| State | `/var/lib/ntpd-rs/last-clock-update`, written at every clock update: its time is the last good time (the floor below), its content the boot ID of that update |
+| Control | `ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status` as root, over the Unix socket `/run/ntpd-rs/observe` (mode 0600); no network control port |
+| Bootstrap | our patch, see below |
 
 **A wrong clock at boot.** NTS-KE checks the server certificate like any TLS client, including its
 validity dates. A machine whose clock is outside them (a hardware clock in 2035, or reset by an empty
 battery to a date before the certificate was issued) could therefore never correct it: the
 certificates of `time.cloudflare.com` and `nts.netnod.se` were checked with the clock in 2035 and
 both were refused as expired. Such a machine would also fail every update (docs/UPDATES.md, T9).
-`nocerttimecheck 1` turns off only the check of the dates, and only until the first clock update
-after chronyd starts; the chain to a trusted CA and the server name are still checked. Debian's
-configuration does not set it; chrony's documentation describes this case as its purpose.
+ntpd-rs has no setting for this (chrony's `nocerttimecheck`), so we patch it
+([`patches/upstream/ntpd-rs-wrong-clock.md`](../patches/upstream/ntpd-rs-wrong-clock.md), public
+domain, not sent upstream). Until the first clock update since boot:
 
-What it costs: until that first update, an attacker on the path who holds the private key of a
-certificate for one of these names that has *expired* (and was issued by a trusted CA) can complete
-the key exchange and offer a wrong time. A stolen key of a certificate that is still valid works
-with or without this setting (chrony does not check revocation), so the expired keys are the only
-addition. With `minsources 2` the attacker needs such keys for both operators, Cloudflare and
-Netnod, at the same time. Not done: pinning the CAs of the two servers (`ntstrustedcerts`), which
-would stop time synchronization silently the day an operator changes its CA.
+1. a key exchange still proves that the server holds the key of the certificate it presents, but
+   the certificate (chain to a trusted CA, server name, dates) is checked at each time the server
+   then gives, not at the local clock's time: a time counts only if the certificate was valid then;
+2. no time counts below the floor: the image's build time (`/usr/lib/clock-epoch`, which systemd
+   also uses to move a clock that starts before it) or the last clock update, whichever is later;
+3. the clock moves only when three servers of different operators agree (above).
 
-What `minsources 2` costs: if one of the two operators cannot be reached, the clock is not updated
-at all and runs on the hardware clock until both answer again.
+After the first clock update, and after a restart of the daemon in the same boot, a key exchange
+checks the certificate at the handshake again, as upstream does. Sources that started before keep
+the check at the time they give, which is then the local time.
 
-**Local changes**, in `/etc`, kept across updates: more sources in `/etc/chrony/sources.d/*.sources`
-(they count towards `minsources`); other directives in `/etc/chrony/conf.d/*.conf`, which are read
-after ours and override them (`minsources 1`, for example). To replace the whole configuration, set
-`DAEMON_OPTS="-F 1 -f /etc/chrony/my.conf"` in `/etc/default/chrony`: the later `-f` wins.
+What it costs: until that first update, an attacker on the path who holds the private key of an
+*expired* certificate for one of these names (issued by a trusted CA) can complete the key exchange
+and offer a time at which that certificate was still valid, and no earlier than the floor; three of
+the four operators' keys are needed at the same time to move the clock. A stolen key of a
+certificate that is still valid works with or without the patch (ntpd-rs does not check revocation).
+Before that first update, ntpd-rs also takes keys from a server whose certificate it has not yet
+checked: it sends that server NTP requests (authenticated, without anything secret) and uses none of
+its times until the certificate is valid at them. With chrony's `nocerttimecheck` the dates were not
+checked at all until the first update.
 
-**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM, two runs: about
-1.0 MB installed (the `chrony` package, 727 KB, plus `ucf`, `sensible-utils` and two small Perl
-libraries); one resident process, started at boot because the clock has to be right before the
-first update check. Synchronized and idle: about 10.8 MB resident (most of it shared libraries,
-GnuTLS among them) and about 6.3 MB charged to its cgroup; at most 5 context switches in 60 s
-(about 0.08 per second); 82 to 87 ms of CPU time from its start, key exchanges included. It polls
-each of the two sources every 64 to 1024 s and has no listening socket.
+What `minimum-agreeing-sources = 3` costs: if two of the four operators cannot be reached, the clock
+is not updated at all and runs on the hardware clock until three answer again. The first update
+after boot can take a few minutes: ntpd-rs uses a server once it has enough answers from it (up to
+eight, asked every 16 s).
+
+**Local changes**: the unit and the configuration are in `/usr`. To use other servers, copy the
+configuration to `/etc/ntpd-rs/ntp.toml` and point the service at it with a drop-in in `/etc`
+(`systemctl edit ntpd-rs.service`: an empty `ExecStart=`, then `ExecStart=/usr/bin/ntp-daemon
+--config /etc/ntpd-rs/ntp.toml`). The AppArmor profile lets it read that file.
+
+**Cost**: the two programs, `ntp-daemon` and `ntp-ctl`, are about 5.9 and 5.6 MB (each carries its
+own copy of aws-lc, the TLS library), against about 1.0 MB for chrony and its dependencies. Measured
+in the update tests (T9, the boot with the clock in 2035, one run on the CI's VM), synchronized:
+about 8.8 MB resident and 11.2 MB charged to its cgroup (chronyd: 10.8 and 6.3 MB); 58 context
+switches in 60 s (chronyd: at most 5); 229 ms of CPU time from its start, key exchanges included
+(chronyd: 82 to 87 ms).
 
 ## Filesystems
 
@@ -330,3 +345,98 @@ For developer tools, use apt in a Distrobox container: distrobox create, then di
 The message is help, not the protection: `/usr` stays read-only for dpkg itself too. Titanic T12
 (docs/TITANIC.md) checks both: the message from all three commands, and "Read-only file system" from
 `/usr/lib/nyra/dpkg -i`, with `/usr` unchanged.
+
+## Rust components
+
+Some of Debian's tools are replaced with rewrites in Rust, where the rewrite does what the base
+needs. Each was tried against the scripts and tests of the base; what failed stays Debian's, with
+the reason below.
+
+### su
+
+`su` is the one from [sudo-rs](https://github.com/trifectatechfoundation/sudo-rs) (Debian's
+`sudo-rs` package), moved to `/usr/bin/su` over util-linux's and setuid root like it (the package's
+script sets the mode; `ci/setuid.txt` still lists `/usr/bin/su`). The rest of the package goes in
+the Containerfile: there is no `sudo`, `sudoedit` or `visudo` on the desktop. It uses the same PAM
+services as util-linux's (`/etc/pam.d/su`, and `su-l` for a login shell).
+
+Two differences matter for the base, both handled in recovery (docs/BOOT.md, "Recovery"):
+- sudo-rs asks for the password up to three times; recovery reads it once itself and gives it to `su`
+  on its input, so a wrong one is one try, as before.
+- sudo-rs refuses to run for a calling user it cannot look up ("user 'current user' not found"),
+  where util-linux's ran as UID 65534 without a `nobody` line in `/etc/passwd`. Recovery therefore
+  runs `su` as the administrator who logs in, by UID, instead of `nobody`.
+
+### zlib
+
+The image's `libz.so.1` is [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), built in the
+image build: Debian has its crates, but no package with the library. `zlib/` holds a small crate
+that builds `libz-rs-sys` (pinned in `zlib/Cargo.lock`, each crate checked against it, without
+network: `ci/vendor-crates.sh`) as a static library; the Containerfile links it into a shared
+library with zlib's soname and symbol versions (`zlib.map` from `libz-rs-sys`), as zlib-rs documents
+for a drop-in, and puts it over the file Debian's `libz.so.1` link points to. Debian's `zlib1g`
+package stays installed for its link and in the SBOM (docs/SBOM.md). The features are those of
+zlib-rs's own C library build (the C allocator, CPU features detected at run time) plus the `gz*` file
+functions. Not used: the crate `libz-rs-sys-cdylib`, which also carries about 66 MB of test
+binaries and profiling data.
+
+Missing: `gzprintf` and `gzvprintf`. They are C variadic functions, which stable Rust cannot define
+(zlib-rs builds them only with a nightly compiler). A program that uses one would not load; none in
+the image does, and the build fails if one appears (a search of `/usr` for the names). `zlibVersion()`
+returns `1.3.0-zlib-rs-<version>`.
+
+Checked before: Python's `zlib` and `gzip` modules (compression levels -1 to 9, zlib, raw and gzip
+streams, data from both libraries decompressed by the other) and curl's `--compressed`. Size: about
+500 KB against Debian's 120 KB.
+
+### Core utilities
+
+The commands of GNU coreutils are those of [uutils coreutils](https://github.com/uutils/coreutils)
+(Debian's `rust-coreutils`): `/usr/bin/<command>` (and `/usr/sbin/chroot`) is a link to its
+multi-call binary `/usr/bin/coreutils`, which runs the command its link is named after. GNU's
+`basenc`, `factor` and `stty` stay: Debian's build of uutils has none of them. GNU coreutils stays
+installed for them; the build fails when that list changes. The image build itself (dracut, the
+initramfs) already runs with uutils.
+
+Checked against GNU before, on the same input, for what the base's scripts and tests use: `mv -T
+--exchange` (the switch of Reset settings), `cp -a` (modes with setuid, setgid and sticky bits, owners,
+times, links, hard links, FIFOs, ACLs, extended attributes, `cp -a SRC/. DEST/`,
+`--one-file-system`), `chmod` and `chown --reference`, `install -m` and `-D`, `date` (`-d` with ISO
+and `@seconds`, `+FORMAT`, `-u`), `sort` (`-r`, `-V`, `-u`, `-z`, the C locale), `stat -c` (`%a`,
+`%U`, `%G`, `%s`, `%t %T`) and `stat -f`, `head`, `tail` (`-c +N`, `-n +N`, `-1`), `cut`, `tr`, `od
+-An -tu1 -N5` (the TPM enrollment in the initramfs: not `-j`, below), `seq -w`, `id -nG`, `readlink -f`,
+`mktemp -d`, `truncate`, `du`, `base64`, `sha256sum -c`, `ln -sT` and `-sfn`, `mkdir -m`, `tee -a`,
+`timeout`, `dd ... conv=fsync status=none`: same output and exit codes. The initramfs stays
+reproducible.
+
+Cost, measured in CI against main (the three Rust components together, uutils' share by far the
+largest): the image (OCI archive) 24 MB larger (+4.2%); the UKI 4.9 MB larger, the initramfs in it
+12.6 MB larger uncompressed (the multi-call binary, about 13.8 MB, instead of the few GNU commands it
+needs); no measurable difference in boot time.
+
+Every Rust program, uutils' commands among them, aborts at its start (SIGABRT, exit 134) when it is
+started with standard input, output or error closed and `/dev/null` cannot be opened: Rust's runtime
+opens `/dev/null` in place of a closed descriptor and aborts if it cannot. GNU's commands run on.
+That needs both a closed descriptor and no `/dev/null`: systemd always gives services open
+descriptors, and recovery and Reset settings start on a fresh devtmpfs, which has `/dev/null`. It
+happened in Titanic T12, after `rm -rf /`: GNU xargs, unable to open `/dev/null`, started
+`sha256sum` with standard input closed (the test now hashes with `find -exec`, docs/TITANIC.md). In a
+shell where `/dev/null` was deleted, `mknod -m 666 /dev/null c 1 3` brings it back.
+
+One difference was found only in a VM: `od -j N` skips by the size the file system reports, and
+efivarfs in the initramfs reported less than the variable holds, so `od -An -tu1 -j4 -N1` on
+`SecureBoot` failed and the TPM enrollment took Secure Boot for off. GNU reads to skip. The enrollment
+now reads the first five bytes (`od -N5`) and takes the fifth, which both do the same.
+
+### Time client
+
+The time client is ntpd-rs, built in the image build from its crates with our patch for a clock
+that is far off; see "Time".
+
+### What stays Debian's
+
+| Component | Why it is not replaced (yet) |
+|---|---|
+| GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
+| GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
+

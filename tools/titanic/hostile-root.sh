@@ -41,10 +41,14 @@ image="$1" disk="$2" uki_cert="$3" work="$4" logs="$5" summary="$6"
 # right before a word inside double quotes.
 # Every path under /usr with its type, mode, owner, size and link target, and the content of every
 # file: two checksums, printed as "nyra-usr: <16 hex>-<16 hex>" (the host reads it from the log).
-usrsum='u="$(find /usr -xdev -printf "%y %m %U %G %s %p %l\n" | LC_ALL=C sort | sha256sum | cut -c1-16)-$(find /usr -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)" && echo "nyra""-usr: $u"'
+# The files are hashed by find -exec, with the shell's own standard input, not by xargs: after
+# rm -rf / there is no /dev/null, so xargs starts its command with standard input closed, and a Rust
+# program (uutils' sha256sum) then aborts before it reads anything (docs/LESSONS.md). pipefail: a
+# command that fails anywhere fails the check, instead of hashing an empty list.
+usrsum='u="$(set -o pipefail; find /usr -xdev -printf "%y %m %U %G %s %p %l\n" | LC_ALL=C sort | sha256sum | cut -c1-16)-$(set -o pipefail; find /usr -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | cut -c1-16)" && echo "nyra""-usr: $u"'
 
 # The same for the ESP, mounted read-only at /boot: "ESP: <16 hex>-<16 hex>".
-espsum='e="$(find /boot -xdev -printf "%y %m %U %G %s %p %l\n" | LC_ALL=C sort | sha256sum | cut -c1-16)-$(find /boot -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)" && echo "ESP: $e"'
+espsum='e="$(set -o pipefail; find /boot -xdev -printf "%y %m %U %G %s %p %l\n" | LC_ALL=C sort | sha256sum | cut -c1-16)-$(set -o pipefail; find /boot -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | cut -c1-16)" && echo "ESP: $e"'
 fallback='cmp /boot/EFI/BOOT/BOOTX64.EFI /usr/lib/shim/shimx64.efi.signed && echo "EFI/BOOT/BOOTX64.EFI is the image'"'"'s shim"'
 
 # What apt, apt-get and an install with dpkg print instead (/usr/lib/nyra/no-apt), in "$o".

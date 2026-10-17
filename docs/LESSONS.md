@@ -377,10 +377,71 @@ Each line is something that broke or surprised us once.
   `chrony-wait.service` asks over `127.0.0.1` and therefore cannot work with it.
 - NTS-KE checks the certificate dates with the local clock: with the clock in 2035 both
   `time.cloudflare.com` and `nts.netnod.se` were refused as expired, so NTS alone can never correct
-  a clock that is far off. `nocerttimecheck 1` lifts only the date check, until the first clock
-  update. Debian's configuration does not set it.
+  a clock that is far off. chrony's `nocerttimecheck 1` lifts only the date check, until the first
+  clock update (Debian's configuration does not set it); ntpd-rs needs our patch (docs/DEFAULTS.md,
+  "Time").
 - chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
   resolves to another address starts with a new key exchange.
+
+## Rust components (docs/DEFAULTS.md)
+
+- sudo-rs's `su` (0.2.15) asks for the password up to three times, also when its input is not a
+  terminal; with the password on its input and nothing after it, the second read ends the attempt.
+  It also refuses a calling UID that has no `/etc/passwd` line ("user 'current user' not found"),
+  where util-linux's `su` only needs the target account.
+- zlib-rs as `libz.so.1`: a cdylib from `cargo build` has no soname and no symbol versions, and
+  programs linked against zlib ask for versioned symbols (`deflateBound@ZLIB_1.2.0`). zlib-rs's way
+  is a static library linked with `cc -shared` and zlib's version script (`--undefined-version`, since
+  the script names functions the build leaves out). Its `gzprintf` feature needs a nightly compiler
+  (`c_variadic`); a stable build simply lacks `gzprintf` and `gzvprintf`.
+- uutils (coreutils 0.12.0, findutils 0.10.0, diffutils 0.5.0) differs from GNU where it is not
+  obvious: `find -newermt` refuses every date form (dracut's `clamp_mtimes` relies on `@SECONDS`),
+  `find -printf %m` prints the mode without the setuid, setgid and sticky bits, and `diff` has no
+  `-r`. Compare a command's output with GNU's on the same input before relying on it; a listing made
+  with uutils `find` can hide a difference of `cp` (it looked as if `cp -a` dropped the setgid bit).
+- uutils `od -j N` skips by the size `stat` reports, also on its standard input, and fails ("cannot
+  skip past end of combined input") where that size is smaller than the content: procfs files, and
+  efivarfs in the initrd, where the TPM enrollment read `SecureBoot` as missing and gave up ("Secure
+  Boot is off"). GNU reads to skip. `od -N 5` and the fifth number, or a pipe, work with both.
+- A Rust program started with fd 0, 1 or 2 closed reopens it on `/dev/null`, and aborts (SIGABRT)
+  when it cannot: with `/dev/null` gone (`rm -rf /` in Titanic T12), uutils' `sha256sum` died at
+  once. GNU xargs starts its command with standard input closed when it cannot open `/dev/null`, so
+  `find | xargs -0 sha256sum` hashed nothing and printed the hash of an empty input, which looked
+  like a changed `/usr`. `find -exec cmd {} +` passes the shell's own descriptors; `set -o pipefail`
+  inside the command substitution turns such a failure into a failed check instead of a wrong hash.
+- GNU strings are no test for GNU binaries: uutils' multi-call binary contains "GNU coreutils" too.
+- ntpd-rs (1.9.0) checks NTS-KE certificates with rustls against the system clock and has no option
+  to skip the dates, so it cannot correct a clock outside their validity by itself. libfaketime
+  (`FAKETIME=@2035-06-01 00:00:00`) with `ntp-ctl force-sync` shows it without root: `ExpiredContext`
+  on every key exchange.
+- rustls passes the time to the certificate verifier (`verify_server_cert(..., now)`), so the same
+  verifier checks a chain at any other time; the handshake signature (`verify_tls13_signature`) does
+  not depend on the time, and the connection keeps the chain (`peer_certificates()`). That is how our
+  ntpd-rs patch checks a certificate at the time the server gives.
+- ntp-daemon (1.9.0) opens a netlink socket at startup (the machine's addresses and their changes):
+  with `RestrictAddressFamilies=` without `AF_NETLINK` it exits with status 1 right after "using
+  config file", and upstream's binary prints no error. Our build's `ntp-daemon` prints it.
+- A service with `PrivateTmp=`/`ProtectSystem=` sandboxing and its own AppArmor profile cannot use
+  `Type=notify`: the write to systemd's notification socket is refused as a "disconnected path"
+  (`name="systemd/notify"`), the start times out after 90 s and the unit fails (ntpd-rs in CI).
+  `Type=exec` needs no notification.
+- `ps -o user=` shows a `DynamicUser=` service's UID as a number, not the unit's name: compare it
+  with `systemctl show -P UID <unit>`.
+- AppArmor checks the resolved path: on the image `/usr/local` links to `/var/usrlocal`, so a CA
+  added with update-ca-certificates is read as `/var/usrlocal/share/ca-certificates/...`, which the
+  `ssl_certs` abstraction does not name (it allows `/usr/local/share/ca-certificates/`). Seen with
+  the update tests' CA: every read of the CA directory by ntp-daemon was denied.
+- ntpd-rs's selection already wants a majority: the largest set of sources that agree must be more
+  than half of the usable ones, and at least `minimum-agreeing-sources` (default 3).
+- ntpd's build script asks git for a commit and its date; outside a git checkout `git diff-index`
+  fails, the build counts as "dirty" and takes today's date (`date -u`), so the binary changes every
+  day. `NTPD_RS_GIT_REV` and `NTPD_RS_GIT_DATE` in the environment avoid it.
+- `git apply` works outside a repository, like `patch`: `git apply -p2 --directory=ntp-proto-1.9.0`
+  applies a patch made in the upstream tree (`a/ntp-proto/src/...`) to the crate unpacked from
+  crates.io.
+- systemd's `@privileged` system call set contains `@clock`: a time client can deny `@resources`
+  but not `@privileged`. `systemd-analyze security --offline=true FILE` scores a unit file that is
+  not installed.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
@@ -761,6 +822,11 @@ Each line is something that broke or surprised us once.
   with all the passing boots of the same run (the serial log artifact). The flaky root partition
   showed up only that way: a one-second stall of one CPU right when the boot disk was probed, in
   the two failed boots and in none of the 182 others.
+- A kernel message can land in the middle of a prompt on the serial console ("Please enter
+  rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then "overy key for disk
+  root:"), when the runner is busy. A pattern that must match the whole prompt is matched in the
+  console without kernel messages (`clean()` in `vm-boot.py`), as the status lines already were.
+  `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
@@ -807,10 +873,11 @@ Each line is something that broke or surprised us once.
   may write there) make every read of that block fail with `Input/output error`, through `/usr` and
   on the object itself. Drop the page cache first (`sync`, `blockdev --flushbufs`, `drop_caches`),
   or the old pages are served. The same write on a plain file in `/var` is the control.
-- systemd sets the clock to its build time at boot when the hardware clock is before it **or more
-  than about 15 years after it**: an RTC in 1970 and one in 2099 both start at the image's build
-  time (the snapshot date), still before the real time. A clock that is wrong but within that range
-  (2035) stays wrong until chronyd corrects it (docs/DEFAULTS.md, "Time").
+- systemd sets the clock at boot to the image's build time (the time of `/usr/lib/clock-epoch`, the
+  snapshot date; without that file, systemd's own build time) when the hardware clock is before it
+  **or more than about 15 years after it**: an RTC in 1970 and one in 2099 both start there, still
+  before the real time. A clock that is wrong but within that range
+  (2035) stays wrong until the time client corrects it (docs/DEFAULTS.md, "Time").
 - curl reports a wrong clock as `SSL certificate OpenSSL verify result: certificate is not yet valid
   or the system clock is incorrect (9)` or `... certificate has expired (10)`, which is what
   `nyra-updated` passes on.
@@ -834,9 +901,9 @@ Each line is something that broke or surprised us once.
   cache exists depends on a race at the first boot: `apparmor.service` runs next to
   `systemd-tmpfiles-setup.service`, and without `/var/cache` yet the parser loads without writing a
   cache. So one T6 run passed and the next had AppArmor failing on the full disk.
-- With chronyd in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
+- With an NTS client in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
   2035) were corrected within seconds of reaching the network, so a check that needs the clock
-  wrong must keep chronyd from its servers (the T9 hostile boot points their names at the runner).
+  wrong must keep it from its servers (the T9 hostile boot points their names at the runner).
 - Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
   answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
   replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)

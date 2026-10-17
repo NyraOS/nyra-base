@@ -1,0 +1,519 @@
+SPDX-License-Identifier: Unlicense
+ntpd-rs: correct a clock that is far off through NTS (what and why: ntpd-rs-wrong-clock.md).
+Made against ntpd-rs v1.9.0 (46ec9bb4d5b6cb24f814f5543d85b9138afb4cba). It changes only the
+ntp-proto crate: git apply in the source tree, or git apply -p2 in the crate's directory.
+
+diff --git a/ntp-proto/src/algorithm/kalman/select.rs b/ntp-proto/src/algorithm/kalman/select.rs
+index 0b4c03c..90b6594 100644
+--- a/ntp-proto/src/algorithm/kalman/select.rs
++++ b/ntp-proto/src/algorithm/kalman/select.rs
+@@ -134,6 +134,31 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn one_source_alone_is_not_enough() {
++        // Nyra OS (crate::bootstrap): with the default minimum-agreeing-sources (3), the clock
++        // follows only three or more sources that agree and are the majority.
++        let sysconfig = SynchronizationConfig::default();
++        let algconfig = AlgorithmConfig::default();
++        let sources = |offsets: &[f64]| -> Vec<_> {
++            offsets
++                .iter()
++                .map(|&offset| snapshot_for_range(offset, 0.01, 0.01, None))
++                .collect()
++        };
++        assert!(select(&sysconfig, &algconfig, &sources(&[0.0])).is_empty());
++        assert!(select(&sysconfig, &algconfig, &sources(&[0.0, 0.0])).is_empty());
++        assert_eq!(
++            select(&sysconfig, &algconfig, &sources(&[0.0, 0.0, 0.0])).len(),
++            3
++        );
++        assert!(select(&sysconfig, &algconfig, &sources(&[0.0, 0.0, 5.0, 5.0])).is_empty());
++        assert_eq!(
++            select(&sysconfig, &algconfig, &sources(&[0.0, 0.0, 0.0, 5.0])).len(),
++            3
++        );
++    }
++
+     #[test]
+     fn test_weighing() {
+         // Test that there only is sufficient overlap in the below set when
+diff --git a/ntp-proto/src/bootstrap.rs b/ntp-proto/src/bootstrap.rs
+new file mode 100644
+index 0000000..9990d0e
+--- /dev/null
++++ b/ntp-proto/src/bootstrap.rs
+@@ -0,0 +1,294 @@
++// SPDX-License-Identifier: Unlicense
++//! Correcting a clock that is far off (Nyra OS: ntpd-rs-wrong-clock.patch, public domain).
++//!
++//! A key exchange checks the server's certificate like any TLS client, its dates included. A clock
++//! outside their validity (an empty RTC battery, a clock years ahead) would therefore never be
++//! corrected. Until the first clock update since boot:
++//! 1. a key exchange checks the server's certificate (chain, name and dates) not at the handshake,
++//!    but at the time the server then gives: that time counts only if the certificate was valid then.
++//!    The handshake still proves that the server holds the certificate's key;
++//! 2. no time counts below the floor: the image's build time or the last clock update, whichever is
++//!    later;
++//! 3. the clock moves only when enough sources agree (`minimum-agreeing-sources` in the
++//!    configuration, with NTS servers of different operators), as without this patch.
++//!
++//! After the first clock update, key exchanges check the certificate at the handshake again.
++
++use std::{
++    fs,
++    sync::{
++        Arc, LazyLock,
++        atomic::{AtomicBool, Ordering},
++    },
++    time::{Duration, SystemTime, UNIX_EPOCH},
++};
++
++use rustls23::{
++    DigitallySignedStruct, Error, SignatureScheme,
++    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
++    pki_types::{CertificateDer, UnixTime},
++};
++use tracing::warn;
++
++use crate::tls_utils::{Certificate, PlatformVerifier, ServerName};
++
++/// Its modification time is the image's build time (systemd's convention, see systemd(1)).
++const BUILD_TIME_FILE: &str = "/usr/lib/clock-epoch";
++/// Written at every clock update: its modification time is the last good time, its content the
++/// boot ID of that update.
++const LAST_UPDATE_FILE: &str = "/var/lib/ntpd-rs/last-clock-update";
++const BOOT_ID_FILE: &str = "/proc/sys/kernel/random/boot_id";
++
++static CLOCK_UPDATED: LazyLock<AtomicBool> = LazyLock::new(|| {
++    let saved = fs::read_to_string(LAST_UPDATE_FILE).ok();
++    let boot_id = fs::read_to_string(BOOT_ID_FILE).ok();
++    AtomicBool::new(updated_this_boot(saved.as_deref(), boot_id.as_deref()))
++});
++
++fn updated_this_boot(saved: Option<&str>, boot_id: Option<&str>) -> bool {
++    saved.is_some() && saved == boot_id
++}
++
++/// Whether the clock was updated since boot, by this run of the daemon or an earlier one.
++pub(crate) fn clock_updated() -> bool {
++    CLOCK_UPDATED.load(Ordering::Relaxed)
++}
++
++/// After every clock update: ends the bootstrap and saves the time as the next floor.
++pub(crate) fn note_clock_update() {
++    CLOCK_UPDATED.store(true, Ordering::Relaxed);
++    let boot_id = fs::read_to_string(BOOT_ID_FILE).unwrap_or_default();
++    if let Err(e) = fs::write(LAST_UPDATE_FILE, boot_id) {
++        warn!("Could not save the time of the clock update in {LAST_UPDATE_FILE}: {e}");
++    }
++}
++
++/// The earliest time a source may give until the first clock update: the image's build time or the
++/// last clock update. None afterwards, when the last update can be a few milliseconds ahead of a
++/// source that is just as good.
++pub(crate) fn floor() -> SystemTime {
++    if clock_updated() {
++        return UNIX_EPOCH;
++    }
++    [BUILD_TIME_FILE, LAST_UPDATE_FILE]
++        .into_iter()
++        .filter_map(|file| fs::metadata(file).and_then(|m| m.modified()).ok())
++        .max()
++        .unwrap_or(UNIX_EPOCH)
++}
++
++/// The time a source gives: the local clock plus the measured offset.
++pub(crate) fn source_time(offset_seconds: f64) -> SystemTime {
++    let now = SystemTime::now();
++    let offset = Duration::try_from_secs_f64(offset_seconds.abs()).unwrap_or(Duration::MAX);
++    let time = if offset_seconds >= 0.0 {
++        now.checked_add(offset)
++    } else {
++        now.checked_sub(offset)
++    };
++    time.unwrap_or(UNIX_EPOCH)
++}
++
++/// Whether a source's time counts: never below the floor, and only at a time its certificate was
++/// valid when that was not checked at the handshake.
++pub(crate) fn check_time(
++    time: SystemTime,
++    floor: SystemTime,
++    certificate: Option<&CertificateCheck>,
++) -> Result<(), &'static str> {
++    if time < floor {
++        return Err("below the image's build time or the last clock update");
++    }
++    if certificate.is_some_and(|c| !c.valid_at(time)) {
++        return Err("the server's certificate is not valid at that time");
++    }
++    Ok(())
++}
++
++/// A server certificate from a key exchange before the first clock update, checked at the times
++/// the server gives.
++pub(crate) struct CertificateCheck {
++    verifier: Arc<PlatformVerifier>,
++    server_name: ServerName<'static>,
++    chain: Vec<Certificate>,
++}
++
++impl CertificateCheck {
++    pub(crate) fn new(
++        verifier: Arc<PlatformVerifier>,
++        server_name: ServerName<'static>,
++        chain: &[Certificate],
++    ) -> Self {
++        CertificateCheck {
++            verifier,
++            server_name,
++            chain: chain.to_vec(),
++        }
++    }
++
++    /// The same check as at a handshake (chain, name, dates), with `time` as the current time.
++    pub(crate) fn valid_at(&self, time: SystemTime) -> bool {
++        let Some((end_entity, intermediates)) = self.chain.split_first() else {
++            return false;
++        };
++        let Ok(since_epoch) = time.duration_since(UNIX_EPOCH) else {
++            return false;
++        };
++        let now = UnixTime::since_unix_epoch(since_epoch);
++        self.verifier
++            .verify_server_cert(end_entity, intermediates, &self.server_name, &[], now)
++            .is_ok()
++    }
++}
++
++/// The verifier of a key exchange before the first clock update: the server must still prove that
++/// it holds the key of the certificate it presents, but the certificate itself is checked later,
++/// by `CertificateCheck`, at the time the server gives.
++#[derive(Debug)]
++pub(crate) struct DeferredVerifier(pub(crate) Arc<PlatformVerifier>);
++
++impl ServerCertVerifier for DeferredVerifier {
++    fn verify_server_cert(
++        &self,
++        _end_entity: &CertificateDer<'_>,
++        _intermediates: &[CertificateDer<'_>],
++        _server_name: &ServerName<'_>,
++        _ocsp_response: &[u8],
++        _now: UnixTime,
++    ) -> Result<ServerCertVerified, Error> {
++        Ok(ServerCertVerified::assertion())
++    }
++
++    fn verify_tls12_signature(
++        &self,
++        message: &[u8],
++        certificate: &CertificateDer<'_>,
++        signature: &DigitallySignedStruct,
++    ) -> Result<HandshakeSignatureValid, Error> {
++        self.0
++            .verify_tls12_signature(message, certificate, signature)
++    }
++
++    fn verify_tls13_signature(
++        &self,
++        message: &[u8],
++        certificate: &CertificateDer<'_>,
++        signature: &DigitallySignedStruct,
++    ) -> Result<HandshakeSignatureValid, Error> {
++        self.0
++            .verify_tls13_signature(message, certificate, signature)
++    }
++
++    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
++        self.0.supported_verify_schemes()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use crate::{
++        KeyExchangeClient, KeyExchangeResult, KeyExchangeServer, KeySet, NtpVersion,
++        NtsClientConfig, NtsError, NtsServerConfig, ProtocolVersion, tls_utils,
++    };
++
++    use super::*;
++
++    fn date(seconds_since_epoch: u64) -> SystemTime {
++        UNIX_EPOCH + Duration::from_secs(seconds_since_epoch)
++    }
++
++    // The test server's certificate (test-keys/end.pem, for localhost) is valid from 2026-02-27 to
++    // 2027-02-27.
++    const BEFORE_ITS_VALIDITY: u64 = 1_748_736_000; // 2025-06-01
++    const IN_ITS_VALIDITY: u64 = 1_780_272_000; // 2026-06-01
++    const AFTER_ITS_VALIDITY: u64 = 1_811_808_000; // 2027-06-01
++
++    /// A key exchange with the test server, by the name `server_name`.
++    async fn key_exchange(
++        server_name: &str,
++        check_later: bool,
++    ) -> Result<KeyExchangeResult, NtsError> {
++        let (client, server) = tokio::io::duplex(4096);
++        let client = async move {
++            let certificates = tls_utils::pemfile::certs(
++                &mut include_bytes!("../test-keys/testca.pem").as_slice(),
++            )
++            .collect::<Result<Arc<_>, _>>()
++            .unwrap();
++            let kex = KeyExchangeClient::new(&NtsClientConfig {
++                certificates,
++                protocol_version: ProtocolVersion::V4,
++            })
++            .unwrap();
++            kex.exchange_keys_checking_later(client, server_name.into(), [], check_later)
++                .await
++        };
++        let server = async move {
++            let certificate_chain = tls_utils::pemfile::certs(
++                &mut include_bytes!("../test-keys/end.fullchain.pem").as_slice(),
++            )
++            .collect::<Result<Vec<_>, _>>()
++            .unwrap();
++            let private_key = tls_utils::pemfile::private_key(
++                &mut include_bytes!("../test-keys/end.key").as_slice(),
++            )
++            .unwrap();
++            let kex = KeyExchangeServer::new(NtsServerConfig {
++                certificate_chain,
++                private_key,
++                accepted_versions: vec![NtpVersion::V4],
++                server: None,
++                port: None,
++                pool_authentication_tokens: vec![],
++            })
++            .unwrap();
++            let _ = kex
++                .handle_connection(server, &KeySet::new(), || None::<()>)
++                .await;
++        };
++        tokio::join!(client, server).0
++    }
++
++    #[tokio::test]
++    async fn certificate_checked_at_the_time_the_server_gives() {
++        let result = key_exchange("localhost", true).await.unwrap();
++        let certificate = result.nts.certificate.as_ref();
++        assert!(certificate.is_some());
++        let floor = UNIX_EPOCH;
++        assert!(check_time(date(IN_ITS_VALIDITY), floor, certificate).is_ok());
++        // Expired at the time the server gives: refused.
++        assert!(check_time(date(AFTER_ITS_VALIDITY), floor, certificate).is_err());
++        assert!(check_time(date(BEFORE_ITS_VALIDITY), floor, certificate).is_err());
++    }
++
++    #[tokio::test]
++    async fn certificate_for_another_name_refused_at_any_time() {
++        // The handshake goes through, the check at the server's time does not.
++        let result = key_exchange("example.com", true).await.unwrap();
++        let certificate = result.nts.certificate.as_ref();
++        assert!(check_time(date(IN_ITS_VALIDITY), UNIX_EPOCH, certificate).is_err());
++    }
++
++    #[tokio::test]
++    async fn strict_after_the_first_clock_update() {
++        // The certificate is checked at the handshake, as without the patch.
++        assert!(key_exchange("example.com", false).await.is_err());
++        let result = key_exchange("localhost", false).await.unwrap();
++        assert!(result.nts.certificate.is_none());
++        // Within one boot, a restarted daemon keeps the strict check.
++        let boot = Some("4f6c1d2e-0000-4000-8000-000000000001\n");
++        let other_boot = Some("4f6c1d2e-0000-4000-8000-000000000002\n");
++        assert!(updated_this_boot(boot, boot));
++        assert!(!updated_this_boot(other_boot, boot));
++        assert!(!updated_this_boot(None, boot));
++        assert!(!updated_this_boot(None, None));
++    }
++
++    #[test]
++    fn time_below_the_floor_refused() {
++        let floor = date(IN_ITS_VALIDITY);
++        assert!(check_time(floor - Duration::from_secs(1), floor, None).is_err());
++        assert!(check_time(floor, floor, None).is_ok());
++        assert!(check_time(floor + Duration::from_secs(3600), floor, None).is_ok());
++    }
++}
+diff --git a/ntp-proto/src/lib.rs b/ntp-proto/src/lib.rs
+index f4840cc..ff8ec5f 100644
+--- a/ntp-proto/src/lib.rs
++++ b/ntp-proto/src/lib.rs
+@@ -144,6 +144,7 @@
+ compile_error!("A crypto provider is needed, use '--features rustcrypto' or '--features openssl'");
+ 
+ mod algorithm;
++mod bootstrap;
+ mod clock;
+ mod config;
+ mod cookiestash;
+diff --git a/ntp-proto/src/nts/mod.rs b/ntp-proto/src/nts/mod.rs
+index 6a00015..56643f8 100644
+--- a/ntp-proto/src/nts/mod.rs
++++ b/ntp-proto/src/nts/mod.rs
+@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+ use tokio_rustls::{TlsAcceptor, TlsConnector};
+ 
+ use crate::{
+-    DecodedServerCookie, NTP_DEFAULT_PORT,
++    DecodedServerCookie, NTP_DEFAULT_PORT, bootstrap,
+     cookiestash::CookieStash,
+     generic::NtpVersion,
+     keyset::KeySet,
+@@ -329,6 +329,10 @@ impl Default for NtsClientConfig {
+ 
+ pub struct KeyExchangeClient {
+     connector: TlsConnector,
++    // Before the first clock update: the certificate is checked later, at the time the server
++    // gives (crate::bootstrap).
++    deferred_connector: TlsConnector,
++    verifier: Arc<tls_utils::PlatformVerifier>,
+     protocols: Box<[NextProtocol]>,
+     algorithms: Box<[AeadAlgorithm]>,
+ }
+@@ -336,17 +340,24 @@ pub struct KeyExchangeClient {
+ impl KeyExchangeClient {
+     pub fn new(config: &NtsClientConfig) -> Result<Self, NtsError> {
+         let builder = tls_utils::client_config_builder_with_protocol_versions(&[&TLS13]);
+-        let verifier =
++        let verifier = Arc::new(
+             tls_utils::PlatformVerifier::new_with_extra_roots(config.certificates.iter().cloned())?
+-                .with_provider(builder.crypto_provider().clone());
++                .with_provider(builder.crypto_provider().clone()),
++        );
+         let mut tls_config = builder
+             .dangerous()
+-            .with_custom_certificate_verifier(Arc::new(verifier))
++            .with_custom_certificate_verifier(verifier.clone())
+             .with_no_client_auth();
+         tls_config.alpn_protocols = vec![b"ntske/1".to_vec()];
++        let mut deferred_config = tls_config.clone();
++        deferred_config
++            .dangerous()
++            .set_certificate_verifier(Arc::new(bootstrap::DeferredVerifier(verifier.clone())));
+ 
+         Ok(KeyExchangeClient {
+             connector: TlsConnector::from(Arc::new(tls_config)),
++            deferred_connector: TlsConnector::from(Arc::new(deferred_config)),
++            verifier,
+             protocols: match config.protocol_version {
+                 ProtocolVersion::V4 => [NextProtocol::NTPv4].into(),
+                 ProtocolVersion::V5 => [NextProtocol::DraftNTPv5].into(),
+@@ -365,6 +376,20 @@ impl KeyExchangeClient {
+         io: impl AsyncRead + AsyncWrite + Unpin,
+         server_name: String,
+         denied_servers: impl IntoIterator<Item = Cow<'_, str>>,
++    ) -> Result<KeyExchangeResult, NtsError> {
++        let check_later = !bootstrap::clock_updated();
++        self.exchange_keys_checking_later(io, server_name, denied_servers, check_later)
++            .await
++    }
++
++    /// With `check_later`, the server's certificate is checked at the times it gives
++    /// (crate::bootstrap), not at the handshake.
++    pub(crate) async fn exchange_keys_checking_later(
++        &self,
++        io: impl AsyncRead + AsyncWrite + Unpin,
++        server_name: String,
++        denied_servers: impl IntoIterator<Item = Cow<'_, str>>,
++        check_later: bool,
+     ) -> Result<KeyExchangeResult, NtsError> {
+         let request = Request::KeyExchange {
+             algorithms: self.algorithms.as_ref().into(),
+@@ -372,10 +397,13 @@ impl KeyExchangeClient {
+             denied_servers: denied_servers.into_iter().collect::<Vec<_>>().into(),
+         };
+ 
+-        let mut io = self
+-            .connector
+-            .connect(ServerName::try_from(server_name.clone())?, io)
+-            .await?;
++        let tls_server_name = ServerName::try_from(server_name.clone())?;
++        let connector = if check_later {
++            &self.deferred_connector
++        } else {
++            &self.connector
++        };
++        let mut io = connector.connect(tls_server_name.clone(), io).await?;
+ 
+         // Serialize request first to a buffer to ensure it is most likely to be sent as a
+         // single packet, which ntpsec needs.
+@@ -402,6 +430,11 @@ impl KeyExchangeClient {
+             return Err(NtsError::NoCookie);
+         }
+ 
++        let certificate = check_later.then(|| {
++            let chain = io.get_ref().1.peer_certificates().unwrap_or_default();
++            bootstrap::CertificateCheck::new(self.verifier.clone(), tls_server_name, chain)
++        });
++
+         Ok(KeyExchangeResult {
+             remote: response
+                 .server
+@@ -412,6 +445,7 @@ impl KeyExchangeClient {
+                 cookies,
+                 c2s: keys.c2s,
+                 s2c: keys.s2c,
++                certificate,
+             }),
+             protocol_version: match response.protocol {
+                 NextProtocol::NTPv4 => ProtocolVersion::V4,
+diff --git a/ntp-proto/src/source.rs b/ntp-proto/src/source.rs
+index e05f6c2..1a3fc29 100644
+--- a/ntp-proto/src/source.rs
++++ b/ntp-proto/src/source.rs
+@@ -7,6 +7,7 @@ use crate::{
+ };
+ use crate::{
+     algorithm::{ObservableSourceTimedata, SourceController},
++    bootstrap,
+     config::SourceConfig,
+     cookiestash::CookieStash,
+     identifiers::ReferenceId,
+@@ -36,6 +37,8 @@ pub struct SourceNtsData {
+     // in the key information they need to keep.
+     pub(crate) c2s: Box<dyn Cipher>,
+     pub(crate) s2c: Box<dyn Cipher>,
++    // A certificate not checked at the key exchange (crate::bootstrap).
++    pub(crate) certificate: Option<bootstrap::CertificateCheck>,
+ }
+ 
+ #[cfg(any(test, feature = "__internal-test"))]
+@@ -821,6 +824,13 @@ impl<Controller: SourceController<MeasurementDelay = NtpDuration>> NtpSource<Con
+         // generate and handle measurement
+         let measurement = Measurement::from_packet(message, send_time, recv_time, local_clock_time);
+ 
++        let time = bootstrap::source_time(measurement.offset.to_seconds());
++        let certificate = self.nts.as_ref().and_then(|nts| nts.certificate.as_ref());
++        if let Err(reason) = bootstrap::check_time(time, bootstrap::floor(), certificate) {
++            warn!("Ignoring the time of the source: {reason}");
++            return actions!();
++        }
++
+         let controller_message = self.controller.handle_measurement(measurement);
+ 
+         // Process new cookies
+@@ -1106,6 +1116,7 @@ mod test {
+             cookies: CookieStash::default(),
+             c2s: Box::new(AesSivCmac256::new([0; 32].into())),
+             s2c: Box::new(AesSivCmac256::new([0; 32].into())),
++            certificate: None,
+         };
+         ntsdata.cookies.store(vec![0; 2048]);
+         ntsdata.cookies.store(vec![0; 2048]);
+diff --git a/ntp-proto/src/system.rs b/ntp-proto/src/system.rs
+index 19dd8d6..48b05d5 100644
+--- a/ntp-proto/src/system.rs
++++ b/ntp-proto/src/system.rs
+@@ -389,6 +389,7 @@ impl<SourceId: Hash + Eq + Copy + Debug, Controller: TimeSyncController<SourceId
+     ) -> SystemActionIterator<Controller::ControllerMessage> {
+         let mut actions = vec![];
+         if let Some(ref used_sources) = update.used_sources {
++            crate::bootstrap::note_clock_update();
+             self.system
+                 .update_used_sources(used_sources.iter().map(|v| {
+                     self.sources.get(v).and_then(|snapshot| *snapshot).expect(

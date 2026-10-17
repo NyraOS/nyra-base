@@ -13,26 +13,49 @@ ARG TOOLS=localhost/nyra-tools
 # nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
 # Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
-# first build), mounted read-only; the build has no network. Cargo does not check a crate already in
-# its download cache against Cargo.lock, and takes features from the registry index, which nothing
-# pins. So neither cargo's cache nor the index is used: each .crate the lock lists is copied, checked
-# against the lock's checksum, and unpacked into a directory source that replaces crates.io.
+# first build), mounted read-only, each checked against Cargo.lock (ci/vendor-crates.sh); the build
+# has no network.
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
-    set -- /crates/registry/cache/*/ && \
-    { [ $# = 1 ] || { echo "expected one crate cache directory, found: $*" >&2; exit 1; }; } && \
-    c="$1" && mkdir -p /root/vendor /root/.cargo && \
-    awk -F'"' '/^name = /{n=$2} /^version = /{v=$2} /^checksum = /{print $2 " " n "-" v}' /src/Cargo.lock > /root/sums && \
-    test -s /root/sums && \
-    while read -r sum crate; do \
-      cp "$c$crate.crate" /root/x.crate && echo "$sum  /root/x.crate" | sha256sum --quiet --strict -c - && \
-      tar -xzf /root/x.crate -C /root/vendor && \
-      printf '{"files":{},"package":"%s"}' "$sum" > "/root/vendor/$crate/.cargo-checksum.json" || exit 1; \
-    done < /root/sums && \
-    printf '[source.crates-io]\nreplace-with = "checked"\n[source.checked]\ndirectory = "/root/vendor"\n' > /root/.cargo/config.toml && \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
     cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
     strip target/release/nyra-updated
+
+# zlib-rs as the system's libz.so.1 (zlib/, docs/DEFAULTS.md "zlib"), from its crates like
+# nyra-updated: libz-rs-sys as a static library, linked into a shared library with zlib's soname and
+# symbol versions (the version script libz-rs-sys ships, include/zlib.map), as zlib-rs documents.
+# gzprintf and gzvprintf are missing: C variadic functions, which stable Rust cannot define.
+# Hardened like Debian's libraries: RELRO and immediate binding (-z relro -z now).
+FROM ${TOOLS} AS zlib
+COPY zlib/ /src/
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    set -- /root/vendor/libz-rs-sys-*/include/zlib.map && test -f "$1" && \
+    cc -shared -Wl,--gc-sections -Wl,--whole-archive target/release/libz_rs.a -Wl,--no-whole-archive \
+      -Wl,--version-script="$1" -Wl,--undefined-version -Wl,-soname,libz.so.1 -Wl,-z,relro,-z,now -lgcc_s -lc \
+      -o target/libz.so.1 && \
+    strip --strip-unneeded target/libz.so.1 && objdump -T target/libz.so.1 > /root/symbols && \
+    grep -Eq ' ZLIB_1\.2\.0 +deflateBound$' /root/symbols && grep -Eq ' ZLIB_1\.3\.2 +compress_z$' /root/symbols && \
+    readelf -d target/libz.so.1 | grep -q 'BIND_NOW' && readelf -l target/libz.so.1 | grep -q GNU_RELRO
+
+# ntpd-rs, the time client (ntpd-rs/, docs/DEFAULTS.md "Time"), from its crates like nyra-updated,
+# with our patch for a clock that is far off (patches/upstream/ntpd-rs-wrong-clock.md) applied to the
+# checked ntp-proto crate. ntpd's build script takes a commit and a date from git, or today's date
+# without git: both are given, so the build is the same every time.
+FROM ${TOOLS} AS ntpd
+COPY ntpd-rs/ /src/
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=patches/upstream/ntpd-rs-wrong-clock.patch,target=/ntpd-rs.patch \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /root/vendor && set -- ntp-proto-*/ && [ $# = 1 ] && git apply -p2 --directory="$1" /ntpd-rs.patch && \
+    cd /src && NTPD_RS_GIT_REV=nyra NTPD_RS_GIT_DATE=- CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    strip target/release/ntp-daemon target/release/ntp-ctl && \
+    set -- /root/vendor/ntpd-*/ && [ $# = 1 ] && mkdir target/doc && cp "$1/COPYRIGHT" "$1/LICENSE-APACHE" "$1/LICENSE-MIT" target/doc/
 
 FROM ${ROOTFS} AS base
 
@@ -70,6 +93,31 @@ RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/ny
 # user adds rules in /etc/udev/hwdb.d.
 RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /etc/udev/hwdb.bin
 
+# su from sudo-rs (docs/DEFAULTS.md, "su") in place of util-linux's, setuid root like it (its package
+# script set the mode). Nothing else of sudo-rs stays: no sudo, sudoedit or visudo on the desktop.
+RUN test "$(stat -c '%a %U %G' /usr/lib/cargo/bin/su)" = '4755 root root' && test -f /etc/pam.d/su && \
+    mv -f /usr/lib/cargo/bin/su /usr/bin/su && \
+    rm /usr/lib/cargo/bin/sudo /usr/lib/cargo/bin/visudo /usr/bin/su-rs /usr/bin/sudo-rs /usr/bin/sudoedit-rs \
+      /usr/bin/visudo-rs && rmdir /etc/sudoers.d && \
+    su --version 2>&1 | grep -q '^su-rs ' && ! command -v sudo && ! command -v sudoedit && ! command -v visudo
+
+# uutils coreutils (docs/DEFAULTS.md, "Core utilities"): every GNU coreutils command that uutils has
+# becomes a link to its multi-call binary, which runs the command its link is named after; the rest
+# of the build (dracut, the initramfs) already uses them. GNU's basenc, factor and stty stay (uutils
+# has none in Debian's build); the build fails when that list changes.
+RUN cd /usr/lib/cargo/bin/coreutils && for u in *; do \
+      for d in /usr/bin /usr/sbin; do \
+        [ -e "$d/$u" ] || continue; \
+        grep -q 'GNU coreutils' "$d/$u" || { echo "$d/$u is not GNU's" >&2; exit 1; }; \
+        if [ "$d" = /usr/bin ]; then ln -sf coreutils "$d/$u"; else ln -sf ../bin/coreutils "$d/$u"; fi || exit 1; \
+      done; \
+    done && cd / && rm -r /usr/lib/cargo/bin/coreutils && \
+    gnu="$(for f in /usr/bin/* /usr/sbin/*; do \
+      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" != /usr/bin/coreutils ] && grep -q 'GNU coreutils' "$f"; then echo "${f##*/}"; fi; \
+    done | tr '\n' ' ')" && \
+    { [ "$gnu" = 'basenc factor stty ' ] || { echo "GNU coreutils left: $gnu" >&2; exit 1; }; } && \
+    ls --version | grep -q '(uutils coreutils)' && test "$(readlink /usr/sbin/chroot)" = ../bin/coreutils
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password
@@ -82,18 +130,30 @@ RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
-# Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
-# configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
-# presets enabled; systemd applies it again at the first boot. systemd-timedated manages the same
-# unit (ntp-units.d/10-nyra.list). No systemd-timesyncd (chrony conflicts with it). The build fails
-# if the configuration does not parse.
-RUN systemctl preset chronyd-restricted.service chrony.service chrony-wait.service && \
-    test "$(systemctl is-enabled chronyd-restricted.service)" = enabled && \
-    test "$(systemctl is-enabled chrony.service)" = disabled && \
-    test "$(systemctl is-enabled chrony-wait.service)" = disabled && \
-    ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && \
-    test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = chronyd-restricted.service && \
-    chronyd -p -f /usr/lib/nyra/chrony/chrony.conf | grep -c ' nts$' | grep -qx 2
+# zlib-rs (docs/DEFAULTS.md, "zlib"): our libz.so.1 in place of the file Debian's libz.so.1 link points
+# to, so every program and library that uses zlib loads it. A program that uses gzprintf or gzvprintf
+# would not load: none in the image does, and the build fails if one appears.
+COPY --from=zlib /src/target/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1.nyra
+COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
+RUN cd /usr/lib/x86_64-linux-gnu && f="$(readlink libz.so.1)" && test -f "$f" && mv libz.so.1.nyra "$f" && \
+    grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
+
+# Authenticated time (docs/DEFAULTS.md, "Time"): ntpd-rs with our configuration and unit from /usr,
+# never root, CAP_SYS_TIME as its only capability, in a sandbox and under its AppArmor profile (moved
+# to /etc/apparmor.d, where apparmor.service reads profiles; the copy in /usr follows below). Enabled by
+# our preset, which systemd applies again at the first boot; systemd-timedated manages the same unit
+# (ntp-units.d/10-nyra.list). No other time client: no chrony, no systemd-timesyncd. The build fails
+# if the configuration does not parse or lacks its four NTS servers, if the image's build time
+# (/usr/lib/clock-epoch, the floor of the clock) is missing, or if the profile does not parse.
+COPY --from=ntpd /src/target/release/ntp-daemon /src/target/release/ntp-ctl /usr/bin/
+COPY --from=ntpd /src/Cargo.lock /src/target/doc/ /usr/share/doc/ntpd-rs/
+RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
+    apparmor_parser --skip-kernel-load --skip-cache /etc/apparmor.d/usr.bin.ntp-daemon && \
+    systemctl preset ntpd-rs.service && test "$(systemctl is-enabled ntpd-rs.service)" = enabled && \
+    ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && ! test -e /usr/sbin/chronyd && \
+    test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = ntpd-rs.service && \
+    ntp-ctl validate -c /usr/lib/nyra/ntpd-rs/ntp.toml && \
+    test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && test -f /usr/lib/clock-epoch
 
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
@@ -180,7 +240,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
       nyra-etc-copy.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
-      systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
+      systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service ntpd-rs.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
     test -x /usr/lib/nyra/health/notice && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf

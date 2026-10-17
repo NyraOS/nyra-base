@@ -4,9 +4,9 @@
 #   snapshot -> bootc layer (Containerfile) -> sealed UKI, signed with a key made for the run
 #   (ci/build-image.sh, docs/BOOT.md) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
-# bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
-# documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
-# publishing to the update server comes later.
+# the Cargo.lock of bootc, zlib-rs and ntpd-rs) with its vulnerability report; known critical or high
+# vulnerabilities without a documented mitigation fail the build (docs/SBOM.md). Nothing is pushed
+# to a public registry; publishing to the update server comes later.
 # Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
 # save one when it is missing; ci/check-release-cache.py checks that), and the sign job signs
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
@@ -111,6 +111,7 @@ jobs:
             case "$f" in
               docs/* | LICENSE | .github/CODEOWNERS | .github/dependabot.yml | tools/hooks/*) ;;
               .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
+              .github/workflows/ntpd-rs.yml) ;;
               .github/workflows/shellcheck.yml | .github/workflows/titanic.yml | tools/titanic/*) ;;
               tools/sbom/*) sbom=true ;;
               */*) image=true ;;
@@ -344,6 +345,8 @@ jobs:
           echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           cp "$WORK/out/nyra-base-rootfs.manifest" dist/nyra-base.manifest.json
           cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
+          cp zlib/Cargo.lock dist/nyra-zlib.Cargo.lock
+          cp ntpd-rs/Cargo.lock dist/nyra-ntpd.Cargo.lock
           sudo chown -R "$(id -u):$(id -g)" dist
           m=dist/nyra-base.manifest.json
           {
@@ -354,7 +357,7 @@ jobs:
             echo "| Debian snapshot | \`$SNAPSHOT\` (unstable) |"
             echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`) |"
             echo "| Kernel | linux-image-amd64 $(jq -r '.packages[] | select(.name == "linux-image-amd64") | .version' "$m") |"
-            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc |"
+            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs, $(grep -c '^source = ' dist/nyra-ntpd.Cargo.lock) in ntpd-rs |"
             echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), $(du -h dist/nyra-base.oci.tar | cut -f1) oci-archive |"
             echo
             echo "\`bootc container lint --fatal-warnings\`"
@@ -381,7 +384,7 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock dist/nyra-ntpd.Cargo.lock \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
           echo "sbom_sha256=$(sha256sum < dist/nyra-base.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -397,6 +400,8 @@ jobs:
             dist/nyra-base.vulnerabilities.md
             dist/nyra-base.manifest.json
             dist/bootc-*.Cargo.lock
+            dist/nyra-zlib.Cargo.lock
+            dist/nyra-ntpd.Cargo.lock
           retention-days: 90
 
   # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
@@ -435,8 +440,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
+          # zlib/ and ntpd-rs/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json >> "$GITHUB_STEP_SUMMARY"
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot, then esp-sync install for the boot
