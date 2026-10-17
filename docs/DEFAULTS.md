@@ -15,7 +15,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
-| Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
+| Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick (FAT, ext4 and exFAT), `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, also from a last line without a newline, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
@@ -290,10 +290,10 @@ Settings. The base keeps the answers in `/etc/nyra/trusted-media`, read by
 1A2B-3C4D SanDisk_Cruzer_Blade_4C530001230101115355-0:0
 ```
 
-When a line names a serial, both must match. The list counts only when root owns it and `/etc/nyra`,
-and nobody else can write either; otherwise nothing is trusted. A change applies when the stick is
-plugged in again, or at once with `udevadm trigger --action=change /dev/sdX1`. "Reset settings"
-empties `/etc`, and with it the list.
+When a line names a serial, both must match; a last line without a newline counts too. The list
+counts only when root owns it and `/etc/nyra`, and nobody else can write either; otherwise nothing
+is trusted. A change applies when the stick is plugged in again, or at once with `udevadm trigger
+--action=change /dev/sdX1`. "Reset settings" empties `/etc`, and with it the list.
 
 **What trust is, and what `noexec` is.** A file system's UUID and a drive's serial are whatever the
 stick reports: FAT's UUID is a 32-bit number chosen when it is formatted (`mkfs.vfat -i`), and a

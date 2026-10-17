@@ -211,11 +211,12 @@ How the base mounts them is in docs/DEFAULTS.md, "Removable media".
 
 | Boot | What | Expected |
 |---|---|---|
-| 1 | two FAT sticks and a squashfs stick plugged in | nothing mounted, udisks2 not even started |
+| 1 | two FAT sticks, a stick with an ext4 and an exFAT partition, and a squashfs stick plugged in | nothing mounted, udisks2 not even started |
 | 1 | `udisksctl mount` of the squashfs stick, and of a FAT stick with `-t squashfs` | neither mounted; squashfs's module not even loaded |
-| 1 | one stick put in `/etc/nyra/trusted-media` | udev marks it trusted; with the list writable by others, it is not |
+| 1 | one stick put in `/etc/nyra/trusted-media` | udev marks it trusted, also when its line is the last one and has no newline; with the list writable by others, it is not |
 | 1 | `udisksctl mount` with `exec`, `suid`, `dev` | refused |
-| 1 | both mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other); udisks2 runs with its hardening drop-in |
+| 1 | both FAT sticks mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other); udisks2 runs with its hardening drop-in |
+| 1 | the ext4 and the exFAT partitions mounted, a file written to each | `nosuid,nodev,noexec`, as the untrusted FAT stick; each unmounts |
 | 1 | the untrusted stick written without a pause (32 MiB, flushed, again and again), pulled out 2 s in | the writer stops on its own, `sync` returns, the stick and its mount are gone within 30 s, the trusted stick still reads, the system `running` |
 | 1 | plugged in again | not mounted until asked; then mounts `noexec` |
 | 1 | a user logged in on a virtual console (an autologin on tty5, made the foreground console): an active local session on seat0 | polkit lets them mount a stick, but `loop-setup` and `modify-device` need an administrator: `udisksctl loop-setup` refused, no loop device; polkit loaded the rules without an error |
