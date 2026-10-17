@@ -188,17 +188,17 @@ vm() { # vm NAME TITLE ARGS...
   shift 2
   python3 -B tools/vm/vm-boot.py --secure-boot "$work/vars.fd" --keep-vars --disk "$work/disk.raw" \
     --tpm "$tpm" --persist --poweroff --autologin --timeout 240 \
-    --log "$logs/serial-encryption-rotation-$name.log" --summary "$summary" --title "$title" "$@"
+    --log "$logs/serial-encryption-rotation$sfx-$name.log" --summary "$summary" --title "$title" "$@"
 }
 blind() { # blind NAME TITLE ARGS...
   local name="$1" title="$2"
   shift 2
   python3 -B tools/vm/vm-boot.py --secure-boot "$work/vars.fd" --keep-vars --disk "$work/disk.raw" \
     --tpm "$tpm" --persist --blind --timeout 300 \
-    --log "$logs/serial-encryption-rotation-$name.log" --summary "$summary" --title "$title" "$@"
+    --log "$logs/serial-encryption-rotation$sfx-$name.log" --summary "$summary" --title "$title" "$@"
 }
 asked() { # asked NAME: did the console of that boot ask for the disk?
-  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-rotation-$1.log"
+  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-rotation$sfx-$1.log"
 }
 by_itself() { ! asked "$1" || { echo "::error::$1 asked for the disk"; fail=1; }; }
 
@@ -286,7 +286,7 @@ check "Re-enrollments (row 6)" 1 "$(printf '%s\n' "$inside" | grep -c '^nyra-tpm
 
 # The recovery key nowhere outside the user's hands.
 found=""
-for f in "$logs"/serial-encryption-rotation-*.log "$summary"; do
+for f in "$logs"/serial-encryption-rotation$sfx-*.log "$summary"; do
   if grep -q -a -F -f "$secrets/patterns" "$f"; then found+=" $(basename "$f")"; fi
 done
 n="$(head -c $(((root_start + 32768) * 512)) "$work/disk.raw" | grep -c -a -F -f "$secrets/patterns" || true)"
