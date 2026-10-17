@@ -44,14 +44,16 @@ TESTS = {
            "Power cuts at random moments (seed in this file) during the download, staging, "
            "finalization and first boot; nyra-updated stages the update again after cuts at fixed and "
            "at random moments."),
-    "T3": ("Broken version", "partial", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
+    "T3": ("Broken version", "full", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
            "A version whose health check fails falls back within 3 boots and is not offered again; "
            "a good version whose health check fails because of settings broken after it was staged "
            "falls back too, but is not marked failed (the older version fails as well) and boots "
            "counted once the settings are repaired; "
            "the network comes up after every soft reboot and full boot of an update (20 rounds); a version "
-           "whose kernel panics (no usable initramfs) reboots by itself and falls back the same way. "
-           "Not yet: no graphical session, dead network."),
+           "whose kernel panics (no usable initramfs) reboots by itself and falls back the same way; "
+           "a dead network, before a check and in the middle of a download: the running version stays, "
+           "reported, the unit not failed, nothing staged or marked failed, staged once the link is back. "
+           "The graphical session is a criterion of the desktop's gate (docs/TITANIC.md)."),
     "T4": ("Signatures and versions", "full", [POLICY, SECURE_BOOT, UPDATES],
            "Unsigned and wrongly signed images and channel sheets, downgrades and replays refused; "
            "signed retractions applied."),
@@ -59,10 +61,10 @@ TESTS = {
            "Registry down, corrupted layer, captive portal, spoofed server, a DNS answer for another "
            "host, a 50 kbit/s link and a registry that stalls mid-pull: refused or stopped at the time "
            "limit, nothing staged, staged later."),
-    "T6": ("Full disk", "partial", [FULL_DISK],
+    "T6": ("Full disk", "full", [FULL_DISK],
            "The root file system full: the update fails and says why, nothing staged, the system boots "
            "and runs, AppArmor loaded without its cache; the ESP full: the same; the space the system takes stays the same across updates "
-           "(8 in a row). Not yet: the desktop and its message (no graphical session yet)."),
+           "(8 in a row). The desktop's message is a criterion of the desktop's gate (docs/TITANIC.md)."),
     "T7": ("Attacked boot", "full", [PROTECTION, SECURE_BOOT, TPM_UNLOCK],
            "EFI variables reset, boot order changed, boot files deleted, cut or corrupted, ESP full: "
            "boots through the fallback path and repairs itself. The signed PCR 11 policy releases the "
@@ -148,7 +150,8 @@ def self_test():
                           ENCRYPTION, ENCRYPTION_TPM, CHANNELS}]
     r = evaluate(every, "u")
     assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass"], r
+        ["pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass"], r
+    assert r["T3"]["result"] == "pass", r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]

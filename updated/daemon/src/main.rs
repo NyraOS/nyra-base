@@ -52,7 +52,11 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
             let mut sys = Real {
                 stage_limit: cfg.stage_timeout,
             };
-            let outcome = check(&mut sys, &store, &cfg, now)?;
+            let outcome = match check(&mut sys, &store, &cfg, now) {
+                // A machine without a network is not failing: a warning, like the above.
+                Err(e @ Error::Offline(_)) => return Ok((4, false, e.to_string())),
+                result => result?,
+            };
             // An owner's own image gets no updates from us: say so, every time.
             let priority = if matches!(outcome, Outcome::ForeignImage(_)) {
                 4

@@ -25,10 +25,10 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 |---|---|---|---|
 | T1 | Immutability | `/usr` read-only (first boot of `install-boot`), `tools/vm/tampered-object.sh` (a composefs object changed on the disk: a read error), signature policy (`tools/signing/test-policy.sh`), refused UKIs (`tools/vm/secure-boot.sh`) | full |
 | T2 | Power cuts | `tools/titanic/power-cuts.sh` (random moments), `tools/vm/updates.sh` (`nyra-updated` after cuts at fixed and at random moments) | full |
-| T3 | Broken version | `tools/vm/boot-counting.sh`, `tools/vm/updates.sh` (failed health check: back within 3 boots, not offered again; a good version with the settings broken after it was staged: back within 3 boots, but not marked failed, since the older version fails too; offered again once the settings are repaired), `tools/vm/soft-reboot-network.sh` (the network after every soft reboot and full boot of an update, 20 rounds a night), `tools/vm/updates.sh` (a kernel panic: no usable initramfs) | partial: no graphical session, dead network not tested yet |
+| T3 | Broken version | `tools/vm/boot-counting.sh`, `tools/vm/updates.sh` (failed health check: back within 3 boots, not offered again; a good version with the settings broken after it was staged: back within 3 boots, but not marked failed, since the older version fails too; offered again once the settings are repaired), `tools/vm/soft-reboot-network.sh` (the network after every soft reboot and full boot of an update, 20 rounds a night), `tools/vm/updates.sh` (a kernel panic: no usable initramfs; a dead network: the link down before a check and in the middle of a download, then back) | full; the graphical session is left for the desktop (below) |
 | T4 | Signatures and versions | `tools/signing/test-policy.sh`, `tools/vm/secure-boot.sh`, `tools/vm/updates.sh` | full |
 | T5 | Hostile network | `tools/vm/updates.sh` (registry down, corrupted layer, captive portal, spoofed server, DNS answer for another host, a 50 kbit/s link, a registry that stalls mid-pull) | full |
-| T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | partial: no desktop and no message for the user yet |
+| T6 | Full disk | `tools/titanic/full-disk.sh` (the root file system full during an update and at boot, the ESP full during an update, the space the system takes across 8 updates in a row) | full; the message for the user is left for the desktop (below) |
 | T7 | Attacked boot | `tools/vm/boot-protection.sh`, `tools/vm/secure-boot.sh`, `tools/signing/tpm-unlock.sh` (the signed PCR policy unlocks the disk only in the initrd, swtpm) | full |
 | T8 | Configuration broken by the user | `tools/titanic/broken-config.sh` (`/etc/fstab`, `/etc/passwd`, the network settings and `/etc/systemd/system` broken, each on its own: does the system boot? Then all of it at once, Recovery without the system accounts, and Reset settings, with Secure Boot) | full |
 | T9 | Wrong clock (1970, 2099) | `tools/vm/updates.sh` (the hardware clock in 1970, 2099 and 2035: chronyd corrects it through NTS by itself and the update works; with the NTS servers spoofed the clock stays wrong, no unauthenticated NTP request is sent, the update server's certificate and unsigned images are refused) | full |
@@ -46,6 +46,17 @@ test. The mapping from workflow steps to tests is in
 renaming it there too.
 
 A test that fails sometimes is a bug, never something to run again until it passes.
+
+## Left for the desktop
+
+Two scenarios need a graphical session, which the base does not have. They are not part of the
+base's results: T3 and T6 pass when every scenario without a desktop passes. They are criteria of the
+desktop's gate instead, tested once there is a desktop:
+
+| # | Scenario | Expected |
+|---|---|---|
+| T3 | an update to a version whose graphical session does not start, and the version the machine falls back to | the broken version falls back like any version that fails its health check; the session of the version fallen back to starts |
+| T6 | the disk full during an update | the desktop tells the user that the update failed, why, and what to do |
 
 ## Power cuts at random moments
 
