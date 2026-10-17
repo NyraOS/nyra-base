@@ -36,12 +36,18 @@ Each line is something that broke or surprised us once.
   after the first build: a 17 s network outage on the runner outlasted cargo's 3 retries (about 10 s
   per request) and failed the job before any test. `ci/build-image.sh` now fetches the crates once
   (`cargo fetch --locked`, 10 retries: over a minute per request), and both builds compile them in a
-  `RUN --network=none` step from that directory, mounted read-only. Cargo checks a crate against
-  `Cargo.lock` only when it downloads it: a `.crate` already in its cache is used as it is (checked
-  locally: one with a changed file compiled without a word). So the step checks every `.crate` against
-  the lock's checksums with `sha256sum` and copies only the download cache and the index, never the
-  unpacked `registry/src`, whose files cargo does not check at all. The binary is byte for byte the one the
-  online build gave.
+  `RUN --network=none` step from that directory, mounted read-only.
+- **An offline cargo build trusts its cache and its index.** Cargo checks a crate against `Cargo.lock`
+  only when it downloads it: a `.crate` already in its cache is used as it is (checked: one with a
+  changed file compiled without a word), and the unpacked `registry/src` is not checked at all. The
+  features of a crate come from the registry index, which `Cargo.lock` does not pin: with `default`
+  emptied in libc's index entry, the build passed and the binary changed. Checking the `.crate` files
+  with `sha256sum` is not enough either if the check and cargo can look at different directories (a
+  second cache directory, checked instead of cargo's). So the `Containerfile` uses neither: it copies
+  each `.crate` that `Cargo.lock` lists, checks the copy against the lock's checksum, unpacks it into a
+  cargo directory source (`replace-with` for crates.io), and fails unless the context has exactly one
+  cache directory. The same edited index then gives the same binary; a changed or missing crate fails
+  the build. The binary differs from an online build only in the source paths in panic messages.
 - **Strip bootc.** Debug info makes it ~378 MB; stripped it is ~40 MB.
 - **mkosi installs only what is listed.** No `passwd`, `login`, `util-linux` unless named. The list in
   `mkosi/mkosi.conf` is the whole system.

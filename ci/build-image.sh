@@ -13,8 +13,8 @@
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check);
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
 # Before step 1, nyra-updated's crates are fetched into UKI_DIR/crates (cargo fetch --locked: the
-# checksums in updated/Cargo.lock), the only download of the build; the Containerfile compiles them
-# without network.
+# checksums in updated/Cargo.lock), the only download of the build; the Containerfile checks each
+# one against Cargo.lock again and compiles them without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
 #   ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
