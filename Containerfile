@@ -165,6 +165,12 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.ta
     test -x /usr/lib/nyra/health/notice && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf
 
+# keyutils without its request-key upcall (mkosi/mkosi.conf, RemoveFiles=): only keyctl.
+RUN test -x /usr/bin/keyctl && \
+    for f in /usr/sbin/request-key /usr/sbin/key.dns_resolver /etc/request-key.conf /etc/request-key.d \
+      /usr/share/keyutils /sbin/request-key; do \
+      ! test -e "$f" || { echo "keyutils left $f in the image"; exit 1; }; done
+
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
 # and the udev rule that probes the boot disk once more when its first probe could not read
@@ -183,7 +189,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       /usr/lib/systemd/system/initrd.target.wants/ && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
-    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od "' \
+    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl "' \
       >> /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver" && \
     lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initrd.txt && \
@@ -195,7 +201,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/lib/systemd/system/nyra-luks-root.service 'usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service -> ' \
       usr/lib/nyra/boot/tpm-enroll usr/lib/systemd/system/nyra-tpm-enroll.service \
       'usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service -> ' \
-      usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od; do \
+      usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 

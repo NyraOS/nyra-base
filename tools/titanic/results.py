@@ -87,10 +87,14 @@ TESTS = {
             "the password after three wrong ones (asked again) still unlock it. With a TPM and Secure "
             "Boot: the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR "
             "11 policy and PCR 7 and 12, the next boots unlock by themselves, without the TPM the "
-            "recovery key unlocks it; a TPM that stops answering before leave-initrd forces a reboot. No "
-            "root partition: emergency mode after 90 s. No secret in the logs, the ESP, the LUKS2 header "
-            "or the root file system. Not yet: updates, Secure Boot off, a changed PCR 7, a cleared TPM, "
-            "an add-on, the recovery profile, the policy key's rotation, the PIN."),
+            "recovery key unlocks it; a TPM that stops answering before leave-initrd forces a reboot; after "
+            "the TPM refused (a new Secure Boot database, a new TPM, a different PCR 12) the recovery key "
+            "unlocks it and the disk is enrolled again, never with Secure Boot off or an add-on measured, "
+            "nor a password disk with a forged TPM2 token; "
+            "the recovery profile asks for the disk. No root partition: emergency mode after 90 s. No "
+            "secret in the logs, the ESP, the LUKS2 header or the root file system. Not yet: updates, the "
+            "policy key's rotation, the PIN; the first boot without a TPM or with Secure Boot off is "
+            "checked by hand only."),
     "T11": ("Version jumps and channels", "full", [CHANNELS],
             "A jump over several versions goes straight to the newest, the retracted one between never "
             "boots; a sheet with an untrusted key, an older sequence or a retracted version refused, "
