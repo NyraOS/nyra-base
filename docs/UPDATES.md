@@ -73,7 +73,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    bootc, systemctl and curl call has a time limit and is killed with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
    bootc leaves part of what it writes on the ESP in memory, and a power cut then can damage the ESP
    (FAT has no journal; `patches/upstream/bootc-finalize-entries-swap.md`). A download (the sheet or
-   the version) that fails while the machine has no network is reported as that, a warning (below).
+   the version) that fails while the machine has no network is reported as that, a warning (below),
+   unless what failed is a refusal (a signature, a digest, a certificate).
 2. The sheet's sequence and retracted digests are saved atomically before anything acts on the sheet.
 3. A retracted digest is remembered and never a target again; an installed version retracted by any
    accepted sheet may still go back.
@@ -99,7 +100,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
     silently without updates. The installer must therefore install with an explicit tag
     (`updates.nyraos.com/nyra-base:stable`): without one the image counts as foreign.
 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
-    version floor) is discarded the same way as in rule 7. A rollback queued for the next boot
+    version floor; a version that bootc does not report, or that does not parse, counts as below it)
+    is discarded the same way as in rule 7. A rollback queued for the next boot
     (`rollbackQueued`, by the user or by rule 6) to such a version is undone with another
     `bootc rollback` (`RollbackUndone`), so it never boots. After a fallback bootc still reports the
     failed version as the next boot (`docs/LESSONS.md`); this sets that order right too.
@@ -109,7 +111,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 13. A version the machine went back from on purpose (`bootc rollback` by the user, later "go back to
     the previous version" in Settings, or by root) is not staged again (`HeldBack`): the machine
     stays where the user put it until the sheet offers another version, or the running version is
-    retracted. A newer version that is neither failed, retracted nor forgiven becomes the rollback
+    retracted. Every check says so as a warning, in words: the machine runs a version without the
+    latest fixes. A newer version that is neither failed, retracted nor forgiven becomes the rollback
     deployment only that way.
 14. The channel is the one chosen on the machine (`nyra-updated set-channel`), or else the image's.
     Right after a change of channel the new channel's version may be older than the running one: the
@@ -125,8 +128,14 @@ going forward again is another `bootc rollback`, and a check before that reboot 
 
 When the running version is retracted and the version the sheet sends it to is refused (retracted,
 failed, below the floor), the machine stays on the retracted version until a sheet offers another
-one, and every check says so: "the running version … was retracted and there is no version to go
-to (…)". For example, the target of a retraction that fails a second time (rule 12).
+one, and every check says so, as an error: "the running version … was retracted and this check could
+not move the machine off it: …", followed by the reason. For example, the target of a retraction that
+fails a second time (rule 12). The same when the download of that version fails, without a network
+too: the next check tries again, and until then the report says which version the machine runs.
+
+`bootc rollback` boots the rollback deployment with the `/etc` it kept from its time: passwords, SSH
+keys, accounts and network settings changed since come back. When Settings offers "go back to the
+previous version", it must warn about that.
 
 ### Channels (rule 14)
 
@@ -186,7 +195,7 @@ by hand is discarded with it.
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
-| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
+| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. The 14-day rule (below, "Updates that stop") does not make it an error: nothing is held up, there is nothing to update from. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
@@ -200,6 +209,20 @@ fails on an invalid configuration or on a key from the test fixtures; CI also ch
 fail with the `seed1` fixture key in place. `boot-complete.target` is pulled in on every boot (not
 only when systemd-boot counts tries), so the health checks always run and `nyra-updated` can rely on
 the target being active on a healthy boot.
+
+**The version.** An image's release version (`year.month.build`) is the year and month of its Debian
+snapshot (`mkosi/mkosi.conf`) and the image workflow's run number, which only grows. The build puts
+it in the manifest annotation `org.opencontainers.image.version`, where bootc reads it, and in the
+config label of the same name; the test versions are built the same way (`podman build --annotation`,
+`tools/vm/updates.sh` and `channels.sh`). bootc reports no version for an image without that
+annotation, and `nyra-updated` cannot update from such a version and treats such a staged or rollback
+deployment as below the version floor (rule 11). So install-boot checks that `bootc status` reports
+the installed image's version, and the update test that it reports a staged one's.
+The scheme has limits the sheet must respect, since a version that is not higher is refused as a
+downgrade (rule 4): a Debian snapshot moved back across a month gives a lower version; renaming
+`image.yml` starts its run number again from 1; a re-run of the same workflow run keeps the number.
+So the sheet must never offer two digests with the same version, and a release after any of these
+needs a version above the last one published.
 
 **Health checks** are units named `nyra-health-*.service` that `boot-complete.target` requires
 (links in `/usr/lib/systemd/system/boot-complete.target.requires/`). A failure keeps the boot from
@@ -275,7 +298,36 @@ stops answering while the link is up is still an error.
 When the state file is broken, every check fails with a message naming it, and updates stop (fail
 closed: forgetting it would forget the sequence and the retractions). The repair, until Settings
 offers it: move `/var/lib/nyra-updated/state.json` away; the next check starts over, and the version
-floor still applies.
+floor still applies. A state lost after a fallback does not know the version the machine fell back
+from: bootc still reports it as the next boot (`rollbackQueued`), so every check answers
+`WaitingForReboot` for it until the sheet offers another version. That is misleading, not unsafe: a
+reboot starts the running version again, because the entry of the version fallen back from has no
+tries left.
+
+**Updates that stop.** `last-check.json` also keeps `last_success`, the time of the last successful
+check (until one succeeds, of the first check). When a check fails 14 days or more after it, whatever
+the cause (no network, a server that does not answer, a refused sheet), its message starts with "no
+successful check for N days:" and it is an error: the unit fails and the machine is `degraded`. An
+image without a sheet key ("not configured") is the exception: it stays a warning and counts as a
+success here, because no update is held up. Someone who controls the
+machine's link could otherwise keep it on an old version with only warnings to show. 14 days: a
+laptop offline for a holiday is not flagged, and the server signs the sheet at least daily. A failed
+check leaves `last_success` as it is, even when it is later than the check's own time: the clock may
+be behind at that check (a dead RTC at the build date, offline), and counting from it would report
+days that never passed once the clock is right. A success that reads the sheet needs one that has
+not expired (at most 31 days of validity), so a clock that was ahead then delays the count by at most
+that; only the outcomes that come before the sheet (a boot not yet healthy, an owner's own image, a
+wrong staged deployment discarded) do not check the time. An older `nyra-updated` (after a rollback) writes the file without `last_success`; the count then starts
+again. The messages in the journal and in `last-check.json` are one line each, control characters
+replaced by spaces and cut at 2000 characters: they carry what bootc and curl print, which can come
+from the registry or the server. Two checks never write the file at once: it is written under the
+lock, and a check that finds another one running writes nothing.
+
+The offline detection reads systemd-networkd's `OnlineState`. A link that networkd does not manage
+(Wi-Fi through NetworkManager or iwd, later) is not seen: a download that fails on it is reported as
+an error, the prudent side, until the detection covers it. A link lost while bootc downloads the
+sigstore signature may be reported as an error too, not as no network: the image proxy's message then
+names the signature, which counts as a refusal (the prudent side as well).
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
