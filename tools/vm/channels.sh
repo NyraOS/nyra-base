@@ -27,8 +27,9 @@
 #   5  d7: follows beta (the image's default): stable's sheet refused, b9 staged
 #   6  b9: an unknown channel, and set-channel by another user than root, refused; set-channel
 #      stable: stable's version s8 is older. A sheet issued before the change does nothing, one below
-#      the floor is refused, then s8 is staged; a replayed sheet is refused, and an even older
-#      version is refused (once per change)
+#      the floor is refused, then s8 is staged; until the reboot the checks wait for it (that sheet
+#      and a later one); a replayed sheet is refused, and an even older version is refused (once
+#      per change)
 #   7  s8: up to date; went back to b9 by hand (bootc rollback)
 #   8  b9: the choice (stable) survived the rollback and wins over b9's default (beta): stable's s8 is
 #      refused as a downgrade (no new change). A setting changed in /etc; set-channel beta, then
@@ -296,8 +297,10 @@ vm "b9: set-channel stable; stable's older s8 only with a sheet issued after the
   --command "$lib; outcome stable-s8 WaitingForSheet && expect staged none && $(asked /channels/nyra-base/stable) && $(state 's["channel_changed"]')" \
   --command "$lib; refused stable-floor 'below the version floor' && expect staged none" \
   --command "$lib; outcome stable-s8-new Staged && expect staged $s8 && $(state 's.get("channel_changed") is None')" \
+  --command "$lib; outcome stable-s8-new WaitingForReboot && expect staged $s8" \
   --command "$lib; refused stable-s8 'is older than the accepted' && expect staged $s8" \
-  --command "$lib; refused stable-k6 'not newer than the installed' && expect staged $s8"
+  --command "$lib; refused stable-k6 'not newer than the installed' && expect staged $s8" \
+  --command "$lib; outcome stable-s8-last WaitingForReboot && expect staged $s8"
 
 vm "s8, back from beta: up to date; back to b9 by hand" \
   --command "$lib; expect booted $s8 && running && blessed && outcome stable-s8-last UpToDate" \

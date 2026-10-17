@@ -1891,10 +1891,20 @@ fn after_a_change_of_channel_an_older_version_needs_a_sheet_issued_after_it_and_
     );
     assert_eq!(store.load().unwrap().channel_changed, None);
     assert_eq!(store.load().unwrap().pending.as_deref(), Some(B));
+    // Until the reboot, the same sheet and a later one with the same version just wait for it.
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 90),
+        Ok(Outcome::WaitingForReboot(image(B)))
+    );
+    fake.sheet = channel_sheet("beta", 250, B, NOW + 6 * 60 * 60);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 6 * 60 * 60 + 60),
+        Ok(Outcome::WaitingForReboot(image(B)))
+    );
     // Once: a later sheet with an even older version is refused as in any channel (rule 4).
-    fake.sheet = channel_sheet("beta", 300, A, NOW + 20);
+    fake.sheet = channel_sheet("beta", 300, A, NOW + 6 * 60 * 60 + 10);
     assert!(matches!(
-        check(&mut fake, &store, &config(), NOW + 120),
+        check(&mut fake, &store, &config(), NOW + 6 * 60 * 60 + 120),
         Err(Error::Sheet(nyra_channel_sheet::Error::Downgrade { .. }))
     ));
     assert_eq!(fake.staged().len(), 1);
@@ -2003,4 +2013,14 @@ fn a_change_of_channel_is_not_dated_before_the_newest_accepted_sheet() {
         Ok(Outcome::WaitingForSheet(image(B)))
     );
     assert_eq!(dir.store().load().unwrap().channel_changed, Some(NOW + 500));
+}
+
+#[test]
+fn a_sheet_issued_at_the_very_moment_of_the_change_counts() {
+    let dir = TempDir::new();
+    let mut fake = switched_to_beta(&dir);
+    // The change is seen at NOW, and the sheet was issued at NOW.
+    fake.sheet = channel_sheet("beta", 100, B, NOW);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(B))));
+    assert_eq!(dir.store().load().unwrap().channel_changed, None);
 }

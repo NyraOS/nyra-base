@@ -766,7 +766,13 @@ pub fn check(
     // Rule 3: decide with every retraction remembered, not only the ones this sheet still lists.
     let mut sheet = sheet;
     sheet.retracted = state.retracted.iter().cloned().collect();
+    let target_staged = Status::digest(&status.staged) == Some(sheet.target(group).digest.as_str());
     let decision = match (sheet.decide(&installed, group), state.channel_changed) {
+        // An older version already staged (by rule 14, at an earlier check): like any staged
+        // version, it waits for the reboot.
+        (Err(nyra_channel_sheet::Error::Downgrade { .. }), _) if target_staged => {
+            return Ok(Outcome::WaitingForReboot(sheet.target(group).clone()));
+        }
         // Rule 14: an older version, right after a change of channel.
         (Err(nyra_channel_sheet::Error::Downgrade { .. }), Some(changed)) => {
             let target = sheet.target(group).clone();
@@ -774,18 +780,14 @@ pub fn check(
                 return Ok(Outcome::WaitingForSheet(target));
             }
             check_target(&target, &state, floor)?;
-            let outcome = if Status::digest(&status.staged) == Some(&target.digest) {
-                Outcome::WaitingForReboot(target)
-            } else {
-                // Never `bootc rollback` here: the rollback deployment kept the `/etc` of its time
-                // (bootc keeps one per deployment), so a routine change of channel would bring
-                // back old passwords, accounts and settings. It is deleted, and the version staged
-                // like any update: merged with today's settings, on trial.
-                if Status::digest(&status.rollback) == Some(&target.digest) {
-                    sys.delete_rollback(&target.digest)?;
-                }
-                stage_target(sys, store, cfg, &mut state, target)?
-            };
+            // Never `bootc rollback` here: the rollback deployment kept the `/etc` of its time
+            // (bootc keeps one per deployment), so a routine change of channel would bring back
+            // old passwords, accounts and settings. It is deleted, and the version staged like
+            // any update: merged with today's settings, on trial.
+            if Status::digest(&status.rollback) == Some(&target.digest) {
+                sys.delete_rollback(&target.digest)?;
+            }
+            let outcome = stage_target(sys, store, cfg, &mut state, target)?;
             state.channel_changed = None;
             store.save(&state)?;
             return Ok(outcome);

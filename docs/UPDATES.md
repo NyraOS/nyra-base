@@ -156,7 +156,8 @@ rollback deployment is deleted first (as in rule 12). The conditions:
   sequence is refused anyway (rule 2);
 - the version passes rules 3-5: not retracted, not failed, not below the version floor;
 - once: as soon as it is staged, or as soon as the new channel's sheet asks for no older version, the
-  change is over, and an older version is refused again (rule 4).
+  change is over, and an older version is refused again (rule 4). Until the reboot, a check whose
+  sheet still gives the staged version waits for it (`WaitingForReboot`), as for any update.
 
 Going back to the first channel before the reboot does not undo a version already staged: it boots,
 and the next check on the first channel moves the machine up again (a newer version, staged as
@@ -321,7 +322,7 @@ with its own update configuration (sheet key, repository, default channel, versi
 | 3-4 | 2026.11.6 trusts only a new sheet key | it boots; a sheet signed with the old key refused, the new key's accepted |
 | 4-5 | 2026.11.7 has `beta` as its default channel | it boots and asks for `beta`'s sheet; `stable`'s refused; beta's 2026.11.9 staged |
 | 6 | `set-channel nightly`, and no name | refused, nothing chosen |
-| 6 | `set-channel stable` on 2026.11.9; stable's version is 2026.11.8 | a sheet issued before the change: nothing done (`WaitingForSheet`); one issued after it, below the floor: refused; then 2026.11.8 staged; afterwards a replayed sheet and an even older version refused |
+| 6 | `set-channel stable` on 2026.11.9; stable's version is 2026.11.8 | a sheet issued before the change: nothing done (`WaitingForSheet`); one issued after it, below the floor: refused; then 2026.11.8 staged; until the reboot, that sheet and a later one wait for it (`WaitingForReboot`); a replayed sheet and an even older version refused |
 | 6 | `set-channel` by another user than root | refused (permission denied), nothing chosen |
 | 7-8 | 2026.11.8 boots; back to 2026.11.9 by hand (`bootc rollback`), whose default is `beta` | the machine still follows `stable`, and 2026.11.8 is refused as a downgrade (no new change) |
 | 8-9 | on 2026.11.9, a file written in `/etc`; `set-channel beta`, then `stable` again: stable's 2026.11.8 is the rollback deployment | it is deleted and 2026.11.8 staged afresh (no `bootc rollback`); it boots counted, with the file |
