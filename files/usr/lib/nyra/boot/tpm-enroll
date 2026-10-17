@@ -160,7 +160,8 @@ remember() { # remember LINE...: the record of the enrollments
   inroot && mkdir -p "${record%/*}" && inroot && printf '%s\n' "$@" > "$record.new" && mv "$record.new" "$record"
 }
 haspin() { grep -Eq '^[0-9]+ [0-9a-f]+ pin$' "$record"; } # the disk's enrollments have a PIN
-typedpin() { # the PIN typed in this boot (the last one), as systemd-cryptenroll's credential
+typedpin() { # the PIN typed in this boot (the last one), as systemd-cryptenroll's credential; also
+  # sets $pin to it, which is how the next key is enrolled with that PIN ("next" below)
   [ -n "$pincache" ] || return 1
   pin="$(keyctl pipe "$pincache" | tr '\0' '\n' | sed '/^$/d' | sed -n '$p')"
   [ -n "$pin" ] || return 1
@@ -245,7 +246,6 @@ elif [ "$case" = pin ]; then
   # this boot if the disk has one.
   newpin="$want"
   [ "$want" != none ] || newpin=""
-  pin=""
   if banned "$curfp"; then
     why="the policy key of this version was retired"
   elif [ -z "$newpin" ] && ! haspin; then
