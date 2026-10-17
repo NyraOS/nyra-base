@@ -10,10 +10,15 @@ polkit.addAdminRule(function(action, subject) {
     return ["unix-group:sudo"];
 });
 
-// Attaching a file as a loop device makes the kernel read a file system that the user built: only
-// with an administrator's password. udisks2 allows it to any active local session.
+// Only with an administrator's password, although udisks2 allows them to any active local session:
+// - loop-setup: attaching a file as a loop device makes the kernel read a file system that the
+//   user built;
+// - modify-device: changing a removable disk (its label, formatting, partitions). libblockdev passes
+//   a new label to fatlabel unchecked, so a label starting with "-" becomes an option of fatlabel
+//   (CVE-2026-111581, low, not fixed in Debian yet). Nothing in the base needs it yet.
 polkit.addRule(function(action, subject) {
-    if (action.id == "org.freedesktop.udisks2.loop-setup") {
+    if (action.id == "org.freedesktop.udisks2.loop-setup" ||
+        action.id == "org.freedesktop.udisks2.modify-device") {
         return polkit.Result.AUTH_ADMIN;
     }
 });
