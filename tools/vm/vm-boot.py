@@ -63,11 +63,14 @@ first (a drop-in passed as a credential), the size of LoaderDevicePartUUID and w
 probe of each disk finds now, and the script fails there without waiting for the timeout.
 A failed boot names its serial log in the output, so the job log leads to the whole console.
 
-KVM is mandatory: accel=kvm, no fallback to emulation.
+KVM is mandatory: accel=kvm, no fallback to emulation. On an aarch64 host the guest is aarch64
+(docs/ARM64.md): QEMU's virt machine with edk2 (AAVMF), the serial console on ttyAMA0, the TPM on
+tpm-tis-device, and KVM when the host has it, otherwise emulation (TCG).
 """
 import argparse
 import base64
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -81,6 +84,13 @@ import time
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 OVMF_CODE_SECBOOT = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
+SERIAL = "ttyS0"
+# aarch64: one firmware for both (Secure Boot is on when the variable store has keys); no SMM on ARM.
+ARM64 = platform.machine() == "aarch64"
+if ARM64:
+    OVMF_CODE = OVMF_CODE_SECBOOT = "/usr/share/AAVMF/AAVMF_CODE.fd"
+    OVMF_VARS = "/usr/share/AAVMF/AAVMF_VARS.fd"
+    SERIAL = "ttyAMA0"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
 # A boot that ends in emergency mode prints what the disk looks like to udev first: the root account
@@ -100,7 +110,7 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
 # not the serial port: the sealed command line has no console=ttyS0. The agent answers on ttyS0 instead,
 # in the initrd too (it imports the credentials), so a test can type the passphrase there.
 ASK_PASSWORD = ("[Service]\nExecStart=\n"
-                "ExecStart=systemd-tty-ask-password-agent --watch --console=/dev/ttyS0\n")
+                f"ExecStart=systemd-tty-ask-password-agent --watch --console=/dev/{SERIAL}\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
@@ -476,8 +486,13 @@ def main():
     # The Secure Boot firmware keeps its variables in SMM, out of reach of the guest OS.
     machine = ["q35,smm=on,accel=kvm", "-global", "driver=cfi.pflash01,property=secure,value=on"] \
         if a.secure_boot else ["q35,accel=kvm"]
+    qemu, cpu = "qemu-system-x86_64", "host"
+    if ARM64:
+        accel = "kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg"
+        qemu, machine = "qemu-system-aarch64", [f"virt,gic-version=max,accel={accel}"]
+        cpu = "host" if accel == "kvm" else "max,pauth-impdef=on"  # the fast pointer authentication
     disk = f"file={a.disk},format={'raw' if a.disk.endswith('.raw') else 'qcow2'},if=virtio"
-    cmd = ["qemu-system-x86_64", "-machine", *machine, "-cpu", "host", "-smp", "2", "-m", "2048",
+    cmd = [qemu, "-machine", *machine, "-cpu", cpu, "-smp", "2", "-m", "2048",
            "-nodefaults", "-display", "none", "-serial", "stdio",
            "-monitor", f"unix:{tmp}/monitor,server,nowait" if a.blind else "none",
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE_SECBOOT if a.secure_boot else OVMF_CODE}",
@@ -486,7 +501,7 @@ def main():
            "-nic", "user,model=virtio-net-pci", "-device", "virtio-rng-pci",
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
            # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
-           "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
+           "-smbios", f"type=11,value=io.systemd.credential:getty.ttys.serial={SERIAL}"]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.emergency.service="
             + base64.b64encode(EMERGENCY.encode()).decode()]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.systemd-ask-password-console.service="
@@ -505,9 +520,9 @@ def main():
         if not os.path.exists(sock):
             raise SystemExit(f"vm-boot: swtpm did not start (state in {a.tpm})")
         cmd += ["-chardev", f"socket,id=chrtpm,path={sock}", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
-                "-device", "tpm-crb,tpmdev=tpm0"]
+                "-device", f"{'tpm-tis-device' if ARM64 else 'tpm-crb'},tpmdev=tpm0"]
     if a.autologin:
-        cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
+        cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@{SERIAL}.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
     for c in a.credential:
         name, _, text = c.partition("=")
