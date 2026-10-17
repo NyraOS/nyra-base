@@ -603,9 +603,10 @@ Each line is something that broke or surprised us once.
 - Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
-  needed and nobody can answer it), which tells a policy apart without an agent. A logind session
-  without a seat (`systemd-run -p PAMName=login --uid=USER`) is active and local, like a console
-  login on a seat. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
+  session as local only when it has a seat: a logind session without one (`systemd-run -p
+  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer. With
+  `-p TTYPath=/dev/tty1` (the foreground virtual console) pam_systemd puts it on seat0, active. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
   a shell script passed to it needs `--expand-environment=no`.
 
 ## Testing in CI
