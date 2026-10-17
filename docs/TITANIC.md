@@ -128,7 +128,11 @@ only if the action fails for another reason:
 The checksum covers every path under `/usr` with its type, mode, owner, size and link target, and the
 content of every file; the ESP's (at `/boot`) covers the same, taken right before and after `rm`, so
 that even a partial delete fails the test, which the next boot's repair would otherwise hide. The
-ESP as `rm` left it is listed in the step summary.
+ESP as `rm` left it is listed in the step summary. The files are hashed through `find -exec`, not
+`xargs`: after `rm` there is no `/dev/null`, xargs then starts its command with standard input
+closed, and a Rust program such as uutils' `sha256sum` aborts on that (docs/DEFAULTS.md, "Core
+utilities"). Any command of the checksum that fails fails the check (`pipefail`), so a missing hash
+can never pass as one.
 
 apt and dpkg: the message is help, not the protection, so both are tested: what the commands say,
 and Debian's dpkg itself, past the message, against the read-only `/usr`.
@@ -196,8 +200,8 @@ shell: on boots 3 and 7 it failed, on the line that is not an account (its journ
 others, the normal boots after the restores and the reset included, it ran and succeeded. A failure anywhere else, or for
 another reason, fails the test; `systemctl --failed` is not filtered.
 
-The password check is `su` through PAM, run as nobody (by number: the broken `/etc/passwd` has no
-such account) so that it has to ask; the network check is a file served by the runner, which the guest
+The password check is `su` through PAM, run as the user who logs in (by UID: sudo-rs's `su` refuses
+to run for a user it cannot look up, and the broken `/etc/passwd` has no `nobody`) so that it has to ask; the network check is a file served by the runner, which the guest
 reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
 the state `/etc`, through a bind mount of `/` alone.
 

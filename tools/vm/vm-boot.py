@@ -176,11 +176,15 @@ class Console:
 
 def refused(con, pattern, timeout):
     """PATTERN shows up on the console, and no system has started 60 s later: no kernel message
-    (only with console=ttyS0) and no login prompt (the getty on ttyS0 comes from a credential)."""
-    m = con.wait_for(pattern.encode(), timeout)
+    (only with console=ttyS0) and no login prompt (the getty on ttyS0 comes from a credential).
+    PATTERN is matched without kernel messages, which can split a prompt in two; the 60 s are
+    watched from what the console held then (a few tenths of a second after the prompt)."""
+    m = con.wait_for(pattern.encode(), timeout, cleaned=True)
     if not m:
         raise RuntimeError(f"no {pattern!r} on the console within {timeout} s")
-    if con.wait_for(rb"Linux version|login: ", 60, m.end()):
+    with con.lock:
+        seen = len(con.buf)
+    if con.wait_for(rb"Linux version|login: ", 60, seen):
         raise RuntimeError("a system started")
     return f"`{m.group().decode(errors='replace')}`, no system started within 60 s"
 
@@ -344,6 +348,10 @@ def self_test():
     assert re.search(target, clean(split)) and re.search(target, clean(whole))
     assert not re.search(target, clean(b"Created symlink /etc/systemd/system/multi-user.target.wants/x.service\r\n"))
     assert clean(b"[  OK  ] Started x.\r\n[    2.61] systemd[1]: y\r\n") == b"[  OK  ] Started x.\r\n"
+    # A disk's prompt split the same way (--refused).
+    prompt = (b"Please enter rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out\r\n"
+              b"overy key for disk root: ")
+    assert re.search(rb"Please enter (passphrase or )?recovery key for disk [^\r\n]*:", clean(prompt))
 
     def run(*console, alive=True, **opts):
         """login_and_run on a console that a process prints in place of QEMU: the first part at once,
