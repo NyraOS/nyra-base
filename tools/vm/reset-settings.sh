@@ -41,7 +41,19 @@
 #      command line, /etc/fstab not read, no emergency mode, the question within 30 s of the start of
 #      the system;
 #   15. the reset with that /etc/fstab; the normal boot after it runs, without those lines;
-#   16. /etc emptied, then a power cut; 17. the normal boot (not the reset entry): a first boot, so
+#   16. "Nyra OS Restore earlier settings" (nyra-restore.CONF, profile 2) is in the menu between
+#      Recovery and Reset settings; the daily copy timer waits; the daily copy: /etc with every
+#      file's owner and mode, /etc/shadow the same, the copies' directory root's (0700), nobody
+#      cannot enter it, and its size printed; then the administrator's password changed, another
+#      administrator added, the settings broken as in boot 1; the restore entry picked for the next boot;
+#      (copies the daily timer may have made at midnight are removed before each restore entry);
+#   17. the restore entry lists the copy ("daily copy"); 1, with a power cut as it switches to the
+#      copy; 18. /etc is whole (all old or all restored);
+#   19. the copy restored, then the normal boot: the breakage gone, /etc/fstab, /etc/systemd/system
+#      and the system accounts are the copy's; the password set after the copy and the
+#      administrator added after it are kept (accounts are never taken from a copy); /home kept,
+#      the previous /etc as etc.nyra-old (0700);
+#   20. /etc emptied, then a power cut; 21. the normal boot (not the reset entry): a first boot, so
 #      systemd-firstboot runs and finishes (active, result success), but it asks for no root password
 #      and the boot goes on; root is locked (its line in /etc/shadow). Both are printed on the console
 #      by a drop-in passed as a credential, so the check does not depend on a login with /etc emptied.
@@ -208,10 +220,48 @@ vm --poweroff --log "$logs/serial-reset-settings-15.log" --chat-then-login --cha
   --command "$running" \
   --command "! grep -s 'nyra-missing\\|nyra-no-such-option' /etc/fstab && echo 'the broken /etc/fstab lines are gone'"
 
+# Restore earlier settings (docs/BOOT.md): the reset profile from the entry nyra-restore.CONF offers
+# the copies of /etc, newest first. The daily timer may make a copy of the broken /etc at a boot
+# after midnight: before the restore entry, every copy but the test's is removed, so that the one
+# offered is the test's.
+copies=/var/lib/nyra/etc-copies
+only_copy="c=\"\$(cat $before/copy)\"; for x in \$(ls $copies); do test \"\$x\" = \"\$c\" || rm -rf \"$copies/\$x\"; done; ls $copies; test \"\$(ls $copies)\" = \"\$c\""
+restore_oneshot='bootctl set-oneshot nyra-restore.CONF && echo "next boot: restore entry"'
+restore_answer='\(daily copy\)(.|\n)*Type the number of the copy to restore, anything else or Control-D to boot normally: '
+pw2="$(openssl rand -hex 12)"
+meta="find . -xdev -printf '%m %U %G %y %p %l\\n' | sort"
+vm --poweroff --log "$logs/serial-reset-settings-16.log" \
+  --title "Reset settings 16: the restore entry before the reset entry; a copy of /etc, then accounts changed and settings broken" \
+  --command "$running" \
+  --command "cat /boot/loader/entries/nyra-restore.CONF; grep -qx 'profile 2' /boot/loader/entries/nyra-restore.CONF && t=\"\$(bootctl list --no-pager | sed -n 's/^ *title: //p' | grep -E '^Nyra OS (Recovery|Restore earlier settings|Reset settings)\$' | head -n 3 | paste -sd '|')\" && echo \"menu: \$t\" && test \"\$t\" = 'Nyra OS Recovery|Nyra OS Restore earlier settings|Nyra OS Reset settings'" \
+  --command 'systemctl list-timers --no-pager nyra-etc-copy.timer; systemctl is-active nyra-etc-copy.timer' \
+  --command "systemctl start nyra-etc-copy.service && c=\"\$(ls $copies | grep -- '-daily\$' | sort | tail -n 1)\" && echo \$c > $before/copy && ls -la $copies && test \"\$(stat -c '%a %U' $copies)\" = '700 root' && (cd /etc && $meta) > /run/meta-etc && (cd $copies/\$c && $meta) > /run/meta-copy && diff /run/meta-etc /run/meta-copy && cmp /etc/shadow $copies/\$c/shadow && stat -c '%a %U %G %n' /etc/shadow $copies/\$c/shadow && echo 'the copy has every file with its owner and mode' && ! setpriv --reuid=65534 --regid=65534 --clear-groups ls $copies && echo 'only root can enter the copies' && echo \"nyra-space: one copy of /etc takes \$(du -sk $copies/\$c | cut -f1) KiB, \$(find $copies/\$c | wc -l) files\"" \
+  --command "printf 'nyra-admin:%s\\n' '$pw2' | chpasswd && grep '^nyra-admin:' /etc/shadow > $before/shadow-after && useradd -m -G sudo -s /bin/bash nyra-later && echo 'after the copy: a new password, a new administrator'" \
+  --command 'echo "garbage line, not a mount" >> /etc/fstab && echo broken-line >> /etc/passwd && systemctl mask systemd-resolved.service && rm -f /etc/resolv.conf && echo junk > /etc/nyra-test-junk' \
+  --command "$only_copy" \
+  --command "$restore_oneshot"
+
+vm --log "$logs/serial-reset-settings-17.log" --chat "$restore_answer=>1" --power-cut-at 'reset-settings: switching to the new /etc' \
+  --title "Reset settings 17: the restore entry offers the copy; power cut as it switches to it"
+
+vm --poweroff --log "$logs/serial-reset-settings-18.log" \
+  --title "Reset settings 18: after that power cut, /etc is whole" \
+  --command "$whole" \
+  --command "$only_copy" \
+  --command "$restore_oneshot"
+
+vm --poweroff --log "$logs/serial-reset-settings-19.log" --chat-then-login --chat "$restore_answer=>1" \
+  --title "Reset settings 19: the copy restored, then the normal boot: the breakage gone, the accounts as they are now" \
+  --command "$running" \
+  --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
+  --command "c=$copies/\$(cat $before/copy); cmp /etc/fstab \$c/fstab && diff -r --no-dereference /etc/systemd/system \$c/systemd/system && grep -v '^nyra-' \$c/passwd > /run/p1 && grep -v '^nyra-' /etc/passwd > /run/p2 && diff /run/p1 /run/p2 && echo '/etc/fstab, /etc/systemd/system and the system accounts are the copy'\"'\"'s'" \
+  --command "grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow-after && id -nG nyra-admin | grep -qw sudo && id -nG nyra-later | grep -qw sudo && test \"\$(grep -c '^nyra-admin:' /etc/shadow)\" = 1 && echo 'the password set after the copy and the administrator added after it are kept'" \
+  --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && $state; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test -e \$s/etc.nyra-old/nyra-test-junk && echo '/home kept; the previous /etc kept as etc.nyra-old (0700)'"
+
 # A normal boot with /etc emptied (docs/BOOT.md, "No first-boot questions"): any first-boot question
 # would stop the boot before multi-user.target.
-vm --log "$logs/serial-reset-settings-16.log" --power-cut-at 'nyra-test: power cut' \
-  --title "Reset settings 16: /etc emptied, then a power cut" \
+vm --log "$logs/serial-reset-settings-20.log" --power-cut-at 'nyra-test: power cut' \
+  --title "Reset settings 20: /etc emptied, then a power cut" \
   --command 'find /etc -mindepth 1 -delete; echo "left in /etc: $(ls -A /etc | wc -l)"; test -z "$(ls -A /etc)"' \
   --command 'sync && echo "nyra-test: power"" cut"'
 # A drop-in passed as a credential prints, in the system, systemd-firstboot's state and root's line,
@@ -220,10 +270,10 @@ vm --log "$logs/serial-reset-settings-16.log" --power-cut-at 'nyra-test: power c
 # (NYRA-FIRSTBOOT-RAN-ROOT-LOCKED) does not appear literally in the drop-in.
 root_locked="systemd.unit-dropin.systemd-user-sessions.service=[Service]
 ExecStartPost=/bin/sh -c 'a=\$\$(systemctl show -P ActiveState systemd-firstboot.service); r=\$\$(systemctl show -P Result systemd-firstboot.service); echo \"systemd-firstboot: \$\$a, \$\$r\" >/dev/ttyS0; grep \"^root:\" /etc/shadow | cut -d: -f1,2 >/dev/ttyS0; test \"\$\$a \$\$r\" = \"active success\" && grep -q \"^root:[!*]\" /etc/shadow && echo NYRA-FIRSTBOOT-RAN-ROOT-\$\$(echo LOCKED) >/dev/ttyS0'"
-vm --log "$logs/serial-reset-settings-17.log" --credential "$root_locked" \
+vm --log "$logs/serial-reset-settings-21.log" --credential "$root_locked" \
   --marker 'NYRA-FIRSTBOOT-RAN-ROOT-LOCKED' --marker-expected yes \
-  --title "Reset settings 17: the normal boot with /etc emptied: no root password question, root locked"
-if grep -aE 'Please enter the new' "$logs/serial-reset-settings-17.log"; then
-  echo "reset settings 17: systemd-firstboot asked a question"
+  --title "Reset settings 21: the normal boot with /etc emptied: no root password question, root locked"
+if grep -aE 'Please enter the new' "$logs/serial-reset-settings-21.log"; then
+  echo "reset settings 21: systemd-firstboot asked a question"
   exit 1
 fi

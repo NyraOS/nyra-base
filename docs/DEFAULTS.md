@@ -89,7 +89,8 @@ and stop run `flush ruleset`, which removes `inet nyra` while `nyra-firewall.ser
 only orders the two at boot.)
 
 Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
-(update checks, docs/UPDATES.md), `chronyd-restricted.service` (the clock, see "Time").
+(update checks, docs/UPDATES.md), `nyra-etc-copy.timer` (the daily copy of `/etc`, docs/BOOT.md,
+"Restore earlier settings"), `chronyd-restricted.service` (the clock, see "Time").
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.

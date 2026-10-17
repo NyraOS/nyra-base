@@ -8,8 +8,8 @@
 #               takes across 8 updates in a row (tools/titanic/full-disk.sh); an update under extreme
 #               load (tools/titanic/extreme-load.sh); a hostile root: apt, dpkg, an unsigned module,
 #               rm -rf / (tools/titanic/hostile-root.sh); the configuration broken by the user, then
-#               Reset settings (tools/titanic/broken-config.sh); these two with Secure Boot and
-#               image.yml's UKI certificate
+#               Restore earlier settings and Reset settings (tools/titanic/broken-config.sh); these two
+#               with Secure Boot and image.yml's UKI certificate
 #   results     titanic-results.json: one result per test T1-T15 (tools/titanic/results.py), read
 #               from this run's steps through the API with the run's own read-only token
 # Artifacts: titanic-results, the serial logs (install-boot-serial-log, titanic-power-cuts-serial-log,

@@ -3,7 +3,11 @@
 # Nyra OS: reset system settings (docs/BOOT.md), run by nyra-reset-settings.service when the "Nyra OS
 # Reset settings" profile of the image's UKI boots. After a typed confirmation, the running system
 # version's /etc (bootc keeps it in /sysroot/state/deploy/<digest>/etc and bind-mounts it on /etc)
-# goes back to the /etc in the image, except:
+# goes back to the /etc in the image, or, from the boot entry "Nyra OS Restore earlier settings"
+# (the same profile; systemd-boot names the entry it started), to a copy of /etc that the user picks
+# by its date (/usr/lib/nyra/etc-copy makes them). The accounts in a copy are not used: only its
+# system accounts and groups (IDs outside 1000-59999), and only their names in its lists of group
+# members. Kept, in both cases:
 #   /etc/machine-id                    the machine's identity (journal, DHCP client ID)
 #   /etc/hostname                      its name on the network
 #   regular users (UID and primary     their lines in passwd, shadow, subuid and subgid, their own
@@ -13,11 +17,11 @@
 #                                      twice in passwd, shadow, group or gshadow is not kept at all,
 #                                      and a subordinate ID range only if it is the name's only one
 #                                      and starts at 100000 or above
-# /home and /var are not touched. Kept users' lines are copied as they are: this is not a cleanup of
-# a compromised /etc. Power cuts: the new /etc is built next to the old one, then the two directories
-# are exchanged in one step (renameat2 RENAME_EXCHANGE, mv --exchange), so a boot sees either the old
-# /etc or the new one. The old one is kept as etc.nyra-old (mode 0700) next to it, until the next
-# reset replaces it or bootc removes this version.
+# /home and /var are not touched (the copies neither). Kept users' lines are copied as they are: this
+# is not a cleanup of a compromised /etc. Power cuts: the new /etc is built next to the old one, then
+# the two directories are exchanged in one step (renameat2 RENAME_EXCHANGE, mv --exchange), so a
+# boot sees either the old /etc or the new one. The old one is kept as etc.nyra-old (mode 0700) next
+# to it, until the next reset or restore replaces it or bootc removes this version.
 set -eu
 trap '' INT QUIT TSTP
 # Files this script makes are for root only (the marker, the temporary copies of group and gshadow);
@@ -27,6 +31,9 @@ umask 077
 # /etc this reset is for may not have: mawk itself, from /usr.
 awk() { mawk "$@"; }
 
+copies=/var/lib/nyra/etc-copies
+# The boot entry systemd-boot started, in lower case (UTF-16 text after 4 bytes of attributes).
+entry="$(tail -c +5 /sys/firmware/efi/efivars/LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f 2>/dev/null | tr -d '\000' || true)"
 d="$(sed -En 's/^(.* )?composefs=\??([0-9a-f]+)( .*)?$/\2/p' /proc/cmdline)"
 state="/sysroot/state/deploy/$d"
 if [ -z "$d" ] || [ ! -d "$state/etc" ]; then
@@ -34,18 +41,54 @@ if [ -z "$d" ] || [ ! -d "$state/etc" ]; then
 	exec systemctl --job-mode=fail --no-block default
 fi
 
-cat <<EOF
+src=""
+if [ "$entry" = nyra-restore.conf ]; then
+	# Newest first, numbered from 1.
+	list="$(find "$copies" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z-(daily|update)$' | sort -r || true)"
+	if [ -z "$list" ]; then
+		echo "Nyra OS: there is no copy of the system settings yet. Continuing the normal boot."
+		exec systemctl --job-mode=fail --no-block default
+	fi
+	cat <<EOF
+
+Nyra OS: restore earlier settings.
+Everything in /etc goes back to a copy made on the date you choose. Kept: user accounts and their
+passwords, the machine ID and the host name. Files in /home are not touched.
+EOF
+	n=0
+	for c in $list; do
+		n=$((n + 1))
+		when="$(date -d "${c%Z-*}Z" '+%a %e %b %Y, %H:%M %Z' 2>/dev/null || echo "${c%-*}")"
+		case "$c" in *-update) why="before an update" ;; *) why="daily copy" ;; esac
+		printf '%4d  %s (%s)\n' "$n" "$when" "$why"
+	done
+	printf 'Type the number of the copy to restore, anything else or Control-D to boot normally: '
+	answer=""
+	read -r answer || true
+	case "$answer" in
+	"" | *[!0-9]*) ;;
+	*) src="$(printf '%s\n' "$list" | sed -n "${answer}p" 2>/dev/null || true)" ;;
+	esac
+	if [ -z "$src" ]; then
+		echo "Nothing changed. Continuing the normal boot."
+		exec systemctl --job-mode=fail --no-block default
+	fi
+	echo "reset-settings: restoring the copy $src"
+	src="$copies/$src"
+else
+	cat <<EOF
 
 Nyra OS: reset system settings.
 Everything in /etc goes back to this system version's defaults. Kept: user accounts and their
 passwords, the machine ID and the host name. Files in /home are not touched.
 EOF
-printf 'Type RESET to reset, anything else or Control-D to boot normally: '
-answer=""
-read -r answer || true
-if [ "$answer" != RESET ]; then
-	echo "Nothing changed. Continuing the normal boot."
-	exec systemctl --job-mode=fail --no-block default
+	printf 'Type RESET to reset, anything else or Control-D to boot normally: '
+	answer=""
+	read -r answer || true
+	if [ "$answer" != RESET ]; then
+		echo "Nothing changed. Continuing the normal boot."
+		exec systemctl --job-mode=fail --no-block default
+	fi
 fi
 
 old="$state/etc" new="$state/etc.nyra-new" prev="$state/etc.nyra-old" image=/run/nyra-image-root
@@ -70,24 +113,71 @@ if [ -d "$new" ]; then
 fi
 
 echo "reset-settings: building the new /etc"
-# The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
-mkdir -p "$image"
-mount --bind / "$image"
-mount -o remount,bind,ro "$image"
+if [ -z "$src" ]; then
+	# The image's /etc: under the bind mount of the state /etc, seen through a bind mount of / alone.
+	mkdir -p "$image"
+	mount --bind / "$image"
+	mount -o remount,bind,ro "$image"
+	src="$image/etc"
+fi
 mkdir -m 0700 "$tmp"
 echo "reset-settings: preparing the new /etc"
 : > "$tmp/.nyra-reset-new"
 sync
 mv -T "$tmp" "$new"
-cp -a "$image/etc/." "$new/"
-chmod --reference="$image/etc" "$new"
-chown --reference="$image/etc" "$new"
-umount "$image"
+cp -a "$src/." "$new/"
+chmod --reference="$src" "$new"
+chown --reference="$src" "$new"
+if [ "$src" = "$image/etc" ]; then umount "$image"; fi
+
+uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
+# A copy's accounts are not used (the image has none): its regular users and groups (ID 1000-59999)
+# go, then its lines in shadow, subuid and subgid of anything that is not an account left in passwd,
+# its gshadow lines of anything that is not a group left in group, and, in the lists of group members
+# (group; administrators and members in gshadow), every name that is not an account left in passwd.
+# The current accounts are added below, as for a reset.
+# only FILE passwd|group|"" FIELDS: in $new/FILE, the lines whose first field is an account in
+# $new/passwd or a group in $new/group (every line for ""), with only accounts of $new/passwd in the
+# comma lists of FIELDS ("4", "3 4").
+or_null() { if [ -f "$1" ]; then echo "$1"; else echo /dev/null; fi; }
+only() {
+	[ -f "$new/$1" ] || return 0
+	keys=""
+	[ "$2" != group ] || keys="$(or_null "$new/group")"
+	# shellcheck disable=SC2086 # $keys: one path or none
+	awk -F: -v OFS=: -v keyed="$2" -v fields="$3" '
+		FILENAME == ARGV[1] { users[$1]; next }
+		keyed == "group" && FILENAME == ARGV[2] { groups[$1]; next }
+		keyed == "" || (keyed == "passwd" && ($1 in users)) || (keyed == "group" && ($1 in groups)) {
+			n = split(fields, f, " ")
+			for (i = 1; i <= n; i++) {
+				if (NF < f[i]) continue
+				m = split($f[i], names, ","); l = ""
+				for (j = 1; j <= m; j++) if (names[j] in users) l = (l == "" ? names[j] : l "," names[j])
+				$f[i] = l
+			}
+			print
+		}' "$(or_null "$new/passwd")" $keys "$new/$1" > "$new/$1.nyra-tmp"
+	cat "$new/$1.nyra-tmp" > "$new/$1"
+	rm "$new/$1.nyra-tmp"
+}
+if [ "$src" != "$image/etc" ]; then
+	for f in passwd group; do
+		[ -f "$new/$f" ] || continue
+		awk -F: "!($uid_ok)" "$new/$f" > "$new/$f.nyra-tmp"
+		cat "$new/$f.nyra-tmp" > "$new/$f"
+		rm "$new/$f.nyra-tmp"
+	done
+	only shadow passwd ""
+	only subuid passwd ""
+	only subgid passwd ""
+	only group "" 4
+	only gshadow group "3 4"
+fi
 
 # The line of NAME in FILE (exact match of the first field).
 line() { awk -F: -v n="$2" '$1 == n { print; exit }' "$1" 2>/dev/null || true; }
 has() { [ -n "$(line "$1" "$2")" ]; }
-uid_ok='$3 ~ /^[0-9]+$/ && $3 >= 1000 && $3 < 60000'
 if grep -Eqx '[0-9a-f]{32}' "$old/machine-id" 2>/dev/null; then install -m 0444 "$old/machine-id" "$new/machine-id"; fi
 if grep -Eqx '[A-Za-z0-9][A-Za-z0-9.-]{0,62}' "$old/hostname" 2>/dev/null; then install -m 0644 "$old/hostname" "$new/hostname"; fi
 # Names that appear more than once in passwd, shadow, group or gshadow (each file on its own) are
@@ -153,5 +243,5 @@ rm -rf "$prev"
 mv "$new" "$prev"
 chmod 0700 "$prev"
 sync
-echo "System settings reset; the previous ones are in $prev. Restarting."
+echo "System settings changed; the previous ones are in $prev. Restarting."
 exec systemctl reboot

@@ -20,7 +20,8 @@
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
 #   3  v1: a sheet signed with another key refused; power cut while v2 downloads (throttled link)
 #   4  v1: v2 staged again; power cut before the staged version is finalized
-#   5  v1: v2 staged again; clean shutdown
+#   5  v1: v2 staged again, after a copy of /etc (nyra-updated makes one before it stages); clean
+#      shutdown
 #   6  power cut when v2's kernel starts (first try)
 #   7  v2, second try, blessed; v4 staged, then retracted: discarded (never finalized); v11
 #      staged by hand afterwards (discarded at shutdown too)
@@ -371,9 +372,9 @@ vm "v1 after the power cut: v2 staged again; power cut before finalization" --po
   --command 'bootc status --format json' \
   --command 'echo POWER''CUT'
 
-vm "v1 after the power cut: v2 staged again" --poweroff \
+vm "v1 after the power cut: v2 staged again, after a copy of /etc" --poweroff \
   --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; outcome s1 Staged && expect staged $d2"
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\""
 
 vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 

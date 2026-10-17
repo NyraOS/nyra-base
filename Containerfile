@@ -148,15 +148,17 @@ RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
       > /usr/lib/systemd/system/systemd-networkd.service.d/10-nyra-firewall.conf
 
 # Updates (docs/UPDATES.md): the check timer, and the health checks that boot-complete.target requires,
-# with the target pulled in on every boot (not only on counted ones). The build fails if a unit does
+# with the target pulled in on every boot (not only on counted ones); the daily copy of /etc
+# (docs/BOOT.md, "Restore earlier settings"). The build fails if a unit does
 # not verify (these, and the shutdown ones: console hangup, journal flush; docs/LESSONS.md), or if
 # the configuration is invalid or trusts a test key, or the notice health-failed runs is missing.
 # (systemd-analyze writes to /run, which must stay empty in the image.)
 RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
-    ln -s ../nyra-updated.timer timers.target.wants/ && \
+    ln -s ../nyra-updated.timer ../nyra-etc-copy.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
+      nyra-etc-copy.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \

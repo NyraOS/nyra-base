@@ -312,6 +312,17 @@ Each line is something that broke or surprised us once.
   mounted root filesystem from the host, so the same code runs on the image and on the control.
 - A service with `StandardOutput=inherit` on the console (a prompt that needs the console at once)
   writes nothing to the journal: check its effects, not its log, in tests.
+- **One UKI profile can serve two boot menu entries.** An entry only picks the profile, and
+  systemd-boot puts the ID of the entry it started in `LoaderEntrySelected`, which the booted system
+  reads. A second action on the same sealed command line (Restore earlier settings next to Reset
+  settings) needs no new profile, so no new PCR 11 value, no new sealed command line and no change
+  to the signed policy. Which entry was picked grants nothing: both are in the same menu.
+- systemd-boot orders entries by `sort-key` first: numbered keys (`nyra-1-recovery`,
+  `nyra-2-restore`, `nyra-3-reset`) keep our entries in the order we want, after bootc's
+  (`bootc-…`); with names alone, `nyra-reset` would sort before `nyra-restore`.
+- **A copy of `/etc` on ext4:** the image's `/etc` is 971 files and 734 KiB of data, but 2.9 MiB on
+  disk, since each small file takes a 4 KiB block. coreutils 9 `cp` reflinks by default
+  (`--reflink=auto`), which would make copies nearly free on btrfs or XFS, not on ext4.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
