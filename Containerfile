@@ -134,6 +134,14 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
 
+# Without a network (docs/DEFAULTS.md): nothing in the base pulls in network-online.target, so
+# systemd-networkd-wait-online never runs at boot. Two of the blocked units wanted it from
+# default.target; our preset disables them. An update check waits for the network on its own.
+RUN --mount=type=tmpfs,dst=/run systemctl preset podman-restart.service podman-auto-update.service && \
+    test "$(systemctl is-enabled podman-restart.service)" = disabled && \
+    test "$(systemctl is-enabled podman-auto-update.service)" = disabled && \
+    systemd-analyze verify --man=no --recursive-errors=no /usr/lib/systemd/system/nyra-updated-wait-online.service
+
 # No NvPCRs (docs/DEFAULTS.md, "TPM measurement units that stay"): without their definitions
 # systemd-tpm2-setup-early allocates no NV index in the TPM, and dracut copies none into the initramfs;
 # the measurement of each login into the NvPCR "login" is blocked with them (it would fail).

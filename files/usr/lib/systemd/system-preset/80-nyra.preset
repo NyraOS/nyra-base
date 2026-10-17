@@ -6,3 +6,8 @@
 enable chronyd-restricted.service
 disable chrony.service
 disable chrony-wait.service
+# Nothing in the base waits for network-online.target at boot (docs/DEFAULTS.md, "Without a
+# network"). Debian enables these two in default.target; they are blocked, but their
+# Wants=network-online.target would still start systemd-networkd-wait-online at every boot.
+disable podman-restart.service
+disable podman-auto-update.service

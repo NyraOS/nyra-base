@@ -4,8 +4,10 @@
 [Unit]
 Description=Nyra: check for a system update and prepare it
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
-After=boot-complete.target network-online.target
-Wants=network-online.target
+# The check waits for the network, as long as it takes (nyra-updated-wait-online.service), not for
+# network-online.target, which nothing in the base pulls in (docs/DEFAULTS.md, "Without a network").
+After=boot-complete.target nyra-updated-wait-online.service
+Wants=nyra-updated-wait-online.service
 # Only with the ESP mounted at /boot, after its file system check: bootc writes there when it stages
 # an update, and the boot counter at shutdown goes through esp-writable, which refuses without that
 # mount (docs/BOOT.md, "Mounts from /etc/fstab"). Each start tries the check and the mount again.

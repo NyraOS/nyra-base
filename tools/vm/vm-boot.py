@@ -48,6 +48,8 @@ persists across runs like a machine's TPM; swtpm is started here and ends with Q
 --tpm-fail-at REGEX kills swtpm as soon as REGEX shows up on the console (a TPM that stops answering).
 --expect-reboot expects the guest to reboot (the kernel's "Restarting system") before any login
 prompt, within --timeout seconds.
+--no-carrier boots with the network cable unplugged: the NIC is there, but its link is down from
+the start (QEMU starts paused, set_link through QMP, then runs).
 --rtc BASE starts the guest's hardware clock at BASE (QEMU -rtc base=, for example
 2099-01-01T00:00:00) instead of the host's time.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
@@ -67,6 +69,7 @@ KVM is mandatory: accel=kvm, no fallback to emulation.
 """
 import argparse
 import base64
+import json
 import os
 import re
 import secrets
@@ -112,6 +115,27 @@ KERNEL_START = re.compile(rb"\] Linux version \d")
 def clean(buf):
     """The console without kernel messages and colour codes, for matching whole status lines."""
     return ANSI.sub(b"", KERNEL_LINE.sub(b"", buf))
+
+
+def qmp(path, *commands):
+    """Send QMP commands (dicts) to QEMU's QMP socket, in order; each must succeed."""
+    with socket.socket(socket.AF_UNIX) as s:
+        for _ in range(50):
+            try:
+                s.connect(path)
+                break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            raise RuntimeError(f"no QMP socket at {path}")
+        s.settimeout(10)
+        f = s.makefile("rwb", buffering=0)
+        f.readline()  # the greeting
+        for c in ({"execute": "qmp_capabilities"}, *commands):
+            f.write(json.dumps(c).encode() + b"\n")
+            while "return" not in (r := json.loads(f.readline())):
+                if "error" in r:
+                    raise RuntimeError(f"QMP {c}: {r['error']}")
 
 
 class Console:
@@ -457,6 +481,7 @@ def main():
     p.add_argument("--tpm", metavar="DIR", help="a TPM 2.0 (swtpm) with its state in DIR")
     p.add_argument("--tpm-fail-at", metavar="REGEX", help="with --tpm: kill swtpm when REGEX shows up")
     p.add_argument("--expect-reboot", action="store_true", help="expect a reboot before any login prompt")
+    p.add_argument("--no-carrier", action="store_true", help="the NIC's link down from the start (no cable)")
     p.add_argument("--rtc", metavar="BASE", help="the guest's hardware clock starts at BASE (QEMU -rtc base=)")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     p.add_argument("--chat", action="append", default=[], metavar="EXPECT=>SEND",
@@ -483,7 +508,7 @@ def main():
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE_SECBOOT if a.secure_boot else OVMF_CODE}",
            "-drive", f"if=pflash,format=raw,file={vars_fd}",
            "-drive", disk if a.persist else disk + ",snapshot=on",
-           "-nic", "user,model=virtio-net-pci", "-device", "virtio-rng-pci",
+           "-nic", "user,id=net0,model=virtio-net-pci", "-device", "virtio-rng-pci",
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
            # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
            "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
@@ -493,6 +518,8 @@ def main():
             + base64.b64encode(ASK_PASSWORD.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
+    if a.no_carrier:
+        cmd += ["-S", "-qmp", f"unix:{tmp}/qmp.sock,server=on,wait=off"]
     swtpm = None
     if a.tpm:
         sock = f"{tmp}/swtpm.sock"
@@ -525,6 +552,10 @@ def main():
         con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode(), max(a.boots, 1),
                       (a.tpm_fail_at.encode(), swtpm) if a.tpm_fail_at and swtpm else None)
         try:
+            if a.no_carrier:
+                qmp(f"{tmp}/qmp.sock", {"execute": "set_link", "arguments": {"name": "net0", "up": False}},
+                    {"execute": "cont"})
+                rows.append(("Network", "no carrier: the NIC's link down from the start"))
             if a.expect_reboot:
                 rows.append(("Reboot", expect_reboot(con, a.timeout)))
             elif a.blind:
