@@ -129,6 +129,8 @@ struct Fake {
     /// The machine has no network ([`System::offline`]).
     offline: bool,
     stage_error: Option<Error>,
+    /// `bootc rollback` and the deletion of the rollback deployment fail with it.
+    rollback_error: Option<Error>,
     /// What bootc ends up staging, if not the digest it was asked for.
     stage_digest: Option<String>,
     calls: Vec<String>,
@@ -156,6 +158,7 @@ impl Fake {
             fetch_error: None,
             offline: false,
             stage_error: None,
+            rollback_error: None,
             stage_digest: None,
             calls: Vec::new(),
             store_dir: dir.store().dir,
@@ -215,6 +218,9 @@ impl System for Fake {
     /// discards a staged deployment and swaps the boot order.
     fn rollback(&mut self) -> Result<(), Error> {
         self.calls.push("rollback".into());
+        if let Some(e) = self.rollback_error.clone() {
+            return Err(e);
+        }
         if self.status.rollback.is_none() {
             return Err(Error::Command("bootc rollback failed".into()));
         }
@@ -224,6 +230,9 @@ impl System for Fake {
     }
     fn delete_rollback(&mut self, digest: &str) -> Result<(), Error> {
         self.calls.push(format!("delete rollback {digest}"));
+        if let Some(e) = self.rollback_error.clone() {
+            return Err(e);
+        }
         if Status::digest(&self.status.rollback) != Some(digest) {
             return Err(Error::Command("not the rollback deployment".into()));
         }
@@ -970,6 +979,26 @@ fn a_second_check_before_the_reboot_does_not_roll_back_again() {
 }
 
 #[test]
+fn a_failed_rollback_off_a_retracted_version_still_says_it_runs_one() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
+    fake.status.rollback = dep(A);
+    fake.rollback_error = Some(Error::Timeout("bootc".into()));
+    let still_retracted = Err(Error::RetractedRunning {
+        running: B.into(),
+        reason: Box::new(Error::Timeout("bootc".into())),
+    });
+    assert_eq!(run_check(&mut fake, &dir), still_retracted);
+    assert_eq!(fake.calls.last().map(String::as_str), Some("rollback"));
+    // The deletion of a forgiven version's deployment (rule 12) the same way.
+    let mut state = dir.store().load().unwrap();
+    state.forgiven = Some(A.into());
+    dir.store().save(&state).unwrap();
+    assert_eq!(run_check(&mut fake, &dir), still_retracted);
+    assert_eq!(fake.calls.last(), Some(&format!("delete rollback {A}")));
+}
+
+#[test]
 fn a_failed_rollback_deployment_is_not_used_for_a_retraction() {
     let dir = TempDir::new();
     dir.store()
@@ -1713,21 +1742,22 @@ fn days_without_a_successful_check_count_from_the_first_report_and_never_from_th
             .message,
         "no successful check for 20 days: x"
     );
-    // A success with the clock years ahead does not hide the days after the clock is put right.
+    // A success with the clock ahead (by at most a sheet's validity, 31 days: a later sheet has
+    // expired) delays the count by that much once the clock is put right.
     let dir = TempDir::new();
     let store = dir.store();
-    store
-        .save_report(NOW + 3000 * DAY, true, "UpToDate")
-        .unwrap();
+    store.save_report(NOW + 31 * DAY, true, "UpToDate").unwrap();
     assert_eq!(
         store.save_report(NOW, false, "x").unwrap().last_success,
-        NOW
+        NOW + 31 * DAY
     );
-    assert!(store
-        .save_report(NOW + 14 * DAY, false, "x")
-        .unwrap()
-        .days_without_success()
-        .is_some());
+    assert_eq!(
+        store
+            .save_report(NOW + 45 * DAY, false, "x")
+            .unwrap()
+            .days_without_success(),
+        Some(14)
+    );
     // An image without a sheet key stays a warning: there is nothing to update from.
     let dir = TempDir::new();
     let store = dir.store();
@@ -1752,6 +1782,50 @@ fn days_without_a_successful_check_count_from_the_first_report_and_never_from_th
         store.save_report(NOW, false, "x").unwrap().last_success,
         NOW
     );
+}
+
+#[test]
+fn a_failed_check_with_the_clock_behind_does_not_count_days_that_never_passed() {
+    // A dead RTC: the clock at the build date, 200 days behind, booting offline; then corrected.
+    let dir = TempDir::new();
+    let store = dir.store();
+    store.save_report(NOW, true, "UpToDate").unwrap();
+    let report = store.save_report(NOW - 200 * DAY, false, "x").unwrap();
+    assert_eq!(
+        (report.last_success, report.days_without_success()),
+        (NOW, None)
+    );
+    let report = store.save_report(NOW + DAY, false, "x").unwrap();
+    assert_eq!(
+        (report.last_success, report.days_without_success()),
+        (NOW, None)
+    );
+    assert_eq!(report.message, "x");
+}
+
+#[test]
+fn what_bootc_and_curl_print_is_logged_and_stored_as_one_short_line() {
+    // A registry that answers with a forged journal line, a terminal escape and a flood.
+    assert_eq!(
+        one_line("pull failed: denied\n<0>nyra-updated check: UpToDate\r\u{1b}[2J\t."),
+        "pull failed: denied <0>nyra-updated check: UpToDate  [2J ."
+    );
+    let long = "é".repeat(MAX_MESSAGE + 1);
+    let line = one_line(&long);
+    assert_eq!(line.chars().count(), MAX_MESSAGE + 1);
+    assert!(line.ends_with("é…"));
+    assert_eq!(one_line(&"é".repeat(MAX_MESSAGE)), "é".repeat(MAX_MESSAGE));
+    // last-check.json gets the same line.
+    let dir = TempDir::new();
+    let report = dir
+        .store()
+        .save_report(NOW, false, "curl failed: 403\n<0>forged")
+        .unwrap();
+    assert_eq!(report.message, "curl failed: 403 <0>forged");
+    let written: Report =
+        serde_json::from_slice(&fs::read(dir.store().dir.join("last-check.json")).unwrap())
+            .unwrap();
+    assert_eq!(written, report);
 }
 
 fn pem(key: &SigningKey) -> String {

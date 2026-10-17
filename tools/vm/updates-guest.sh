@@ -73,6 +73,15 @@ outcome() { # outcome SHEET PATTERN: the check succeeds with a result matching P
 	select_sheet "$1" && run_check && grep -q -- "$2" /var/lib/nyra-updated/last-check.json
 }
 
+no_success_since() { # no_success_since DAYS: last-check.json says the last successful check was
+	# DAYS days ago, as if updates had stopped then
+	python3 -c 'import json, sys, time
+p = "/var/lib/nyra-updated/last-check.json"
+r = json.load(open(p))
+r["last_success"] = int(time.time()) - int(sys.argv[1]) * 86400
+json.dump(r, open(p, "w"))' "$1"
+}
+
 refused() { # refused SHEET REGEX: the check fails with an error matching REGEX (grep -E)
 	select_sheet "$1" || return 1
 	! run_check && grep -q '"ok":false' /var/lib/nyra-updated/last-check.json &&

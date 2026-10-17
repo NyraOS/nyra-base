@@ -438,28 +438,34 @@ impl Store {
     /// Writes the outcome of this check (`time`: Unix seconds) to `last-check.json` and returns
     /// it, keeping the time of the last successful check from the previous report. A failed check
     /// [`STALE_AFTER_DAYS`] or more after it says so first: "no successful check for N days: …".
-    /// [`NOT_CONFIGURED`] is no failed check (no update is held up): the count starts again.
+    /// [`NOT_CONFIGURED`] is no failed check (no update is held up): the count starts again. The
+    /// message is stored as [`one_line`]. Callers hold the [`Lock`]: the file has one writer.
     pub fn save_report(&self, time: u64, ok: bool, message: &str) -> Result<Report, Error> {
         let path = self.dir.join("last-check.json");
+        let message = one_line(message);
         // A report without `last_success` (written by an older nyra-updated, after a rollback) or
         // none at all: the count starts now.
         let previous = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok())
             .map(|r| r.last_success);
-        // Never after now: a clock that was ahead must not hide days without a success.
+        // A failed check keeps the last success as it is, even one later than now: the clock may
+        // be behind at this check (a dead RTC, offline), and a time from it would count days that
+        // never passed once the clock is right. A success that reads the sheet needs one that has
+        // not expired (at most 31 days of validity), so a clock that was ahead then delays the
+        // count by at most that.
         let last_success = match (ok || message == NOT_CONFIGURED, previous) {
-            (false, Some(t)) => t.min(time),
+            (false, Some(t)) => t,
             _ => time,
         };
         let mut report = Report {
             time,
             ok,
-            message: message.to_string(),
+            message: message.clone(),
             last_success,
         };
         if let Some(days) = report.days_without_success() {
-            report.message = format!("no successful check for {days} days: {message}");
+            report.message = one_line(&format!("no successful check for {days} days: {message}"));
         }
         let bytes = serde_json::to_vec(&report).expect("the report serializes");
         self.write_atomic("last-check.json", &bytes)?;
@@ -483,6 +489,25 @@ impl Store {
             Err(e) => Err(io(&path, e)),
         }
     }
+}
+
+/// The longest message written to the journal or to `last-check.json`, in characters.
+pub const MAX_MESSAGE: usize = 2000;
+
+/// `text` as one line that is safe to log and store: what bootc and curl print can come from the
+/// registry or the server, and a control character (a newline followed by `<0>`, an escape
+/// sequence) would forge journal lines or garble a terminal. Control characters become spaces, and
+/// the text is cut at [`MAX_MESSAGE`] characters.
+pub fn one_line(text: &str) -> String {
+    let mut line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_MESSAGE)
+        .collect();
+    if text.chars().nth(MAX_MESSAGE).is_some() {
+        line.push('…');
+    }
+    line
 }
 
 /// After this many days without a successful check, every check that fails is an error, whatever

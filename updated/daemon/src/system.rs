@@ -301,6 +301,7 @@ impl System for Real {
         // A copy of /etc before every update, for "Restore earlier settings" (docs/BOOT.md). It
         // never holds the update back: a copy that fails (the disk full) is only logged.
         if let Err(e) = run_ok(Command::new(ETC_COPY).arg("update"), SHORT) {
+            let e = crate::one_line(&e.to_string());
             eprintln!("<4>nyra-updated: no copy of /etc before this update: {e}");
         }
         run_ok(

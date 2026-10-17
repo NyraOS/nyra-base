@@ -218,6 +218,11 @@ config label of the same name; the test versions are built the same way (`podman
 annotation, and `nyra-updated` cannot update from such a version and treats such a staged or rollback
 deployment as below the version floor (rule 11). So install-boot checks that `bootc status` reports
 the installed image's version, and the update test that it reports a staged one's.
+The scheme has limits the sheet must respect, since a version that is not higher is refused as a
+downgrade (rule 4): a Debian snapshot moved back across a month gives a lower version; renaming
+`image.yml` starts its run number again from 1; a re-run of the same workflow run keeps the number.
+So the sheet must never offer two digests with the same version, and a release after any of these
+needs a version above the last one published.
 
 **Health checks** are units named `nyra-health-*.service` that `boot-complete.target` requires
 (links in `/usr/lib/systemd/system/boot-complete.target.requires/`). A failure keeps the boot from
@@ -306,13 +311,23 @@ successful check for N days:" and it is an error: the unit fails and the machine
 image without a sheet key ("not configured") is the exception: it stays a warning and counts as a
 success here, because no update is held up. Someone who controls the
 machine's link could otherwise keep it on an old version with only warnings to show. 14 days: a
-laptop offline for a holiday is not flagged, and the server signs the sheet at least daily. A time
-in the future (a clock that was ahead) counts as now. An older `nyra-updated` (after a rollback)
-writes the file without `last_success`; the count then starts again.
+laptop offline for a holiday is not flagged, and the server signs the sheet at least daily. A failed
+check leaves `last_success` as it is, even when it is later than the check's own time: the clock may
+be behind at that check (a dead RTC at the build date, offline), and counting from it would report
+days that never passed once the clock is right. A success that reads the sheet needs one that has
+not expired (at most 31 days of validity), so a clock that was ahead then delays the count by at most
+that; only the outcomes that come before the sheet (a boot not yet healthy, an owner's own image, a
+wrong staged deployment discarded) do not check the time. An older `nyra-updated` (after a rollback) writes the file without `last_success`; the count then starts
+again. The messages in the journal and in `last-check.json` are one line each, control characters
+replaced by spaces and cut at 2000 characters: they carry what bootc and curl print, which can come
+from the registry or the server. Two checks never write the file at once: it is written under the
+lock, and a check that finds another one running writes nothing.
 
 The offline detection reads systemd-networkd's `OnlineState`. A link that networkd does not manage
 (Wi-Fi through NetworkManager or iwd, later) is not seen: a download that fails on it is reported as
-an error, the prudent side, until the detection covers it.
+an error, the prudent side, until the detection covers it. A link lost while bootc downloads the
+sigstore signature may be reported as an error too, not as no network: the image proxy's message then
+names the signature, which counts as a refusal (the prudent side as well).
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
