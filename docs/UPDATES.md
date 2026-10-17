@@ -188,7 +188,7 @@ by hand is discarded with it.
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
-| `nyra-updated-wait-online.service` | before every check: `systemd-networkd-wait-online --any --timeout=0`, so a check that comes due without a network waits for one and runs once a link is online (below, and docs/DEFAULTS.md, "Without a network"); a dynamic user without capabilities |
+| `nyra-updated-wait-online.service` | before every check: `systemd-networkd-wait-online --any --timeout=3600`, so a check that comes due without a network waits up to an hour for one and runs once a link is online, or when the hour is over (below, and docs/DEFAULTS.md, "Without a network"); a dynamic user without capabilities, `IPAddressDeny=any` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
@@ -267,8 +267,8 @@ possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutSt
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
 Settings, which will read it through the daemon (the file is root-only, like the rest of the state).
 **Without a network** (a laptop offline, a link lost in the middle of a pull): a check that comes
-due without a network waits for one (`nyra-updated-wait-online.service`, without a time limit) and
-runs as soon as a link is online. When the download of the sheet or of the version fails and
+due without a network waits for one (`nyra-updated-wait-online.service`, up to an hour) and runs as
+soon as a link is online, or when the hour is over. When the download of the sheet or of the version fails and
 systemd-networkd reports the machine `offline` (its `OnlineState`), the check says "no network
 connection (…): the running version stays, the next check tries again", as a warning (`ok: false`),
 and the unit does not fail: a check without a network does not make the machine `degraded`. Nothing

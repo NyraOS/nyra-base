@@ -4,7 +4,7 @@
 [Unit]
 Description=Nyra: check for a system update and prepare it
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
-# The check waits for the network, as long as it takes (nyra-updated-wait-online.service), not for
+# The check waits for the network, up to an hour (nyra-updated-wait-online.service), not for
 # network-online.target, which nothing in the base pulls in (docs/DEFAULTS.md, "Without a network").
 After=boot-complete.target nyra-updated-wait-online.service
 Wants=nyra-updated-wait-online.service

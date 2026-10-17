@@ -194,27 +194,38 @@ wait-online keeps its defaults: with nothing pulling it in, a shorter time limit
 only change what a layer that needs it gets.
 
 **The update check waits for the network on its own.** `nyra-updated.service` wants and is ordered
-after `nyra-updated-wait-online.service`, which runs `systemd-networkd-wait-online --any --timeout=0`
-before every check: it waits until systemd-networkd reports one link online (configured, DHCP
-included), without a time limit, and does not stay active, so the next check waits again. A check
-that comes due without a network (the timer, 15 minutes after boot and every 6 hours) waits as a
-queued start job, and runs as soon as a link is online instead of at the next timer run, up to
-6 hours later; nothing runs, retries or fails in the meantime. A wait that fails is ignored (`-`): the
-check then runs and reports what it finds (docs/UPDATES.md, "What a machine shows").
+after `nyra-updated-wait-online.service`, which runs
+`systemd-networkd-wait-online --any --timeout=3600` before every check: it waits until
+systemd-networkd reports one link online (configured, DHCP included), for up to an hour, and does not
+stay active, so the next check waits again. A check that comes due without a network (the timer,
+15 minutes after boot and every 6 hours) waits as a queued start job, and runs as soon as a link is
+online instead of at the next timer run, up to 6 hours later; nothing retries or fails in the
+meantime. When the hour is over, or the wait fails, the check runs anyway (`-`) and reports what it
+finds: "no network connection" without a network (docs/UPDATES.md, "What a machine shows"), or the
+update itself on a machine that is online through a link networkd does not manage.
+
+The time limit is finite on purpose, and shorter than the timer's 6 hours (the image build fails
+otherwise): a check that never ran would write nothing and fail nothing, so a machine whose updates
+stopped, because its link never counts as online for networkd or because the local network keeps it
+from being configured, would show nothing. With the limit, every timer run ends in a check that
+reports.
 
 - `--any`: one link online is enough; a second port without a cable does not hold the check back.
 - Only links that systemd-networkd manages count (the wired ones in the base). When the desktop
   brings its own network manager, this wait follows it.
 - Cost: while it waits, one process (the `systemd-networkd-wait-online` binary, run as a dynamic
-  user without capabilities) that sleeps until a link or its state changes; no polling. Its memory is
-  printed by the test.
+  user without capabilities or IP traffic, `IPAddressDeny=any`) that sleeps until a link or its state
+  changes or the hour is over; no polling. Its memory is printed by the test.
+- A check started by hand and waited for (`systemctl start nyra-updated.service`) waits that long
+  too: whatever starts a check on request, Settings later, starts it without waiting (`--no-block`).
 
 **Checked in the VM** (`tools/vm/no-network.sh`, on the installed disk): with the cable unplugged
 from the start (QEMU's link down before the CPU starts), the system is `running`, no unit failed,
 neither wait-online nor `network-online.target` started, and `graphical.target` came within 60 s; an
-update check started then is still waiting after 150 s (past wait-online's 2 minutes), and nothing
-failed. With the network, the same holds at boot; with the link taken down a check waits, and once the
-link is up again it runs and succeeds within 90 s.
+update check started then is still waiting after 150 s (past wait-online's 2 minutes), with the
+shipped limit of an hour, and nothing failed; with the limit shortened to 20 s for the test, the check
+runs once it is over and succeeds, and nothing failed. With the network, the same holds at boot; with
+the link taken down a check waits, and once the link is up again it runs and succeeds within 90 s.
 
 ## Time
 

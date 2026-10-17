@@ -136,11 +136,15 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
 
 # Without a network (docs/DEFAULTS.md): nothing in the base pulls in network-online.target, so
 # systemd-networkd-wait-online never runs at boot. Two of the blocked units wanted it from
-# default.target; our preset disables them. An update check waits for the network on its own.
+# default.target; our preset disables them. An update check waits for the network on its own, for a
+# finite time shorter than the timer's 6 hours, so a check always runs and reports.
 RUN --mount=type=tmpfs,dst=/run systemctl preset podman-restart.service podman-auto-update.service && \
     test "$(systemctl is-enabled podman-restart.service)" = disabled && \
     test "$(systemctl is-enabled podman-auto-update.service)" = disabled && \
-    systemd-analyze verify --man=no --recursive-errors=no /usr/lib/systemd/system/nyra-updated-wait-online.service
+    systemd-analyze verify --man=no --recursive-errors=no /usr/lib/systemd/system/nyra-updated-wait-online.service && \
+    t="$(sed -n 's/^ExecStart=.*systemd-networkd-wait-online .*--timeout=\([0-9]*\)$/\1/p' \
+      /usr/lib/systemd/system/nyra-updated-wait-online.service)" && \
+    test "${t:-0}" -gt 0 && test "$t" -lt 21600
 
 # No NvPCRs (docs/DEFAULTS.md, "TPM measurement units that stay"): without their definitions
 # systemd-tpm2-setup-early allocates no NV index in the TPM, and dracut copies none into the initramfs;
