@@ -584,6 +584,43 @@ Each line is something that broke or surprised us once.
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
 
+## Removable media (docs/DEFAULTS.md)
+- **udisks2 needs polkitd, even for root.** It falls back to "root only" only when the polkit
+  library cannot be set up at all, and the library sets up fine without polkitd (a D-Bus proxy to a
+  name nobody owns); every check then fails. polkitd itself allows root everything.
+- udisks2 (2.10, 2.11) computes mount options from its built-in defaults, then
+  `/etc/udisks2/mount_options.conf`, then the device's udev properties `UDISKS_MOUNT_OPTIONS_*`, each
+  replacing the one before per key. It always puts `nodev,nosuid` first, and every option a caller
+  passes must be in the `allow` list: an `allow` without `exec` refuses `-o exec`.
+- Debian builds udisks2 to mount at `/media/<user>/<label>`. On a read-only root, `/media` must be a
+  link to a writable place (`/run/media`).
+- Debian's packages enable `udisks2.service` in `graphical.target` and polkit's
+  `polkit-agent-helper.socket` (polkit 127 and later: the password helper is socket-activated, no
+  longer setuid). Both work through D-Bus or the socket on request; a preset keeps them off at boot.
+- udisks2 2.11 with polkitd 128 adds 29 packages, about 15 MB installed (a snapshot of October
+  2026); the largest is NSS (5 MB), which its crypto plugin needs through `libvolume-key1`.
+  polkitd depends on `logind`, which `libpam-systemd` provides: its postinst puts `pam_systemd` into
+  `/etc/pam.d/common-session`, so every login gets a logind session, a user manager and a
+  `/run/user/UID` tmpfs (root's console login too, which it did not before).
+- **`run-user-UID.mount` has no order against the user manager.** At shutdown systemd unmounts it
+  next to stopping `user@UID.service` and `user-runtime-dir@UID.service` (whose stop unmounts it
+  anyway); once in CI the unmount came first, while the user manager still had files open there:
+  `Failed unmounting run-user-0.mount`. `After=run-user-%i.mount` in a `user-runtime-dir@.service`
+  drop-in stops the mount unit last.
+- udisks2 mounts only a device whose udev usage (`ID_FS_USAGE`) is `filesystem` (or not probed at
+  all). A file system type named by the caller (`-t`) is accepted from a list built into udisks2
+  (hfsplus, squashfs, erofs, f2fs and more) or from `/proc/filesystems`; nothing configures it away.
+- Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
+  signature and goes on to the next driver when the type is unknown.
+- polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
+  needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
+  session as local only when it has a seat: a logind session without one (`systemd-run -p
+  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
+  `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
+  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. A user
+  with a login has two sessions: the login's and their manager's (class `manager`, no TTY). systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  a shell script passed to it needs `--expand-environment=no`.
+
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
   exits 0 whatever happens. Pass the input as an argument (or use `lastpipe`), and prove a test can
@@ -670,6 +707,12 @@ Each line is something that broke or surprised us once.
   `bootc-cache` workflow saves it on `main` and is never cancelled while it runs. If a pull request
   still misses (the cache is evicted after 7 days without use), run it by hand on `main`
   (`gh workflow run bootc-cache.yml`) and push the pull request after it finishes.
+- **Compare the times of two units only when something orders them.** Units with no `After=` or
+  `Before=` between them start in parallel, and which one finishes first changes from boot to boot. A
+  check that a broken `/etc/fstab` mount failed before `boot.mount` passed run after run, then failed
+  by 4 ms. When a scenario needs an order, the test sets it (there, `x-systemd.before=` on the test's
+  own fstab line), checks the declared order (`systemctl show -P Before`) and then the observed times.
+  A margin of seconds between unordered units is still a guess about timing, not an order.
 - `set -e` also applies inside an `EXIT` trap: a failing command there skips the rest of the trap.
   Clean-up steps that may fail get `|| true` before anything that must run (deleting keys).
 - **Keep CI runs to what a change needs.** Every job counts rounded up to a whole minute. While this
@@ -723,6 +766,9 @@ Each line is something that broke or surprised us once.
   the two failed boots and in none of the 182 others.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
+- QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
+  cooperation (`usb-storage` on `qemu-xhci`). With its drive given as `-blockdev`, the drive stays
+  after the device is gone, so `device_add` plugs the same stick in again (`vm-boot.py --qmp`).
 - `set -e` does not stop the script when `! command` fails: write `if command; then exit 1; fi`.
 - Right after `losetup -P --show`, the loop device's partition devices (`/dev/loopNp1`, ...) can
   be missing for a moment, for instance while udev rereads the partition table. A `"$loop"p*` glob

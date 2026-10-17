@@ -87,6 +87,33 @@ untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoof
 	return $rc
 }
 
+network() { # network down|up: the guest's only network link, down or up again (a cable pulled out,
+	# plugged in); waits until systemd-networkd reports the machine offline or online
+	dev="$(ip -o link show | awk -F': ' '$2 != "lo" { print $2; exit }')"
+	want=offline
+	[ "$1" = up ] && want=online
+	ip link set dev "$dev" "$1" || return 1
+	for _ in $(seq 60); do
+		state="$(busctl get-property org.freedesktop.network1 /org/freedesktop/network1 org.freedesktop.network1.Manager OnlineState)"
+		if [ "$state" = "s \"$want\"" ]; then
+			echo "$dev $1: networkd reports $want"
+			return 0
+		fi
+		sleep 1
+	done
+	echo "$dev $1: networkd still reports $state"
+	return 1
+}
+
+offline_reported() { # offline_reported DIGEST: the last check found no network and said so, as a
+	# warning: the unit did not fail and DIGEST is not marked failed
+	grep -q '"ok":false' /var/lib/nyra-updated/last-check.json &&
+		grep -q 'no network connection' /var/lib/nyra-updated/last-check.json &&
+		journalctl -b -u nyra-updated -p warning -o cat | grep 'no network connection' &&
+		! systemctl is-failed --quiet nyra-updated.service &&
+		python3 -c 'import json, sys; sys.exit(sys.argv[1] in json.load(open("/var/lib/nyra-updated/state.json")).get("failed", []))' "$1"
+}
+
 synced() { # synced NOT_BEFORE: chronyd set the clock through NTS; it reads between NOT_BEFORE (the
 	# runner's time when this boot started) and 10 minutes later
 	if ! chronyc waitsync 90 0.1 0 2; then

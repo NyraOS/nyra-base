@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: nyra-updated across real updates, on a copy of the installed test disk (docs/UPDATES.md).
-# Titanic T2 (power cuts), T3 (a broken version, and a good one with broken settings), T4 (signatures
-# and versions), T5 (a hostile network), T9 (a wrong clock), the discard of a staged deployment
+# Titanic T2 (power cuts), T3 (a broken version, a good one with broken settings, a dead network), T4
+# (signatures and versions), T5 (a hostile network), T9 (a wrong clock), the discard of a staged deployment
 # (bootc rollback twice) and blessing after a soft reboot.
 #
 # Everything the guest trusts is made for this run and deleted with the runner: an image signing key
@@ -13,7 +13,7 @@
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
-# Test versions of IMAGE (v1-v16: 2026.10.1-16, the version in the manifest annotation bootc reads;
+# Test versions of IMAGE (v1-v17: 2026.10.1-17, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; switch to v0 from another registry
@@ -69,6 +69,10 @@
 #  37  v16: the retraction to the forgiven v13 deletes its deployment and stages it afresh
 #  38  v13 boots counted and is blessed; the shipped signature policy linked again; then the secure
 #      defaults check (T15)
+#  39  v13, the test policy again; a dead network (T3): the link down before a check, then cut while
+#      v17 downloads: reported, the unit not failed, nothing staged or marked failed; the link back: v17
+#      staged
+#  40  v17 boots counted and is blessed
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -138,9 +142,10 @@ version() { # version NAME VERSION [Containerfile lines]
 for n in 0 1 4 5 6 7 8 9 10 11 12 13 15 16; do version "v$n" "2026.10.$n"; done
 # v14: its UKI carries an initramfs of zeros, so the kernel panics (and reboots, panic=10).
 BROKEN_INITRD=1 version v14 2026.10.14
-# v2 carries 16 MiB that do not compress, so its download takes about a minute on the throttled link
-# of boot 3 and the power cut lands in the middle of it.
+# v2 and v17 carry 16 MiB that do not compress, so their download takes about a minute on a
+# throttled link: the power cut of boot 3 and the network cut of boot 39 land in the middle of it.
 version v2 2026.10.2 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
+version v17 2026.10.17 'RUN head -c 16777216 /dev/urandom > /usr/lib/nyra-test-payload'
 version v3 2026.10.3 "$(cat <<'EOF'
 RUN printf '%s\n' '[Unit]' 'Description=Test only: a health check that always fails' '[Service]' \
       'Type=oneshot' 'ExecStart=/usr/bin/false' > /usr/lib/systemd/system/nyra-health-test.service && \
@@ -180,7 +185,7 @@ push() { # push NAME TAG [SIGSTORE_KEY]
 }
 push v0 v0
 push v1 stable sigstore
-for n in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do push "v$n" "v$n" sigstore; done
+for n in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17; do push "v$n" "v$n" sigstore; done
 skopeo copy -q --dest-tls-verify=false --sign-by-sigstore-private-key /u/attacker.private \
   --sign-passphrase-file /u/pass oci-archive:/u/tiny.oci.tar docker://updates.nyraos.com/nyra-base:attacker
 d0="$(cat "$u/v0.digest")" d1="$(cat "$u/v1.digest")" d2="$(cat "$u/v2.digest")" d3="$(cat "$u/v3.digest")"
@@ -188,6 +193,7 @@ d4="$(cat "$u/v4.digest")" d5="$(cat "$u/v5.digest")" d6="$(cat "$u/v6.digest")"
 d8="$(cat "$u/v8.digest")" d9="$(cat "$u/v9.digest")" d10="$(cat "$u/v10.digest")"
 d11="$(cat "$u/v11.digest")" d12="$(cat "$u/v12.digest")" d13="$(cat "$u/v13.digest")"
 d14="$(cat "$u/v14.digest")" d15="$(cat "$u/v15.digest")" d16="$(cat "$u/v16.digest")"
+d17="$(cat "$u/v17.digest")"
 old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pulled
 
 # --- signed channel sheets -------------------------------------------------------------------------
@@ -224,6 +230,7 @@ sheet s14 sheet 1400 "$d14" 2026.10.14 "$d4" "$d6"
 sheet s15 sheet 1500 "$d15" 2026.10.15 "$d4" "$d6"
 sheet s16 sheet 1600 "$d16" 2026.10.16 "$d4" "$d6"
 sheet r16 sheet 1700 "$d13" 2026.10.13 "$d4" "$d6" "$d16"
+sheet s17 sheet 1800 "$d17" 2026.10.17 "$d4" "$d6" "$d16"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -653,3 +660,16 @@ mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
 cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-updates.log"
 
+# A dead network (T3): the guest's network link goes down (tools/vm/updates-guest.sh, network), as a
+# cable pulled out or a lost Wi-Fi would take it, first before a check, then while nyra-updated pulls
+# v17 on a throttled link (the pull fails, or hangs until its time limit: 90 s here). Each time the
+# running version stays, nothing is staged, nothing is marked failed and the unit does not fail: the
+# check reports "no network connection" as a warning. With the link back, the next check stages v17,
+# which boots counted and is blessed. The test policy comes back first: boot 38 linked the shipped one.
+vm "v13: a dead network, before a check and in the middle of the download of v17; the link back: v17 staged" --poweroff \
+  --command "$lib; expect booted $d13 && running && ln -sfn /etc/nyra-test/policy.json /etc/containers/policy.json" \
+  --command "$lib; select_sheet s17 && network down && run_check && offline_reported $d17 && expect staged none && expect booted $d13" \
+  --command "$lib; network up && curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 10 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && network down && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; offline_reported $d17; }" \
+  --command "$lib; expect staged none && expect booted $d13 && network up && curl -fsS https://updates.nyraos.com/_test/rate/0 && outcome s17 Staged && expect staged $d17 && running"
+vm "v17 boots counted and is blessed" --poweroff \
+  --command "$lib; expect booted $d17 && running && blessed && outcome s17 UpToDate && expect staged none"

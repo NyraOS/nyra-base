@@ -48,6 +48,11 @@ persists across runs like a machine's TPM; swtpm is started here and ends with Q
 --tpm-fail-at REGEX kills swtpm as soon as REGEX shows up on the console (a TPM that stops answering).
 --expect-reboot expects the guest to reboot (the kernel's "Restarting system") before any login
 prompt, within --timeout seconds.
+--qemu ARG (repeatable) adds ARG to the QEMU command line as it is (a USB controller and a stick).
+--qmp 'WHEN=>COMMAND' (repeatable) sends COMMAND (QMP, JSON) to QEMU once, WHEN seconds after QEMU
+starts ("12s") or as soon as the regular expression WHEN shows up on the console, like
+--power-cut-at: a stick pulled out ({"execute":"device_del",...}) or plugged in again. A command
+that was not sent before the end of the run, or that QEMU answers with an error, fails the run.
 --rtc BASE starts the guest's hardware clock at BASE (QEMU -rtc base=, for example
 2099-01-01T00:00:00) instead of the host's time.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
@@ -67,6 +72,7 @@ KVM is mandatory: accel=kvm, no fallback to emulation.
 """
 import argparse
 import base64
+import json
 import os
 import re
 import secrets
@@ -114,11 +120,79 @@ def clean(buf):
     return ANSI.sub(b"", KERNEL_LINE.sub(b"", buf))
 
 
+def qmp_send(path, command):
+    """Send one QMP command (JSON text) to QEMU's QMP socket; QEMU's answer to it."""
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(10)
+        s.connect(path)
+        f = s.makefile("rwb", buffering=0)
+        f.readline()  # the greeting
+        for c in ('{"execute": "qmp_capabilities"}', command):
+            f.write(c.encode() + b"\n")
+            while "return" not in (r := json.loads(f.readline())) and "error" not in r:
+                pass  # an event
+        return r
+
+
+class Qmp:
+    """The --qmp commands: each sent once, at its time or console pattern, from a thread of its own."""
+
+    def __init__(self, path, specs, t0):
+        self.path, self.specs, self.t0, self.lock = path, specs, t0, threading.Lock()
+        self.pending, self.done, self.threads = [], [], []
+        for spec in specs:
+            when, _, command = spec.partition("=>")
+            json.loads(command)  # a typo fails at once
+            if re.fullmatch(r"\d+(\.\d+)?s", when):
+                t = threading.Timer(float(when[:-1]), self.send, (spec, command))
+                t.daemon = True
+                self.threads.append(t)
+            else:
+                self.pending.append((re.compile(when.encode()), spec, command))
+
+    def start(self):
+        for t in self.threads:
+            t.start()
+
+    def check(self, buf):
+        """Send the commands whose pattern is now on the console."""
+        for item in [p for p in self.pending if p[0].search(buf)]:
+            self.pending.remove(item)
+            t = threading.Thread(target=self.send, args=item[1:], daemon=True)
+            self.threads.append(t)
+            t.start()
+
+    def send(self, spec, command):
+        at = time.monotonic() - self.t0
+        try:
+            answer = json.dumps(qmp_send(self.path, command))
+        except (OSError, ValueError) as e:
+            answer = f"error: {e}"
+        with self.lock:
+            self.done.append((spec, at, answer))
+
+    def results(self):
+        """Rows for the summary, and whether every command was sent and answered without an error."""
+        for t in self.threads:
+            if isinstance(t, threading.Timer):
+                t.cancel()  # not due yet: never sent
+            if t.is_alive():
+                t.join(15)
+        with self.lock:
+            done = list(self.done)
+        sent = {spec for spec, _, _ in done}
+        rows = [("QMP", f"`{spec}` at {at:.1f} s: `{answer}`") for spec, at, answer in done]
+        missing = [spec for spec in self.specs if spec not in sent]
+        rows += [("QMP", f"`{spec}`: never sent") for spec in missing]
+        ok = not missing and all('"return"' in answer for _, _, answer in done)
+        return rows, ok
+
+
 class Console:
     """Guest serial console: everything QEMU prints, plus a way to type."""
 
-    def __init__(self, proc, log, cut_at=None, kernels=1, tpm_fail=None):
-        self.proc, self.log, self.cut_at = proc, log, cut_at
+    def __init__(self, proc, log, cut_at=None, kernels=1, tpm_fail=None, qmp=None):
+        self.proc, self.log, self.cut_at, self.qmp = proc, log, cut_at, qmp
         self.tpm_fail = tpm_fail  # (REGEX, swtpm process): --tpm-fail-at
         self.tpm_failed = None  # seconds after start when swtpm was killed
         self.kernels = kernels  # kernel starts expected so far; one more is an unexpected reboot
@@ -141,6 +215,8 @@ class Console:
             if self.tpm_fail and self.tpm_failed is None and re.search(self.tpm_fail[0], self.buf):
                 self.tpm_fail[1].kill()
                 self.tpm_failed = time.monotonic() - self.t0
+            if self.qmp:
+                self.qmp.check(self.buf)
 
     def wait_for(self, pattern, timeout, start=0, cleaned=False):
         """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
@@ -427,6 +503,45 @@ def self_test():
     assert reboot(boot).startswith("no reboot within 2 s")
     assert reboot(boot + unlocked + restart, rb"Finished .{0,80}Cryptography Setup for root\.").startswith("TPM failed ")
     assert reboot(boot + restart, rb"Cryptography Setup for root").startswith("the TPM was never made to fail")
+
+    # --qmp: a command at its time, one at its console pattern, one whose pattern never comes, and
+    # QEMU's error answer, with a stand-in for QEMU's QMP socket.
+    tmp = tempfile.mkdtemp()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(f"{tmp}/qmp.sock")
+    server.listen()
+
+    def serve():
+        while True:
+            c, _ = server.accept()
+            with c, c.makefile("rwb", buffering=0) as f:
+                f.write(b'{"QMP": {}}\r\n')
+                while line := f.readline():
+                    bad = b"nonsense" in line
+                    f.write(b'{"event": "X"}\r\n' + (b'{"error": {}}' if bad else b'{"return": {}}') + b"\r\n")
+
+    threading.Thread(target=serve, daemon=True).start()
+    good = ['0.2s=>{"execute": "device_del"}', '@@UN''PLUG@@=>{"execute": "device_add"}']
+    q = Qmp(f"{tmp}/qmp.sock", good, time.monotonic())
+    q.start()
+    q.check(b"echo @@UN''PLUG@@")
+    assert not q.done
+    q.check(b"@@UNPLUG@@\r\n")
+    time.sleep(0.5)
+    rows, ok = q.results()
+    assert ok and len(rows) == 2 and all('{"return": {}}' in v for _, v in rows), rows
+    q = Qmp(f"{tmp}/qmp.sock", good + ['60s=>{"execute": "x"}', 'never=>{"execute": "y"}'], time.monotonic())
+    q.start()
+    q.check(b"@@UNPLUG@@")
+    time.sleep(0.5)
+    rows, ok = q.results()
+    assert not ok and sum("never sent" in v for _, v in rows) == 2, rows
+    q = Qmp(f"{tmp}/qmp.sock", ['0s=>{"execute": "nonsense"}'], time.monotonic())
+    q.start()
+    time.sleep(0.3)
+    assert not q.results()[1]
+    server.close()
+    shutil.rmtree(tmp)
     print("vm-boot.py: self-test passed")
 
 
@@ -457,6 +572,9 @@ def main():
     p.add_argument("--tpm", metavar="DIR", help="a TPM 2.0 (swtpm) with its state in DIR")
     p.add_argument("--tpm-fail-at", metavar="REGEX", help="with --tpm: kill swtpm when REGEX shows up")
     p.add_argument("--expect-reboot", action="store_true", help="expect a reboot before any login prompt")
+    p.add_argument("--qemu", action="append", default=[], metavar="ARG", help="one more QEMU argument, as it is")
+    p.add_argument("--qmp", action="append", default=[], metavar="WHEN=>COMMAND",
+                   help="send a QMP command WHEN seconds (\"12s\") after QEMU starts or at a console pattern")
     p.add_argument("--rtc", metavar="BASE", help="the guest's hardware clock starts at BASE (QEMU -rtc base=)")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     p.add_argument("--chat", action="append", default=[], metavar="EXPECT=>SEND",
@@ -506,6 +624,10 @@ def main():
             raise SystemExit(f"vm-boot: swtpm did not start (state in {a.tpm})")
         cmd += ["-chardev", f"socket,id=chrtpm,path={sock}", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
                 "-device", "tpm-crb,tpmdev=tpm0"]
+    qmp = Qmp(f"{tmp}/qmp.sock", a.qmp, 0) if a.qmp else None
+    if qmp:
+        cmd += ["-qmp", f"unix:{tmp}/qmp.sock,server=on,wait=off"]
+    cmd += a.qemu
     if a.autologin:
         cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
@@ -523,7 +645,10 @@ def main():
     with open(a.log, "wb") as log:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode(), max(a.boots, 1),
-                      (a.tpm_fail_at.encode(), swtpm) if a.tpm_fail_at and swtpm else None)
+                      (a.tpm_fail_at.encode(), swtpm) if a.tpm_fail_at and swtpm else None, qmp)
+        if qmp:
+            qmp.t0 = con.t0
+            qmp.start()
         try:
             if a.expect_reboot:
                 rows.append(("Reboot", expect_reboot(con, a.timeout)))
@@ -565,6 +690,10 @@ def main():
                 ok = False
                 rows.append(("Error", str(e)))
         finally:
+            if qmp:  # before QEMU goes: a command due now is still answered
+                qmp_rows, qmp_ok = qmp.results()
+                rows += qmp_rows
+                ok = ok and qmp_ok
             proc.kill()
             proc.wait()
             if swtpm:  # it ends by itself once QEMU is gone (--terminate), after writing its state
