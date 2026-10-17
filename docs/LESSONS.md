@@ -591,6 +591,12 @@ Each line is something that broke or surprised us once.
   (`systemd-analyze`: 9–11 s).
 - With root autologin the shell prompt can appear in the same instant as the login prompt: wait for it
   from the end of the login prompt, not from whatever the console buffer holds when you look.
+- A kernel message can land in the middle of any prompt on the serial console ("Type RESET" then
+  "[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then " to reset: "), and a
+  pattern matched on the raw console then waits until its timeout. `vm-boot.py` matches every prompt
+  (`--chat`, `--refused`, login, password, shell) without kernel messages (`clean()`) and maps the
+  end of the match back to the raw console (`raw_offset()`), so the next wait starts right after the
+  prompt and kernel starts are still counted up to it.
 - On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
   pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
