@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CycloneDX SBOM and vulnerability gate for nyra-base (docs/SBOM.md).
 
-usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT
+usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
   MANIFEST    mkosi JSON manifest (exact Debian package versions)
-  CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc)
+  CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc); after SBOM_OUT, the
+              Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
+              counts once
   SBOM_OUT    CycloneDX 1.6 JSON written here
 Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf.
 
@@ -235,7 +237,12 @@ def main():
     snapshot = mkosi_setting("Snapshot")
     today = datetime.datetime.now(datetime.UTC).date()
     manifest = json.load(open(manifest_path))
-    crates = [p for p in tomllib.load(open(lock_path, "rb"))["package"] if "source" in p]
+    crates = {}
+    for path in [lock_path, *sys.argv[4:]]:
+        for p in tomllib.load(open(path, "rb"))["package"]:
+            if "source" in p:
+                crates.setdefault((p["name"], p["version"], p["source"]), p)
+    crates = list(crates.values())
     debs = debian_sources(manifest, snapshot)
     count = write_sbom(sbom_path, snapshot, debs, crates, os.environ["BOOTC_REF"], os.environ["BOOTC_COMMIT"])
     mitigations = load_mitigations(today)  # after the SBOM: an invalid file still blocks, but the SBOM is there

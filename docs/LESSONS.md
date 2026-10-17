@@ -388,6 +388,11 @@ Each line is something that broke or surprised us once.
   terminal; with the password on its input and nothing after it, the second read ends the attempt.
   It also refuses a calling UID that has no `/etc/passwd` line ("user 'current user' not found"),
   where util-linux's `su` only needs the target account.
+- zlib-rs as `libz.so.1`: a cdylib from `cargo build` has no soname and no symbol versions, and
+  programs linked against zlib ask for versioned symbols (`deflateBound@ZLIB_1.2.0`). zlib-rs's way
+  is a static library linked with `cc -shared` and zlib's version script (`--undefined-version`, since
+  the script names functions the build leaves out). Its `gzprintf` feature needs a nightly compiler
+  (`c_variadic`); a stable build simply lacks `gzprintf` and `gzvprintf`.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then

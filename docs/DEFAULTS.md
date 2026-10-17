@@ -278,3 +278,25 @@ Two differences matter for the base, both handled in recovery (docs/BOOT.md, "Re
   where util-linux's ran as UID 65534 without a `nobody` line in `/etc/passwd`. Recovery therefore
   runs `su` as the administrator who logs in, by UID, instead of `nobody`.
 
+### zlib
+
+The image's `libz.so.1` is [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), built in the
+image build: Debian has its crates, but no package with the library. `zlib/` holds a small crate
+that builds `libz-rs-sys` (pinned in `zlib/Cargo.lock`, each crate checked against it, without
+network: `ci/vendor-crates.sh`) as a static library; the Containerfile links it into a shared
+library with zlib's soname and symbol versions (`zlib.map` from `libz-rs-sys`), as zlib-rs documents
+for a drop-in, and puts it over the file Debian's `libz.so.1` link points to. Debian's `zlib1g`
+package stays installed for its link and in the SBOM (docs/SBOM.md). The features are those of
+zlib-rs's own C library build (the C allocator, CPU features detected at run time) plus the `gz*` file
+functions. Not used: the crate `libz-rs-sys-cdylib`, which also carries about 66 MB of test
+binaries and profiling data.
+
+Missing: `gzprintf` and `gzvprintf`. They are C variadic functions, which stable Rust cannot define
+(zlib-rs builds them only with a nightly compiler). A program that uses one would not load; none in
+the image does, and the build fails if one appears (a search of `/usr` for the names). `zlibVersion()`
+returns `1.3.0-zlib-rs-<version>`.
+
+Checked before: Python's `zlib` and `gzip` modules (compression levels -1 to 9, zlib, raw and gzip
+streams, data from both libraries decompressed by the other) and curl's `--compressed`. Size: about
+500 KB against Debian's 120 KB.
+

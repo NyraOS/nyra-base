@@ -13,26 +13,34 @@ ARG TOOLS=localhost/nyra-tools
 # nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
 # Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
-# first build), mounted read-only; the build has no network. Cargo does not check a crate already in
-# its download cache against Cargo.lock, and takes features from the registry index, which nothing
-# pins. So neither cargo's cache nor the index is used: each .crate the lock lists is copied, checked
-# against the lock's checksum, and unpacked into a directory source that replaces crates.io.
+# first build), mounted read-only, each checked against Cargo.lock (ci/vendor-crates.sh); the build
+# has no network.
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
-    set -- /crates/registry/cache/*/ && \
-    { [ $# = 1 ] || { echo "expected one crate cache directory, found: $*" >&2; exit 1; }; } && \
-    c="$1" && mkdir -p /root/vendor /root/.cargo && \
-    awk -F'"' '/^name = /{n=$2} /^version = /{v=$2} /^checksum = /{print $2 " " n "-" v}' /src/Cargo.lock > /root/sums && \
-    test -s /root/sums && \
-    while read -r sum crate; do \
-      cp "$c$crate.crate" /root/x.crate && echo "$sum  /root/x.crate" | sha256sum --quiet --strict -c - && \
-      tar -xzf /root/x.crate -C /root/vendor && \
-      printf '{"files":{},"package":"%s"}' "$sum" > "/root/vendor/$crate/.cargo-checksum.json" || exit 1; \
-    done < /root/sums && \
-    printf '[source.crates-io]\nreplace-with = "checked"\n[source.checked]\ndirectory = "/root/vendor"\n' > /root/.cargo/config.toml && \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
     cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
     strip target/release/nyra-updated
+
+# zlib-rs as the system's libz.so.1 (zlib/, docs/DEFAULTS.md "zlib"), from its crates like
+# nyra-updated: libz-rs-sys as a static library, linked into a shared library with zlib's soname and
+# symbol versions (the version script libz-rs-sys ships, include/zlib.map), as zlib-rs documents.
+# gzprintf and gzvprintf are missing: C variadic functions, which stable Rust cannot define.
+# Hardened like Debian's libraries: RELRO and immediate binding (-z relro -z now).
+FROM ${TOOLS} AS zlib
+COPY zlib/ /src/
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    set -- /root/vendor/libz-rs-sys-*/include/zlib.map && test -f "$1" && \
+    cc -shared -Wl,--gc-sections -Wl,--whole-archive target/release/libz_rs.a -Wl,--no-whole-archive \
+      -Wl,--version-script="$1" -Wl,--undefined-version -Wl,-soname,libz.so.1 -Wl,-z,relro,-z,now -lgcc_s -lc \
+      -o target/libz.so.1 && \
+    strip --strip-unneeded target/libz.so.1 && objdump -T target/libz.so.1 > /root/symbols && \
+    grep -Eq ' ZLIB_1\.2\.0 +deflateBound$' /root/symbols && grep -Eq ' ZLIB_1\.3\.2 +compress_z$' /root/symbols && \
+    readelf -d target/libz.so.1 | grep -q 'BIND_NOW' && readelf -l target/libz.so.1 | grep -q GNU_RELRO
 
 FROM ${ROOTFS} AS base
 
@@ -89,6 +97,14 @@ RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
       /usr/lib/systemd/system/systemd-firstboot.service
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
+
+# zlib-rs (docs/DEFAULTS.md, "zlib"): our libz.so.1 in place of the file Debian's libz.so.1 link points
+# to, so every program and library that uses zlib loads it. A program that uses gzprintf or gzvprintf
+# would not load: none in the image does, and the build fails if one appears.
+COPY --from=zlib /src/target/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1.nyra
+COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
+RUN cd /usr/lib/x86_64-linux-gnu && f="$(readlink libz.so.1)" && test -f "$f" && mv libz.so.1.nyra "$f" && \
+    grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
 
 # Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
 # configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
