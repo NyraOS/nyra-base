@@ -234,9 +234,11 @@ configuration to `/etc/ntpd-rs/ntp.toml` and point the service at it with a drop
 --config /etc/ntpd-rs/ntp.toml`). The AppArmor profile lets it read that file.
 
 **Cost**: the two programs, `ntp-daemon` and `ntp-ctl`, are about 5.9 and 5.6 MB (each carries its
-own copy of aws-lc, the TLS library), against about 1.0 MB for chrony and its dependencies. Memory,
-context switches and CPU time are measured in the update tests (T9, the boot with the clock in 2035)
-and printed in their log.
+own copy of aws-lc, the TLS library), against about 1.0 MB for chrony and its dependencies. Measured
+in the update tests (T9, the boot with the clock in 2035, one run on the CI's VM), synchronized:
+about 8.8 MB resident and 11.2 MB charged to its cgroup (chronyd: 10.8 and 6.3 MB); 58 context
+switches in 60 s (chronyd: at most 5); 229 ms of CPU time from its start, key exchanges included
+(chronyd: 82 to 87 ms).
 
 ## Filesystems
 

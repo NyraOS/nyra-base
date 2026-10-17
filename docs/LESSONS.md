@@ -425,6 +425,8 @@ Each line is something that broke or surprised us once.
   `Type=notify`: the write to systemd's notification socket is refused as a "disconnected path"
   (`name="systemd/notify"`), the start times out after 90 s and the unit fails (ntpd-rs in CI).
   `Type=exec` needs no notification.
+- `ps -o user=` shows a `DynamicUser=` service's UID as a number, not the unit's name: compare it
+  with `systemctl show -P UID <unit>`.
 - ntpd-rs's selection already wants a majority: the largest set of sources that agree must be more
   than half of the usable ones, and at least `minimum-agreeing-sources` (default 3).
 - ntpd's build script asks git for a commit and its date; outside a git checkout `git diff-index`
