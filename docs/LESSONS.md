@@ -331,6 +331,22 @@ Each line is something that broke or surprised us once.
   puts it there instead (the same bytes on every build); the service then writes `/etc` only when
   the user adds rules in `/etc/udev/hwdb.d`. coreutils 9 `cp` reflinks by default
   (`--reflink=auto`), which would make copies nearly free on btrfs or XFS, not on ext4.
+- **A whole copy of `/etc` restored on a newer version brings back the older version's defaults**
+  (Debian's files there, such as AppArmor's and PAM's), and bootc's merge then keeps them as the
+  user's changes. Keeping only what differs from the image's `/etc`, plus the list of what was
+  deleted, and laying that over the running version's `/etc` avoids it, and the copy shrinks from
+  about 3 MiB to tens of KiB.
+- **Comparing two files with their ACLs and extended attributes without `getfattr`:** archive each as
+  a one-member tar (`--no-recursion --format=posix --numeric-owner --acls --xattrs
+  --xattrs-include='*' --mtime=@0 --pax-option=delete=atime,delete=ctime`) and compare the bytes:
+  without the `delete`, equal files give different archives. Older GNU tars put their PID in the
+  extended header name (`PaxHeaders.<pid>`); 1.35's default, `%d/PaxHeaders/%f`, does not. In GNU
+  tar 1.35, `--xattrs-include` alone already turns on `--xattrs`.
+- **GNU `cp -a` writes a file through a link at the destination** (it refuses only a dangling link,
+  and a directory over a link), and `cp -a SRC/. DST/` gives an existing `DST` directory (and every
+  existing directory under it) the source's mode and owner. Laying one tree over another therefore
+  first removes, parents first, whatever is at each path the source has, unless both are
+  directories; otherwise a link in the destination can lead the copy outside.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with
@@ -519,6 +535,13 @@ Each line is something that broke or surprised us once.
   (`dev-mapper-root.device`) no time limit, but the root mount waits for `/dev/gpt-auto-root`, whose job
   times out after 90 s: a passphrase typed later ends in emergency mode. And systemd-cryptsetup gives up
   after three wrong passphrases (`tries=3`), which gpt-auto offers no way to change.
+- **gpt-auto's measurement of the root cannot be turned off through its options either** (systemd 262,
+  from the sources): it writes `tpm2-measure-pcr=yes,tpm2-measure-keyslot-nvpcr=yes` into the unit when
+  the stub measured the boot. systemd-cryptsetup sends both through systemd-pcrextend's socket and only
+  logs an error when that fails; `SYSTEMD_FORCE_MEASURE=0` in the unit's environment skips both, and
+  nothing else in systemd-cryptsetup reads it. Setting `tpm2-measure-pcr=no` and
+  `tpm2-measure-keyslot-nvpcr=no` instead (with no `fixate-volume-key=`) would also let it use
+  libcryptsetup's token plugins (`use_token_plugins()`): it avoids them only while it needs the volume key.
 - **bootc points `/run/systemd/volatile-root` at `/dev/gpt-auto-root`**, which for an encrypted root is
   the opened volume. systemd's `blockdev_get_root()` takes that link as it is (it traces dm-crypt to the
   partition only without the link), so gpt-auto in the running system finds no disk and mounts no ESP

@@ -185,7 +185,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
     ln -s ../nyra-tpm-retire.service boot-complete.target.wants/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer nyra-tpm-retire.service \
-      nyra-etc-copy.service nyra-etc-copy.timer \
+      nyra-etc-copy@daily.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
