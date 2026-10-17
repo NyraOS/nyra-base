@@ -36,7 +36,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T11 | Version jumps and channels | `tools/vm/channels.sh` (a jump over several versions with a retracted one between, refused sheets on the way and a retraction below the floor the jump raised; versions that change the sheet key, the default channel and the repository; a channel chosen on the machine, which survives a rollback; beta to stable back to stable's older version only with a sheet issued after the change, once, never below the floor, staged afresh with today's `/etc` even when it is the rollback deployment) | full |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | full |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
-| T14 | Removable media pulled out | none: needs removable media support | not implemented |
+| T14 | Removable media pulled out | `tools/vm/removable-media.sh` (USB sticks pulled out during a write, during an update and during the boot; a stick with ESP, root, swap and /home partitions at boot; trusted, untrusted and refused sticks; a user's loop device) | full |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates), `tools/signing/tpm-unlock.sh` (the TPM releases the disk key only in the initrd, swtpm; no NvPCR definitions in the image) | full |
 
 A test passes only if every step that runs it succeeded; a test that covers only part of its
@@ -175,7 +175,8 @@ the image's:
 | 9 | that boot: `RESET`, then the normal boot | `/etc/fstab`, `/etc/passwd` (plus the user's line), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the image's; the file in `/home` is the same; healthy (below) |
 
 **Repaired** means: `/etc/fstab`, `/etc/passwd` (but the user's line, which comes from the current
-`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are the copy's; and
+`/etc`), `/etc/systemd/network`, `/etc/resolv.conf` and `/etc/systemd/system` are as in `/etc` when
+the copy was made (the copy holds only what differed from the image; the rest is the image's); and
 **healthy**: running; the user logs in with their password, a wrong one is refused; the network
 works; the basic services are active (journald, D-Bus, logind, networkd, resolved, chronyd, the
 firewall, AppArmor, the update timer); Secure Boot and the lockdown on.
@@ -204,6 +205,35 @@ The password check is `su` through PAM, run as the user who logs in (by UID: sud
 to run for a user it cannot look up, and the broken `/etc/passwd` has no `nobody`) so that it has to ask; the network check is a file served by the runner, which the guest
 reaches as 10.0.2.2. The image's `/etc` is read the way the reset reads it: under the bind mount of
 the state `/etc`, through a bind mount of `/` alone.
+
+## Removable media pulled out
+
+[`tools/vm/removable-media.sh`](../tools/vm/removable-media.sh), in the `install-boot` job, follows a
+copy of the installed disk with USB sticks on QEMU's USB controller. QEMU plugs them in and pulls them
+out without asking the guest (`vm-boot.py --qmp`, `device_del` and `device_add`), as a hand does.
+How the base mounts them is in docs/DEFAULTS.md, "Removable media".
+
+| Boot | What | Expected |
+|---|---|---|
+| 1 | two FAT sticks and a squashfs stick plugged in | nothing mounted, udisks2 not even started |
+| 1 | `udisksctl mount` of the squashfs stick, and of a FAT stick with `-t squashfs` | neither mounted; squashfs's module not even loaded |
+| 1 | one stick put in `/etc/nyra/trusted-media` | udev marks it trusted; with the list writable by others, it is not |
+| 1 | `udisksctl mount` with `exec`, `suid`, `dev` | refused |
+| 1 | both mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other); udisks2 runs with its hardening drop-in |
+| 1 | the untrusted stick written without a pause (32 MiB, flushed, again and again), pulled out 2 s in | the writer stops on its own, `sync` returns, the stick and its mount are gone within 30 s, the trusted stick still reads, the system `running` |
+| 1 | plugged in again | not mounted until asked; then mounts `noexec` |
+| 1 | a user logged in on a virtual console (an autologin on tty5, made the foreground console): an active local session on seat0 | polkit lets them mount a stick, but `loop-setup` and `modify-device` need an administrator: `udisksctl loop-setup` refused, no loop device; polkit loaded the rules without an error |
+| 1 | shutdown with the trusted stick mounted | clean |
+| 2 | a stick mounted and written, `bootc switch` to a test version, the stick pulled out half a second into the switch | the switch was still running, then succeeds with exactly the test version staged; clean shutdown, which finalizes it |
+| 3 | a boot with a stick that has an ESP, a root (x86-64), a swap and a /home partition, by their Discoverable Partitions types, and the FAT stick | the test version runs; the root, the ESP and `/dev/gpt-auto-root` are on the boot disk; no swap; nothing mounted from the sticks |
+| 4-6 | the same stick pulled out 3, 6 and 10 s after QEMU starts (the firmware, the kernel and its initrd, the start of the system) | each boot reaches the login prompt and `running`, no job waits; the kernel log says when the stick went; clean shutdown |
+
+Every boot ends with a clean shutdown: it fails on a file system left mounted (`Failed unmounting`) and
+on a shutdown longer than 60 s.
+
+Why the system stick is not used: systemd-gpt-auto-generator uses only the disk the boot came from,
+and there only the root and the ESP (the image policy on the sealed command line, docs/BOOT.md,
+"Disk encryption"). A boot from the stick itself (its ESP) is up to the firmware and Secure Boot.
 
 ## Results
 
