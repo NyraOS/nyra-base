@@ -281,6 +281,22 @@ impl System for Real {
         Ok(sheet)
     }
 
+    /// systemd-networkd's `OnlineState` (org.freedesktop.network1(5)) is `offline`. No answer is
+    /// not offline: the error that brought us here is then reported as it is.
+    fn offline(&mut self) -> bool {
+        run(
+            Command::new("busctl").args([
+                "get-property",
+                "org.freedesktop.network1",
+                "/org/freedesktop/network1",
+                "org.freedesktop.network1.Manager",
+                "OnlineState",
+            ]),
+            SHORT,
+        )
+        .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"s \"offline\"")
+    }
+
     fn stage(&mut self, image_ref: &str) -> Result<(), Error> {
         // A copy of /etc before every update, for "Restore earlier settings" (docs/BOOT.md). It
         // never holds the update back: a copy that fails (the disk full) is only logged.

@@ -72,7 +72,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 1. One update at a time (a lock, which `health-failed` takes too before it touches the state); every
    bootc, systemctl and curl call has a time limit and is killed with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
    bootc leaves part of what it writes on the ESP in memory, and a power cut then can damage the ESP
-   (FAT has no journal; `patches/upstream/bootc-finalize-entries-swap.md`).
+   (FAT has no journal; `patches/upstream/bootc-finalize-entries-swap.md`). A download (the sheet or
+   the version) that fails while the machine has no network is reported as that, a warning (below).
 2. The sheet's sequence and retracted digests are saved atomically before anything acts on the sheet.
 3. A retracted digest is remembered and never a target again; an installed version retracted by any
    accepted sheet may still go back.
@@ -264,6 +265,13 @@ possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutSt
 **What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
 Settings, which will read it through the daemon (the file is root-only, like the rest of the state).
+**Without a network** (a laptop offline, a link lost in the middle of a pull): when the download of
+the sheet or of the version fails and systemd-networkd reports the machine `offline` (its
+`OnlineState`), the check says "no network connection (…): the running version stays, the next check
+tries again", as a warning (`ok: false`), and the unit does not fail: a check without a network
+does not make the machine `degraded`. Nothing is marked failed, and the next check (the timer, every
+6 hours) stages the update. Only the machine's own link state counts: a server or a network that
+stops answering while the link is up is still an error.
 When the state file is broken, every check fails with a message naming it, and updates stop (fail
 closed: forgetting it would forget the sequence and the retractions). The repair, until Settings
 offers it: move `/var/lib/nyra-updated/state.json` away; the next check starts over, and the version
@@ -271,13 +279,13 @@ floor still applies.
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 38 boots and real updates. Everything the
+The `install-boot` job follows one installed VM through 40 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
 guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
 port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
-v0-v16 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
+v0-v17 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
 bootc reads it.
 
 | Titanic | Scenario | Expected |
@@ -312,6 +320,7 @@ bootc reads it.
 | T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: an untrusted certificate on the NTS-KE port, an NTP server that answers with a time in 2001 | the clock stays in 2035, chronyd sends not one NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 | T3 | a retraction to an older version that is not a local deployment, the settings broken after it was staged | it fails its health check three times and systemd-boot falls back to the retracted version, which fails it too: the older version is forgiven, and bootc still reports it as the next boot (`rollbackQueued`). Settings repaired: the retraction deletes its deployment (with the old `/etc`) and stages it afresh instead of waiting for a reboot; it boots counted and is blessed |
+| T3 | a dead network: the guest's link down before a check, then cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 10 s into a ~16 MiB pull) | the check says "no network connection" (a journal warning, `ok: false`), the unit does not fail, nothing is staged or marked failed, the running version stays; with the link back the next check stages the update, which boots counted and is blessed |
 
 **Version jumps and channels** (`tools/vm/channels.sh`, Titanic T11): on its own copy of the
 installed disk, set up the same way, with two sheet keys and the test versions 2026.11.1-11, each
