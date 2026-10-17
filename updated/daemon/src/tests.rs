@@ -1966,7 +1966,8 @@ fn the_first_check_is_not_a_change_of_channel() {
 }
 
 #[test]
-fn after_a_change_of_channel_the_local_rollback_deployment_is_reached_by_bootc_rollback() {
+fn after_a_change_of_channel_the_local_rollback_deployment_is_staged_afresh_not_rolled_back() {
+    // `bootc rollback` would boot it with the `/etc` it had then: old passwords and settings.
     let dir = TempDir::new();
     let mut fake = switched_to_beta(&dir);
     fake.status.rollback = dep(B);
@@ -1974,8 +1975,32 @@ fn after_a_change_of_channel_the_local_rollback_deployment_is_reached_by_bootc_r
     let store = dir.store();
     assert_eq!(
         check(&mut fake, &store, &config(), NOW + 60),
-        Ok(Outcome::RolledBack(image(B)))
+        Ok(Outcome::Staged(image(B)))
     );
-    assert_eq!(fake.calls.last().map(String::as_str), Some("rollback"));
-    assert_eq!(store.load().unwrap().channel_changed, None);
+    assert_eq!(
+        fake.calls,
+        vec![
+            format!("fetch {BETA_URL}"),
+            format!("delete rollback {B}"),
+            format!("stage updates.nyraos.com/nyra@{B}"),
+        ]
+    );
+    let state = store.load().unwrap();
+    assert_eq!(state.channel_changed, None);
+    assert_eq!(state.pending.as_deref(), Some(B));
+}
+
+#[test]
+fn a_change_of_channel_is_not_dated_before_the_newest_accepted_sheet() {
+    // A clock that is behind: the sheets accepted so far say what time it is at least.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, C, sheet(NOW + 500, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    set_channel(&dir.store(), "beta").unwrap();
+    fake.sheet = channel_sheet("beta", 100, B, NOW + 100);
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::WaitingForSheet(image(B)))
+    );
+    assert_eq!(dir.store().load().unwrap().channel_changed, Some(NOW + 500));
 }

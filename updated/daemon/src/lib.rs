@@ -65,7 +65,9 @@
 //!     version may be older than the running one: the machine goes to it anyway, once, but only
 //!     with a sheet issued after the change (a replayed or old sheet cannot do it), and never to
 //!     a version that rules 3-5 refuse. Until such a sheet comes, nothing is done
-//!     ([`Outcome::WaitingForSheet`]). Within a channel, an older version stays refused (rule 4).
+//!     ([`Outcome::WaitingForSheet`]). The version is staged afresh, never reached by
+//!     `bootc rollback`: a rollback deployment kept the `/etc` of its time. Within a channel, an
+//!     older version stays refused (rule 4).
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -696,7 +698,10 @@ pub fn check(
     }
     if state.following.as_ref() != Some(&channel) {
         if state.following.is_some() {
-            state.channel_changed = Some(now);
+            // Not before the newest sheet already accepted (a sequence is the time of issue): a
+            // clock that is behind cannot let an older sheet through.
+            let newest = state.sheets.values().map(|a| a.sequence).max().unwrap_or(0);
+            state.channel_changed = Some(now.max(newest));
         }
         // Saved with the sheet below (rule 2): a sheet refused before that changes nothing.
         state.following = Some(channel.clone());
@@ -769,7 +774,18 @@ pub fn check(
                 return Ok(Outcome::WaitingForSheet(target));
             }
             check_target(&target, &state, floor)?;
-            let outcome = prepare(sys, store, cfg, &mut state, &status, target, true)?;
+            let outcome = if Status::digest(&status.staged) == Some(&target.digest) {
+                Outcome::WaitingForReboot(target)
+            } else {
+                // Never `bootc rollback` here: the rollback deployment kept the `/etc` of its time
+                // (bootc keeps one per deployment), so a routine change of channel would bring
+                // back old passwords, accounts and settings. It is deleted, and the version staged
+                // like any update: merged with today's settings, on trial.
+                if Status::digest(&status.rollback) == Some(&target.digest) {
+                    sys.delete_rollback(&target.digest)?;
+                }
+                stage_target(sys, store, cfg, &mut state, target)?
+            };
             state.channel_changed = None;
             store.save(&state)?;
             return Ok(outcome);
@@ -795,21 +811,7 @@ pub fn check(
         }
         return Err(e);
     }
-    prepare(sys, store, cfg, &mut state, &status, target, retraction)
-}
 
-/// Makes `target` the next boot (rules 6, 7, 12 and 13), after the checks of [`check`].
-fn prepare(
-    sys: &mut impl System,
-    store: &Store,
-    cfg: &Config,
-    state: &mut State,
-    status: &Status,
-    target: Image,
-    retraction: bool,
-) -> Result<Outcome, Error> {
-    let booted = status.booted.as_ref().ok_or(Error::NoBootedImage)?;
-    let running_retracted = state.retracted.contains(&booted.digest);
     if Status::digest(&status.staged) == Some(&target.digest) {
         return Ok(Outcome::WaitingForReboot(target));
     }
@@ -837,7 +839,17 @@ fn prepare(
         // when the running version is retracted and the target is one the user went back from.
         sys.delete_rollback(&target.digest)?;
     }
+    stage_target(sys, store, cfg, &mut state, target)
+}
 
+/// Stages `target`, pinned by digest, as the pending version (rule 7).
+fn stage_target(
+    sys: &mut impl System,
+    store: &Store,
+    cfg: &Config,
+    state: &mut State,
+    target: Image,
+) -> Result<Outcome, Error> {
     state.pending = Some(target.digest.clone());
     store.save(state)?;
     sys.stage(&cfg.image_ref(&target.digest))?;

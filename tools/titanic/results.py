@@ -98,7 +98,8 @@ TESTS = {
             "the default channel or the repository installs, boots and follows its new configuration. "
             "The channel chosen with set-channel wins over the image and survives a rollback; another "
             "channel's sheet and an unknown channel refused; beta to stable goes back to stable's "
-            "older version only with a sheet issued after the change, once, never below the floor."),
+            "older version only with a sheet issued after the change, once, never below the floor, staged "
+            "afresh with today's settings even when it is the rollback deployment."),
     "T12": ("Hostile root", "full", [HOSTILE_ROOT],
             "As root with Secure Boot on: apt, apt-get and dpkg -i cannot change /usr and say what to "
             "use instead (the Store, Distrobox); dpkg itself fails with a read-only file system (the "

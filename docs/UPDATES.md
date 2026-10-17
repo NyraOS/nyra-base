@@ -110,7 +110,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 14. The channel is the one chosen on the machine (`nyra-updated set-channel`), or else the image's.
     Right after a change of channel the new channel's version may be older than the running one: the
     machine goes to it, once, but only with a sheet issued after the change, and never to a version
-    rules 3-5 refuse (below, "Channels"). Within a channel an older version stays refused (rule 4).
+    rules 3-5 refuse (below, "Channels"). It is staged afresh, never reached by `bootc rollback`.
+    Within a channel an older version stays refused (rule 4).
 
 **Going back by hand.** The version Settings will offer to go back to (`offered_rollback`) is the
 rollback deployment, unless it is retracted, failed, below the version floor, forgiven, or already
@@ -125,23 +126,29 @@ to (…)". For example, the target of a retraction that fails a second time (rul
 
 ### Channels (rule 14)
 
-The image says which channel a new installation follows (`channel` in `updated.conf`). The same
-signed image is promoted from one channel to the next (`dev`, `beta`, `stable`), so the image does
-not decide which channel a machine is on: root can choose with `nyra-updated set-channel NAME`
+The image says which channel a new installation follows (`channel` in `updated.conf`, always
+`stable`: the image build fails otherwise). The same signed image is promoted from one channel to
+the next (`dev`, `beta`, `stable`), so the image does not decide which channel a machine is on: root can choose with `nyra-updated set-channel NAME`
 (Settings will offer it later, to an administrator with a password). The choice is kept in the
 state (`channel` in `/var/lib/nyra-updated/state.json`) and wins over the image's: it stays after a
 rollback to an older version and after "Reset settings", which leaves `/var` alone. An unknown channel
 is refused, by `set-channel` and in the state; a sheet of another channel or repository is refused
 (it is signed for its own). The sequence is kept per repository and channel. A `nyra-updated` from
-before the choice existed (an older version booted after a rollback) ignores it and follows the
-image's channel.
+before the choice existed (an older version booted after a rollback) follows the image's channel and
+deletes the choice the first time it saves the state; the machine then follows the image's channel
+again, without a change of channel being counted (nothing records which channel it followed).
 
 Every check notes the channel it follows (`following`). When that changes (a choice, or an image
-with another default on a machine without one), the check records when (`channel_changed`). From
-then on the machine follows the new channel's sheet like any other, with one exception: when the
-version that sheet gives it is older than the running one (`beta` to `stable`, say), it goes there
-anyway, as with a retraction (rule 6 if that version is the local rollback deployment), on these
-conditions:
+with another default on a machine without one), the check records when (`channel_changed`: the
+time of the check, but never before the newest sequence accepted so far, which is the time a sheet
+was issued, so a clock that is behind cannot let an older sheet through). From then on the machine
+follows the new channel's sheet like any other, with one exception: when the version that sheet
+gives it is older than the running one (`beta` to `stable`, say), it goes there anyway. It is staged
+like any update: merged with today's settings, pending, on trial with three tries. Never by
+`bootc rollback`, even when that version is the local rollback deployment (the usual case: back to
+the channel the machine came from): that deployment kept the `/etc` of its time (bootc keeps one per
+deployment), so old passwords, accounts, firewall rules and network settings would come back. The
+rollback deployment is deleted first (as in rule 12). The conditions:
 
 - the sheet was issued after the change (`issued_at` at or after `channel_changed`). A sheet from
   before, an old one or a replayed one, does nothing (`WaitingForSheet`, not an error): the machine
@@ -150,6 +157,10 @@ conditions:
 - the version passes rules 3-5: not retracted, not failed, not below the version floor;
 - once: as soon as it is staged, or as soon as the new channel's sheet asks for no older version, the
   change is over, and an older version is refused again (rule 4).
+
+Going back to the first channel before the reboot does not undo a version already staged: it boots,
+and the next check on the first channel moves the machine up again (a newer version, staged as
+usual).
 
 ### Discarding a staged deployment (rules 7 and 11)
 
@@ -311,7 +322,9 @@ with its own update configuration (sheet key, repository, default channel, versi
 | 4-5 | 2026.11.7 has `beta` as its default channel | it boots and asks for `beta`'s sheet; `stable`'s refused; beta's 2026.11.9 staged |
 | 6 | `set-channel nightly`, and no name | refused, nothing chosen |
 | 6 | `set-channel stable` on 2026.11.9; stable's version is 2026.11.8 | a sheet issued before the change: nothing done (`WaitingForSheet`); one issued after it, below the floor: refused; then 2026.11.8 staged; afterwards a replayed sheet and an even older version refused |
+| 6 | `set-channel` by another user than root | refused (permission denied), nothing chosen |
 | 7-8 | 2026.11.8 boots; back to 2026.11.9 by hand (`bootc rollback`), whose default is `beta` | the machine still follows `stable`, and 2026.11.8 is refused as a downgrade (no new change) |
+| 8-9 | on 2026.11.9, a file written in `/etc`; `set-channel beta`, then `stable` again: stable's 2026.11.8 is the rollback deployment | it is deleted and 2026.11.8 staged afresh (no `bootc rollback`); it boots counted, with the file |
 | 9-10 | 2026.11.10 moves its updates to the repository `nyra-next` | it boots and asks for `nyra-next`'s sheet; `nyra-base`'s refused; 2026.11.11 staged from `nyra-next` |
 | 11 | 2026.11.11 from `nyra-next` | up to date |
 

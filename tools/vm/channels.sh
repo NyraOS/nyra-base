@@ -25,13 +25,16 @@
 #   3  a5: a retraction to 2026.11.4 refused (below the floor a5 raised); k6 staged
 #   4  k6: a sheet signed with key 1 refused (rotated out); d7 staged with key 2
 #   5  d7: follows beta (the image's default): stable's sheet refused, b9 staged
-#   6  b9: an unknown channel refused; set-channel stable: stable's version s8 is older. A sheet
-#      issued before the change does nothing, one below the floor is refused, then s8 is staged; a
-#      replayed sheet is refused, and an even older version is refused (once per change)
+#   6  b9: an unknown channel, and set-channel by another user than root, refused; set-channel
+#      stable: stable's version s8 is older. A sheet issued before the change does nothing, one below
+#      the floor is refused, then s8 is staged; a replayed sheet is refused, and an even older
+#      version is refused (once per change)
 #   7  s8: up to date; went back to b9 by hand (bootc rollback)
 #   8  b9: the choice (stable) survived the rollback and wins over b9's default (beta): stable's s8 is
-#      refused as a downgrade (no new change); back to s8 by hand
-#   9  s8: up to date; r10 staged
+#      refused as a downgrade (no new change). A setting changed in /etc; set-channel beta, then
+#      stable again: s8, now the rollback deployment, is deleted and staged afresh (never bootc
+#      rollback, which would boot it with its old /etc)
+#   9  s8 with the setting made on b9; r10 staged
 #  10  r10: follows nyra-next: nyra-base's sheet refused; n11 staged from nyra-next
 #  11  n11: up to date
 #   tools/vm/channels.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
@@ -159,8 +162,9 @@ sheet stable-floor key2 nyra-base stable 1100 "$a4" 2026.11.4 3600
 sheet stable-s8-new key2 nyra-base stable 1200 "$s8" 2026.11.8 7200
 sheet stable-k6 key2 nyra-base stable 1300 "$k6" 2026.11.6 10800
 sheet stable-s8-last key2 nyra-base stable 1400 "$s8" 2026.11.8 14400
+sheet stable-s8-again key2 nyra-base stable 1450 "$s8" 2026.11.8 18000
 # Another repository.
-sheet to-r10 key2 nyra-base stable 1500 "$r10" 2026.11.10 14400
+sheet to-r10 key2 nyra-base stable 1500 "$r10" 2026.11.10 18000
 sheet next-n11 key2 nyra-next stable 100 "$n11" 2026.11.11 0
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -219,7 +223,9 @@ put() { # guest commands that write the local file $1 to $2, in pieces the conso
   echo "--command"
   echo "base64 -d $2.b64 > $2 && rm $2.b64"
 }
-lib='. /var/lib/nyra-test/lib.sh'
+# Many checks fail on purpose in a row: reset-failed keeps systemd's start limit of the unit out of
+# the way.
+lib='. /var/lib/nyra-test/lib.sh; systemctl reset-failed nyra-updated.service'
 asked() { # the sheet the last check asked for: asked /channels/REPOSITORY/CHANNEL
   echo "test \"\$(curl -kfsS https://updates.nyraos.com/_test/last)\" = $1"
 }
@@ -284,6 +290,8 @@ vm "d7 follows beta, its default: stable's sheet refused; b9 staged" \
 vm "b9: set-channel stable; stable's older s8 only with a sheet issued after the change, once" \
   --command "$lib; expect booted $b9 && running && blessed && outcome beta-b9 UpToDate" \
   --command "! /usr/libexec/nyra-updated set-channel nightly && ! /usr/libexec/nyra-updated set-channel && $(state 's.get("channel") is None')" \
+  --command 'out="$(setpriv --reuid=65534 --regid=65534 --clear-groups /usr/libexec/nyra-updated set-channel stable 2>&1)"; rc=$?; echo "$out"; test $rc != 0 && echo "$out" | grep -q "Permission denied"' \
+  --command "$(state 's.get("channel") is None')" \
   --command "/usr/libexec/nyra-updated set-channel stable && $(state 's["channel"] == "stable"')" \
   --command "$lib; outcome stable-s8 WaitingForSheet && expect staged none && $(asked /channels/nyra-base/stable) && $(state 's["channel_changed"]')" \
   --command "$lib; refused stable-floor 'below the version floor' && expect staged none" \
@@ -295,13 +303,16 @@ vm "s8, back from beta: up to date; back to b9 by hand" \
   --command "$lib; expect booted $s8 && running && blessed && outcome stable-s8-last UpToDate" \
   --command "$lib; bootc rollback && test \"\$(queued)\" = true"
 
-vm "b9 by hand: still on stable, s8 refused as a downgrade; back to s8 by hand" \
-  --command "$lib; expect booted $b9 && running" \
+vm "b9 by hand: still on stable, s8 refused; beta, then stable again: s8 staged afresh, not rolled back to" \
+  --command "$lib; expect booted $b9 && expect rollback $s8 && running" \
   --command "$lib; refused stable-s8-last 'not newer than the installed' && $(asked /channels/nyra-base/stable) && expect staged none" \
-  --command "$lib; bootc rollback && test \"\$(queued)\" = true"
+  --command 'echo "made on b9" > /etc/nyra-t11-setting' \
+  --command "$lib; /usr/libexec/nyra-updated set-channel beta && outcome beta-b9 UpToDate && $(asked /channels/nyra-base/beta)" \
+  --command "$lib; /usr/libexec/nyra-updated set-channel stable && outcome stable-s8-again Staged && expect staged $s8 && expect rollback none && test \"\$(queued)\" = false && $(state 's.get("channel_changed") is None')"
 
-vm "s8: up to date; r10 (repository nyra-next) staged" \
-  --command "$lib; expect booted $s8 && running && outcome stable-s8-last UpToDate" \
+vm "s8, staged afresh: today's settings; r10 (repository nyra-next) staged" \
+  --command "$lib; expect booted $s8 && running && blessed && grep -x 'made on b9' /etc/nyra-t11-setting" \
+  --command "$lib; outcome stable-s8-again UpToDate" \
   --command "$lib; outcome to-r10 Staged && expect staged $r10"
 
 vm "r10 follows nyra-next: nyra-base's sheet refused; n11 staged from nyra-next" \
