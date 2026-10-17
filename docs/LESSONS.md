@@ -331,6 +331,22 @@ Each line is something that broke or surprised us once.
   puts it there instead (the same bytes on every build); the service then writes `/etc` only when
   the user adds rules in `/etc/udev/hwdb.d`. coreutils 9 `cp` reflinks by default
   (`--reflink=auto`), which would make copies nearly free on btrfs or XFS, not on ext4.
+- **A whole copy of `/etc` restored on a newer version brings back the older version's defaults**
+  (Debian's files there, such as AppArmor's and PAM's), and bootc's merge then keeps them as the
+  user's changes. Keeping only what differs from the image's `/etc`, plus the list of what was
+  deleted, and laying that over the running version's `/etc` avoids it, and the copy shrinks from
+  about 3 MiB to tens of KiB.
+- **Comparing two files with their ACLs and extended attributes without `getfattr`:** archive each as
+  a one-member tar (`--no-recursion --format=posix --numeric-owner --acls --xattrs
+  --xattrs-include='*' --mtime=@0 --pax-option=delete=atime,delete=ctime`) and compare the bytes:
+  without the `delete`, equal files give different archives. Older GNU tars put their PID in the
+  extended header name (`PaxHeaders.<pid>`); 1.35's default, `%d/PaxHeaders/%f`, does not. In GNU
+  tar 1.35, `--xattrs-include` alone already turns on `--xattrs`.
+- **GNU `cp -a` writes a file through a link at the destination** (it refuses only a dangling link,
+  and a directory over a link), and `cp -a SRC/. DST/` gives an existing `DST` directory (and every
+  existing directory under it) the source's mode and owner. Laying one tree over another therefore
+  first removes, parents first, whatever is at each path the source has, unless both are
+  directories; otherwise a link in the destination can lead the copy outside.
 
 ## Secure defaults (docs/DEFAULTS.md)
 - Debian packages enable their units in maintainer scripts, which mkosi runs: the base came up with

@@ -42,17 +42,20 @@
 #      the system;
 #   15. the reset with that /etc/fstab; the normal boot after it runs, without those lines;
 #   16. "Nyra OS Restore earlier settings" (nyra-restore.CONF, profile 2) is in the menu between
-#      Recovery and Reset settings; the daily copy timer waits; root given a password; the daily
-#      copy: /etc with every
-#      file's owner and mode, /etc/shadow the same, the copies' directory root's (0700), nobody
-#      cannot enter it, and its size printed; then root locked again, the administrator's password
-#      changed, another
-#      administrator added, the settings broken as in boot 1; the restore entry picked for the next boot;
+#      Recovery and Reset settings; the daily copy timer waits; root given a password, /etc/motd
+#      made 0600, /etc/issue.net (a file of the image) removed and a setgid directory added; the
+#      daily copy: the copies' directory root's (0700), nobody cannot enter it; the copy holds less
+#      than a quarter of /etc's files and lists /etc/issue.net as removed, and laid over the image's
+#      /etc (etc-copy apply) it gives /etc back, every file with its content, owner and mode; its
+#      size printed; then root locked again, the administrator's password changed, another
+#      administrator added, those three files as in the image again, the settings broken as in
+#      boot 1; the restore entry picked for the next boot;
 #      (copies the daily timer may have made at midnight are removed before each restore entry);
 #   17. the restore entry lists the copy ("daily copy"); 1, with a power cut as it switches to the
 #      copy; 18. /etc is whole (all old or all restored);
 #   19. the copy restored, then the normal boot: the breakage gone, /etc/fstab, /etc/systemd/system
-#      and the system accounts are the copy's; root stays locked (no password comes from a copy,
+#      and the system accounts as when the copy was made; /etc/issue.net removed again, /etc/motd
+#      0600 and the setgid directory with its mode and group; root stays locked (no password comes from a copy,
 #      not even a system account's); the password set after the copy and the
 #      administrator added after it are kept (accounts are never taken from a copy); /home kept,
 #      the previous /etc as etc.nyra-old (0700);
@@ -235,15 +238,20 @@ restore_oneshot='bootctl set-oneshot nyra-restore.CONF && echo "next boot: resto
 restore_answer='\(daily copy\)(.|\n)*Type the number of the copy to restore, anything else or Control-D to boot normally: '
 pw2="$(openssl rand -hex 12)" pwroot="$(openssl rand -hex 12)"
 meta="find . -xdev -printf '%m %U %G %y %p %l\\n' | sort"
+# /etc as it was when the test's copy was made (boot 16), to compare the restored /etc with.
+at_copy=/var/nyra-test-etc-at-copy
 vm --poweroff --log "$logs/serial-reset-settings-16.log" \
   --title "Reset settings 16: the restore entry before the reset entry; a copy of /etc, then accounts changed and settings broken" \
   --command "$running" \
   --command "cat /boot/loader/entries/nyra-restore.CONF; grep -qx 'profile 2' /boot/loader/entries/nyra-restore.CONF && t=\"\$(bootctl list --no-pager | sed -n 's/^ *title: //p' | grep -E '^Nyra OS (Recovery|Restore earlier settings|Reset settings)\$' | head -n 3 | paste -sd '|')\" && echo \"menu: \$t\" && test \"\$t\" = 'Nyra OS Recovery|Nyra OS Restore earlier settings|Nyra OS Reset settings'" \
   --command 'systemctl list-timers --no-pager nyra-etc-copy.timer; timedatectl show -p NTPSynchronized; systemctl is-active nyra-etc-copy.timer' \
   --command "printf 'root:%s\\n' '$pwroot' | chpasswd && passwd -S root | grep -q ' P ' && echo 'before the copy: root has a password'" \
-  --command "systemctl start nyra-etc-copy.service && c=\"\$(ls $copies | grep -- '-daily\$' | sort | tail -n 1)\" && echo \$c > $before/copy && ls -la $copies && test \"\$(stat -c '%a %U' $copies)\" = '700 root' && (cd /etc && $meta) > /run/meta-etc && (cd $copies/\$c && $meta) > /run/meta-copy && diff /run/meta-etc /run/meta-copy && cmp /etc/shadow $copies/\$c/shadow && stat -c '%a %U %G %n' /etc/shadow $copies/\$c/shadow && echo 'the copy has every file with its owner and mode' && ! setpriv --reuid=65534 --regid=65534 --clear-groups ls $copies && echo 'only root can enter the copies' && echo \"nyra-space: one copy of /etc takes \$(du -sk $copies/\$c | cut -f1) KiB, \$(find $copies/\$c | wc -l) files\"" \
-  --command "grep -q '^root:\\\$' $copies/\$(cat $before/copy)/shadow && usermod -p '!*' root && passwd -S root | grep -q ' L ' && grep '^root:' /etc/shadow > $before/root-after && echo 'after the copy: root locked again (its password is still in the copy)'" \
+  --command "chmod 0600 /etc/motd && rm /etc/issue.net && mkdir /etc/nyra-test-sgid && chgrp adm /etc/nyra-test-sgid && chmod 2750 /etc/nyra-test-sgid && echo s > /etc/nyra-test-sgid/f && echo 'before the copy: /etc/motd 0600, /etc/issue.net removed, a setgid directory'" \
+  --command "systemctl start nyra-etc-copy@daily.service && c=\"\$(ls $copies | grep -- '-daily\$' | sort | tail -n 1)\" && echo \$c > $before/copy && cp -a /etc $at_copy && ls -la $copies && test \"\$(stat -c '%a %U' $copies)\" = '700 root' && ! setpriv --reuid=65534 --regid=65534 --clear-groups ls $copies && echo 'only root can enter the copies' && echo \"nyra-space: one copy of /etc takes \$(du -sk $copies/\$c | cut -f1) KiB, \$(find $copies/\$c | wc -l) files; /etc \$(du -sk /etc | cut -f1) KiB, \$(find /etc | wc -l) files\" && find $copies/\$c/etc -printf '%m %U %G %y %P\\n' | sort -k5 && echo removed: && tr '\\0' '\\n' < $copies/\$c/removed" \
+  --command "c=$copies/\$(cat $before/copy); test \$(find \$c/etc | wc -l) -lt \$((\$(find /etc | wc -l) / 4)) && grep -qzx issue.net \$c/removed && test ! -e \$c/etc/issue.net && echo 'the copy holds what differs from the image, and /etc/issue.net as removed' && i=/run/nyra-image && mkdir -p \$i /run/nyra-rt && mount --bind / \$i && mount -o remount,bind,ro \$i && cp -a \$i/etc/. /run/nyra-rt/ && umount \$i && /usr/lib/nyra/etc-copy apply \$c /run/nyra-rt && (cd /etc && $meta) > /run/meta-etc && (cd /run/nyra-rt && $meta) > /run/meta-rt && diff /run/meta-etc /run/meta-rt && diff -r --no-dereference /etc /run/nyra-rt && echo 'laid over the image, the copy gives /etc back: every file with its content, owner and mode'" \
+  --command "grep -q '^root:\\\$' $copies/\$(cat $before/copy)/etc/shadow && usermod -p '!*' root && passwd -S root | grep -q ' L ' && grep '^root:' /etc/shadow > $before/root-after && echo 'after the copy: root locked again (its password is still in the copy)'" \
   --command "printf 'nyra-admin:%s\\n' '$pw2' | chpasswd && grep '^nyra-admin:' /etc/shadow > $before/shadow-after && useradd -m -G sudo -s /bin/bash nyra-later && echo 'after the copy: a new password, a new administrator'" \
+  --command 'chmod 0644 /etc/motd && echo junk > /etc/issue.net && rm -r /etc/nyra-test-sgid && echo "after the copy: /etc/motd, /etc/issue.net and the setgid directory as in the image"' \
   --command 'echo "garbage line, not a mount" >> /etc/fstab && echo broken-line >> /etc/passwd && systemctl mask systemd-resolved.service && rm -f /etc/resolv.conf && echo junk > /etc/nyra-test-junk' \
   --command "$only_copy" \
   --command "$restore_oneshot"
@@ -261,7 +269,8 @@ vm --poweroff --log "$logs/serial-reset-settings-19.log" --chat-then-login --cha
   --title "Reset settings 19: the copy restored, then the normal boot: the breakage gone, the accounts as they are now" \
   --command "$running" \
   --command 'test ! -e /etc/nyra-test-junk && ! grep -q garbage /etc/fstab && ! grep -q broken-line /etc/passwd && test "$(systemctl is-enabled systemd-resolved.service)" != masked && test -L /etc/resolv.conf && test ! -e /etc/.nyra-reset-new && echo "the broken settings are gone"' \
-  --command "c=$copies/\$(cat $before/copy); f=0; for p in fstab systemd/system; do if test -e \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p; then echo \"/etc/\$p is not in the copy\"; f=1; fi; done; grep -v '^nyra-' \$c/passwd > /run/p1 && grep -v '^nyra-' /etc/passwd > /run/p2 && diff /run/p1 /run/p2 && test \$f = 0 && echo '/etc/fstab, /etc/systemd/system and the system accounts are as in the copy'" \
+  --command "c=$at_copy; f=0; for p in fstab systemd/system; do if test -e \$c/\$p; then diff -r --no-dereference \$c/\$p /etc/\$p || f=1; elif test -e /etc/\$p; then echo \"/etc/\$p was not there when the copy was made\"; f=1; fi; done; grep -v '^nyra-' \$c/passwd > /run/p1 && grep -v '^nyra-' /etc/passwd > /run/p2 && diff /run/p1 /run/p2 && test \$f = 0 && echo '/etc/fstab, /etc/systemd/system and the system accounts are as when the copy was made'" \
+  --command "stat -c '%a %G %n' /etc/motd /etc/nyra-test-sgid /etc/nyra-test-sgid/f; test ! -e /etc/issue.net && test \"\$(stat -c '%a %G' /etc/motd /etc/nyra-test-sgid /etc/nyra-test-sgid/f | paste -sd ' ')\" = '600 root 2750 adm 644 adm' && echo '/etc/issue.net removed again; /etc/motd, the setgid directory and its file with their mode and group'" \
   --command "grep '^root:' /etc/shadow | cmp - $before/root-after && passwd -S root | grep -q ' L ' && echo 'root stays locked: no password comes from the copy'" \
   --command "grep '^nyra-admin:' /etc/shadow | cmp - $before/shadow-after && id -nG nyra-admin | grep -qw sudo && id -nG nyra-later | grep -qw sudo && test \"\$(grep -c '^nyra-admin:' /etc/shadow)\" = 1 && echo 'the password set after the copy and the administrator added after it are kept'" \
   --command "test \"\$(cat /home/nyra-admin/keep.txt)\" = kept && $state; test \"\$(stat -c %a \$s/etc.nyra-old)\" = 700 && test -e \$s/etc.nyra-old/nyra-test-junk && echo '/home kept; the previous /etc kept as etc.nyra-old (0700)'"

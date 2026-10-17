@@ -910,7 +910,7 @@ to authenticate.
 ## Restore earlier settings
 
 The reset loses the good settings with the broken ones. So `/etc` is copied every day and before
-every update, and the boot menu offers **"Nyra OS Restore earlier settings"**, just before "Nyra OS
+every change of system version, and the boot menu offers **"Nyra OS Restore earlier settings"**, just before "Nyra OS
 Reset settings", to go back to one of those copies. The settings screen will use the same command
 later; nothing here depends on it.
 
@@ -918,14 +918,33 @@ later; nothing here depends on it.
 
 - **When:** once a day (`nyra-etc-copy.timer`, `OnCalendar=daily`, `Persistent=true`: a day the
   machine was off is made up at the next boot), and by `nyra-updated` right before it stages an
-  update (`bootc switch`). A copy that fails before an update (the disk full) is logged and does not
-  hold the update back.
-- **Where:** `/var/lib/nyra/etc-copies/<date and time, UTC>-daily` or `-update`, on the root file
-  system, so on the same disk as `/etc` (encrypted with it, once the disk is). The directory is
-  root's, `0700`: no one else can even list it. Each copy is `cp -a` of `/etc`: every file's owner,
-  mode, ACLs and extended attributes as in `/etc` (`/etc/shadow` stays `0640 root:shadow`, inside a
-  directory only root can enter). A copy is made under a temporary name and renamed once complete, so
-  an interrupted copy is never offered, and the next run removes it. One run at a time (`flock`).
+  update (`bootc switch`) or goes back to the other version (`bootc rollback`: that version boots
+  with the `/etc` it had, so today's settings stay in the copy). Each is the unit
+  `nyra-etc-copy@daily`, `@update` or `@rollback`. A copy that fails before a change of version (the
+  disk full) is logged and does not hold it back.
+- **What:** only what differs from the image's `/etc` (the running version's defaults). A copy is
+  `/var/lib/nyra/etc-copies/<date and time, UTC>-daily`, `-update` or `-rollback`, with:
+  - `etc/`: every file, link and directory that the image's `/etc` does not have, or has with
+    another content, link target, type, mode, owner, group, ACL or extended attribute, and the
+    directories leading to them. They are made by `cp -a` of `/etc`: every owner, mode (setgid
+    included), ACL and extended attribute as in `/etc` (`/etc/shadow` stays `0640 root:shadow`). The
+    entries that are as in the image are then removed from that copy, so all of it is `/etc` at one
+    moment. Two entries are compared as one-member tar archives of each (`--numeric-owner --acls
+    --xattrs`, times left out): the image has no `getfattr` or `getfacl`, and tar compares
+    everything a copy keeps. An entry under a link in the image's `/etc` (such as a link to a
+    directory in `/usr/share` that the user replaced with a directory) is always kept: tar would
+    compare it with what the link leads to, which a restore does not have.
+  - `removed`: the paths of the image's `/etc` that `/etc` did not have, one per NUL byte, so that
+    a file or directory the user deleted stays deleted after a restore.
+
+  The image's `/etc` is under the bind mount of `/etc` (bootc mounts the version's state there):
+  the unit gets a bind mount of `/` alone at `/run/nyra-etc-copy/<kind>/image`
+  (`BindReadOnlyPaths=/:…:norbind`, in a runtime directory of its own), where `etc` is the image's, and the script stops when that
+  `etc` is `/etc` itself (same device and inode), rather than make a copy that would hold nothing.
+- **Where:** on the root file system, so on the same disk as `/etc` (encrypted with it, once the disk
+  is). The directory is root's, `0700`: no one else can even list it. A copy is made under a
+  temporary name and renamed once complete, so an interrupted copy is never offered, and the next
+  run removes it. One run at a time (`flock`).
 - **How long:** at each new copy, those older than 30 days go, except the three newest, so a machine
   that was off for a month still has the copies from before it. The 30 days are counted back from the
   newest earlier copy that is not dated after now, never from the copy just made: a clock set far
@@ -936,27 +955,43 @@ later; nothing here depends on it.
   first. `tools/vm/test-etc-copy.sh` checks these cases (CI, the shellcheck workflow). The timer does
   not wait for the clock (`chrony-wait` is off, docs/DEFAULTS.md), so a copy can be named from a wrong
   clock; only the removal depends on it.
-- **Space**, measured on the image: its `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4
-  gives each small file a 4 KiB block). A real copy on a booted test system, as
-  `tools/vm/reset-settings.sh` prints it: 2,992 KiB, 972 files.
-  udev's hardware database (`hwdb.bin`, 14 MB) is built into `/usr` by the image build; otherwise
-  `systemd-hwdb-update` writes it to `/etc` at the first boot, and each copy would take 16 MiB.
-  A month is 30 daily copies and one per update, about 35 copies or 100 MiB and 35,000 inodes, more if
-  the user's own files in `/etc` are large. The copies share nothing (ext4 has no reflinks), and an
+- **Space:** the image's `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4 gives each
+  small file a 4 KiB block); a whole copy took 2,992 KiB. A copy of the differences, on the image's
+  `/etc` with what a first boot and one user change (machine ID, host name, the account files and
+  their backups, `.updated`, `adjtime`): 64 KiB, 19 files and directories, made in about 4 s
+  (`tools/vm/reset-settings.sh` prints the size of the test system's copy, boot 16). A month is 30
+  daily copies and one per update, about 35 copies or 2-3 MiB and under 1,000 inodes, more if the
+  user's own files in `/etc` are large. The copies share nothing (ext4 has no reflinks), and an
   unchanged `/etc` is copied all the same (simpler, and every copy keeps its own date). An update
   whose download keeps failing is tried every 6 hours, with a copy each time: up to four a day, about
-  12 MiB, until it succeeds; 30 days of that would be about 450 MiB.
+  8 MiB in 30 days. udev's hardware database (`hwdb.bin`, 14 MB) is built into `/usr` by the image
+  build; otherwise `systemd-hwdb-update` would write it to `/etc` at the first boot, into every copy.
+  Copies made in the earlier format (a whole `/etc`, without `removed`) are not offered; they go
+  after 30 days like the others.
 - The unit runs sandboxed: everything read-only but its own directory (`StateDirectory=`), no
-  network, idle I/O priority.
+  network, idle I/O priority, and of root's capabilities only those a copy with owners, modes and
+  ACLs needs (`CAP_DAC_OVERRIDE`, which reads every file, `CAP_CHOWN`, `CAP_FOWNER`, `CAP_FSETID`).
 
 **The restore.** `loader/entries/nyra-restore.CONF` (`sort-key nyra-2-restore`, between Recovery
 and Reset settings) starts **the reset profile** (profile 2) of the same signed UKI. It is written,
 carried across updates and kept out of bootc's sight like the other two entries (see "Recovery").
 `reset-settings` reads which entry systemd-boot started (`LoaderEntrySelected` = `nyra-restore.conf`)
 and, from this one, lists the copies on the console, newest first, numbered, with their date and
-whether each was a daily copy or made before an update. Typing a number restores that copy; anything
-else, or Control-D, continues the normal boot and changes nothing. Then everything works as the
-reset (above), with the copy in place of the image's `/etc`:
+whether each was a daily copy or made before an update or a version change. Typing a number
+restores that copy; anything else, or Control-D, continues the normal boot and changes nothing. Then
+everything works as the reset (above), with the copy laid over the image's `/etc`
+(`etc-copy apply`):
+
+- **Laid over the running version's defaults:** the new `/etc` starts as the image's `/etc`, as for
+  the reset. The paths in `removed` go, then every entry of the copy replaces what is at its path
+  (where both are directories, their contents merge and the copy's owner and mode apply). A path is
+  removed only when it is a plain relative path (no `..`, `.`, empty name or trailing slash) and
+  every directory on the way to it is a directory of the new `/etc`, not a link, and whatever the
+  copy replaces is removed before it is copied, parents first: a link in the image's `/etc` that
+  points outside it is replaced, never written through. A copy whose result has no `/etc/passwd`, or
+  has one of `passwd`, `shadow`, `group`, `gshadow`, `subuid` and `subgid` that is not a regular
+  file (the restore rewrites them in place, through a temporary file outside the new `/etc`), is not
+  restored (nothing changes, `/sysroot` is read-only again, and the normal boot continues).
 
 - **Kept from the current `/etc`, never from the copy:** the regular users (their lines in `passwd`,
   `shadow`, `subuid` and `subgid`, their groups and their membership in the system groups, `sudo`
@@ -980,12 +1015,12 @@ reset (above), with the copy in place of the image's `/etc`:
   reset profile's, sealed and unchanged; on a disk unlocked by the TPM it asks for the disk's password
   or recovery key, like the reset ("TPM2 unlock": only the main profile is signed). No new UKI
   profile, so `ci/uki-cmdline.txt`, the PCR 11 policy and their tests are unchanged.
-- **Another system version's `/etc`.** A copy made before an update holds the previous version's
-  defaults; restored on the new version, files the update changed in `/etc` go back to how they were
-  then (Debian's files there, such as the AppArmor profiles in `/etc/apparmor.d` or PAM's). bootc's
-  three-way merge then counts them as the user's changes, so they stay in their old form at the
-  following updates too, until a reset. Nyra keeps its defaults in `/usr`, so `/etc` holds little of
-  them.
+- **Another system version's `/etc`.** A copy made on an earlier version holds only what the user
+  had changed then, so restored on a newer one, every file the user never changed is the newer
+  version's (Debian's files there, such as the AppArmor profiles in `/etc/apparmor.d` or PAM's), and
+  a file the user deleted stays deleted even if the newer version ships it again. The files the user
+  did change come back as they were, and a directory on the way to one of them comes back with its
+  owner and mode from the copy (as a container image layer does).
 
 The entry is just as reachable from the keyboard as the reset, and what a copy brings back is limited
 to what `/etc` held in the last 30 days: settings, not accounts or passwords. Those settings include
@@ -994,13 +1029,23 @@ rules, PAM, an autologin drop-in, SSH host keys). The copies also keep old secre
 password hashes, Wi-Fi keys) for up to 30 days, readable only by root.
 
 CI (`tools/vm/reset-settings.sh`, boots 16-19): the restore entry is in the menu between Recovery and
-Reset settings, with `profile 2`; the daily timer waits; the daily copy has every file of `/etc` with
-its owner and mode and the same `/etc/shadow`, and only root can enter the copies; after the copy the
-administrator's password changes, another administrator is added and the settings break as in boot 1.
-The restore entry lists the copy; a power cut as it switches leaves `/etc` whole; the restore then
-brings back the copy's `/etc/fstab`, `/etc/systemd/system` and system accounts, keeps root locked
-(it had a password when the copy was made), the new password and the new administrator, `/home`, and the previous `/etc` as `etc.nyra-old`. The copy before an
-update: `tools/vm/updates.sh`, boot 5. Titanic T8 restores a copy after each breakage.
+Reset settings, with `profile 2`; the daily timer waits; before the copy, a file of the image is made
+`0600`, another is removed and a setgid directory is added; only root can enter the copies; the copy
+holds less than a quarter of `/etc`'s files and lists the removed file, and laid over the image's
+`/etc` it gives `/etc` back, every file with its content, owner and mode; after the copy those three
+are as in the image again, the administrator's password changes, another administrator is added and
+the settings break as in boot 1. The restore entry lists the copy; a power cut as it switches leaves
+`/etc` whole; the restore then brings back `/etc/fstab`, `/etc/systemd/system` and the system
+accounts as they were at the copy, the removed file removed again, the mode and the setgid
+directory, keeps root locked (it had a password when the copy was made), the new password and the
+new administrator, `/home`, and the previous `/etc` as `etc.nyra-old`. The copy before an update:
+`tools/vm/updates.sh`, boot 5; before a rollback, boot 12. Titanic T8 restores a copy after each
+breakage. Offline (`tools/vm/test-etc-copy.sh`, as root): a copy made on an older image's `/etc` and
+laid over a newer one gives the newer defaults plus exactly the user's changes (content, mode, owner,
+ACL, extended attribute, a deleted file and directory, a file turned into a directory and back, a
+retargeted link, a setgid directory, a name with a newline), and nothing is written or removed through
+links the newer image has where the older had directories; each of these checks fails on a copy of
+the script without the code it tests.
 
 ## Mounts from /etc/fstab
 
