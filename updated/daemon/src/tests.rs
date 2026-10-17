@@ -1728,6 +1728,17 @@ fn days_without_a_successful_check_count_from_the_first_report_and_never_from_th
         .unwrap()
         .days_without_success()
         .is_some());
+    // An image without a sheet key stays a warning: there is nothing to update from.
+    let dir = TempDir::new();
+    let store = dir.store();
+    store.save_report(NOW, false, "x").unwrap();
+    let report = store
+        .save_report(NOW + 20 * DAY, false, NOT_CONFIGURED)
+        .unwrap();
+    assert_eq!(
+        (report.message.as_str(), report.days_without_success()),
+        (NOT_CONFIGURED, None)
+    );
     // A report written by an older nyra-updated (no `last_success`): the count starts now.
     let dir = TempDir::new();
     let store = dir.store();

@@ -375,7 +375,7 @@ sudo tc qdisc del dev lo root
 
 vm "v1 after the power cut: v2 staged again; power cut before finalization" --power-cut-at POWERCUT \
   --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; outcome s1 Staged && expect staged $d2 && expect rollback $d0" \
+  --command "$lib; outcome s1 Staged && expect staged $d2 && expect_version staged 2026.10.2 && expect rollback $d0" \
   --command 'bootc status --format json' \
   --command 'echo POWER''CUT'
 

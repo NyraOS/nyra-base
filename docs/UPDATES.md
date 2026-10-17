@@ -195,7 +195,7 @@ by hand is discarded with it.
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
-| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state; after 14 days without a successful check it is an error, like any other (below, "Updates that stop"). A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
+| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. The 14-day rule (below, "Updates that stop") does not make it an error: nothing is held up, there is nothing to update from. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
@@ -209,6 +209,15 @@ fails on an invalid configuration or on a key from the test fixtures; CI also ch
 fail with the `seed1` fixture key in place. `boot-complete.target` is pulled in on every boot (not
 only when systemd-boot counts tries), so the health checks always run and `nyra-updated` can rely on
 the target being active on a healthy boot.
+
+**The version.** An image's release version (`year.month.build`) is the year and month of its Debian
+snapshot (`mkosi/mkosi.conf`) and the image workflow's run number, which only grows. The build puts
+it in the manifest annotation `org.opencontainers.image.version`, where bootc reads it, and in the
+config label of the same name; the test versions are built the same way (`podman build --annotation`,
+`tools/vm/updates.sh` and `channels.sh`). bootc reports no version for an image without that
+annotation, and `nyra-updated` cannot update from such a version and treats such a staged or rollback
+deployment as below the version floor (rule 11). So install-boot checks that `bootc status` reports
+the installed image's version, and the update test that it reports a staged one's.
 
 **Health checks** are units named `nyra-health-*.service` that `boot-complete.target` requires
 (links in `/usr/lib/systemd/system/boot-complete.target.requires/`). A failure keeps the boot from
@@ -292,8 +301,10 @@ tries left.
 
 **Updates that stop.** `last-check.json` also keeps `last_success`, the time of the last successful
 check (until one succeeds, of the first check). When a check fails 14 days or more after it, whatever
-the cause (no network, a refused sheet, no key), its message starts with "no successful check for N
-days:" and it is an error: the unit fails and the machine is `degraded`. Someone who controls the
+the cause (no network, a server that does not answer, a refused sheet), its message starts with "no
+successful check for N days:" and it is an error: the unit fails and the machine is `degraded`. An
+image without a sheet key ("not configured") is the exception: it stays a warning and counts as a
+success here, because no update is held up. Someone who controls the
 machine's link could otherwise keep it on an old version with only warnings to show. 14 days: a
 laptop offline for a holiday is not flagged, and the server signs the sheet at least daily. A time
 in the future (a clock that was ahead) counts as now. An older `nyra-updated` (after a rollback)

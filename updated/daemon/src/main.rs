@@ -14,6 +14,7 @@
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, set_channel, Config, Error, HealthAction, Lock, Store, System,
+    NOT_CONFIGURED,
 };
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -25,10 +26,6 @@ const STATE_DIR: &str = "/var/lib/nyra-updated";
 const LOCK: &str = "/run/nyra-updated.lock";
 /// Writes what the user sees when the system stays up after a failed health check (docs/UPDATES.md).
 const NOTICE: &str = "/usr/lib/nyra/health/notice";
-
-/// Updates are not configured: the image ships no channel sheet key yet (docs/UPDATES.md).
-const NOT_CONFIGURED: &str =
-    "updates are not configured: no channel sheet key in /usr/lib/nyra/updates/channel-sheet.pem";
 
 fn config() -> Result<Option<Config>, Error> {
     Config::load(Path::new(CONFIG), Path::new(KEYS))
@@ -133,8 +130,8 @@ fn main() -> ExitCode {
             dir: STATE_DIR.into(),
         };
         match store.save_report(now, ok, &message) {
-            // Updates stopped for two weeks, whatever the cause (no network, no key included): an
-            // error, so the unit fails and the machine is `degraded`.
+            // Updates stopped for two weeks, whatever the cause (no network included): an error, so
+            // the unit fails and the machine is `degraded`.
             Ok(report) if report.days_without_success().is_some() => {
                 result = Err(Error::NoSuccessfulCheck(report.message));
             }

@@ -199,6 +199,11 @@ fn io(what: &Path, e: std::io::Error) -> Error {
 
 // --- configuration (from the image) -----------------------------------------------------------
 
+/// The report of a check on an image without a channel sheet key (`docs/UPDATES.md`): a warning at
+/// every check, never an error, as there is nothing to update from.
+pub const NOT_CONFIGURED: &str =
+    "updates are not configured: no channel sheet key in /usr/lib/nyra/updates/channel-sheet.pem";
+
 /// The update server. Fixed in code, never configured: the image's signature policy requires our
 /// signature only for exactly this registry scope (`docs/SIGNING.md`), so any other spelling (a port, a
 /// trailing dot, another host) would pull system images without signature verification.
@@ -433,6 +438,7 @@ impl Store {
     /// Writes the outcome of this check (`time`: Unix seconds) to `last-check.json` and returns
     /// it, keeping the time of the last successful check from the previous report. A failed check
     /// [`STALE_AFTER_DAYS`] or more after it says so first: "no successful check for N days: …".
+    /// [`NOT_CONFIGURED`] is no failed check (no update is held up): the count starts again.
     pub fn save_report(&self, time: u64, ok: bool, message: &str) -> Result<Report, Error> {
         let path = self.dir.join("last-check.json");
         // A report without `last_success` (written by an older nyra-updated, after a rollback) or
@@ -442,7 +448,7 @@ impl Store {
             .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok())
             .map(|r| r.last_success);
         // Never after now: a clock that was ahead must not hide days without a success.
-        let last_success = match (ok, previous) {
+        let last_success = match (ok || message == NOT_CONFIGURED, previous) {
             (false, Some(t)) => t.min(time),
             _ => time,
         };
@@ -496,7 +502,8 @@ pub struct Report {
     pub time: u64,
     pub ok: bool,
     pub message: String,
-    /// The last check that was ok (Unix seconds); until one is, the first check reported.
+    /// The last check that was ok or found updates not configured (Unix seconds); until one is, the
+    /// first check reported.
     pub last_success: u64,
 }
 

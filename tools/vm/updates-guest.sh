@@ -4,7 +4,7 @@
 # bootc status --format json is canonical (sorted keys, one line): in .status, "booted" comes before
 # "rollback", "rollbackQueued" and "staged", and nothing after "staged" holds an image digest.
 
-digest() { # booted | staged | rollback: that deployment's image digest, or "none"
+deployment() { # booted | staged | rollback: that deployment's part of bootc status
 	s="$(bootc status --format json)"
 	case "$1" in
 	booted) s="$(bootc status --booted --format json)" ;;
@@ -14,8 +14,18 @@ digest() { # booted | staged | rollback: that deployment's image digest, or "non
 		s="${s%%'"rollbackQueued"'*}"
 		;;
 	esac
-	d="$(printf '%s' "$s" | grep -o '"imageDigest":"[^"]*"' | head -1 | cut -d'"' -f4)"
+	printf '%s' "$s"
+}
+
+digest() { # booted | staged | rollback: that deployment's image digest, or "none"
+	d="$(deployment "$1" | grep -o '"imageDigest":"[^"]*"' | head -1 | cut -d'"' -f4)"
 	echo "${d:-none}"
+}
+
+expect_version() { # expect_version booted|staged|rollback VERSION: the version bootc reports for it
+	v="$(deployment "$1" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)"
+	echo "$1 version: ${v:-none}"
+	[ "$v" = "$2" ]
 }
 
 expect() { # expect booted|staged|rollback DIGEST|none
