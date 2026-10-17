@@ -1,0 +1,64 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Once this version is confirmed good (nyra-tpm-retire.service, after boot-complete.target): remove the
+# disk's TPM2 enrollments for retired policy keys and mark those keys retired in the disk's record
+# (docs/BOOT.md, "Disk encryption"; docs/SIGNING.md, "The PCR policy key"), so that they are never
+# enrolled again, even after the recovery key on an old version signed with one. Retired are:
+#   - the keys that this version neither signed with nor carries as the next one, enrolled before the
+#     key this version booted with (after a rotation, the old key). Only when an enrollment for that
+#     key is in the record, so that the disk always keeps one that works; the record lists them in the
+#     order they were made, so a fallback to an older release that is confirmed good never removes
+#     the enrollment of a newer key (it still unlocks the newer release, which may be tried again);
+#   - the keys this version's image lists as retired (/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys,
+#     checked by the release gate), whether the disk is enrolled for them or not: keys that a machine
+#     never saw retired (it missed a rotation and was enrolled again) or that are no longer trusted.
+# Versions signed only with them stop unlocking the disk by themselves, while a fallback to them
+# before this confirmation still did. The keys this boot booted with and carries as next come from
+# its initrd (/run/nyra-tpm2-keep, nyra-tpm-enroll); the enrollments, by key slot number, from the
+# record, and a slot is removed only if the LUKS2 header has it as a TPM2 enrollment (a record left
+# behind never removes the recovery key or another kind of key). Removing a key slot needs no key and
+# no TPM.
+set -eu
+
+record=/var/lib/nyra/tpm2-slots
+keep=/run/nyra-tpm2-keep
+list=/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys
+log() { echo "nyra-tpm-retire: $*"; }
+
+[ -f "$record" ] && [ -f "$keep" ] || exit 0
+current="$(sed -n 1p "$keep")"
+old=""
+if grep -Eq "^[0-9]+ $current( pin)?\$" "$record"; then
+  # The record's enrollments made before the current key's, for keys that are not kept.
+  old="$(sed -n "/^[0-9][0-9]* $current\( pin\)\?\$/q; /^[0-9][0-9]* /p" "$record" | grep -v -F -f "$keep" || true)"
+else
+  log "the record has no enrollment for this boot's policy key ($current): no key retired by the rotation"
+fi
+# The keys the image lists as retired (never this boot's), with their enrollments.
+listed="$(grep -Ex '[0-9a-f]{64}' "$list" 2>/dev/null | grep -vxF "$current" || true)"
+if [ -n "$listed" ]; then
+  old="$(printf '%s\n' "$old" "$(grep -E "^[0-9]+ ($(echo $listed | tr ' ' '|'))( pin)?\$" "$record" || true)" | sed '/^$/d' | sort -u)"
+fi
+gone="$(printf '%s\n' "$(echo "$old" | sed -n 's/^[0-9][0-9]* \([0-9a-f]*\).*/\1/p')" $listed | sed '/^$/d' |
+  sort -u | while read -r k; do grep -qx "retired $k" "$record" || echo "retired $k"; done)"
+[ -n "$old" ] || [ -n "$gone" ] || exit 0
+
+wipe=""
+if [ -n "$old" ]; then
+  dev="$(cryptsetup status root | sed -n 's/^ *device: *//p')"
+  [ -n "$dev" ] || { log "the encrypted root's device was not found"; exit 1; }
+  # Only key slots that the header has as TPM2 enrollments now: also leaves out slots that are gone
+  # (a run cut off after removing them and before writing the record, a power cut, leaves a record that
+  # lists them, and systemd-cryptenroll fails on those).
+  tpm2="$(systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) *tpm2\( .*\)\?$/\1/p')"
+  wipe="$(echo "$old" | sed 's/ .*//' | grep -xF "${tpm2:--}" | tr '\n' ',' | sed 's/,$//' || true)"
+fi
+# The new record is written first: if it cannot be (a full /var), nothing is removed.
+{
+  if [ -n "$old" ]; then grep -v -x -F "$old" "$record" || true; else cat "$record"; fi
+  [ -z "$gone" ] || echo "$gone"
+} > "$record.new"
+[ -z "$wipe" ] || systemd-cryptenroll --wipe-slot="$wipe" "$dev"
+mv "$record.new" "$record"
+[ -z "$wipe" ] || log "removed the enrollments of retired policy keys: $(echo "$wipe" | tr ',' ' ')"
+[ -z "$gone" ] || log "retired: $(echo "$gone" | sed 's/^retired //' | tr '\n' ' ')"

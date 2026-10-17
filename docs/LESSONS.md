@@ -543,6 +543,12 @@ Each line is something that broke or surprised us once.
   `--one-file-system`.
 - An initrd that writes into the root's `/var` (the running system's, so its root's) must not follow
   symbolic links there: check every component of the path before reading or writing.
+- `systemd-cryptenroll --tpm2-signature=` checks a new enrollment by unsealing it, which needs a
+  signature by the enrolled key for the current PCR 11: a next policy key, which has signed nothing
+  yet, can only be enrolled without that check.
+- In the initrd, after bootc's `bootc-root-setup.service`, `/sysroot` is the composed root: `/usr` the
+  composefs image (pinned by the digest on the sealed command line, so a file read from it is the
+  image's), `/var` the shared `/var`; before it, `/sysroot` is the physical root.
 - `cryptsetup open --test-passphrase -v` says which key slot a key opens ("Key slot N unlocked.") on
   stderr.
 - **`systemd-cryptenroll` does nothing when the same policy is already enrolled** (it compares the
@@ -567,12 +573,32 @@ Each line is something that broke or surprised us once.
   key included, on stderr: keep stderr out of the logs.
 - systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
   echoed. A test that types a secret on a console waits a moment after the prompt.
+- "Remove every enrollment for a key this boot neither uses nor carries as next" is wrong on a
+  fallback: the previous release, confirmed good, would remove the newer key's enrollment (and mark it
+  retired, so it is never enrolled again). Found while writing the rotation test in a VM; the record
+  keeps enrollments in the order they were made, and only older ones are removed.
 - **A `Type=oneshot` unit that is still running when the initrd ends fails.** initrd-cleanup's isolate
   stops it with SIGTERM, and for a oneshot only exit status 0 is a clean end (`Result=signal`). The
   console shows only "Stopped", the failed state crosses the switch to the real root, and the running
   system is `degraded` with no `FAILED` line anywhere on the console. A wait in the background that the
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
+- **TPM2 PIN (systemd 262).** gpt-auto sets `tpm2-measure-pcr=yes`, which turns off libcryptsetup's
+  token plugin, so systemd-cryptsetup handles the PIN itself: up to five tries, then
+  the passphrase prompt; an empty PIN (with Argon2id) goes straight to it; a locked TPM
+  ("dictionary attack lock-out mode") too. It asks for the PIN before it unseals, so it asks even when
+  the PCRs no longer match (and the PIN typed is then never checked), and for a token of another policy
+  key; the next token takes the PIN from the kernel's cache (`tpm2-pin`), an empty one is asked again.
+  A correct PIN does not reset the TPM's failure counter: only time does.
+- systemd-cryptenroll takes `$PIN` (and `$NEWPIN`) once: the first TPM2 token it tries consumes it, and
+  for the next one it asks on the console. The credential `cryptenroll.tpm2-pin` (in
+  `$CREDENTIALS_DIRECTORY`) is read again for each token, and for each of its five tries: a wrong PIN
+  there counts five times against the TPM.
+- With a PIN, systemd-cryptenroll replaces an enrollment of the same policy (same key, same PCR values)
+  by itself, removing its slot after adding the new one; without a PIN it keeps it and does nothing.
+- swtpm (libtpms) locks after 3 wrong authorizations and forgives one every 1000 s of running time; a
+  shutdown that is not orderly also counts as one when a protected object was used. A test that needs
+  a known count copies the TPM state directory and puts it back.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
