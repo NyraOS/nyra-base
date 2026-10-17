@@ -14,8 +14,8 @@ it is something the user switches on, not off), and how CI proves it.
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
-| Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
-| Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored |
+| Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
+| Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
@@ -247,12 +247,33 @@ unattended machine reads nothing that is plugged into it.
 | Mounting | udisks2 (`udisksctl`, and later the desktop through D-Bus), at `/media/<user>/<label>`. `/media` is a link to `/run/media`, since the root file system is read-only. On unmount or removal udisks2 removes the mount point |
 | Options | udisks2 always adds `nosuid` and `nodev`. `90-nyra-udisks.rules` adds `noexec` and takes `exec`, `suid` and `dev` off the options a caller may ask for, so `udisksctl mount -o exec` is refused |
 | Trusted media | a file system in `/etc/nyra/trusted-media` is mounted without `noexec`; `nosuid` and `nodev` stay (below) |
-| File systems | only kernel drivers: vfat, exfat, NTFS (ntfs3, udisks2's first choice; ntfs-3g is not installed), ext4, btrfs, xfs, iso9660, udf. No FUSE drivers, no new checking tools. f2fs stays unloadable (see "Filesystems") |
-| Services | `udisks2.service` and `polkit.service` start through D-Bus on the first request, never at boot: our preset disables `udisks2.service`, which Debian enables in `graphical.target`. polkitd runs as its own user, sandboxed by its unit; it has no setuid helper |
-| Who may mount | root always (polkit allows root everything). Other users by udisks2's polkit policy: a removable file system from an active local session without a password; an internal disk with an administrator's password, which needs polkit's password helper. Its socket, `polkit-agent-helper.socket`, is disabled (our preset) until something in the base asks users for a password through polkit |
+| File systems | vfat, exfat, NTFS (the kernel's `ntfs` driver: kernel 7.2 has no ntfs3, and udisks2, which tries ntfs3 first, goes on to it), ext4 (also ext2 and ext3, read by the ext4 driver), btrfs, xfs, iso9660, udf. Only kernel drivers: no FUSE drivers, no new checking tools. Every other file system is refused (below) |
+| Services | `udisks2.service` and `polkit.service` start through D-Bus on the first request, never at boot: our preset disables `udisks2.service`, which Debian enables in `graphical.target`. udisks2 runs as root, with a hardening drop-in (`udisks2.service.d/10-nyra.conf`: no new privileges, only Unix and netlink sockets, no namespaces, no real-time scheduling, no writable and executable memory, native system calls only); it keeps the system's mount namespace, since its mounts must be the system's. polkitd runs as its own user, sandboxed by its unit; it has no setuid helper |
+| Who may mount | root always (polkit allows root everything). Other users by udisks2's polkit policy: a removable file system from an active local session without a password; an internal disk with an administrator's password. Setting up a file as a loop device (`udisksctl loop-setup`), which udisks2 allows any active session, needs an administrator's password too (`/usr/share/polkit-1/rules.d/49-nyra.rules`): a user's file would otherwise become a file system for the kernel to read, with no stick at all |
+| Passwords through polkit | none today. Every "administrator's password" above needs polkit's password helper, whose socket (`polkit-agent-helper.socket`) is disabled (our preset) until something in the base asks users for a password through polkit and the helper has no known open issue (`tools/sbom/mitigations.toml`); until then those actions are refused for everyone but root. The administrators are the group `sudo` (`49-nyra.rules`, as Debian's default) |
+| Logins | `libpam-systemd`, which polkitd needs: every login gets a logind session, which is how polkit knows an active local session. With it every user who logs in, root on the console too, gets their user manager (`user@UID.service`) and `/run/user/UID`; the user manager starts the user units Debian enables for every user. At shutdown `/run/user/UID` is unmounted only after the user manager has stopped (`user-runtime-dir@.service.d/10-nyra.conf`) |
 
-Cost: 28 packages, about 15 MB installed (udisks2 with its libblockdev plugins and parted, polkitd,
-and NSS, 5 MB, for udisks2's crypto plugin). No resident process until a user asks to mount.
+**Refused file systems.** `90-nyra-udisks.rules` gives every other file system that blkid finds
+(hfsplus, squashfs, erofs, f2fs, ...) the usage `nyra-refused` instead of `filesystem`, and udisks2
+mounts only a device whose usage is `filesystem`. A caller can still name a file system type
+(`udisksctl mount -t TYPE`), which udisks2 accepts from a fixed list of well-known ones; the kernel
+loads the driver for it on its own, unless it is blacklisted (see "Filesystems"): hfsplus, squashfs
+and f2fs are. What stays: erofs is always loaded (composefs uses it), so a user in an active session
+can ask for `-t erofs` on a stick they plug in, whatever blkid saw on it. udisks2 has no setting to
+refuse a type asked for by name.
+
+Cost: 29 packages, about 15 MB installed (udisks2 with its libblockdev plugins and parted, polkitd,
+libpam-systemd, and NSS, 5 MB, for udisks2's crypto plugin). No resident process until a user asks
+to mount.
+
+**What polkitd turns on besides udisks2.** With polkitd in the image, every D-Bus service that asks
+polkit gets its answers from the services' own policies (before, without polkitd, their checks
+failed for everyone but root). For a user in an active local session, without a password: logind's
+power-off, reboot and suspend, and lingering for themselves (`set-self-linger`: their user manager
+keeps running after they log out); Flatpak's system helper updates installed apps and runtimes,
+changes remotes and repository settings and updates the AppStream data, and members of `sudo` may
+also install apps system-wide (Flatpak's own rule). Nothing more is opened here; what stays is decided
+with Settings.
 
 udisks2 reads the options from udev properties of the device (`UDISKS_MOUNT_OPTIONS_DEFAULTS`,
 `UDISKS_MOUNT_OPTIONS_ALLOW`), which win over its own defaults and over

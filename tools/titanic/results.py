@@ -125,7 +125,8 @@ TESTS = {
             "into the boot: the writer stops, sync returns, the mount goes away, nothing waits for the "
             "stick, every shutdown is clean. A stick with ESP, root, swap and /home partitions at boot "
             "is not used. Mounted only when asked (udisks2), nosuid and nodev, noexec unless the stick "
-            "is in the list of trusted media; a program runs from a trusted stick only."),
+            "is in the list of trusted media; a program runs from a trusted stick only. A squashfs stick "
+            "is refused, also by name; a user's loop device needs an administrator."),
     "T15": ("Secure defaults", "full", [DEFAULTS, SECURE_BOOT, UPDATES, TPM_UNLOCK],
             "Secure Boot with a MOK, lockdown, AppArmor, firewall, listening sockets, running units and "
             "the signature policy checked after installation and again after updates. The TPM unlock "

@@ -587,8 +587,25 @@ Each line is something that broke or surprised us once.
 - Debian's packages enable `udisks2.service` in `graphical.target` and polkit's
   `polkit-agent-helper.socket` (polkit 127 and later: the password helper is socket-activated, no
   longer setuid). Both work through D-Bus or the socket on request; a preset keeps them off at boot.
-- udisks2 2.11 with polkitd 128 adds 28 packages, about 15 MB installed (a snapshot of October
+- udisks2 2.11 with polkitd 128 adds 29 packages, about 15 MB installed (a snapshot of October
   2026); the largest is NSS (5 MB), which its crypto plugin needs through `libvolume-key1`.
+  polkitd depends on `logind`, which `libpam-systemd` provides: its postinst puts `pam_systemd` into
+  `/etc/pam.d/common-session`, so every login gets a logind session, a user manager and a
+  `/run/user/UID` tmpfs (root's console login too, which it did not before).
+- **`run-user-UID.mount` has no order against the user manager.** At shutdown systemd unmounts it
+  next to stopping `user@UID.service` and `user-runtime-dir@UID.service` (whose stop unmounts it
+  anyway); once in CI the unmount came first, while the user manager still had files open there:
+  `Failed unmounting run-user-0.mount`. `After=run-user-%i.mount` in a `user-runtime-dir@.service`
+  drop-in stops the mount unit last.
+- udisks2 mounts only a device whose udev usage (`ID_FS_USAGE`) is `filesystem` (or not probed at
+  all). A file system type named by the caller (`-t`) is accepted from a list built into udisks2
+  (hfsplus, squashfs, erofs, f2fs and more) or from `/proc/filesystems`; nothing configures it away.
+- Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
+  signature and goes on to the next driver when the type is unknown.
+- polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
+  needed and nobody can answer it), which tells a policy apart without an agent. A logind session
+  without a seat (`systemd-run -p PAMName=login --uid=USER`) is active and local, like a console
+  login on a seat.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test

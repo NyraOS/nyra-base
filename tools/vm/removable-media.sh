@@ -3,12 +3,16 @@
 # CI only: Titanic T14, removable media pulled out (docs/TITANIC.md, docs/DEFAULTS.md "Removable
 # media"). On a copy-on-write copy of the installed test disk, with USB sticks on a USB controller
 # that QEMU plugs in and pulls out (vm-boot.py --qemu, --qmp):
-#   1  two sticks with a FAT file system; nothing mounts them by itself. One goes into the list of
-#      trusted media (a list others can write is ignored). udisksctl mounts both: nosuid and nodev,
-#      noexec on the other one only (exec, suid and dev refused); a program runs from the trusted
-#      one only. The other one is pulled out while it is written without a pause: the writer
+#   1  two sticks with a FAT file system and one with squashfs; nothing mounts them by itself. The
+#      squashfs one is refused, and so is squashfs asked for by name on a FAT stick (its module is
+#      not even loaded). One FAT stick goes into the list of trusted media (a list others can write
+#      is ignored). udisksctl mounts both: nosuid and nodev, noexec on the other one only (exec,
+#      suid and dev refused); a program runs from the trusted one only; udisks2 runs with its
+#      hardening. The other one is pulled out while it is written without a pause: the writer
 #      stops, sync returns, the mount goes away, the system runs. Plugged in again, it is not
-#      mounted until asked, and mounts. Clean shutdown with the trusted one still mounted.
+#      mounted until asked, and mounts. A user in an active session may mount a stick, but not set
+#      up a file as a loop device (polkit asks for an administrator, nobody can answer). Clean
+#      shutdown with the trusted stick still mounted.
 #   2  a stick mounted and written while an update (plain `bootc switch` to a test version, as in
 #      tools/titanic/extreme-load.sh) runs, pulled out during it: the update is staged exactly; clean
 #      shutdown, which finalizes it.
@@ -64,6 +68,12 @@ rm -r root
 EOF
 sudo podman run --rm --network none -v "$media:/w" "$image" bash /w/sticks.sh
 sudo chown "$(id -u):$(id -g)" "$media"/*.raw
+# A stick with a file system Nyra does not mount (squashfs, on the whole stick), made on the runner.
+command -v mksquashfs >/dev/null || sudo apt-get install -y -q --no-install-recommends squashfs-tools >/dev/null
+mkdir -p "$media/foreign"
+echo "a squashfs stick" > "$media/foreign/readme"
+mksquashfs "$media/foreign" "$media/foreign.raw" -quiet -noappend
+truncate -s 4M "$media/foreign.raw"
 
 xhci=(--qemu=-device "--qemu=qemu-xhci,id=xhci")
 stick() { # stick NAME SERIAL: vm-boot.py options that plug in NAME.raw at QEMU's start
@@ -74,6 +84,7 @@ stick() { # stick NAME SERIAL: vm-boot.py options that plug in NAME.raw at QEMU'
 mapfile -t untrusted < <(stick untrusted T14UNTRUSTED)
 mapfile -t trusted < <(stick trusted T14TRUSTED)
 mapfile -t system < <(stick system T14SYSTEM)
+mapfile -t foreign < <(stick foreign T14FOREIGN)
 unplug() { echo "{\"execute\": \"device_del\", \"arguments\": {\"id\": \"$1\"}}"; }
 plug() { echo "{\"execute\": \"device_add\", \"arguments\": {\"driver\": \"usb-storage\", \"bus\": \"xhci.0\", \"drive\": \"$1\", \"id\": \"$1\", \"serial\": \"$2\", \"removable\": true}}"; }
 
@@ -115,11 +126,16 @@ U=/dev/disk/by-label/T14UNTRUST T=/dev/disk/by-label/T14TRUSTED
 # What the VM sees of the sticks; nothing from them is mounted or swapped to, and udisks2 has not
 # even started: nothing mounts a stick before a user asks.
 sticks='lsblk -o NAME,TRAN,RM,SIZE,PARTTYPENAME,FSTYPE,LABEL,MOUNTPOINTS; m="$(findmnt -rn -o SOURCE,TARGET | grep "^/dev/sd" || true)"; echo "mounted from the sticks: ${m:-nothing}"; w="$(swapon --show --noheadings)"; echo "swap: ${w:-none}"; test -z "$m" && test -z "$w" && ! systemctl -q is-active udisks2.service && echo "udisks2: not running"'
+# squashfs: not a file system to udisks2 (usage "nyra-refused"), so not mounted; asked for by name on
+# the FAT stick, it is not mounted either, since its module does not load.
+foreign_fs='d="$(ls /dev/disk/by-id/usb-*T14FOREIGN* | head -1)" && udevadm info -q property --property=ID_FS_TYPE --property=ID_FS_USAGE "$d" && test "$(udevadm info -q property --property=ID_FS_USAGE --value "$d")" = nyra-refused && { udisksctl mount -b "$d" 2>&1 || true; } && ! findmnt --source "$d" >/dev/null && { udisksctl mount -b '"$U"' -t squashfs 2>&1 || true; } && ! findmnt --source '"$U"' >/dev/null && ! grep -qw squashfs /proc/filesystems && echo "squashfs: not mounted, by its type or by name, and its module not loaded"'
 # The trusted stick into the list; udev applies the list (NYRA_MEDIA_TRUSTED), but only while
 # nobody else can write it.
 trust='u="$(lsblk -no UUID '"$T"')" && s="$(udevadm info -q property --property=ID_SERIAL --value '"$T"')" && echo "trusted: $u $s" && mkdir -p /etc/nyra && echo "$u $s" > /etc/nyra/trusted-media && t() { udevadm trigger --action=change --settle "$1" && udevadm info -q property --property=NYRA_MEDIA_TRUSTED --value "$1"; } && test "$(t '"$T"')" = 1 && test "$(t '"$U"')" = 0 && chmod 666 /etc/nyra/trusted-media && test "$(t '"$T"')" = 0 && echo "the list writable by others: ignored" && chmod 644 /etc/nyra/trusted-media && test "$(t '"$T"')" = 1 && echo "the list owned by root, 0644: the trusted stick is trusted, the other one not"'
 # exec, suid and dev cannot be asked for; then both mounted, with their options.
 mount2='a=; for o in exec suid dev; do e="$(udisksctl mount -b '"$U"' -o "$o" 2>&1)"; echo "$e"; echo "$e" | grep -q "not allowed" || a=1; done; has() { echo "$1" | tr , "\n" | grep -qx "$2"; } && test -z "$a" && ! findmnt --source '"$U"' >/dev/null && udisksctl mount -b '"$U"' && udisksctl mount -b '"$T"' && mu="$(findmnt -rno TARGET --source '"$U"')" && mt="$(findmnt -rno TARGET --source '"$T"')" && ou="$(findmnt -rno OPTIONS --source '"$U"')" && ot="$(findmnt -rno OPTIONS --source '"$T"')" && echo "untrusted: $mu $ou" && echo "trusted: $mt $ot" && has "$ou" nosuid && has "$ou" nodev && has "$ou" noexec && has "$ot" nosuid && has "$ot" nodev && ! has "$ot" noexec'
+# udisks2 runs with Nyra's hardening (udisks2.service.d/10-nyra.conf).
+hardening='p="$(systemctl show -P RestrictAddressFamilies udisks2.service)"; n="$(systemctl show -P NoNewPrivileges udisks2.service)"; echo "udisks2: RestrictAddressFamilies=$p NoNewPrivileges=$n"; systemctl -q is-active udisks2.service && test "$p" = "AF_UNIX AF_NETLINK" && test "$n" = yes'
 # A program on each (FAT shows .exe files as executable): it runs from the trusted stick only.
 run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/true.exe" && echo "from the trusted stick: runs" && e="$("$mu/true.exe" 2>&1)"; echo "from the other one: $e"; echo "$e" | grep -q "Permission denied"'
 # Written without a pause (32 MiB at a time, each flushed) until the stick is pulled out; 2 minutes
@@ -127,6 +143,11 @@ run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/
 write_unplug='echo "writing to $mu"; timeout 120 sh -c "while dd if=/dev/zero of=\"\$1/t14-write\" bs=1M count=32 conv=fsync status=none; do :; done" sh "$mu" & w=$!; sleep 2; echo "@@UNPLUG""-WRITE@@"; wait $w; rc=$?; echo "writer: exit $rc"; test $rc = 0'
 gone='for i in $(seq 30); do test -e '"$U"' || break; sleep 1; done; ! test -e '"$U"' && echo "the stick is gone" && timeout 60 sync && echo "sync: returned" && for i in $(seq 30); do findmnt "$mu" >/dev/null || break; sleep 1; done; findmnt "$mu"; ! findmnt "$mu" >/dev/null && echo "its mount is gone" && ls "$mt" && journalctl -k -b --no-pager | grep -iE "disconnect|I/O error" | tail -5; '"$running"
 replug='echo "@@REPLUG""-1@@"; for i in $(seq 30); do test -e '"$U"' && break; sleep 1; done; test -e '"$U"' && udevadm settle && sleep 5 && ! findmnt --source '"$U"' && echo "plugged in again: not mounted" && udisksctl mount -b '"$U"' && findmnt -rno TARGET,OPTIONS --source '"$U"' && findmnt -rno OPTIONS --source '"$U"' | tr , "\n" | grep -qx noexec && udisksctl unmount -b '"$U"''
+# A user in an active local session (seatless, so active: a logind session through PAM): polkit
+# lets them mount a stick, but asks an administrator before a file becomes a loop device
+# (49-nyra.rules); without anyone to answer, udisksctl loop-setup is refused. polkit loaded the
+# rules without an error.
+loop='id t14user >/dev/null 2>&1 || useradd -m t14user; truncate -s 16M /var/tmp/t14-loop.img && mkfs.vfat /var/tmp/t14-loop.img >/dev/null && chmod 644 /var/tmp/t14-loop.img && out="$(systemd-run --wait --pipe -q -p PAMName=login --uid=t14user sh -c "loginctl show-session \"\$XDG_SESSION_ID\" -p Active -p Remote; pkcheck --action-id org.freedesktop.udisks2.filesystem-mount --process \$\$; echo mount: \$?; pkcheck --action-id org.freedesktop.udisks2.loop-setup --process \$\$; echo loop-setup: \$?; udisksctl loop-setup --no-user-interaction -f /var/tmp/t14-loop.img; echo udisksctl: \$?" 2>&1)"; echo "$out"; journalctl -b -u polkit.service -o cat --no-pager | tail -5; echo "$out" | grep -qx "Active=yes" && echo "$out" | grep -qx "mount: 0" && echo "$out" | grep -qx "loop-setup: 2" && echo "$out" | grep -qx "udisksctl: 1" && ! losetup -j /var/tmp/t14-loop.img | grep -q . && ! journalctl -b -u polkit.service -o cat --no-pager | grep -qiE "error (compiling|evaluating|loading)" && echo "loop-setup: refused without an administrator"'
 # The update while the stick is written, pulled out half a second after the switch starts.
 reg='mkdir -p /etc/containers/registries.conf.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf && sync'
 digest() { # digest booted|staged: sets d to that deployment's image digest, or "none" (as in tools/vm/updates-guest.sh)
@@ -147,11 +168,12 @@ vm() { # vm N TITLE [vm-boot.py options and --command ...]
     --log "$logs/serial-removable-media-$1.log" --summary "$summary" --title "Removable media $1: $2" "${@:3}"
 }
 
-vm 1 "trusted and untrusted, pulled out during a write, plugged in again" \
-  "${xhci[@]}" "${untrusted[@]}" "${trusted[@]}" \
+vm 1 "trusted, untrusted and refused sticks, one pulled out during a write, plugged in again" \
+  "${xhci[@]}" "${untrusted[@]}" "${trusted[@]}" "${foreign[@]}" \
   --qmp "@@UNPLUG-WRITE@@=>$(unplug untrusted)" --qmp "@@REPLUG-1@@=>$(plug untrusted T14UNTRUSTED)" \
-  --command "$running" --command "$sticks" --command "$trust" --command "$mount2" --command "$run" \
-  --command "$write_unplug" --command "$gone" --command "$replug"
+  --command "$running" --command "$sticks" --command "$foreign_fs" --command "$trust" --command "$mount2" \
+  --command "$hardening" --command "$run" --command "$write_unplug" --command "$gone" --command "$replug" \
+  --command "$loop"
 
 vm 2 "pulled out during an update" "${xhci[@]}" "${untrusted[@]}" \
   --qmp "@@UNPLUG-UPDATE@@=>$(unplug untrusted)" \

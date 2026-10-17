@@ -36,7 +36,7 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
 | T11 | Version jumps and channels | `tools/vm/channels.sh` (a jump over several versions with a retracted one between, refused sheets on the way and a retraction below the floor the jump raised; versions that change the sheet key, the default channel and the repository; a channel chosen on the machine, which survives a rollback; beta to stable back to stable's older version only with a sheet issued after the change, once, never below the floor, staged afresh with today's `/etc` even when it is the rollback deployment) | full |
 | T12 | Hostile root (`rm -rf /`, `apt`, unsigned modules) | `tools/titanic/hostile-root.sh` (apt and dpkg, an unsigned module, the lockdown, `rm -rf --no-preserve-root /` then Reset settings, with Secure Boot) | full |
 | T13 | Extreme load during an update | `tools/titanic/extreme-load.sh` (8 busy loops on 2 vCPUs, less than 200 MiB of memory free, the disk written without a pause) | full |
-| T14 | Removable media pulled out | `tools/vm/removable-media.sh` (USB sticks pulled out during a write, during an update and during the boot; a stick with ESP, root, swap and /home partitions at boot; trusted and untrusted sticks) | full |
+| T14 | Removable media pulled out | `tools/vm/removable-media.sh` (USB sticks pulled out during a write, during an update and during the boot; a stick with ESP, root, swap and /home partitions at boot; trusted, untrusted and refused sticks; a user's loop device) | full |
 | T15 | Secure defaults | `tools/vm/security-defaults.sh`, `tools/vm/secure-boot.sh` (after installation), `tools/vm/updates.sh` (the same check again after updates), `tools/signing/tpm-unlock.sh` (the TPM releases the disk key only in the initrd, swtpm; no NvPCR definitions in the image) | full |
 
 A test passes only if every step that runs it succeeded; a test that covers only part of its
@@ -210,12 +210,14 @@ How the base mounts them is in docs/DEFAULTS.md, "Removable media".
 
 | Boot | What | Expected |
 |---|---|---|
-| 1 | two FAT sticks plugged in | nothing mounted, udisks2 not even started |
+| 1 | two FAT sticks and a squashfs stick plugged in | nothing mounted, udisks2 not even started |
+| 1 | `udisksctl mount` of the squashfs stick, and of a FAT stick with `-t squashfs` | neither mounted; squashfs's module not even loaded |
 | 1 | one stick put in `/etc/nyra/trusted-media` | udev marks it trusted; with the list writable by others, it is not |
 | 1 | `udisksctl mount` with `exec`, `suid`, `dev` | refused |
-| 1 | both mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other) |
+| 1 | both mounted, a program copied to each | both `nosuid,nodev`; the untrusted one `noexec` too; the program runs from the trusted stick only ("Permission denied" on the other); udisks2 runs with its hardening drop-in |
 | 1 | the untrusted stick written without a pause (32 MiB, flushed, again and again), pulled out 2 s in | the writer stops on its own, `sync` returns, the stick and its mount are gone within 30 s, the trusted stick still reads, the system `running` |
 | 1 | plugged in again | not mounted until asked; then mounts `noexec` |
+| 1 | a user in an active logind session (`systemd-run -p PAMName=login`) | polkit lets them mount a stick, but `loop-setup` needs an administrator: `udisksctl loop-setup` refused, no loop device; polkit loaded the rules without an error |
 | 1 | shutdown with the trusted stick mounted | clean |
 | 2 | a stick mounted and written, `bootc switch` to a test version, the stick pulled out half a second into the switch | the switch was still running, then succeeds with exactly the test version staged; clean shutdown, which finalizes it |
 | 3 | a boot with a stick that has an ESP, a root (x86-64), a swap and a /home partition, by their Discoverable Partitions types, and the FAT stick | the test version runs; the root, the ESP and `/dev/gpt-auto-root` are on the boot disk; no swap; nothing mounted from the sticks |

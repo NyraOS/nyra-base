@@ -103,6 +103,8 @@ RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \
     test -x /usr/lib/nyra/media/trusted && test -f /usr/lib/udev/rules.d/90-nyra-udisks.rules && \
+    test -f /usr/share/polkit-1/rules.d/49-nyra.rules && test -f /usr/share/polkit-1/rules.d/50-default.rules && \
+    grep -q pam_systemd /etc/pam.d/common-session && \
     test "$(/usr/lib/nyra/media/trusted)" = NYRA_MEDIA_TRUSTED=0
 
 # Image signatures (docs/SIGNING.md): images from updates.nyraos.com must carry our keyless
