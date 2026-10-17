@@ -9,13 +9,13 @@
 //!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key.
 
-use nyra_updated::system::{run as run_limited, Real};
+use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, Config, Error, HealthAction, Lock, Outcome, Store, System,
 };
 use std::path::Path;
 use std::process::{Command, ExitCode};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const CONFIG: &str = "/usr/lib/nyra/updates/updated.conf";
 const KEYS: &str = "/usr/lib/nyra/updates/channel-sheet.pem";
@@ -59,16 +59,14 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             Ok((priority, true, format!("{outcome:?}")))
         }
         "health-failed" => {
-            // The boot state it decided on, for the journal.
-            let mut sys = Real::default();
-            let info = sys.boot_info()?;
+            // Every call has its limit (SHORT); the unit's TimeoutStartSec= is above their sum.
             let store = Store {
                 dir: STATE_DIR.into(),
             };
-            let action = on_health_failure(&mut sys, &store);
+            let action = on_health_failure(&mut Real::default(), &store, Path::new(LOCK));
             // The system stays up unhealthy (an error too): the user is told how to repair it.
             if !matches!(action, Ok(HealthAction::Reboot)) {
-                match run_limited(&mut Command::new(NOTICE), Duration::from_secs(60)) {
+                match run_limited(&mut Command::new(NOTICE), SHORT) {
                     Ok(out) if out.status.success() => {}
                     Ok(out) => eprintln!(
                         "<4>nyra-updated: {NOTICE} failed ({}): {}",
@@ -78,7 +76,7 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
                     Err(e) => eprintln!("<4>nyra-updated: {NOTICE}: {e}"),
                 }
             }
-            action.map(|a| (6, true, format!("{a:?} ({info:?})")))
+            action.map(|a| (6, true, format!("{a:?}")))
         }
         "health" => {
             let booted = Real::default()

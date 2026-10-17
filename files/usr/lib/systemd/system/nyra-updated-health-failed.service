@@ -12,6 +12,9 @@ DefaultDependencies=no
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/nyra-updated health-failed
+# Off trial it may wait for systemctl, systemd-bless-boot, bootc status and the notice, up to 60 s
+# each; the default 90 s would stop it before the notice (a unit test checks the sum).
+TimeoutStartSec=5min
 # It reads the boot state (systemctl, systemd-bless-boot, EFI variables) and asks for a reboot, or
 # reads bootc status (off trial, with a pending version), writes its state file and the notice (in
 # /run). bootc needs no mount namespace of its own: PrivateTmp= already gives the unit one.

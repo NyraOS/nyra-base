@@ -66,8 +66,8 @@ reboots fully while a new version is on trial, so systemd-boot's boot counting c
 (`docs/BOOT.md`); otherwise the system stays up and says how to reset the settings (below). Each
 rule has a unit test (`updated/daemon/src/tests.rs`):
 
-1. One update at a time (a lock); every bootc, systemctl and curl call has a time limit and is killed
-   with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
+1. One update at a time (a lock, which `health-failed` takes too before it touches the state); every
+   bootc, systemctl and curl call has a time limit and is killed with its children when it hangs. `bootc switch` and `bootc rollback` are followed by `sync`:
    bootc leaves part of what it writes on the ESP in memory, and a power cut then can damage the ESP
    (FAT has no journal; `patches/upstream/bootc-finalize-entries-swap.md`).
 2. The sheet's sequence and retracted digests are saved atomically before anything acts on the sheet.
@@ -79,8 +79,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
 6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
    "No changes"), once: `bootc rollback` swaps the boot order every time it runs, so when `bootc status`
    already reports the rollback deployment as the next boot (`rollbackQueued`), a check before the
-   reboot runs nothing (`WaitingForReboot`). Not for a version forgiven under rule 12: that one is
-   staged afresh, as there.
+   reboot runs nothing (`WaitingForReboot`), as for a rollback the user queued. Not for a version
+   forgiven under rule 12: that one is staged afresh, as there.
 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a staged
    deployment that must not boot is never finalized (below).
 8. A failed health check reboots fully: never a soft reboot, always after a soft reboot (which bypasses
@@ -94,10 +94,29 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
     install with an explicit tag (`updates.nyraos.com/nyra-base:stable`): without one the image counts
     as foreign.
 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
-    version floor) is discarded the same way as in rule 7.
+    version floor) is discarded the same way as in rule 7. A rollback queued for the next boot
+    (`rollbackQueued`, by the user or by rule 6) to such a version is undone with another
+    `bootc rollback` (`RollbackUndone`), so it never boots. After a fallback bootc still reports the
+    failed version as the next boot (`docs/LESSONS.md`); this sets that order right too.
 12. A version is marked failed only when the version the machine fell back to passes its health
     checks, or when the machine falls back from it a second time (below, "The version or the
     settings").
+13. A version the machine went back from on purpose (`bootc rollback` by the user, later "go back to
+    the previous version" in Settings, or by root) is not staged again (`HeldBack`): the machine
+    stays where the user put it until the sheet offers another version, or the running version is
+    retracted. A newer version that is neither failed, retracted nor forgiven becomes the rollback
+    deployment only that way.
+
+**Going back by hand.** The version Settings will offer to go back to (`offered_rollback`) is the
+rollback deployment, unless it is retracted, failed, below the version floor, forgiven, or already
+the next boot (`rollbackQueued`: a rollback already queued, or the version the machine fell back
+from, which bootc still reports first). After the reboot the version left is held back (rule 13);
+going forward again is another `bootc rollback`, and a check before that reboot waits for it.
+
+When the running version is retracted and the version the sheet sends it to is refused (retracted,
+failed, below the floor), the machine stays on the retracted version until a sheet offers another
+one, and every check says so: "the running version … was retracted and there is no version to go
+to (…)". For example, the target of a retraction that fails a second time (rule 12).
 
 ### Discarding a staged deployment (rules 7 and 11)
 
@@ -123,7 +142,7 @@ by hand is discarded with it.
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
-| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice |
+| `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
 
@@ -157,6 +176,10 @@ new version), so the older one fails its health checks too. It is not on trial a
   and the version is staged afresh like any update: merged with today's settings, pending, three
   tries. If it fails again, it is marked failed: at once on a healthy machine, and after the next
   repair if the older version fails again too (it was forgiven already, `forgiven` in the state).
+  Once it boots healthy it is no longer forgiven. `forgiven` holds one version: if another version
+  is forgiven in between and the first one comes back, it can be forgiven once more, at the cost of
+  another three boots. A set would close that, but an older `nyra-updated` (booted after a rollback)
+  must still read the state file, and it would refuse a field whose type changed.
   The same holds when the version comes back as the target of a retraction (the version fallen back
   to was retracted): bootc does not see boot counting and still reports the deployment fallen back
   from as the next boot (`rollbackQueued`), so rule 6 would wait for a reboot that boots the
@@ -221,7 +244,7 @@ bootc reads it.
 | T2 | power cut after staging, before finalization, then an update to another version | only the new version's entry and the running one are staged (the stale ones are removed at boot); the new version boots, two boot entries |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
 | — | staged version retracted before the reboot, with an acceptable rollback deployment and with a failed one | not finalized: the next boot is the running version, boot order and rollback deployment unchanged, no staged entries left |
-| T3 | new version whose health check fails | it reboots by itself three times, systemd-boot falls back, the version is marked failed and refused |
+| T3 | new version whose health check fails | it reboots by itself three times, systemd-boot falls back, the version is marked failed; bootc, which still has it first, gets the order set right (`RollbackUndone`, rule 11); the version is refused |
 | T5 | captive portal answers HTML | refused (malformed sheet) |
 | T5 | spoofed server (certificate not from a trusted CA) | refused (TLS) |
 | T4 | older version served (downgrade), replayed older sheet | refused |
@@ -231,7 +254,7 @@ bootc reads it.
 | T5 | registry down | refused (connection refused), nothing staged |
 | T5 | corrupted layer in the registry | refused when the layer is read, nothing staged |
 | T3 | a good version, the settings broken after it was staged (`systemd-resolved` masked) | it fails its health check three times and systemd-boot falls back; the older version fails it too and stays up: the new version is not marked failed, the console and the login message say to reset the settings. Settings repaired: the version is offered again, its old deployment (with the old `/etc`) deleted, staged afresh; it boots counted and is blessed |
-| T3 | new version whose kernel finds no usable initramfs | it panics and reboots by itself (`panic=10`) three times, systemd-boot falls back, the version is marked failed and refused |
+| T3 | new version whose kernel finds no usable initramfs | it panics and reboots by itself (`panic=10`) three times, systemd-boot falls back, the version is marked failed, bootc's order set right, and the version refused |
 | T5 | DNS answer for another host (a certificate from a trusted CA, for another name) | refused (TLS name check), nothing staged |
 | T5 | a 50 kbit/s link | the pull is stopped at the time limit, nothing staged; staged later on a normal link |
 | T5 | the registry stops answering in the middle of a pull | the pull is stopped at the time limit, nothing staged; staged once the registry answers |

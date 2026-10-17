@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 /// Set by systemd-boot when it starts an entry that has a tries counter.
 const LOADER_BOOT_COUNT_PATH: &str =
     "/sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-const SHORT: Duration = Duration::from_secs(60);
+/// The time limit of every call but a pull (and the deletion of a deployment, which collects).
+pub const SHORT: Duration = Duration::from_secs(60);
 /// Most output read from a command (bootc status is a few KiB); the rest is not read.
 const MAX_OUTPUT: u64 = 1024 * 1024;
 
@@ -123,6 +124,50 @@ pub fn parse_status(json: &[u8]) -> Result<Status, Error> {
         rollback: dep(host.status.rollback),
         rollback_queued: host.status.rollback_queued,
     })
+}
+
+/// The ID `bootc delete-deployment` takes for the rollback deployment (its composefs digest), from
+/// `bootc status --format json`, only if that deployment's image is `digest`.
+pub fn rollback_id(json: &[u8], digest: &str) -> Result<String, Error> {
+    #[derive(Deserialize)]
+    struct Host {
+        status: HostStatus,
+    }
+    #[derive(Deserialize)]
+    struct HostStatus {
+        rollback: Option<Entry>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        image: Option<ImageStatus>,
+        composefs: Option<Composefs>,
+    }
+    #[derive(Deserialize)]
+    struct ImageStatus {
+        #[serde(rename = "imageDigest")]
+        image_digest: String,
+    }
+    #[derive(Deserialize)]
+    struct Composefs {
+        verity: String,
+    }
+    let host: Host =
+        serde_json::from_slice(json).map_err(|e| Error::Command(format!("bootc status: {e}")))?;
+    let rollback = host
+        .status
+        .rollback
+        .ok_or_else(|| Error::Command("bootc status: no rollback deployment".into()))?;
+    let found = rollback.image.map(|i| i.image_digest).unwrap_or_default();
+    if found != digest {
+        return Err(Error::Command(format!(
+            "bootc status: the rollback deployment is {found}, not {digest}: not deleted"
+        )));
+    }
+    rollback
+        .composefs
+        .map(|c| c.verity)
+        .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| Error::Command("bootc status: no composefs rollback deployment".into()))
 }
 
 /// The curl command for the channel sheet: no `.curlrc` (`-q` must come first), HTTPS only with
@@ -247,39 +292,12 @@ impl System for Real {
         sync()
     }
 
-    fn delete_rollback(&mut self) -> Result<(), Error> {
-        // The deployment's ID is its composefs digest, which bootc status reports.
-        #[derive(Deserialize)]
-        struct Host {
-            status: HostStatus,
-        }
-        #[derive(Deserialize)]
-        struct HostStatus {
-            rollback: Option<Entry>,
-        }
-        #[derive(Deserialize)]
-        struct Entry {
-            composefs: Option<Composefs>,
-        }
-        #[derive(Deserialize)]
-        struct Composefs {
-            verity: String,
-        }
+    fn delete_rollback(&mut self, digest: &str) -> Result<(), Error> {
         let json = run_ok(
             Command::new("bootc").args(["status", "--format", "json"]),
             SHORT,
         )?;
-        let host: Host = serde_json::from_slice(&json)
-            .map_err(|e| Error::Command(format!("bootc status: {e}")))?;
-        let id = host
-            .status
-            .rollback
-            .and_then(|e| e.composefs)
-            .map(|c| c.verity)
-            .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
-            .ok_or_else(|| {
-                Error::Command("bootc status: no composefs rollback deployment".into())
-            })?;
+        let id = rollback_id(&json, digest)?;
         // It also collects what only that deployment used: as long as a pull, at most.
         run_ok(
             Command::new("bootc").args(["delete-deployment", &id]),

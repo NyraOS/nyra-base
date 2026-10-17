@@ -43,7 +43,9 @@
 //!     ([`HOST`] is fixed in code, `docs/SIGNING.md`): an owner who switched to their own image keeps it.
 //!     The outcome says so ([`Outcome::ForeignImage`]), so such a machine is not silently without updates.
 //! 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
-//!     version floor) is discarded the same way as in rule 7.
+//!     version floor) is discarded the same way as in rule 7. A rollback queued for the next boot
+//!     (`rollbackQueued`) to such a version is undone with another `bootc rollback`, which puts the
+//!     running version first again.
 //! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
 //!     health checks. When the older version fails them too (a boot that is not on trial), the
 //!     version fallen back from is forgiven instead, once: the machine's own settings (`/etc`) are
@@ -51,6 +53,11 @@
 //!     target of a retraction); a second fallback from it marks it failed. Its deployment, the
 //!     rollback one by then, kept the `/etc` it was tried with (bootc keeps one per deployment), so
 //!     it is deleted ([`System::delete_rollback`]) and the version staged afresh, on trial again.
+//!     Once it boots healthy it is no longer forgiven.
+//! 13. A version the machine went back from on purpose (`bootc rollback`, run by the user or by
+//!     root; the only way a version that is neither failed, retracted nor forgiven becomes the
+//!     rollback deployment) is not staged again ([`Outcome::HeldBack`]): the machine stays where the
+//!     user put it until the sheet offers another version, or the running version is retracted.
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -101,6 +108,12 @@ pub enum Error {
     NoBootedImage,
     /// A new version booted without boot counting (rule 9).
     NotBootCounted(String),
+    /// The running version was retracted, and the version the sheet sends it to is refused (rules
+    /// 3-5): the machine stays on the retracted version until a sheet offers another one.
+    RetractedRunning {
+        running: String,
+        reason: Box<Error>,
+    },
     /// Another `nyra-updated` holds the lock.
     Busy,
     Timeout(String),
@@ -130,6 +143,11 @@ impl fmt::Display for Error {
             Error::NotBootCounted(d) => write!(
                 f,
                 "{d} booted without a boot counter: an unhealthy version would not have fallen back"
+            ),
+            Error::RetractedRunning { running, reason } => write!(
+                f,
+                "the running version {running} was retracted and there is no version to go to \
+                 ({reason}): it stays until the channel offers another one"
             ),
             Error::Busy => write!(f, "another nyra-updated is running"),
             Error::Timeout(what) => write!(f, "{what} timed out and was stopped"),
@@ -314,7 +332,10 @@ pub struct State {
     pub failed: BTreeSet<String>,
     /// The digest prepared by the last update and not yet confirmed good.
     pub pending: Option<String>,
-    /// The last digest forgiven under rule 12: a second fallback from it marks it failed.
+    /// The last digest forgiven under rule 12, until it boots healthy: a second fallback from it
+    /// marks it failed. One digest, not a set: an older daemon (booted after a rollback) must still
+    /// read the file, and a forgiven version that comes back after another was forgiven only costs
+    /// three more boots (`docs/UPDATES.md`).
     pub forgiven: Option<String>,
 }
 
@@ -472,8 +493,9 @@ pub trait System {
     /// deployment becomes the next boot, or, if it already was, the booted one again. Fails when
     /// there is no rollback deployment.
     fn rollback(&mut self) -> Result<(), Error>;
-    /// Deletes the rollback deployment, its boot entries and its `/etc` (`bootc delete-deployment`).
-    fn delete_rollback(&mut self) -> Result<(), Error>;
+    /// Deletes the rollback deployment, its boot entries and its `/etc` (`bootc delete-deployment`),
+    /// only if its image is `digest`.
+    fn delete_rollback(&mut self, digest: &str) -> Result<(), Error>;
     /// The staged deployment (this digest) must never boot: its staged boot entries are removed now
     /// and again at shutdown, so it is not finalized and the boot entries stay as they are
     /// (`/run/nyra-updated/discarded`, `esp-sync`). Until the next reboot, anything staged is
@@ -504,6 +526,11 @@ pub enum Outcome {
     /// The staged deployment (this digest) must not boot and was discarded (rules 7 and 11); nothing
     /// more happens until the next reboot.
     Discarded(String),
+    /// A rollback to this digest was queued for the next boot, and it must not boot: another
+    /// `bootc rollback` put the running version first again (rule 11).
+    RollbackUndone(String),
+    /// The machine went back from the target by a rollback: it is not staged again (rule 13).
+    HeldBack(Image),
 }
 
 /// SHA-256 (hex) of the payload of a sheet envelope that [`verify`] accepted.
@@ -538,6 +565,11 @@ fn settle_pending(state: &mut State, status: &Status) {
     if fell_back_from(status, &pending) {
         // It booted and the machine came back: systemd-boot's fallback after three tries.
         state.failed.insert(pending);
+    } else if Status::digest(&status.booted) == Some(&pending)
+        && state.forgiven.as_ref() == Some(&pending)
+    {
+        // Forgiven under rule 12 and now booted healthy: its fallback is behind it.
+        state.forgiven = None;
     }
     // Booted and healthy, failed, or staging never finished (retried below): settled.
     state.pending = None;
@@ -560,13 +592,29 @@ pub fn check_target(target: &Image, state: &State, floor: &str) -> Result<(), Er
     Ok(())
 }
 
-/// The local version "Revino la versiunea anterioară" may offer: the rollback deployment, unless
-/// the machine fell back from it or it was retracted.
-pub fn offered_rollback<'a>(status: &'a Status, state: &State) -> Option<&'a Deployment> {
-    status
-        .rollback
-        .as_ref()
-        .filter(|d| !state.failed.contains(&d.digest) && !state.retracted.contains(&d.digest))
+/// Rules 3-5 on a local deployment: retracted, failed, or below the version floor.
+fn unacceptable(d: &Deployment, state: &State, floor: &str) -> bool {
+    let below_floor = d
+        .version
+        .as_deref()
+        .is_some_and(|v| compare_versions(v, floor).is_ok_and(|o| o == Ordering::Less));
+    state.retracted.contains(&d.digest) || state.failed.contains(&d.digest) || below_floor
+}
+
+/// The local version "go back to the previous version" may offer: the rollback deployment, unless
+/// it is unacceptable (rule 11 would undo the rollback), the machine fell back from it (failed, or
+/// forgiven under rule 12), or bootc already reports it as the next boot (`rollbackQueued`): a
+/// rollback already queued, or a version fallen back from, since bootc does not see boot counting.
+pub fn offered_rollback<'a>(
+    status: &'a Status,
+    state: &State,
+    floor: &str,
+) -> Option<&'a Deployment> {
+    status.rollback.as_ref().filter(|d| {
+        !status.rollback_queued
+            && state.forgiven.as_ref() != Some(&d.digest)
+            && !unacceptable(d, state, floor)
+    })
 }
 
 /// One update check (see the crate documentation). `now`: Unix seconds.
@@ -633,18 +681,21 @@ pub fn check(
     store.save(&state)?;
 
     // Rule 11: a staged version that must not boot is discarded now, not after the reboot.
+    let floor = cfg.version_floor.as_str();
     if let Some(staged) = &status.staged {
-        let below_floor = staged.version.as_deref().is_some_and(|v| {
-            compare_versions(v, &cfg.version_floor).is_ok_and(|o| o == Ordering::Less)
-        });
-        if state.retracted.contains(&staged.digest)
-            || state.failed.contains(&staged.digest)
-            || below_floor
-        {
+        if unacceptable(staged, &state, floor) {
             sys.discard_staged(&staged.digest)?;
             state.pending = None;
             store.save(&state)?;
             return Ok(Outcome::Discarded(staged.digest.clone()));
+        }
+    }
+    // Rule 11 for a queued rollback (by the user, or rule 6 before a later sheet). After a fallback
+    // bootc still reports the failed version as the next boot; this sets its order right too.
+    if let Some(rollback) = &status.rollback {
+        if status.rollback_queued && unacceptable(rollback, &state, floor) {
+            sys.rollback()?;
+            return Ok(Outcome::RollbackUndone(rollback.digest.clone()));
         }
     }
 
@@ -661,26 +712,43 @@ pub fn check(
         Decision::Update(t) => (t, false),
         Decision::Retract(t) => (t, true),
     };
-    check_target(&target, &state, &cfg.version_floor)?;
+    let running_retracted = state.retracted.contains(&booted.digest);
+    if let Err(e) = check_target(&target, &state, floor) {
+        if running_retracted {
+            return Err(Error::RetractedRunning {
+                running: booted.digest,
+                reason: Box::new(e),
+            });
+        }
+        return Err(e);
+    }
 
     if Status::digest(&status.staged) == Some(&target.digest) {
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        if retraction && state.forgiven.as_ref() != Some(&target.digest) {
-            // Rule 6, once: another `bootc rollback` would make the retracted version the next
-            // boot again.
+        if state.forgiven.as_ref() != Some(&target.digest) {
+            // Already the next boot (rule 6 ran, or the user queued it): another `bootc rollback`
+            // would swap the order back.
             if status.rollback_queued {
                 return Ok(Outcome::WaitingForReboot(target));
             }
-            sys.rollback()?;
-            return Ok(Outcome::RolledBack(target));
+            // Rule 6.
+            if retraction {
+                sys.rollback()?;
+                return Ok(Outcome::RolledBack(target));
+            }
+            // Rule 13: the machine went back from it on purpose.
+            if !running_retracted {
+                return Ok(Outcome::HeldBack(target));
+            }
         }
         // Rule 12: a version offered again after it was forgiven (a newer one, or the target of a
         // retraction). Its deployment would boot with the settings it was tried with, not today's,
         // and has no tries left (bootc still reports it as the next boot: `rollbackQueued` does
-        // not see boot counting): it goes, and the version is staged like any update.
-        sys.delete_rollback()?;
+        // not see boot counting): it goes, and the version is staged like any update. The same
+        // when the running version is retracted and the target is one the user went back from.
+        sys.delete_rollback(&target.digest)?;
     }
 
     state.pending = Some(target.digest.clone());
@@ -713,9 +781,14 @@ pub enum HealthAction {
     Stay(Option<String>),
 }
 
-/// A health check failed on this boot (rules 8 and 12). Off trial with a pending version, it reads
-/// `bootc status`. No lock: on a boot that is not healthy, [`check`] stops before it reads the state.
-pub fn on_health_failure(sys: &mut impl System, store: &Store) -> Result<HealthAction, Error> {
+/// A health check failed on this boot (rules 8 and 12). Off trial, it takes `lock` (rule 1), the
+/// one [`check`] runs under, before it reads the state; with a pending version it reads
+/// `bootc status`. A lock held by a check is an error: the version stays unforgiven.
+pub fn on_health_failure(
+    sys: &mut impl System,
+    store: &Store,
+    lock: &Path,
+) -> Result<HealthAction, Error> {
     let info = sys.boot_info()?;
     if info.soft_rebooted || info.on_trial {
         sys.reboot()?;
@@ -724,6 +797,7 @@ pub fn on_health_failure(sys: &mut impl System, store: &Store) -> Result<HealthA
     // Rule 12: if the machine fell back from the pending version and this older one fails too,
     // the settings are to blame, not that version: it is forgiven, once. Anything else (a version
     // only staged, or booted without a boot counter: rule 9) stays for the next check to settle.
+    let _lock = Lock::acquire(lock)?;
     let mut state = store.load()?;
     let Some(pending) = state.pending.clone() else {
         return Ok(HealthAction::Stay(None));
