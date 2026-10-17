@@ -26,8 +26,8 @@
 #      staged by hand afterwards (discarded at shutdown too)
 #   8  v2 again (boot order kept, no staged entries left); v3 staged
 #   9  v3 fails its health check and reboots by itself, three times; systemd-boot falls back to v2;
-#      v3 is marked failed and refused; v8 staged, then retracted: discarded, with the failed v3 as
-#      rollback deployment
+#      v3 is marked failed, and bootc's order, which still has v3 first, is set right (rule 11); v3
+#      refused; v8 staged, then retracted: discarded, with the failed v3 as rollback deployment
 #  10  v2 again, v8 not finalized; v5 staged
 #  11  v5, first try: captive portal, spoofed server, downgrade, replayed sheet refused; soft reboot
 #      into v6: not blessed, system not degraded
@@ -54,7 +54,7 @@
 #      stalls mid-pull refused, nothing staged; v13 staged
 #  29  v13: v14 staged (its initramfs is broken)
 #  30  v14's kernel panics and reboots by itself, three times; systemd-boot falls back to v13;
-#      v14 is marked failed and refused
+#      v14 is marked failed, bootc's order set right, and v14 refused
 #  31  v13, the hardware clock in 2099 (T9): chronyd corrects it through NTS; v15 staged
 #  32  v15, the hardware clock in 1970: the same; v16 staged
 #  33  v16, the hardware clock in 2035: the same; up to date; chronyd's cost measured
@@ -391,7 +391,8 @@ vm "v2 again: boot order kept; v3 staged" --poweroff \
   --command "$lib; outcome s4 Staged && expect staged $d3"
 
 vm "v3 fails its health check three times, back on v2 by itself" --poweroff --boots 4 \
-  --command "$lib; expect booted $d2 && running && entries | grep -F +0-3" \
+  --command "$lib; expect booted $d2 && running && entries | grep -F +0-3 && test \"\$(queued)\" = true" \
+  --command "$lib; outcome s4 RollbackUndone && test \"\$(queued)\" = false && expect rollback $d3 && grep -F $d3 /var/lib/nyra-updated/state.json" \
   --command "$lib; refused s4 'this machine fell back from it' && expect staged none" \
   --command "$lib; outcome s8 Staged && expect staged $d8 && expect rollback $d3" \
   --command "$lib; outcome s8r Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect rollback $d3"
@@ -527,7 +528,8 @@ vm "v13: v14 staged" --poweroff \
   --command 'grep -qw panic=10 /proc/cmdline && systemctl is-active nyra-health-bootc.service && test "$(systemctl show -P RestrictSUIDSGID nyra-health-bootc.service)" = no && test "$(systemctl show -P RestrictSUIDSGID nyra-health-system.service)" = yes && echo "panic=10; bootc health check passed, the only one without RestrictSUIDSGID"' \
   --command "$lib; outcome s14 Staged && expect staged $d14"
 vm "v14 panics three times, back on v13 by itself" --poweroff --boots 4 --timeout 300 \
-  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3" \
+  --command "$lib; expect booted $d13 && running && entries | grep -F +0-3 && test \"\$(queued)\" = true" \
+  --command "$lib; outcome s14 RollbackUndone && test \"\$(queued)\" = false && expect rollback $d14" \
   --command "$lib; refused s14 'this machine fell back from it' && expect staged none"
 l="$logs/serial-updates-$n.log"
 echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 'Kernel panic' "$l")"

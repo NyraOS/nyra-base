@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! One test (at least) per rule of the crate documentation, with a fake [`System`].
 
-use super::system::{curl, esp_sync_discard, on_trial, parse_status, run, DISCARDED};
+use super::system::{
+    curl, esp_sync_discard, on_trial, parse_status, rollback_id, run, DISCARDED, SHORT,
+};
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use nyra_channel_sheet::{pae, PAYLOAD_TYPE};
@@ -19,6 +21,7 @@ const A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const C: &str = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const SHEET_URL: &str = "https://updates.nyraos.com/channels/nyra/stable";
+const FLOOR: &str = "2026.10.1";
 
 fn version(d: &str) -> &'static str {
     match d {
@@ -86,7 +89,7 @@ fn config() -> Config {
     Config {
         repository: "nyra".into(),
         channel: "stable".into(),
-        version_floor: "2026.10.1".into(),
+        version_floor: FLOOR.into(),
         keys: vec![signer().verifying_key()],
         stage_timeout: STAGE_TIMEOUT,
     }
@@ -208,8 +211,11 @@ impl System for Fake {
         self.status.rollback_queued = !self.status.rollback_queued;
         Ok(())
     }
-    fn delete_rollback(&mut self) -> Result<(), Error> {
-        self.calls.push("delete rollback".into());
+    fn delete_rollback(&mut self, digest: &str) -> Result<(), Error> {
+        self.calls.push(format!("delete rollback {digest}"));
+        if Status::digest(&self.status.rollback) != Some(digest) {
+            return Err(Error::Command("not the rollback deployment".into()));
+        }
         self.status.rollback = None;
         self.status.rollback_queued = false;
         Ok(())
@@ -231,6 +237,18 @@ impl System for Fake {
 
 fn run_check(fake: &mut Fake, dir: &TempDir) -> Result<Outcome, Error> {
     check(fake, &dir.store(), &config(), NOW)
+}
+
+fn lock_path(dir: &TempDir) -> PathBuf {
+    fs::create_dir_all(&dir.0).unwrap();
+    dir.0.join("lock")
+}
+
+/// `on_health_failure` with the lock in `dir`. No process starts while it holds the lock (see
+/// [`SPAWN`]), so a later call in the same test finds it free.
+fn health_failed(fake: &mut Fake, dir: &TempDir) -> Result<HealthAction, Error> {
+    let _spawns = no_parallel_spawns();
+    on_health_failure(fake, &dir.store(), &lock_path(dir))
 }
 
 // --- the normal path, pinned by digest (rule 7) ----------------------------------------------
@@ -564,9 +582,12 @@ fn a_signed_retraction_below_the_version_floor_is_refused() {
     let mut fake = Fake::new(&dir, B, sheet(100, Z, &[B]));
     assert_eq!(
         run_check(&mut fake, &dir),
-        Err(Error::BelowFloor {
-            version: "2026.9.1".into(),
-            floor: "2026.10.1".into()
+        Err(Error::RetractedRunning {
+            running: B.into(),
+            reason: Box::new(Error::BelowFloor {
+                version: "2026.9.1".into(),
+                floor: "2026.10.1".into()
+            })
         })
     );
     assert_eq!(fake.calls, vec![format!("fetch {SHEET_URL}")]);
@@ -599,7 +620,7 @@ fn a_version_the_machine_fell_back_from_is_marked_failed_and_never_staged_again(
     assert!(state.failed.contains(C));
     assert_eq!(state.pending, None);
     assert_eq!(fake.staged().len(), 1);
-    assert_eq!(offered_rollback(&fake.status, &state), None);
+    assert_eq!(offered_rollback(&fake.status, &state, FLOOR), None);
 }
 
 #[test]
@@ -617,7 +638,10 @@ fn a_version_that_booted_healthy_is_confirmed() {
     let state = dir.store().load().unwrap();
     assert_eq!(state.pending, None);
     assert!(state.failed.is_empty());
-    assert_eq!(offered_rollback(&fake.status, &state), dep(A).as_ref());
+    assert_eq!(
+        offered_rollback(&fake.status, &state, FLOOR),
+        dep(A).as_ref()
+    );
 }
 
 #[test]
@@ -685,7 +709,61 @@ fn a_retracted_rollback_deployment_is_not_offered() {
         rollback: dep(B),
         ..Status::default()
     };
-    assert_eq!(offered_rollback(&status, &state), None);
+    assert_eq!(offered_rollback(&status, &state, FLOOR), None);
+}
+
+#[test]
+fn the_version_fallen_back_from_is_not_offered() {
+    // C failed its tries and systemd-boot went back to A; bootc still reports C as the next boot.
+    let fallback = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        rollback_queued: true,
+        ..Status::default()
+    };
+    // Before a check settles it (C still pending), and once it is forgiven (rule 12).
+    let pending = State {
+        pending: Some(C.into()),
+        ..State::default()
+    };
+    let forgiven = State {
+        forgiven: Some(C.into()),
+        ..State::default()
+    };
+    assert_eq!(offered_rollback(&fallback, &pending, FLOOR), None);
+    assert_eq!(offered_rollback(&fallback, &forgiven, FLOOR), None);
+    // Forgiven, even with a bootc that would see the fallback.
+    let seen = Status {
+        rollback_queued: false,
+        ..fallback
+    };
+    assert_eq!(offered_rollback(&seen, &forgiven, FLOOR), None);
+    assert_eq!(
+        offered_rollback(&seen, &State::default(), FLOOR),
+        dep(C).as_ref()
+    );
+}
+
+#[test]
+fn a_rollback_already_queued_or_below_the_floor_is_not_offered() {
+    let status = Status {
+        booted: dep(B),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    assert_eq!(
+        offered_rollback(&status, &State::default(), FLOOR),
+        dep(A).as_ref()
+    );
+    assert_eq!(
+        offered_rollback(&status, &State::default(), "2026.10.2"),
+        None
+    );
+    let queued = Status {
+        rollback_queued: true,
+        ..status
+    };
+    assert_eq!(offered_rollback(&queued, &State::default(), FLOOR), None);
 }
 
 // --- rule 6: retraction to the local rollback deployment --------------------------------------
@@ -740,7 +818,13 @@ fn a_failed_rollback_deployment_is_not_used_for_a_retraction() {
         .unwrap();
     let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
     fake.status.rollback = dep(A);
-    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(A.into())));
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::RetractedRunning {
+            running: B.into(),
+            reason: Box::new(Error::Failed(A.into()))
+        })
+    );
     assert!(!fake.calls.contains(&"rollback".to_string()));
 }
 
@@ -806,6 +890,117 @@ fn a_staged_version_below_the_floor_or_failed_is_discarded() {
     }
 }
 
+fn rollbacks(fake: &Fake) -> usize {
+    fake.calls
+        .iter()
+        .filter(|c| c.as_str() == "rollback")
+        .count()
+}
+
+#[test]
+fn a_queued_rollback_to_a_version_retracted_before_the_reboot_is_undone() {
+    // The user goes back from B to A (bootc rollback); before the reboot a sheet retracts A.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, B, &[]));
+    fake.status.rollback = dep(A);
+    fake.rollback().unwrap();
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    assert!(fake.status.rollback_queued);
+    fake.sheet = sheet(101, B, &[A]);
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::RollbackUndone(A.into()))
+    );
+    assert!(!fake.status.rollback_queued);
+    // Once: B stays the next boot.
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    assert_eq!(rollbacks(&fake), 2);
+}
+
+#[test]
+fn a_queued_rollback_to_a_failed_or_below_the_floor_version_is_undone() {
+    // Below the floor (queued by hand), and failed (bootc still reports the version fallen back from
+    // as the next boot).
+    for (rollback, failed) in [(Z, None), (C, Some(C))] {
+        let dir = TempDir::new();
+        if let Some(f) = failed {
+            dir.store()
+                .save(&State {
+                    failed: [f.to_string()].into(),
+                    ..State::default()
+                })
+                .unwrap();
+        }
+        let mut fake = Fake::new(&dir, B, sheet(100, B, &[]));
+        fake.status.rollback = dep(rollback);
+        fake.status.rollback_queued = true;
+        assert_eq!(
+            run_check(&mut fake, &dir),
+            Ok(Outcome::RollbackUndone(rollback.into()))
+        );
+        assert!(!fake.status.rollback_queued, "{rollback}");
+        assert_eq!(rollbacks(&fake), 1);
+    }
+}
+
+// --- rule 13: a version the user went back from -----------------------------------------------
+
+#[test]
+fn a_version_the_user_went_back_from_is_not_staged_again() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    // The user goes back to A: nothing changes before the reboot, nor after it.
+    fake.rollback().unwrap();
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::HeldBack(image(C))));
+    assert_eq!(fake.staged().len(), 1);
+    assert!(!fake.calls.iter().any(|c| c.starts_with("delete rollback")));
+    assert_eq!(dir.store().load().unwrap().pending, None);
+    // The user goes forward again: C is the next boot and stays it.
+    fake.rollback().unwrap();
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::WaitingForReboot(image(C)))
+    );
+    assert!(fake.status.rollback_queued);
+}
+
+#[test]
+fn a_version_the_user_went_back_from_gives_way_to_another_or_to_a_retraction() {
+    let back_from_c = |dir: &TempDir, sheet: Vec<u8>| {
+        let mut fake = Fake::new(dir, A, sheet);
+        fake.status.rollback = dep(C);
+        fake
+    };
+    // Another version: staged.
+    let dir = TempDir::new();
+    let mut fake = back_from_c(&dir, sheet(100, B, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(B))));
+    // The running version retracted: C goes, with the settings it was left with, and is staged afresh.
+    let dir = TempDir::new();
+    let mut fake = back_from_c(&dir, sheet(100, C, &[A]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert_eq!(
+        fake.calls[fake.calls.len() - 2..],
+        [
+            format!("delete rollback {C}"),
+            format!("stage updates.nyraos.com/nyra@{C}")
+        ]
+    );
+}
+
 // --- rule 8: health check failures ------------------------------------------------------------
 
 #[test]
@@ -813,10 +1008,7 @@ fn a_failed_health_check_on_trial_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.on_trial = true;
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Reboot)
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Reboot));
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -825,10 +1017,7 @@ fn a_failed_health_check_after_a_soft_reboot_reboots_fully() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
     fake.boot.soft_rebooted = true;
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Reboot)
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Reboot));
     assert_eq!(fake.calls, vec!["reboot"]);
 }
 
@@ -847,10 +1036,7 @@ fn every_try_of_a_counted_entry_is_on_trial() {
 fn a_failed_health_check_off_trial_does_not_loop_reboots() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, C, Vec::new());
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Stay(None))
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Stay(None)));
     assert!(fake.calls.is_empty());
 }
 
@@ -865,11 +1051,55 @@ fn a_failed_health_check_on_trial_keeps_the_pending_version() {
         ..Status::default()
     };
     fake.boot.on_trial = true;
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Reboot));
+    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+}
+
+#[test]
+fn a_failed_health_check_off_trial_waits_for_no_check_and_changes_nothing() {
+    // C failed its tries, the machine fell back to A, which fails too: C would be forgiven. A check
+    // holds the lock (root started one by hand).
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    fake.healthy = false;
+    let _spawns = no_parallel_spawns();
+    let lock = lock_path(&dir);
+    let check = Lock::acquire(&lock).unwrap();
     assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
+        on_health_failure(&mut fake, &dir.store(), &lock),
+        Err(Error::Busy)
+    );
+    let state = dir.store().load().unwrap();
+    assert_eq!((state.pending.as_deref(), state.forgiven), (Some(C), None));
+    // On trial, the reboot does not need it.
+    fake.boot.on_trial = true;
+    assert_eq!(
+        on_health_failure(&mut fake, &dir.store(), &lock),
         Ok(HealthAction::Reboot)
     );
-    assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
+    drop(check);
+}
+
+#[test]
+fn health_failed_has_time_for_its_slowest_path() {
+    // Off trial: systemctl show and systemd-bless-boot status (the boot state), bootc status and the
+    // notice, each up to SHORT. systemd's default (90 s) would stop it before the notice.
+    let unit =
+        include_str!("../../../files/usr/lib/systemd/system/nyra-updated-health-failed.service");
+    let limit = unit
+        .lines()
+        .find_map(|l| l.strip_prefix("TimeoutStartSec="))
+        .and_then(|v| v.strip_suffix("min"))
+        .and_then(|m| m.parse::<u64>().ok())
+        .map(|m| Duration::from_secs(m * 60))
+        .expect("TimeoutStartSec=<minutes>min");
+    assert!(limit > 4 * SHORT, "{limit:?}");
 }
 
 // --- rule 12: the machine's settings, not the version ------------------------------------------
@@ -890,7 +1120,7 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
     };
     fake.healthy = false;
     assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
+        health_failed(&mut fake, &dir),
         Ok(HealthAction::Stay(Some(C.into())))
     );
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::NotHealthy));
@@ -904,7 +1134,7 @@ fn a_version_is_not_failed_when_the_version_fallen_back_to_fails_too() {
     assert_eq!(
         fake.calls[fake.calls.len() - 2..],
         [
-            "delete rollback".to_string(),
+            format!("delete rollback {C}"),
             format!("stage updates.nyraos.com/nyra@{C}")
         ]
     );
@@ -938,7 +1168,7 @@ fn a_retraction_to_a_forgiven_version_stages_it_afresh() {
     };
     fake.healthy = false;
     assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
+        health_failed(&mut fake, &dir),
         Ok(HealthAction::Stay(Some(A.into())))
     );
     // The settings repaired: the retraction to A must not wait for a reboot that boots B again.
@@ -948,7 +1178,7 @@ fn a_retraction_to_a_forgiven_version_stages_it_afresh() {
     assert_eq!(
         fake.calls[fake.calls.len() - 2..],
         [
-            "delete rollback".to_string(),
+            format!("delete rollback {A}"),
             format!("stage updates.nyraos.com/nyra@{A}")
         ]
     );
@@ -979,10 +1209,7 @@ fn a_new_version_booted_without_a_counter_is_still_reported_after_a_failed_healt
     };
     fake.boot.counted = false;
     fake.healthy = false;
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Stay(None))
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Stay(None)));
     fake.healthy = true;
     assert_eq!(
         run_check(&mut fake, &dir),
@@ -996,10 +1223,7 @@ fn a_staged_version_is_not_forgiven_by_a_failed_health_check_before_it_booted() 
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Stay(None))
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Stay(None)));
     assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(C));
     // C fails its tries and the machine comes back to a healthy A: C failed.
     fake.status = Status {
@@ -1024,7 +1248,7 @@ fn a_version_is_forgiven_only_once() {
     fake.status = fallback.clone();
     fake.healthy = false;
     assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
+        health_failed(&mut fake, &dir),
         Ok(HealthAction::Stay(Some(C.into())))
     );
     fake.healthy = true;
@@ -1032,10 +1256,7 @@ fn a_version_is_forgiven_only_once() {
     // Second fallback from C, A unhealthy again: not forgiven, and failed once A is healthy.
     fake.status = fallback;
     fake.healthy = false;
-    assert_eq!(
-        on_health_failure(&mut fake, &dir.store()),
-        Ok(HealthAction::Stay(None))
-    );
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Stay(None)));
     fake.healthy = true;
     assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
     assert!(dir.store().load().unwrap().failed.contains(C));
@@ -1044,6 +1265,12 @@ fn a_version_is_forgiven_only_once() {
 #[test]
 fn a_version_offered_again_that_fails_again_is_failed() {
     let dir = TempDir::new();
+    dir.store()
+        .save(&State {
+            forgiven: Some(C.into()),
+            ..State::default()
+        })
+        .unwrap();
     let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
     fake.status.rollback = dep(C);
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
@@ -1055,6 +1282,76 @@ fn a_version_offered_again_that_fails_again_is_failed() {
     };
     assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
     assert!(dir.store().load().unwrap().failed.contains(C));
+}
+
+#[test]
+fn a_forgiven_version_that_boots_healthy_is_no_longer_forgiven() {
+    // C was forgiven, staged afresh and boots healthy.
+    let dir = TempDir::new();
+    dir.store()
+        .save(&State {
+            forgiven: Some(C.into()),
+            ..State::default()
+        })
+        .unwrap();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    fake.status = Status {
+        booted: dep(C),
+        rollback: dep(A),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    assert_eq!(dir.store().load().unwrap().forgiven, None);
+    // So when the user goes back from it, it is held back like any other (rule 13).
+    fake.status = Status {
+        booted: dep(A),
+        rollback: dep(C),
+        ..Status::default()
+    };
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::HeldBack(image(C))));
+}
+
+#[test]
+fn a_retraction_target_that_fails_again_leaves_a_clear_report() {
+    // B retracted; A, forgiven once, staged afresh (the chain of the test above), fails again and
+    // the machine falls back to B, which fails too: A is not forgiven twice.
+    let dir = TempDir::new();
+    dir.store()
+        .save(&State {
+            forgiven: Some(A.into()),
+            ..State::default()
+        })
+        .unwrap();
+    let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(A))));
+    fake.status = Status {
+        booted: dep(B),
+        staged: None,
+        rollback: dep(A),
+        rollback_queued: true,
+    };
+    fake.healthy = false;
+    assert_eq!(health_failed(&mut fake, &dir), Ok(HealthAction::Stay(None)));
+    // The settings repaired: A is failed, bootc's order set right, and the report says that the
+    // machine runs a retracted version with nowhere to go.
+    fake.healthy = true;
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Ok(Outcome::RollbackUndone(A.into()))
+    );
+    let refused = run_check(&mut fake, &dir).unwrap_err();
+    assert_eq!(
+        refused,
+        Error::RetractedRunning {
+            running: B.into(),
+            reason: Box::new(Error::Failed(A.into()))
+        }
+    );
+    assert!(refused.to_string().starts_with(&format!(
+        "the running version {B} was retracted and there is no version to go to"
+    )));
+    assert_eq!(fake.staged().len(), 1);
 }
 
 // --- the state directory ----------------------------------------------------------------------
@@ -1448,4 +1745,19 @@ fn bootc_status_from_our_image_is_parsed() {
     };
     assert!(cfg.is_official(staged.booted.unwrap().image.as_deref()));
     assert!(!cfg.is_official(staged.rollback.unwrap().image.as_deref()));
+}
+
+#[test]
+fn only_the_rollback_deployment_of_the_target_digest_is_deleted() {
+    let staged = include_bytes!("../tests/data/bootc-status-staged.json");
+    let v0 = "sha256:b48d7b7b895992b934aa28ddd8397951f4e801787b813621fcf233a777e6a0ad";
+    let v1 = "sha256:f33c75f15a753ee24db0ee4c73d642eff7b1f7b575179c83538756389bfa23b4";
+    assert_eq!(
+        rollback_id(staged, v0).unwrap(),
+        "1d2a78d94ae322dbce0c01a62ff58ab8534d82f687d158c852940a55287456783a0281cc968e006148265af385390675ff4953a1303cb3ad00c90c7b63806f05"
+    );
+    // Another image (here the booted one), or no rollback deployment at all: nothing to delete.
+    assert!(matches!(rollback_id(staged, v1), Err(Error::Command(_))));
+    let installed = include_bytes!("../tests/data/bootc-status-installed.json");
+    assert!(matches!(rollback_id(installed, v0), Err(Error::Command(_))));
 }
