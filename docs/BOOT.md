@@ -1067,12 +1067,14 @@ so the normal entry restarts again and again. The "Reset settings" entry does no
 CI (`tools/vm/reset-settings.sh`, boots 13-15) adds to `/etc/fstab`, without `nofail`, a disk that is not
 connected, a swap partition on a disk that is not connected (`tmp.mount` waits for `swap.target`), a
 line that is not a mount, and a `proc` mount with an option it does not know, which fails at once,
-before the ESP and `/tmp` are mounted. The normal boot reaches the login prompt without emergency
-mode, and only the `proc` mount failed. The boot loader random seed is ordered after `boot.mount` and
-came after the ESP's check and `boot.mount`, and `nyra-boot-repair` ran. The boot's tmpfiles are
-ordered after `tmp.mount` and came after it (`/tmp/.X11-unix` is root's, mode 1777). The journal
-names the missing disk less than 20 s after the start of the system. The reset entry asks within
-30 s of the start of the system, without reading `/etc/fstab`, and the reset removes the lines.
+before the ESP and `/tmp` are mounted (its line orders it before `boot.mount` and `tmp.mount` with
+`x-systemd.before=`, so every run has `local-fs.target` failed while both are still to come). The
+normal boot reaches the login prompt without emergency mode, and only the `proc` mount failed. The
+boot loader random seed is ordered after `boot.mount` and came after the ESP's check and
+`boot.mount`, and `nyra-boot-repair` ran. The boot's tmpfiles are ordered after `tmp.mount` and came
+after it (`/tmp/.X11-unix` is root's, mode 1777). The journal names the missing disk less than 20 s
+after the start of the system. The reset entry asks within 30 s of the start of the system, without
+reading `/etc/fstab`, and the reset removes the lines.
 
 ## Boot counting (`tools/vm/boot-counting.sh`)
 
