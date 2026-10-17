@@ -28,6 +28,7 @@ PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
 UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)")
 SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATES.md)")
+CHANNELS = ("install-boot", "Version jumps and channels, Titanic T11 (docs/UPDATES.md)")
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
 FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
 EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
@@ -90,7 +91,14 @@ TESTS = {
             "root partition: emergency mode after 90 s. No secret in the logs, the ESP, the LUKS2 header "
             "or the root file system. Not yet: updates, Secure Boot off, a changed PCR 7, a cleared TPM, "
             "an add-on, the recovery profile, the policy key's rotation, the PIN."),
-    "T11": ("Version jumps", None, [], "Needs published versions and channels; not written yet."),
+    "T11": ("Version jumps and channels", "full", [CHANNELS],
+            "A jump over several versions goes straight to the newest, the retracted one between never "
+            "boots; a sheet with an untrusted key, an older sequence or a retracted version refused, "
+            "and a retraction below the floor the jump raised. A version that changes the sheet key, "
+            "the default channel or the repository installs, boots and follows its new configuration. "
+            "The channel chosen with set-channel wins over the image and survives a rollback; another "
+            "channel's sheet and an unknown channel refused; beta to stable goes back to stable's "
+            "older version only with a sheet issued after the change, once, never below the floor."),
     "T12": ("Hostile root", "full", [HOSTILE_ROOT],
             "As root with Secure Boot on: apt, apt-get and dpkg -i cannot change /usr and say what to "
             "use instead (the Store, Distrobox); dpkg itself fails with a read-only file system (the "
@@ -136,10 +144,10 @@ def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
-                          ENCRYPTION, ENCRYPTION_TPM}]
+                          ENCRYPTION, ENCRYPTION_TPM, CHANNELS}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T12", "T13", "T15")] == \
-        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "partial", "pass", "pass", "pass"], r
+    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T15")] == \
+        ["pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass"], r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]

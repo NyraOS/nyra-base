@@ -87,12 +87,13 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    boot counting), and never on a version that is not on trial (no reboot loop).
 9. The first healthy boot of a new version must have been a full boot with a boot counter, or it is
    reported as an error.
-10. Nothing is done when the booted image is not from `updates.nyraos.com/<repository>`: the server is
-    fixed in code, because the signature policy covers exactly that name (`docs/SIGNING.md`). An owner
-    who switched to their own image keeps it, and the outcome (`ForeignImage`) is logged as a warning
-    at every check, so such a machine is not silently without updates. The installer must therefore
-    install with an explicit tag (`updates.nyraos.com/nyra-base:stable`): without one the image counts
-    as foreign.
+10. Nothing is done when the booted image is not from `updates.nyraos.com`: the server is fixed in
+    code, because the signature policy covers exactly that name (`docs/SIGNING.md`). Any repository
+    there is ours, so a version that moves its updates to another repository (`repository` in its
+    configuration) keeps getting them from there. An owner who switched to their own image keeps it,
+    and the outcome (`ForeignImage`) is logged as a warning at every check, so such a machine is not
+    silently without updates. The installer must therefore install with an explicit tag
+    (`updates.nyraos.com/nyra-base:stable`): without one the image counts as foreign.
 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
     version floor) is discarded the same way as in rule 7. A rollback queued for the next boot
     (`rollbackQueued`, by the user or by rule 6) to such a version is undone with another
@@ -106,6 +107,10 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
     stays where the user put it until the sheet offers another version, or the running version is
     retracted. A newer version that is neither failed, retracted nor forgiven becomes the rollback
     deployment only that way.
+14. The channel is the one chosen on the machine (`nyra-updated set-channel`), or else the image's.
+    Right after a change of channel the new channel's version may be older than the running one: the
+    machine goes to it, once, but only with a sheet issued after the change, and never to a version
+    rules 3-5 refuse (below, "Channels"). Within a channel an older version stays refused (rule 4).
 
 **Going back by hand.** The version Settings will offer to go back to (`offered_rollback`) is the
 rollback deployment, unless it is retracted, failed, below the version floor, forgiven, or already
@@ -117,6 +122,34 @@ When the running version is retracted and the version the sheet sends it to is r
 failed, below the floor), the machine stays on the retracted version until a sheet offers another
 one, and every check says so: "the running version … was retracted and there is no version to go
 to (…)". For example, the target of a retraction that fails a second time (rule 12).
+
+### Channels (rule 14)
+
+The image says which channel a new installation follows (`channel` in `updated.conf`). The same
+signed image is promoted from one channel to the next (`dev`, `beta`, `stable`), so the image does
+not decide which channel a machine is on: root can choose with `nyra-updated set-channel NAME`
+(Settings will offer it later, to an administrator with a password). The choice is kept in the
+state (`channel` in `/var/lib/nyra-updated/state.json`) and wins over the image's: it stays after a
+rollback to an older version and after "Reset settings", which leaves `/var` alone. An unknown channel
+is refused, by `set-channel` and in the state; a sheet of another channel or repository is refused
+(it is signed for its own). The sequence is kept per repository and channel. A `nyra-updated` from
+before the choice existed (an older version booted after a rollback) ignores it and follows the
+image's channel.
+
+Every check notes the channel it follows (`following`). When that changes (a choice, or an image
+with another default on a machine without one), the check records when (`channel_changed`). From
+then on the machine follows the new channel's sheet like any other, with one exception: when the
+version that sheet gives it is older than the running one (`beta` to `stable`, say), it goes there
+anyway, as with a retraction (rule 6 if that version is the local rollback deployment), on these
+conditions:
+
+- the sheet was issued after the change (`issued_at` at or after `channel_changed`). A sheet from
+  before, an old one or a replayed one, does nothing (`WaitingForSheet`, not an error): the machine
+  waits for the next sheet, which the server signs at least daily. A replayed sheet with a lower
+  sequence is refused anyway (rule 2);
+- the version passes rules 3-5: not retracted, not failed, not below the version floor;
+- once: as soon as it is staged, or as soon as the new channel's sheet asks for no older version, the
+  change is over, and an older version is refused again (rule 4).
 
 ### Discarding a staged deployment (rules 7 and 11)
 
@@ -136,7 +169,7 @@ by hand is discarded with it.
 | Path | What |
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
-| `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel`, `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
+| `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
@@ -264,6 +297,25 @@ bootc reads it.
 | T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: an untrusted certificate on the NTS-KE port, an NTP server that answers with a time in 2001 | the clock stays in 2035, chronyd sends not one NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 | T3 | a retraction to an older version that is not a local deployment, the settings broken after it was staged | it fails its health check three times and systemd-boot falls back to the retracted version, which fails it too: the older version is forgiven, and bootc still reports it as the next boot (`rollbackQueued`). Settings repaired: the retraction deletes its deployment (with the old `/etc`) and stages it afresh instead of waiting for a reboot; it boots counted and is blessed |
+
+**Version jumps and channels** (`tools/vm/channels.sh`, Titanic T11): on its own copy of the
+installed disk, set up the same way, with two sheet keys and the test versions 2026.11.1-11, each
+with its own update configuration (sheet key, repository, default channel, version floor).
+
+| Boot | Scenario | Expected |
+|---|---|---|
+| 2 | on 2026.11.1, a sheet for 2026.11.5 (2026.11.3 retracted) signed with a key the version does not trust yet | refused |
+| 2 | the same sheet with the trusted key | 2026.11.5 staged directly; an older sheet offering 2026.11.3 refused (sequence), a later one refused (retracted) |
+| 3 | on 2026.11.5, which raises the version floor to itself: a signed retraction to 2026.11.4 | refused (below the floor) |
+| 3-4 | 2026.11.6 trusts only a new sheet key | it boots; a sheet signed with the old key refused, the new key's accepted |
+| 4-5 | 2026.11.7 has `beta` as its default channel | it boots and asks for `beta`'s sheet; `stable`'s refused; beta's 2026.11.9 staged |
+| 6 | `set-channel nightly`, and no name | refused, nothing chosen |
+| 6 | `set-channel stable` on 2026.11.9; stable's version is 2026.11.8 | a sheet issued before the change: nothing done (`WaitingForSheet`); one issued after it, below the floor: refused; then 2026.11.8 staged; afterwards a replayed sheet and an even older version refused |
+| 7-8 | 2026.11.8 boots; back to 2026.11.9 by hand (`bootc rollback`), whose default is `beta` | the machine still follows `stable`, and 2026.11.8 is refused as a downgrade (no new change) |
+| 9-10 | 2026.11.10 moves its updates to the repository `nyra-next` | it boots and asks for `nyra-next`'s sheet; `nyra-base`'s refused; 2026.11.11 staged from `nyra-next` |
+| 11 | 2026.11.11 from `nyra-next` | up to date |
+
+The versions the jump skips never boot: every boot checks which version runs.
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
 disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft

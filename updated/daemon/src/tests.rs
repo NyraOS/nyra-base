@@ -328,10 +328,11 @@ fn a_wrong_staged_deployment_is_discarded_whatever_the_rollback_deployment_is() 
 fn nothing_happens_on_an_image_the_owner_chose() {
     for image in [
         Some("quay.io/someone/nyra:stable"),
-        Some("updates.nyraos.com/nyra-fork:stable"),
         Some("updates.nyraos.com:443/nyra@sha256:x"),
         Some("updates.nyraos.com./nyra:stable"),
-        Some("updates.nyraos.com/other/nyra:stable"),
+        Some("updates.nyraos.com.evil.test/nyra:stable"),
+        Some("updates.nyraos.com/Nyra:stable"),
+        Some("updates.nyraos.com/nyra"),
         None, // containers-storage or another transport
     ] {
         let dir = TempDir::new();
@@ -351,6 +352,24 @@ fn our_images_by_tag_or_digest_are_official() {
     assert!(cfg.is_official(Some("updates.nyraos.com/nyra:stable")));
     assert!(cfg.is_official(Some(&format!("updates.nyraos.com/nyra@{A}"))));
     assert!(!cfg.is_official(Some("updates.nyraos.com/nyra")));
+    // Any repository on our server: a version may move its updates to another one.
+    assert!(cfg.is_official(Some("updates.nyraos.com/nyra-fork:stable")));
+    assert!(cfg.is_official(Some("updates.nyraos.com/other/nyra:stable")));
+}
+
+#[test]
+fn a_version_that_moves_its_updates_to_another_repository_keeps_getting_them() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.status.booted.as_mut().unwrap().image = Some(format!("updates.nyraos.com/nyra-old@{A}"));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert_eq!(
+        fake.calls,
+        vec![
+            format!("fetch {SHEET_URL}"),
+            format!("stage updates.nyraos.com/nyra@{C}"),
+        ]
+    );
 }
 
 #[test]
@@ -1378,6 +1397,9 @@ fn the_state_is_written_atomically_and_privately() {
         failed: [C.to_string()].into(),
         pending: Some(A.into()),
         forgiven: Some(B.into()),
+        channel: Some("beta".into()),
+        following: Some("stable".into()),
+        channel_changed: Some(NOW),
     };
     store.save(&state).unwrap();
     assert_eq!(store.load().unwrap(), state);
@@ -1760,4 +1782,200 @@ fn only_the_rollback_deployment_of_the_target_digest_is_deleted() {
     assert!(matches!(rollback_id(staged, v1), Err(Error::Command(_))));
     let installed = include_bytes!("../tests/data/bootc-status-installed.json");
     assert!(matches!(rollback_id(installed, v0), Err(Error::Command(_))));
+}
+
+// --- rule 14: channels ------------------------------------------------------------------------
+
+/// A sheet of `channel` issued at `issued_at`.
+fn channel_sheet(channel: &str, sequence: u64, current: &str, issued_at: u64) -> Vec<u8> {
+    let mut p = payload(sequence, current, &[]);
+    p["channel"] = json!(channel);
+    p["issued_at"] = json!(issued_at);
+    sign(&p)
+}
+
+const BETA_URL: &str = "https://updates.nyraos.com/channels/nyra/beta";
+
+/// A machine on C that followed `stable` until now and then chose `beta`.
+fn switched_to_beta(dir: &TempDir) -> Fake {
+    let mut fake = Fake::new(dir, C, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, dir), Ok(Outcome::UpToDate));
+    set_channel(&dir.store(), "beta").unwrap();
+    fake.calls.clear();
+    fake
+}
+
+#[test]
+fn the_chosen_channel_wins_over_the_image() {
+    let dir = TempDir::new();
+    set_channel(&dir.store(), "beta").unwrap();
+    let mut fake = Fake::new(&dir, A, channel_sheet("beta", 100, C, NOW - DAY));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert_eq!(fake.calls[0], format!("fetch {BETA_URL}"));
+    // A new image default does not change the choice.
+    let beta_default = Config {
+        channel: "dev".into(),
+        ..config()
+    };
+    fake.calls.clear();
+    let _ = check(&mut fake, &dir.store(), &beta_default, NOW);
+    assert_eq!(fake.calls[0], format!("fetch {BETA_URL}"));
+}
+
+#[test]
+fn an_unknown_channel_is_refused() {
+    let dir = TempDir::new();
+    set_channel(&dir.store(), "beta").unwrap();
+    for name in ["nightly", "Beta", "", "beta/../stable"] {
+        assert!(matches!(
+            set_channel(&dir.store(), name),
+            Err(Error::Config(_))
+        ));
+    }
+    assert_eq!(dir.store().load().unwrap().channel.as_deref(), Some("beta"));
+    // Nor is one written into the state by hand.
+    let mut state = dir.store().load().unwrap();
+    state.channel = Some("nightly".into());
+    dir.store().save(&state).unwrap();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert!(matches!(run_check(&mut fake, &dir), Err(Error::Config(_))));
+    assert!(fake.calls.is_empty());
+}
+
+#[test]
+fn the_sheet_of_another_channel_is_refused() {
+    let dir = TempDir::new();
+    let mut fake = switched_to_beta(&dir);
+    fake.sheet = channel_sheet("stable", 200, B, NOW);
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Sheet(nyra_channel_sheet::Error::WrongChannel {
+            expected: "nyra:beta".into(),
+            found: "nyra:stable".into()
+        }))
+    );
+    assert!(fake.staged().is_empty());
+}
+
+#[test]
+fn a_newer_version_on_the_new_channel_ends_the_change() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, A, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    set_channel(&dir.store(), "beta").unwrap();
+    fake.sheet = channel_sheet("beta", 100, B, NOW - DAY);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(B))));
+    let state = dir.store().load().unwrap();
+    assert_eq!(state.following.as_deref(), Some("beta"));
+    assert_eq!(state.channel_changed, None);
+}
+
+#[test]
+fn after_a_change_of_channel_an_older_version_needs_a_sheet_issued_after_it_and_is_reached_once() {
+    let dir = TempDir::new();
+    let mut fake = switched_to_beta(&dir);
+    let store = dir.store();
+    // The change is seen at NOW. A sheet issued before it (an old or replayed one) does nothing.
+    fake.sheet = channel_sheet("beta", 100, B, NOW - 1);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW),
+        Ok(Outcome::WaitingForSheet(image(B)))
+    );
+    assert!(fake.staged().is_empty());
+    assert_eq!(store.load().unwrap().channel_changed, Some(NOW));
+    // Issued after the change: the machine goes to the channel's version.
+    fake.sheet = channel_sheet("beta", 200, B, NOW + 10);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Ok(Outcome::Staged(image(B)))
+    );
+    assert_eq!(store.load().unwrap().channel_changed, None);
+    assert_eq!(store.load().unwrap().pending.as_deref(), Some(B));
+    // Once: a later sheet with an even older version is refused as in any channel (rule 4).
+    fake.sheet = channel_sheet("beta", 300, A, NOW + 20);
+    assert!(matches!(
+        check(&mut fake, &store, &config(), NOW + 120),
+        Err(Error::Sheet(nyra_channel_sheet::Error::Downgrade { .. }))
+    ));
+    assert_eq!(fake.staged().len(), 1);
+}
+
+#[test]
+fn after_a_change_of_channel_no_version_below_the_floor_retracted_or_failed() {
+    let dir = TempDir::new();
+    let mut fake = switched_to_beta(&dir);
+    let store = dir.store();
+    fake.sheet = channel_sheet("beta", 100, Z, NOW + 100);
+    assert!(matches!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Err(Error::BelowFloor { .. })
+    ));
+    let mut state = store.load().unwrap();
+    state.retracted.insert(B.into());
+    state.failed.insert(A.into());
+    store.save(&state).unwrap();
+    fake.sheet = channel_sheet("beta", 200, B, NOW + 100);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Err(Error::Retracted(B.into()))
+    );
+    fake.sheet = channel_sheet("beta", 300, A, NOW + 100);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Err(Error::Failed(A.into()))
+    );
+    assert!(fake.staged().is_empty());
+    // Nothing was done: the change still stands.
+    assert_eq!(store.load().unwrap().channel_changed, Some(NOW + 60));
+}
+
+#[test]
+fn a_new_image_default_is_a_change_for_a_machine_without_its_own_choice() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    let mut fake = Fake::new(&dir, C, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::UpToDate));
+    let beta_default = Config {
+        channel: "beta".into(),
+        ..config()
+    };
+    fake.sheet = channel_sheet("beta", 100, B, NOW + 10);
+    assert_eq!(
+        check(&mut fake, &store, &beta_default, NOW + 60),
+        Ok(Outcome::WaitingForSheet(image(B)))
+    );
+    assert_eq!(store.load().unwrap().channel_changed, Some(NOW + 60));
+    fake.sheet = channel_sheet("beta", 200, B, NOW + 70);
+    assert_eq!(
+        check(&mut fake, &store, &beta_default, NOW + 80),
+        Ok(Outcome::Staged(image(B)))
+    );
+}
+
+#[test]
+fn the_first_check_is_not_a_change_of_channel() {
+    // A machine that never ran a check (or an older daemon's state): an older version is refused.
+    let dir = TempDir::new();
+    set_channel(&dir.store(), "beta").unwrap();
+    let mut fake = Fake::new(&dir, C, channel_sheet("beta", 100, B, NOW));
+    assert!(matches!(
+        run_check(&mut fake, &dir),
+        Err(Error::Sheet(nyra_channel_sheet::Error::Downgrade { .. }))
+    ));
+    assert_eq!(dir.store().load().unwrap().channel_changed, None);
+}
+
+#[test]
+fn after_a_change_of_channel_the_local_rollback_deployment_is_reached_by_bootc_rollback() {
+    let dir = TempDir::new();
+    let mut fake = switched_to_beta(&dir);
+    fake.status.rollback = dep(B);
+    fake.sheet = channel_sheet("beta", 100, B, NOW + 100);
+    let store = dir.store();
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Ok(Outcome::RolledBack(image(B)))
+    );
+    assert_eq!(fake.calls.last().map(String::as_str), Some("rollback"));
+    assert_eq!(store.load().unwrap().channel_changed, None);
 }

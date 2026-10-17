@@ -7,11 +7,14 @@
 //!   settings;
 //! - `health` (`nyra-health-bootc.service`): bootc reports the booted image, so this version can
 //!   still update itself;
-//! - `check-config` (image build): the configuration parses and holds no test key.
+//! - `check-config` (image build): the configuration parses and holds no test key;
+//! - `set-channel NAME` (root, by hand until Settings offers it): this machine follows channel
+//!   NAME from the next check on, whatever the image says (rule 14).
 
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
-    check, on_health_failure, Config, Error, HealthAction, Lock, Outcome, Store, System,
+    check, on_health_failure, set_channel, Config, Error, HealthAction, Lock, Outcome, Store,
+    System,
 };
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -34,9 +37,9 @@ fn config() -> Result<Option<Config>, Error> {
 
 /// The journal priority (sd-daemon prefix: 3 error, 4 warning, 6 info), whether the command did
 /// its job (for last-check.json) and the result line.
-fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
-    match command {
-        "check" => {
+fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String), Error> {
+    match (command, arg) {
+        ("check", None) => {
             let _lock = Lock::acquire(Path::new(LOCK))?;
             let store = Store {
                 dir: STATE_DIR.into(),
@@ -58,7 +61,7 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             };
             Ok((priority, true, format!("{outcome:?}")))
         }
-        "health-failed" => {
+        ("health-failed", None) => {
             // Every call has its limit (SHORT); the unit's TimeoutStartSec= is above their sum.
             let store = Store {
                 dir: STATE_DIR.into(),
@@ -78,7 +81,7 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             }
             action.map(|a| (6, true, format!("{a:?}")))
         }
-        "health" => {
+        ("health", None) => {
             let booted = Real::default()
                 .status()?
                 .booted
@@ -89,7 +92,7 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
                 format!("bootc reports the booted image {}", booted.digest),
             ))
         }
-        "check-config" => match config()? {
+        ("check-config", None) => match config()? {
             Some(cfg) => Ok((
                 6,
                 true,
@@ -97,19 +100,32 @@ fn run(command: &str, now: u64) -> Result<(u8, bool, String), Error> {
             )),
             None => Ok((4, true, NOT_CONFIGURED.into())),
         },
+        ("set-channel", Some(channel)) => {
+            let _lock = Lock::acquire(Path::new(LOCK))?;
+            let store = Store {
+                dir: STATE_DIR.into(),
+            };
+            set_channel(&store, channel)?;
+            Ok((6, true, format!("this machine follows channel {channel}")))
+        }
         _ => Err(Error::Config(
-            "usage: nyra-updated check|health-failed|health|check-config".into(),
+            "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME".into(),
         )),
     }
 }
 
 fn main() -> ExitCode {
-    let command = std::env::args().nth(1).unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (command, arg) = match args.as_slice() {
+        [c] => (c.as_str(), None),
+        [c, a] => (c.as_str(), Some(a.as_str())),
+        _ => ("", None), // the usage
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let result = run(&command, now);
+    let result = run(command, arg, now);
     if command == "check" {
         let (ok, message) = match &result {
             Ok((_, ok, m)) => (*ok, m.clone()),

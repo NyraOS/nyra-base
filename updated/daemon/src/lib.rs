@@ -39,9 +39,11 @@
 //!    (`LoaderBootCountPath` set by systemd-boot): otherwise it is reported as an error, not
 //!    swallowed, because the counter service can fail silently and a soft reboot skips counting.
 //!    This daemon never soft-reboots (the [`System`] trait has no soft reboot at all).
-//! 10. Nothing is done when the booted image is not from `updates.nyraos.com/<repository>`
-//!     ([`HOST`] is fixed in code, `docs/SIGNING.md`): an owner who switched to their own image keeps it.
-//!     The outcome says so ([`Outcome::ForeignImage`]), so such a machine is not silently without updates.
+//! 10. Nothing is done when the booted image is not from [`HOST`] (fixed in code,
+//!     `docs/SIGNING.md`): an owner who switched to their own image keeps it. The outcome says so
+//!     ([`Outcome::ForeignImage`]), so such a machine is not silently without updates. Any
+//!     repository on [`HOST`] is ours, so a version that moves its updates to another repository
+//!     keeps getting them.
 //! 11. A staged version that becomes unacceptable before the reboot (retracted, failed, or below the
 //!     version floor) is discarded the same way as in rule 7. A rollback queued for the next boot
 //!     (`rollbackQueued`) to such a version is undone with another `bootc rollback`, which puts the
@@ -58,6 +60,12 @@
 //!     root; the only way a version that is neither failed, retracted nor forgiven becomes the
 //!     rollback deployment) is not staged again ([`Outcome::HeldBack`]): the machine stays where the
 //!     user put it until the sheet offers another version, or the running version is retracted.
+//! 14. The channel is the one root chose ([`set_channel`]), or else the image's. After a change of
+//!     channel (a choice, or a new image default on a machine without one), the new channel's
+//!     version may be older than the running one: the machine goes to it anyway, once, but only
+//!     with a sheet issued after the change (a replayed or old sheet cannot do it), and never to
+//!     a version that rules 3-5 refuse. Until such a sheet comes, nothing is done
+//!     ([`Outcome::WaitingForSheet`]). Within a channel, an older version stays refused (rule 4).
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -182,6 +190,7 @@ pub const CHANNELS: [&str; 3] = ["dev", "beta", "stable"];
 #[derive(Debug, Clone)]
 pub struct Config {
     pub repository: String,
+    /// The image's default; a channel chosen on the machine wins (rule 14).
     pub channel: String,
     /// No target older than this, not even a signed retraction.
     pub version_floor: String,
@@ -281,14 +290,15 @@ impl Config {
         format!("{HOST}/{}@{}", self.repository, digest)
     }
 
-    /// The booted image comes from our registry and repository (`bootc status` reference, by
-    /// tag or digest). Anything else was chosen on purpose by the machine's owner.
+    /// The booted image comes from our registry, any repository (`bootc status` reference, by tag
+    /// or digest): a version may move its updates to another repository (rule 10). Anything else
+    /// was chosen on purpose by the machine's owner.
     pub fn is_official(&self, image: Option<&str>) -> bool {
         image
             .and_then(|i| i.strip_prefix(HOST))
             .and_then(|i| i.strip_prefix('/'))
-            .and_then(|i| i.strip_prefix(self.repository.as_str()))
-            .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('@'))
+            .and_then(|i| i.find([':', '@']).map(|n| i.split_at(n)))
+            .is_some_and(|(repository, _)| is_repository(repository))
     }
 
     fn sheet_key(&self) -> String {
@@ -337,6 +347,14 @@ pub struct State {
     /// read the file, and a forgiven version that comes back after another was forgiven only costs
     /// three more boots (`docs/UPDATES.md`).
     pub forgiven: Option<String>,
+    /// The channel root chose ([`set_channel`]); `None`: the image's (rule 14).
+    pub channel: Option<String>,
+    /// The channel the last check followed.
+    pub following: Option<String>,
+    /// When a check first followed another channel than before (Unix seconds), until the machine
+    /// has acted on the new one: going to an older version is allowed only with a sheet issued
+    /// from then on, and only once (rule 14).
+    pub channel_changed: Option<u64>,
 }
 
 /// The state directory (`/var/lib/nyra-updated`, 0700, files 0600).
@@ -531,6 +549,23 @@ pub enum Outcome {
     RollbackUndone(String),
     /// The machine went back from the target by a rollback: it is not staged again (rule 13).
     HeldBack(Image),
+    /// The channel changed and its version is older than the running one: going to it needs a
+    /// sheet issued after the change (rule 14).
+    WaitingForSheet(Image),
+}
+
+/// Rule 14: from now on this machine follows `channel` (one of [`CHANNELS`]), whatever the image
+/// says. Root only: the state is root's.
+pub fn set_channel(store: &Store, channel: &str) -> Result<(), Error> {
+    if !CHANNELS.contains(&channel) {
+        return Err(Error::Config(format!(
+            "unknown channel {channel:?}: not one of {}",
+            CHANNELS.join(", ")
+        )));
+    }
+    let mut state = store.load()?;
+    state.channel = Some(channel.to_string());
+    store.save(&state)
 }
 
 /// SHA-256 (hex) of the payload of a sheet envelope that [`verify`] accepted.
@@ -652,6 +687,25 @@ pub fn check(
         return Ok(Outcome::Discarded(digest));
     }
 
+    // Rule 14: the channel this machine follows, and whether it just changed.
+    let channel = state.channel.clone().unwrap_or_else(|| cfg.channel.clone());
+    if !CHANNELS.contains(&channel.as_str()) {
+        return Err(Error::Config(format!(
+            "unknown channel {channel:?} in the state"
+        )));
+    }
+    if state.following.as_ref() != Some(&channel) {
+        if state.following.is_some() {
+            state.channel_changed = Some(now);
+        }
+        // Saved with the sheet below (rule 2): a sheet refused before that changes nothing.
+        state.following = Some(channel.clone());
+    }
+    let cfg = &Config {
+        channel,
+        ..cfg.clone()
+    };
+
     // Rule 2: verify, then persist the sequence and the retractions before acting.
     let envelope = sys.fetch_sheet(&cfg.sheet_url())?;
     let key = cfg.sheet_key();
@@ -707,7 +761,26 @@ pub fn check(
     // Rule 3: decide with every retraction remembered, not only the ones this sheet still lists.
     let mut sheet = sheet;
     sheet.retracted = state.retracted.iter().cloned().collect();
-    let (target, retraction) = match sheet.decide(&installed, group)? {
+    let decision = match (sheet.decide(&installed, group), state.channel_changed) {
+        // Rule 14: an older version, right after a change of channel.
+        (Err(nyra_channel_sheet::Error::Downgrade { .. }), Some(changed)) => {
+            let target = sheet.target(group).clone();
+            if sheet.issued_at < changed {
+                return Ok(Outcome::WaitingForSheet(target));
+            }
+            check_target(&target, &state, floor)?;
+            let outcome = prepare(sys, store, cfg, &mut state, &status, target, true)?;
+            state.channel_changed = None;
+            store.save(&state)?;
+            return Ok(outcome);
+        }
+        (decision, _) => decision?,
+    };
+    // Rule 14: the machine follows the new channel as usual from now on.
+    if state.channel_changed.take().is_some() {
+        store.save(&state)?;
+    }
+    let (target, retraction) = match decision {
         Decision::UpToDate => return Ok(Outcome::UpToDate),
         Decision::Update(t) => (t, false),
         Decision::Retract(t) => (t, true),
@@ -722,7 +795,21 @@ pub fn check(
         }
         return Err(e);
     }
+    prepare(sys, store, cfg, &mut state, &status, target, retraction)
+}
 
+/// Makes `target` the next boot (rules 6, 7, 12 and 13), after the checks of [`check`].
+fn prepare(
+    sys: &mut impl System,
+    store: &Store,
+    cfg: &Config,
+    state: &mut State,
+    status: &Status,
+    target: Image,
+    retraction: bool,
+) -> Result<Outcome, Error> {
+    let booted = status.booted.as_ref().ok_or(Error::NoBootedImage)?;
+    let running_retracted = state.retracted.contains(&booted.digest);
     if Status::digest(&status.staged) == Some(&target.digest) {
         return Ok(Outcome::WaitingForReboot(target));
     }
@@ -752,7 +839,7 @@ pub fn check(
     }
 
     state.pending = Some(target.digest.clone());
-    store.save(&state)?;
+    store.save(state)?;
     sys.stage(&cfg.image_ref(&target.digest))?;
     let after = sys.status()?;
     let staged = Status::digest(&after.staged)
