@@ -640,7 +640,11 @@ Each line is something that broke or surprised us once.
   pattern matched on the raw console then waits until its timeout. `vm-boot.py` matches every prompt
   (`--chat`, `--refused`, login, password, shell) without kernel messages (`clean()`) and maps the
   end of the match back to the raw console (`raw_offset()`), so the next wait starts right after the
-  prompt and kernel starts are still counted up to it.
+  prompt and kernel starts are still counted up to it. Console triggers (`--power-cut-at`,
+  `--tpm-fail-at`, `--qmp`, `--marker`) and command results are mostly printed by units or commands,
+  so they split the same way; they match on the raw console or without kernel messages, since a
+  trigger can also be a kernel message itself (`Linux version`). A prompt pattern ending in
+  `[^\r\n:]*:` stops at the prompt's colon instead of running into a kernel message after it.
 - On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
   pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
