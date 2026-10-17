@@ -112,6 +112,7 @@ Nyra's own, in the initramfs only:
 |---|---|---|
 | `nyra-root-wait.service` | the initrd waits for an encrypted root without a time limit (its passphrase may take long), but a root partition must still appear within 90 s (docs/BOOT.md, "Disk encryption") | one-shot in the initrd: checks once a second whether the root partition is there, which it normally is within a second or two; nothing resident |
 | `nyra-luks-root.service` | with an encrypted root, the running system finds the ESP on the LUKS2 partition's disk (docs/BOOT.md, "Disk encryption") | one-shot in the initrd, only with an encrypted root: one symbolic link; nothing resident |
+| `nyra-tpm-enroll.service` | the first boot of a disk installed for a TPM enrolls it with the signed PCR policy (docs/BOOT.md, "Disk encryption") | one-shot in the initrd, after the disk is unlocked: on an encrypted disk it reads the LUKS2 tokens from the header (milliseconds) and stops there, except at that first boot (one enrollment, under a second); on a plain disk nothing; nothing resident. With it, the initramfs carries `systemd-cryptenroll`, `cryptsetup` and `od` |
 
 `systemd-pcrphase-factory-reset.service` and `systemd-pcrphase-storage-target-mode.service` stay
 linked too, but only `factory-reset.target` and `storage-target-mode.target` start them, and nothing in
@@ -147,9 +148,9 @@ A reboot loop is therefore possible only with a TPM that is present but fails at
 counting cannot help there, since every version does the same. Such a TPM cannot unseal either, so the
 loop costs availability, not confidentiality; a TPM that fails once makes one extra reboot. The way
 out is to turn the TPM off in the firmware: the stub then measures nothing, the units do nothing, and
-the disk asks for its password or the recovery key. Checking both in a real boot (no unit failed, and
-that way out) needs a TPM attached to the VM and an encrypted disk, and is left for the encryption
-work; the software-TPM test (docs/BOOT.md) already proves the unlock the policy authorizes.
+the disk asks for its password or the recovery key. The encryption test with a TPM (docs/BOOT.md,
+"Disk encryption") checks it in real boots: no unit failed, the forced reboot when the TPM stops
+answering before `leave-initrd`, and that way out (without the TPM, the recovery key unlocks the disk).
 
 ## Firewall
 

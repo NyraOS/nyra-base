@@ -593,6 +593,20 @@ jobs:
         timeout-minutes: 30
         run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      # Titanic T10 with a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM
+      # (a recovery key and a temporary TPM2 enrollment in the VM's swtpm), booted with Secure Boot:
+      # the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR policy,
+      # the next boots unlock by themselves, without the TPM the recovery key unlocks it.
+      - name: Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/encryption-tpm.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY"
+
       - name: Secure Boot chain (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:

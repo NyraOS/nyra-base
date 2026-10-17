@@ -14,6 +14,8 @@
 #   - the recovery key unlocks it in place of the password;
 #   - a wrong password is asked again, and the recovery key typed 120 s later still unlocks it;
 #   - three wrong passwords: asked again (systemd-cryptsetup would give up), and the password unlocks it;
+#   - no root partition (its type changed on a copy): emergency mode after 90 s, through
+#     nyra-root-wait.service, then a reboot;
 #   - neither the password nor the recovery key is anywhere in the serial logs, in the unencrypted
 #     part of the disk (ESP, LUKS2 header) or in the decrypted root file system (the journal of the
 #     first boot included).
@@ -26,7 +28,7 @@ image="$1" work="$2/encryption" logs="$3" summary="$4"
 mkdir -p "$work"
 secrets="$work/secrets"
 mkdir -m 0700 "$secrets"
-trap 'sudo rm -rf "$secrets" "$work/disk.raw" "$work/header" "$work/header.json"' EXIT
+trap 'sudo rm -rf "$secrets" "$work/disk.raw" "$work/header" "$work/header.json" "$work/disk-noroot.raw"' EXIT
 
 # Letters and digits only: the initrd reads the keyboard as US, whatever the user's layout.
 password="$(python3 -I -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20)))')"
@@ -122,6 +124,20 @@ boot later "Encrypted disk: a wrong password, then the recovery key 120 s later"
 boot three-wrong "Encrypted disk: three wrong passwords, then asked again, without a restart" \
   --chat "$ask=>wrong1" --chat "$ask=>wrong2" --chat "$ask=>wrong3" --chat "$ask=>$password" --chat-then-login \
   --command "$running" || fail=1
+# No root partition at all (its type changed on a copy of the disk): the initrd waits for an encrypted
+# root without a limit, so nyra-root-wait.service is what still ends the boot after 90 s, in emergency
+# mode, which reboots.
+cp --sparse=always "$work/disk.raw" "$work/disk-noroot.raw"
+sfdisk -q --part-type "$work/disk-noroot.raw" 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4
+python3 -B tools/vm/vm-boot.py --disk "$work/disk-noroot.raw" --timeout 240 --expect-reboot \
+  --log "$logs/serial-encryption-noroot.log" --summary "$summary" \
+  --title "No root partition: emergency mode after 90 s (nyra-root-wait), which reboots" || fail=1
+rm "$work/disk-noroot.raw"
+if ! grep -q -a "nyra-root-wait: no root partition" "$logs/serial-encryption-noroot.log" ||
+   ! grep -q -a "@@ emergency: diagnostics" "$logs/serial-encryption-noroot.log"; then
+  echo "::error::no root partition: nyra-root-wait's message or the emergency mode is missing"
+  fail=1
+fi
 
 # Neither secret anywhere outside the user's head: the serial logs and this summary, the unencrypted
 # start of the disk (the ESP and the LUKS2 header), the decrypted root file system.

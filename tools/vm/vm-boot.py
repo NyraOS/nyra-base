@@ -39,6 +39,11 @@ then a root shell prompt must follow (for a boot that asks for something else th
 a login, like recovery).
 With --chat-then-login a login prompt follows instead (the guest reboots after the
 chat, for example), and the script logs in there as usual.
+--tpm DIR gives the VM a TPM 2.0 (swtpm, CRB interface) whose state is kept in DIR, so it
+persists across runs like a machine's TPM; swtpm is started here and ends with QEMU.
+--tpm-fail-at REGEX kills swtpm as soon as REGEX shows up on the console (a TPM that stops answering).
+--expect-reboot expects the guest to reboot (the kernel's "Restarting system") before any login
+prompt, within --timeout seconds.
 --rtc BASE starts the guest's hardware clock at BASE (QEMU -rtc base=, for example
 2099-01-01T00:00:00) instead of the host's time.
 --boots N logs in only after the Nth kernel start, for a guest that reboots by
@@ -107,8 +112,10 @@ def clean(buf):
 class Console:
     """Guest serial console: everything QEMU prints, plus a way to type."""
 
-    def __init__(self, proc, log, cut_at=None, kernels=1):
+    def __init__(self, proc, log, cut_at=None, kernels=1, tpm_fail=None):
         self.proc, self.log, self.cut_at = proc, log, cut_at
+        self.tpm_fail = tpm_fail  # (REGEX, swtpm process): --tpm-fail-at
+        self.tpm_failed = None  # seconds after start when swtpm was killed
         self.kernels = kernels  # kernel starts expected so far; one more is an unexpected reboot
         self.buf = b""
         self.cut = None  # seconds after start when QEMU was killed by --power-cut-at
@@ -126,6 +133,9 @@ class Console:
             if self.cut_at and self.cut is None and re.search(self.cut_at, self.buf):
                 self.proc.kill()
                 self.cut = time.monotonic() - self.t0
+            if self.tpm_fail and self.tpm_failed is None and re.search(self.tpm_fail[0], self.buf):
+                self.tpm_fail[1].kill()
+                self.tpm_failed = time.monotonic() - self.t0
 
     def wait_for(self, pattern, timeout, start=0, cleaned=False):
         """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
@@ -168,6 +178,22 @@ def refused(con, pattern, timeout):
     if con.wait_for(rb"Linux version|login: ", 60, m.end()):
         raise RuntimeError("a system started")
     return f"`{m.group().decode(errors='replace')}`, no system started within 60 s"
+
+
+def expect_reboot(con, timeout):
+    """The guest reboots (the kernel's "Restarting system") without reaching a login prompt; with
+    --tpm-fail-at, after the TPM failed."""
+    m = con.wait_for(rb"reboot: Restarting system", timeout)
+    if con.tpm_fail and con.tpm_failed is None:
+        raise RuntimeError("the TPM was never made to fail (--tpm-fail-at did not match)")
+    with con.lock:
+        before = con.buf[:m.start()] if m else con.buf
+    if b"login: " in before:
+        raise RuntimeError("a login prompt came after the TPM failed")
+    if not m:
+        raise RuntimeError(f"no reboot within {timeout} s of the start")
+    failed = f"TPM failed {con.tpm_failed:.1f} s after the start; " if con.tpm_failed is not None else ""
+    return f"{failed}rebooted {time.monotonic() - con.t0:.1f} s after the start, no login prompt"
 
 
 def marker(con, pattern, expected, timeout):
@@ -368,6 +394,9 @@ def main():
     p.add_argument("--smbios", action="append", default=[], metavar="STRING",
                    help="one more SMBIOS OEM string (type 11), as it is")
     p.add_argument("--power-cut-at", metavar="REGEX", help="kill QEMU as soon as REGEX shows up on the console")
+    p.add_argument("--tpm", metavar="DIR", help="a TPM 2.0 (swtpm) with its state in DIR")
+    p.add_argument("--tpm-fail-at", metavar="REGEX", help="with --tpm: kill swtpm when REGEX shows up")
+    p.add_argument("--expect-reboot", action="store_true", help="expect a reboot before any login prompt")
     p.add_argument("--rtc", metavar="BASE", help="the guest's hardware clock starts at BASE (QEMU -rtc base=)")
     p.add_argument("--boots", type=int, default=1, help="log in after this many kernel starts")
     p.add_argument("--chat", action="append", default=[], metavar="EXPECT=>SEND",
@@ -401,6 +430,19 @@ def main():
             + base64.b64encode(ASK_PASSWORD.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
+    swtpm = None
+    if a.tpm:
+        sock = f"{tmp}/swtpm.sock"
+        swtpm = subprocess.Popen(["swtpm", "socket", "--tpm2", "--tpmstate", f"dir={a.tpm}",
+                                  "--ctrl", f"type=unixio,path={sock}", "--terminate"])
+        for _ in range(50):
+            if os.path.exists(sock) or swtpm.poll() is not None:
+                break
+            time.sleep(0.2)
+        if not os.path.exists(sock):
+            raise SystemExit(f"vm-boot: swtpm did not start (state in {a.tpm})")
+        cmd += ["-chardev", f"socket,id=chrtpm,path={sock}", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
+                "-device", "tpm-crb,tpmdev=tpm0"]
     if a.autologin:
         cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
@@ -417,9 +459,12 @@ def main():
     ok, rows, outputs = True, [], []
     with open(a.log, "wb") as log:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
-        con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode(), max(a.boots, 1))
+        con = Console(proc, log, a.power_cut_at and a.power_cut_at.encode(), max(a.boots, 1),
+                      (a.tpm_fail_at.encode(), swtpm) if a.tpm_fail_at and swtpm else None)
         try:
-            if a.refused:
+            if a.expect_reboot:
+                rows.append(("Reboot", expect_reboot(con, a.timeout)))
+            elif a.refused:
                 rows.append(("Boot refused", refused(con, a.refused, a.timeout)))
             elif a.marker:
                 rows.append(("Console", marker(con, a.marker, a.marker_expected == "yes", a.timeout)))
@@ -457,6 +502,12 @@ def main():
         finally:
             proc.kill()
             proc.wait()
+            if swtpm:  # it ends by itself once QEMU is gone (--terminate), after writing its state
+                try:
+                    swtpm.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    swtpm.kill()
+                    swtpm.wait()
             shutil.rmtree(tmp)
 
     with open(a.summary, "a") as f:

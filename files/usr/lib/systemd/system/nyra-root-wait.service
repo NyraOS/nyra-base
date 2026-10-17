@@ -10,3 +10,5 @@ After=systemd-udevd.service
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/nyra/boot/root-wait
+# Its message (no root partition) is also on the console, before emergency mode reboots.
+StandardError=journal+console
