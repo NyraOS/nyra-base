@@ -72,9 +72,12 @@
 //!     `bootc rollback`: a rollback deployment kept the `/etc` of its time. Within a channel, an
 //!     older version stays refused (rule 4).
 //! 15. A version marked failed only by the network health check (its last try had carrier but no
-//!     address, and the version fallen back to gets one: `network-fallback` in the state directory,
-//!     written by that check) is tried once more ([`NetworkRetry`]): from a day later, or as soon as
-//!     the machine is on another network (another list of links with an address, `network-links`).
+//!     address, and the version fallen back to does not fail that check: `network-fallback` in the
+//!     state directory, written by it) is tried once more ([`NetworkRetry`]): from a day later, or
+//!     as soon as the machine is on another network (another list of links with an address,
+//!     `network-links`). The version fallen back to passes when it gets an address, and also when
+//!     it judges nothing (no carrier, no such link, `networkctl` lists no links): the cost is at
+//!     most one more try, cheaper than telling those apart.
 //!     It is staged afresh, like a forgiven version (rule 12). A second fallback from it is final.
 //!     Any other failure is final at once, as before.
 //!
@@ -464,8 +467,6 @@ impl Store {
         self.write_atomic("last-check.json", report.to_string().as_bytes())
     }
 
-    /// The install code: 32 random bytes made on first use, kept in `install-code` (0600). It
-    /// never leaves the machine; it only picks the rollout group.
     /// The links with a routable address at this check (`network-links`, written by
     /// `/usr/lib/nyra/health/network record` just before it); empty when there is none.
     pub fn network_links(&self) -> String {
@@ -484,6 +485,8 @@ impl Store {
         }
     }
 
+    /// The install code: 32 random bytes made on first use, kept in `install-code` (0600). It
+    /// never leaves the machine; it only picks the rollout group.
     pub fn install_code(&self) -> Result<Vec<u8>, Error> {
         let path = self.dir.join("install-code");
         match fs::read(&path) {
@@ -952,10 +955,11 @@ pub fn check(
             }
         }
         // Rule 12: a version offered again after it was forgiven (a newer one, or the target of a
-        // retraction), and rule 15: its second try after a failed network check. Its deployment would boot with the settings it was tried with, not today's,
-        // and has no tries left (bootc still reports it as the next boot: `rollbackQueued` does
-        // not see boot counting): it goes, and the version is staged like any update. The same
-        // when the running version is retracted and the target is one the user went back from.
+        // retraction), and rule 15: its second try after a failed network check. Its deployment
+        // would boot with the settings it was tried with, not today's, and has no tries left
+        // (bootc still reports it as the next boot: `rollbackQueued` does not see boot
+        // counting): it goes, and the version is staged like any update. The same when the
+        // running version is retracted and the target is one the user went back from.
         sys.delete_rollback(&target.digest)?;
     }
     stage_target(sys, store, cfg, &mut state, target)

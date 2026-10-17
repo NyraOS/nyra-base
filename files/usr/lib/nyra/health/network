@@ -2,16 +2,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra OS health check (nyra-health-network.service, docs/UPDATES.md, "The network"): a new version
 # brings up the network that the versions before it brought up. It fails only when that is clearly
-# the version's fault: a link systemd-networkd configured with a routable address at the last update
-# check of a healthy boot (the record) has carrier now, but no routable address within $wait seconds. A link without
-# carrier (no cable), waiting for authentication (dormant) or not there at all (a USB adapter
-# unplugged) is not judged, so a machine without a network never fails it.
+# the version's fault: a link systemd-networkd configured with a routable address at the last
+# update check of a healthy boot (the record) has carrier now, but no routable address within
+# $wait seconds. A link without carrier (no cable), waiting for authentication (dormant) or not
+# there at all (a USB adapter unplugged) is not judged, so a machine without a network never fails
+# it.
 #
 #   network         the check: on a boot on trial (systemd-boot counts its tries), and on the boot
 #                   after a trial boot that failed it, the version fallen back to: if that one gets
 #                   no address either, the network or the settings are to blame (rule 12); if it
-#                   gets one, the version fallen back from failed only this check and nyra-updated
-#                   tries it once more later (rule 15)
+#                   passes, the version fallen back from failed only this check and nyra-updated
+#                   tries it once more later (rule 15). It passes with an address, and also when
+#                   nothing is judged (no carrier, no such link, networkctl lists nothing): at
+#                   most one more try, simpler than telling those apart
 #   network record  nyra-updated.service, before every update check, on a healthy boot: the record
 #                   becomes the links configured with a routable address now (kept as it is when
 #                   there is none: the machine is offline), so a link the settings no longer give an
@@ -19,8 +22,11 @@
 set -fu
 dir=/var/lib/nyra-updated
 record="$dir/network-links"
-failed="$dir/network-failed"     # this check failed a trial boot: the next boot is judged too
-fallback="$dir/network-fallback" # and that next boot passed: nyra-updated tries the version again (rule 15)
+# network-failed: this check failed a trial boot, so the next boot is judged too. network-fallback:
+# and that next boot passed (an address, or nothing judged): nyra-updated tries the version again
+# (rule 15).
+failed="$dir/network-failed"
+fallback="$dir/network-fallback"
 wait=60  # seconds a link with carrier has to get a routable address
 grace=20 # seconds a link has to show carrier (Ethernet negotiation) before it counts as unplugged
 
@@ -36,7 +42,8 @@ if [ "${1:-}" = record ]; then
 		[ "$oper $setup" = "routable configured" ] && echo "$name"
 	done)"
 	[ -n "$new" ] || exit 0
-	# On the disk before the rename: a power cut must never leave an empty record, which judges nothing.
+	# On the disk before the rename: a power cut must never leave an empty record, which judges
+	# nothing.
 	echo "$new" >"$record.new" && sync && mv "$record.new" "$record"
 	exit
 fi

@@ -4,7 +4,8 @@
 # of the script with its paths moved into a temporary directory and its time limits shortened (60 s
 # and 20 s to 3 s and 1 s), and stand-ins for networkctl (the links of $LINKS), systemctl
 # (boot-complete.target active unless $UNHEALTHY, SoftRebootsCount $SOFT, the failed health checks
-# $OTHER_FAILED) and sync (logs whether the new record is there when it runs). The VM test (tools/vm/network-health.sh) covers the real system.
+# $OTHER_FAILED) and sync (logs whether the new record is there when it runs). The VM test
+# (tools/vm/network-health.sh) covers the real system.
 #   tools/vm/test-network-health.sh
 set -euo pipefail
 
@@ -89,6 +90,8 @@ check "trial: no such link" 0 'not judged: enp1s0' LINKS="$(links)"
 check "trial: waiting for authentication" 0 'not judged: enp1s0' LINKS="$(links enp1s0:dormant:configuring)"
 check "trial: networkctl lists nothing" 0 '^<4>networkctl listed no links' LINKS=""
 test ! -e "$t/var/network-failed" || { echo "FAILED: a marker without a failure"; fails=$((fails + 1)); }
+test ! -e "$t/var/network-fallback" && echo "ok: a trial boot that passes asks for no retry" ||
+  { echo "FAILED: network-fallback on a trial boot"; fails=$((fails + 1)); }
 check "trial: carrier, no address" 1 'no routable address after 3 s.*enp1s0 \(degraded configured\)' LINKS="$(links enp1s0:degraded:configured)"
 test -e "$t/var/network-failed" && echo "ok: the next boot judges too" || { echo "FAILED: no marker"; fails=$((fails + 1)); }
 check "trial: not managed any more" 1 'enp1s0 \(off unmanaged\)' LINKS="$(links enp1s0:off:unmanaged)"
@@ -106,6 +109,14 @@ check "after the fallback: no address either (the network or the settings)" 1 'n
 test ! -e "$t/var/network-failed" && echo "ok: only a trial boot leaves a marker" || { echo "FAILED: marker off trial"; fails=$((fails + 1)); }
 test ! -e "$t/var/network-fallback" && echo "ok: no retry when the older version gets no address either" ||
   { echo "FAILED: network-fallback without an address"; fails=$((fails + 1)); }
+# Nothing judged after the fallback passes too: at most one more try, simpler than telling apart.
+touch "$t/counted"
+check "trial fails once more" 1 'no routable address' LINKS="$(links enp1s0:degraded:configured)"
+rm "$t/counted"
+check "after the fallback: no cable" 0 'not judged: enp1s0' LINKS="$(links enp1s0:no-carrier:configuring)"
+test -e "$t/var/network-fallback" && echo "ok: nothing judged after the fallback: one more try" ||
+  { echo "FAILED: no network-fallback when nothing is judged"; fails=$((fails + 1)); }
+rm "$t/var/network-fallback"
 touch "$t/counted"
 check "trial: no address, and another health check failed" 1 'no routable address' OTHER_FAILED="nyra-health-bootc.service loaded failed failed" LINKS="$(links enp1s0:degraded:configured)"
 test ! -e "$t/var/network-failed" && echo "ok: not the network check's alone: the next boot is not judged, no retry" ||

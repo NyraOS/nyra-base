@@ -269,25 +269,28 @@ unplugged) is not judged. networkd or resolved not running is the core services 
 - **When it judges.** Only on a boot on trial (systemd-boot started an entry that counts its tries:
   `LoaderBootCountPath`, and no soft reboot since, which leaves that variable from the last full
   boot; nothing is blessed after a soft reboot either, and the next full boot is counted), so a
-  version that passed its checks never waits for an address at boot,
-  and a router that is down does not delay the login on it. And on the boot after a trial boot that
-  failed it (`/var/lib/nyra-updated/network-failed`, written only when no other health check failed
-  on that boot), which is the version fallen back to: rule 12 needs to know whether that one gets an
+  version that passed its checks never waits for an address at boot, and a router that is down
+  does not delay the login on it. And on the boot after a trial boot that failed it
+  (`/var/lib/nyra-updated/network-failed`, written only when no other health check failed on that
+  boot), which is the version fallen back to: rule 12 needs to know whether that one gets an
   address. If it does, the new version is marked failed; if it does not, the network or the
   settings are to blame, as for any check both versions fail: the new version is forgiven, and the
-  notice says to reset the settings.
+  notice says to reset the settings. If that boot judges nothing (no carrier, the link not there,
+  `networkctl` lists no links), it passes too, and the new version is marked failed, with its one
+  more try (below): at most one try more, simpler than telling those cases apart.
 - **One more try (rule 15).** A version marked failed that way, by the network check alone, may
   still have met a network that was down only then (a router restarting during all three tries). The
-  boot after the fallback leaves `/var/lib/nyra-updated/network-fallback`; the next update check
-  takes it, marks the version failed as usual and remembers it (`network_retry` in the state: the
-  digest, the time, the list of links with an address then). The version is staged once more, afresh
-  (its old deployment, with the `/etc` of its tries, is deleted, as for rule 12), as soon as a check
-  finds a day has passed or the list of links with an address is another (the machine moved from
-  Wi-Fi to a cable, or to a dock): the simplest sign of another network the machine already keeps.
-  The same link on another network (another Wi-Fi) is not told apart; the day covers it. If the
-  version fails the network check again, it stays failed until the next version; if it boots
-  healthy, nothing is left of the first failure. One version at a time, like a forgiven one; an
-  older `nyra-updated` (after a rollback) drops the field and keeps the version failed.
+  boot after the fallback, when it passes the check (an address, or nothing judged), leaves
+  `/var/lib/nyra-updated/network-fallback`; the next update check takes it, marks the version failed
+  as usual and remembers it (`network_retry` in the state: the digest, the time, the list of links
+  with an address then). The version is staged once more, afresh (its old deployment, with the
+  `/etc` of its tries, is deleted, as for rule 12), as soon as a check finds a day has passed or the
+  list of links with an address is another (the machine moved from Wi-Fi to a cable, or to a dock):
+  the simplest sign of another network the machine already keeps. The same link on another network
+  (another Wi-Fi) is not told apart; the day covers it. If the version fails the network check
+  again, it stays failed until the next version; if it boots healthy, nothing is left of the first
+  failure. One version at a time, like a forgiven one; an older `nyra-updated` (after a rollback)
+  drops the field and keeps the version failed.
 - **The cost.** A version on trial whose link has carrier but gets no address delays the login by
   60 s; a version that breaks the network takes three times that longer to fall back. On trial, a
   recorded link without carrier (or not there) delays the login by 20 s before it counts as unplugged.
@@ -312,12 +315,13 @@ which still has its `+3`, is counted from then on.
 
 **Sandboxing.** `nyra-updated.service` runs bootc, which needs root, its own mount namespace (it
 remounts `/sysroot` and the read-only ESP read-write there; `esp-sync discard` does the same through
-`esp-writable`), the network, `/sysroot` and `/var`: it gets
-`ProtectSystem=full`, `ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup
-protections and a list of address families (`systemd-analyze security`: 6.5). The health checks and
-`health-failed` only read state and ask systemd for a reboot: no network, no capabilities where
-possible. The network check sees the machine's links (no private network namespace), but opens no
-network socket (only `AF_UNIX` and `AF_NETLINK`). The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutStartSec` is above that.
+`esp-writable`), the network, `/sysroot` and `/var`: it gets `ProtectSystem=full`,
+`ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup protections and a list
+of address families (`systemd-analyze security`: 6.5). The health checks and `health-failed` only
+read state and ask systemd for a reboot: no network, no capabilities where possible. The network
+check sees the machine's links (no private network namespace), but opens no network socket (only
+`AF_UNIX` and `AF_NETLINK`). The pull itself is stopped by `nyra-updated` after 2 hours;
+`TimeoutStartSec` is above that.
 
 **What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
@@ -415,8 +419,9 @@ The check's own cases run without a VM on every pull request (`tools/vm/test-net
 stand-in for `networkctl`): the list replaced at each check and kept while offline, synced before the
 rename; a recorded port that is bridged or no longer managed judged until the next check and not
 after it; a soft reboot, no cable, a link not there, `dormant` and an empty `networkctl` not judged;
-the boot after a failed trial judged, and the only one off trial; `network-fallback` left only when
-that boot gets an address, and no marker when another health check failed too.
+the boot after a failed trial judged, and the only one off trial; `network-fallback` left when that
+boot passes, with an address or with nothing judged (no cable), never when it gets no address
+either and never on a trial boot; no marker when another health check failed too.
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
 disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft
