@@ -377,8 +377,9 @@ Each line is something that broke or surprised us once.
   `chrony-wait.service` asks over `127.0.0.1` and therefore cannot work with it.
 - NTS-KE checks the certificate dates with the local clock: with the clock in 2035 both
   `time.cloudflare.com` and `nts.netnod.se` were refused as expired, so NTS alone can never correct
-  a clock that is far off. `nocerttimecheck 1` lifts only the date check, until the first clock
-  update. Debian's configuration does not set it.
+  a clock that is far off. chrony's `nocerttimecheck 1` lifts only the date check, until the first
+  clock update (Debian's configuration does not set it); ntpd-rs needs our patch (docs/DEFAULTS.md,
+  "Time").
 - chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
   resolves to another address starts with a new key exchange.
 
@@ -413,6 +414,21 @@ Each line is something that broke or surprised us once.
   to skip the dates, so it cannot correct a clock outside their validity by itself. libfaketime
   (`FAKETIME=@2035-06-01 00:00:00`) with `ntp-ctl force-sync` shows it without root: `ExpiredContext`
   on every key exchange.
+- rustls passes the time to the certificate verifier (`verify_server_cert(..., now)`), so the same
+  verifier checks a chain at any other time; the handshake signature (`verify_tls13_signature`) does
+  not depend on the time, and the connection keeps the chain (`peer_certificates()`). That is how our
+  ntpd-rs patch checks a certificate at the time the server gives.
+- ntpd-rs's selection already wants a majority: the largest set of sources that agree must be more
+  than half of the usable ones, and at least `minimum-agreeing-sources` (default 3).
+- ntpd's build script asks git for a commit and its date; outside a git checkout `git diff-index`
+  fails, the build counts as "dirty" and takes today's date (`date -u`), so the binary changes every
+  day. `NTPD_RS_GIT_REV` and `NTPD_RS_GIT_DATE` in the environment avoid it.
+- `git apply` works outside a repository, like `patch`: `git apply -p2 --directory=ntp-proto-1.9.0`
+  applies a patch made in the upstream tree (`a/ntp-proto/src/...`) to the crate unpacked from
+  crates.io.
+- systemd's `@privileged` system call set contains `@clock`: a time client can deny `@resources`
+  but not `@privileged`. `systemd-analyze security --offline=true FILE` scores a unit file that is
+  not installed.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
@@ -797,10 +813,11 @@ Each line is something that broke or surprised us once.
   may write there) make every read of that block fail with `Input/output error`, through `/usr` and
   on the object itself. Drop the page cache first (`sync`, `blockdev --flushbufs`, `drop_caches`),
   or the old pages are served. The same write on a plain file in `/var` is the control.
-- systemd sets the clock to its build time at boot when the hardware clock is before it **or more
-  than about 15 years after it**: an RTC in 1970 and one in 2099 both start at the image's build
-  time (the snapshot date), still before the real time. A clock that is wrong but within that range
-  (2035) stays wrong until chronyd corrects it (docs/DEFAULTS.md, "Time").
+- systemd sets the clock at boot to the image's build time (the time of `/usr/lib/clock-epoch`, the
+  snapshot date; without that file, systemd's own build time) when the hardware clock is before it
+  **or more than about 15 years after it**: an RTC in 1970 and one in 2099 both start there, still
+  before the real time. A clock that is wrong but within that range
+  (2035) stays wrong until the time client corrects it (docs/DEFAULTS.md, "Time").
 - curl reports a wrong clock as `SSL certificate OpenSSL verify result: certificate is not yet valid
   or the system clock is incorrect (9)` or `... certificate has expired (10)`, which is what
   `nyra-updated` passes on.
@@ -824,9 +841,9 @@ Each line is something that broke or surprised us once.
   cache exists depends on a race at the first boot: `apparmor.service` runs next to
   `systemd-tmpfiles-setup.service`, and without `/var/cache` yet the parser loads without writing a
   cache. So one T6 run passed and the next had AppArmor failing on the full disk.
-- With chronyd in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
+- With an NTS client in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
   2035) were corrected within seconds of reaching the network, so a check that needs the clock
-  wrong must keep chronyd from its servers (the T9 hostile boot points their names at the runner).
+  wrong must keep it from its servers (the T9 hostile boot points their names at the runner).
 - Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
   answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
   replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)

@@ -114,24 +114,26 @@ offline_reported() { # offline_reported DIGEST: the last check found no network 
 		python3 -c 'import json, sys; sys.exit(sys.argv[1] in json.load(open("/var/lib/nyra-updated/state.json")).get("failed", []))' "$1"
 }
 
-synced() { # synced NOT_BEFORE: chronyd set the clock through NTS; it reads between NOT_BEFORE (the
-	# runner's time when this boot started) and 10 minutes later
-	if ! chronyc waitsync 90 0.1 0 2; then
-		chronyc -n sources
-		chronyc -N authdata
-		journalctl -b -u chronyd-restricted -o short-monotonic --no-pager | tail -50
+synced() { # synced NOT_BEFORE: within 4 minutes, ntpd-rs set the clock through NTS; it reads between
+	# NOT_BEFORE (the runner's time when this boot started) and 10 minutes later. ntpd-rs's first
+	# update can take up to eight answers from three servers, which it asks every 16 s.
+	for _ in $(seq 240); do
+		now="$(date +%s)"
+		[ "$now" -ge "$1" ] && [ "$now" -lt $(($1 + 600)) ] && break
+		sleep 1
+	done
+	ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status
+	date -u
+	now="$(date +%s)"
+	if ! { [ "$now" -ge "$1" ] && [ "$now" -lt $(($1 + 600)) ]; }; then
+		journalctl -b -u ntpd-rs -o short-monotonic --no-pager | tail -50
 		return 1
 	fi
-	chronyc -n sources
-	chronyc -N authdata
-	now="$(date +%s)"
-	date -u
-	[ "$now" -ge "$1" ] && [ "$now" -lt $(($1 + 600)) ]
 }
 
-not_synced() { # chronyd tried for 30 s and did not set the clock
-	! chronyc waitsync 15 0 0 2 || return 1
-	chronyc -n sources
-	chronyc -N authdata
-	journalctl -b -u chronyd-restricted -o short-monotonic --no-pager | tail -20
+not_synced() { # ntpd-rs tried for 30 s and did not set the clock
+	sleep 30
+	ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status
+	journalctl -b -u ntpd-rs -o short-monotonic --no-pager | tail -20
+	systemctl is-active ntpd-rs.service && ! journalctl -b -u ntpd-rs -o cat --no-pager | grep -F 'Jumped offset'
 }

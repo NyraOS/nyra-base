@@ -13,7 +13,7 @@
 #          4  the network: the wired network's settings replaced in /etc with a wrong static address,
 #             /etc/resolv.conf replaced with a wrong name server
 #          5  /etc/systemd/system: everything deleted (the services enabled there), then systemd-resolved,
-#             chronyd, the firewall and the update timer masked
+#             ntpd-rs, the firewall and the update timer masked
 #        Expected: the system boots to a login prompt. What happens is in the step summary and the
 #        serial logs: the system state, the failed units, the basic services, the network, whether the
 #        user can log in, the notice a failed health check leaves on the console, and the warnings of
@@ -57,7 +57,7 @@ echo "$token" > "$t8/www/t8"
 python3 -m http.server 8088 --bind 127.0.0.1 --directory "$t8/www" > "$t8/http.log" 2>&1 &
 
 # --- guest commands (as in tools/titanic/secure-boot-system.sh) -----------------------------------
-units="systemd-journald.service dbus.service systemd-logind.service systemd-networkd.service systemd-resolved.service chronyd-restricted.service nyra-firewall.service apparmor.service nyra-updated.timer"
+units="systemd-journald.service dbus.service systemd-logind.service systemd-networkd.service systemd-resolved.service ntpd-rs.service nyra-firewall.service apparmor.service nyra-updated.timer"
 net="curl -fsS --max-time 10 http://10.0.2.2:8088/t8 | grep -qx $token"
 # The user's password through PAM: su, run as the user so that it has to ask, reads it from its input.
 # By UID: su (sudo-rs) refuses to run for a user it cannot look up, and the broken /etc/passwd has no
@@ -76,7 +76,7 @@ shadow_refused="systemctl is-failed -q $shadow_unit && journalctl -b -u $shadow_
 break_fstab='mkdir -p /var/mnt/data && printf "a line that is not a mount\nLABEL=nyra-t8-data /var/mnt/data ext4 defaults 0 2\n" >> /etc/fstab && cat /etc/fstab'
 break_passwd="grep -E '^(root|$user):' /etc/passwd > /var/tmp/passwd && echo 'a line that is not an account' >> /var/tmp/passwd && cat /var/tmp/passwd > /etc/passwd && rm /var/tmp/passwd && cat /etc/passwd"
 break_network='mkdir -p /etc/systemd/network && printf "[Match]\nName=en* eth*\n[Network]\nAddress=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n" > /etc/systemd/network/80-nyra-wired.network && rm -f /etc/resolv.conf && echo "nameserver 192.0.2.53" > /etc/resolv.conf && cat /etc/systemd/network/80-nyra-wired.network /etc/resolv.conf'
-break_services='rm -rf /etc/systemd/system/* && systemctl mask systemd-resolved.service chronyd-restricted.service nyra-firewall.service nyra-updated.timer && ls -lR /etc/systemd/system'
+break_services='rm -rf /etc/systemd/system/* && systemctl mask systemd-resolved.service ntpd-rs.service nyra-firewall.service nyra-updated.timer && ls -lR /etc/systemd/system'
 
 # What a broken system does after it booted; only shown, never a failure.
 observe="s=\"\$(timeout 150 systemctl is-system-running --wait)\"; echo \"system: \$s\"; systemctl --no-pager --failed; for u in $units; do echo \"\$u: \$(systemctl is-active \$u)\"; done; ip -br address; ip route; if $net; then echo 'network: the runner answers'; else echo 'network: the runner does not answer'; fi; if $login_ok; then echo '$user: logs in with the password'; else echo '$user: cannot log in'; fi; cat /run/issue.d/50-nyra-health.issue 2>/dev/null; journalctl -b -p warning -o short-monotonic --no-pager | tail -n 40; true"

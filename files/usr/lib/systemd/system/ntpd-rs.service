@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra: ntpd-rs, the time client (docs/DEFAULTS.md, "Time"). NTS only, with our configuration from
+# /usr; never root, CAP_SYS_TIME as its only capability, in a sandbox and under its AppArmor profile
+# (/etc/apparmor.d/usr.bin.ntp-daemon). Its state (the time of the last clock update, the floor of the
+# clock) is in /var/lib/ntpd-rs.
+[Unit]
+Description=Network time (ntpd-rs, NTS)
+Documentation=https://docs.ntpd-rs.pendulum-project.org/
+Conflicts=systemd-timesyncd.service chrony.service
+Wants=time-sync.target
+Before=time-sync.target
+ConditionVirtualization=!container
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/ntp-daemon --config /usr/lib/nyra/ntpd-rs/ntp.toml
+# ntp-daemon ends itself when a step of more than 1000 s is suggested after its first one (someone
+# set the clock by hand, for example); started again, it corrects the clock as at boot.
+Restart=on-failure
+RestartSec=30s
+# Without a network it tries each server again every second and logs every failure.
+LogRateLimitIntervalSec=1h
+LogRateLimitBurst=1000
+DynamicUser=yes
+StateDirectory=ntpd-rs
+RuntimeDirectory=ntpd-rs
+CapabilityBoundingSet=CAP_SYS_TIME
+AmbientCapabilities=CAP_SYS_TIME
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @clock
+SystemCallFilter=~@resources
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

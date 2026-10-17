@@ -15,7 +15,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
 | ESP read-only | mounted read-only at `/boot` at every boot; only `esp-sync`, `systemd-bless-boot`, `systemd-boot-random-seed` and bootc make it writable, each in a mount namespace of its own (docs/BOOT.md, "The ESP is read-only") | the only FAT mount is `/boot`, `ro`; a write there fails with "Read-only file system" |
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs` is there and none for vfat, exfat, ntfs3, ext4, btrfs, xfs, udf, isofs, hfsplus, squashfs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
-| Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| Authenticated time | ntpd-rs (Rust, built by us with our patch for a clock that is far off) with NTS only (Cloudflare, Netnod, PTB, SIDN Labs), run by `ntpd-rs.service` (never root, only `CAP_SYS_TIME`, sandboxed, AppArmor); configuration in `/usr/lib/nyra/ntpd-rs/ntp.toml`; no chrony, no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd` or chrony; the service active, ntp-daemon as its dynamic user with `CAP_SYS_TIME` as its only effective capability, no new privileges, its seccomp filter on and its AppArmor profile in enforce mode without a denial, our configuration with exactly the four NTS sources and every running source NTS, a systemd exposure of at most 1.9; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
 | `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
@@ -91,7 +91,7 @@ only orders the two at boot.)
 
 Kept: `fstrim.timer` (weekly TRIM for SSDs), `systemd-tmpfiles-clean.timer`, `nyra-updated.timer`
 (update checks, docs/UPDATES.md), `nyra-etc-copy.timer` (the daily copy of `/etc`, docs/BOOT.md,
-"Restore earlier settings"), `chronyd-restricted.service` (the clock, see "Time").
+"Restore earlier settings"), `ntpd-rs.service` (the clock, see "Time").
 
 The check lists running services, waiting timers and listening sockets. One-shot units that run
 at boot and exit are not on that list; the blocked ones are checked one by one.
@@ -159,9 +159,9 @@ answering before `leave-initrd`, and that way out (without the TPM, the recovery
 The ruleset (`inet nyra`, input hook only) lets in loopback, replies to connections this machine
 started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements, MLD queries) and
 DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
-Outbound and forwarded traffic is not filtered: chronyd's NTS key exchange (TCP 4460) and NTP
+Outbound and forwarded traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP
 queries (UDP 123) go out, and only their replies come back in (`established`). Nothing listens for
-time: chronyd opens no server port and no command port (see "Time").
+time: ntpd-rs serves no time and has no network control port (see "Time").
 
 - nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
   per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
@@ -185,46 +185,58 @@ Security, RFC 8915): a TLS key exchange with the server (NTS-KE, TCP 4460), then
 
 | What | How |
 |---|---|
-| Client | `chrony`, which conflicts with `systemd-timesyncd` (not installed) |
-| Sources | `time.cloudflare.com` and `nts.netnod.se`, both with `nts`; no pool, no servers from DHCP, no unauthenticated fallback. `minsources 2`: the clock is updated only when both operators are reachable and agree, so one compromised or impersonated server cannot move it |
-| Configuration | `/usr/lib/nyra/chrony/chrony.conf`, passed with `-f` by a drop-in of `chronyd-restricted.service`. Debian's `/etc/chrony/chrony.conf` (an unauthenticated pool and servers from DHCP) stays as the package left it and is not read |
-| Service | Debian's `chronyd-restricted.service`: started as `_chrony`, with `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state, runtime and log directories only, Debian's seccomp filter (`-F 1`, set in the drop-in) and AppArmor profile (enforce mode) (`systemd-analyze security`: exposure 1.9, "OK"). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it and disables `chrony.service` (chronyd started as root; the two units conflict) and `chrony-wait.service` (it asks chronyd over UDP 323, which the restricted client does not open, and would delay the boot). systemd applies presets again at the first boot, so the preset is what keeps them that way. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`, ahead of chrony's own list: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it, never `chrony.service` with Debian's configuration |
-| State | NTS cookies (`ntsdumpdir`) and the drift file in `/var/lib/chrony` |
-| Control | `chronyc` as root, over the Unix socket in `/run/chrony`; `cmdport 0`, so no UDP 323 |
-| Bootstrap | `nocerttimecheck 1`, see below |
+| Client | [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) (`ntp-daemon`, version in `ntpd-rs/Cargo.lock`), built in the image build from its crates with our patch (below) |
+| Sources | `time.cloudflare.com`, `nts.netnod.se`, `ptbtime1.ptb.de` (PTB, Germany's metrology institute) and `nts.time.nl` (SIDN Labs), all NTS; no pool, no servers from DHCP, no unauthenticated fallback. `minimum-agreeing-sources = 3`: the clock moves only when at least three servers agree and are the majority of those that answer (ntpd-rs's selection), so one or two compromised or impersonated servers cannot move it, and one operator out of reach does not stop it |
+| Configuration | `/usr/lib/nyra/ntpd-rs/ntp.toml`, passed with `--config` by `ntpd-rs.service`. At startup a step of any size is allowed (`startup-step-panic-threshold`), bounded by the patch; later a step of more than 1000 s ends the daemon (upstream's default, for a clock set by hand, for example), and systemd starts it again 30 s later, which corrects the clock as at boot. Offline it tries each server every second and logs each failure: the journal takes at most 1000 of its messages an hour |
+| Service | our `ntpd-rs.service` (`Type=notify`): a dynamic user (no account in `/etc/passwd`), `CAP_SYS_TIME` as its only capability (bounding and ambient), `NoNewPrivileges`, `ProtectSystem=strict`, its own state and runtime directories only, no devices, kernel tunables, modules, logs or control groups, Internet and local sockets only, a system call allow list (`@system-service @clock`, without `@resources`), no writable and executable memory, and its AppArmor profile in enforce mode (`/etc/apparmor.d/usr.bin.ntp-daemon`, kept in `/usr/lib/nyra/apparmor.d` like the others) (`systemd-analyze security`: exposure 1.9, "OK", as chronyd-restricted's before it). Our preset (`/usr/lib/systemd/system-preset/80-nyra.preset`) enables it, and systemd applies presets again at the first boot. `/usr/lib/systemd/ntp-units.d/10-nyra.list` names it as the NTP service for `systemd-timedated`: `timedatectl` reports it, and turning automatic time on (`timedatectl set-ntp true`, later the desktop's switch) enables and starts it |
+| State | `/var/lib/ntpd-rs/last-clock-update`, written at every clock update: its time is the last good time (the floor below), its content the boot ID of that update |
+| Control | `ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status` as root, over the Unix socket `/run/ntpd-rs/observe` (mode 0600); no network control port |
+| Bootstrap | our patch, see below |
 
 **A wrong clock at boot.** NTS-KE checks the server certificate like any TLS client, including its
 validity dates. A machine whose clock is outside them (a hardware clock in 2035, or reset by an empty
 battery to a date before the certificate was issued) could therefore never correct it: the
 certificates of `time.cloudflare.com` and `nts.netnod.se` were checked with the clock in 2035 and
 both were refused as expired. Such a machine would also fail every update (docs/UPDATES.md, T9).
-`nocerttimecheck 1` turns off only the check of the dates, and only until the first clock update
-after chronyd starts; the chain to a trusted CA and the server name are still checked. Debian's
-configuration does not set it; chrony's documentation describes this case as its purpose.
+ntpd-rs has no setting for this (chrony's `nocerttimecheck`), so we patch it
+([`patches/upstream/ntpd-rs-wrong-clock.md`](../patches/upstream/ntpd-rs-wrong-clock.md), public
+domain, not sent upstream). Until the first clock update since boot:
 
-What it costs: until that first update, an attacker on the path who holds the private key of a
-certificate for one of these names that has *expired* (and was issued by a trusted CA) can complete
-the key exchange and offer a wrong time. A stolen key of a certificate that is still valid works
-with or without this setting (chrony does not check revocation), so the expired keys are the only
-addition. With `minsources 2` the attacker needs such keys for both operators, Cloudflare and
-Netnod, at the same time. Not done: pinning the CAs of the two servers (`ntstrustedcerts`), which
-would stop time synchronization silently the day an operator changes its CA.
+1. a key exchange still proves that the server holds the key of the certificate it presents, but
+   the certificate (chain to a trusted CA, server name, dates) is checked at each time the server
+   then gives, not at the local clock's time: a time counts only if the certificate was valid then;
+2. no time counts below the floor: the image's build time (`/usr/lib/clock-epoch`, which systemd
+   also uses to move a clock that starts before it) or the last clock update, whichever is later;
+3. the clock moves only when three servers of different operators agree (above).
 
-What `minsources 2` costs: if one of the two operators cannot be reached, the clock is not updated
-at all and runs on the hardware clock until both answer again.
+After the first clock update, and after a restart of the daemon in the same boot, a key exchange
+checks the certificate at the handshake again, as upstream does. Sources that started before keep
+the check at the time they give, which is then the local time.
 
-**Local changes**, in `/etc`, kept across updates: more sources in `/etc/chrony/sources.d/*.sources`
-(they count towards `minsources`); other directives in `/etc/chrony/conf.d/*.conf`, which are read
-after ours and override them (`minsources 1`, for example). To replace the whole configuration, set
-`DAEMON_OPTS="-F 1 -f /etc/chrony/my.conf"` in `/etc/default/chrony`: the later `-f` wins.
+What it costs: until that first update, an attacker on the path who holds the private key of an
+*expired* certificate for one of these names (issued by a trusted CA) can complete the key exchange
+and offer a time at which that certificate was still valid, and no earlier than the floor; three of
+the four operators' keys are needed at the same time to move the clock. A stolen key of a
+certificate that is still valid works with or without the patch (ntpd-rs does not check revocation).
+Before that first update, ntpd-rs also takes keys from a server whose certificate it has not yet
+checked: it sends that server NTP requests (authenticated, without anything secret) and uses none of
+its times until the certificate is valid at them. With chrony's `nocerttimecheck` the dates were not
+checked at all until the first update.
 
-**Cost**, measured in the update tests (docs/UPDATES.md, T9) on the CI's VM, two runs: about
-1.0 MB installed (the `chrony` package, 727 KB, plus `ucf`, `sensible-utils` and two small Perl
-libraries); one resident process, started at boot because the clock has to be right before the
-first update check. Synchronized and idle: about 10.8 MB resident (most of it shared libraries,
-GnuTLS among them) and about 6.3 MB charged to its cgroup; at most 5 context switches in 60 s
-(about 0.08 per second); 82 to 87 ms of CPU time from its start, key exchanges included. It polls
-each of the two sources every 64 to 1024 s and has no listening socket.
+What `minimum-agreeing-sources = 3` costs: if two of the four operators cannot be reached, the clock
+is not updated at all and runs on the hardware clock until three answer again. The first update
+after boot can take a few minutes: ntpd-rs uses a server once it has enough answers from it (up to
+eight, asked every 16 s).
+
+**Local changes**: the unit and the configuration are in `/usr`. To use other servers, copy the
+configuration to `/etc/ntpd-rs/ntp.toml` and point the service at it with a drop-in in `/etc`
+(`systemctl edit ntpd-rs.service`: an empty `ExecStart=`, then `ExecStart=/usr/bin/ntp-daemon
+--config /etc/ntpd-rs/ntp.toml`). The AppArmor profile lets it read that file.
+
+**Cost**: the two programs, `ntp-daemon` and `ntp-ctl`, are about 5.9 and 5.6 MB (each carries its
+own copy of aws-lc, the TLS library), against about 1.0 MB for chrony and its dependencies. Memory,
+context switches and CPU time are measured in the update tests (T9, the boot with the clock in 2035)
+and printed in their log.
 
 ## Filesystems
 
@@ -339,11 +351,15 @@ efivarfs in the initramfs reported less than the variable holds, so `od -An -tu1
 `SecureBoot` failed and the TPM enrollment took Secure Boot for off. GNU reads to skip. The enrollment
 now reads the first five bytes (`od -N5`) and takes the fifth, which both do the same.
 
+### Time client
+
+The time client is ntpd-rs, built in the image build from its crates with our patch for a clock
+that is far off; see "Time".
+
 ### What stays Debian's
 
 | Component | Why it is not replaced (yet) |
 |---|---|
-| chrony, not ntpd-rs (1.9.0) | ntpd-rs checks the NTS server's certificate against the system clock, with no way to skip the dates until the first clock update (chrony's `nocerttimecheck`, see "Time"). A clock in 2035 or 2099 therefore never gets corrected: every key exchange fails with an expired certificate (tried with the clock moved, against `time.cloudflare.com` and `nts.netnod.se`), and the update tests (T9) need that correction |
 | GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
 | GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
 

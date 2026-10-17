@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Our patch to ntpd-rs (patches/upstream/ntpd-rs-wrong-clock.md): applied to the upstream source of the
+# version in ntpd-rs/Cargo.lock, then the tests of ntp-proto, the crate it changes, ours among them,
+# with upstream's Cargo.lock. The image build applies the same patch to the crates it compiles
+# (Containerfile). A new version needs its commit here and the patch made again for it.
+name: ntpd-rs
+on:
+  push:
+    branches: [main]
+    paths:
+      - "patches/upstream/ntpd-rs-*"
+      - "ntpd-rs/**"
+      - ".github/workflows/ntpd-rs.yml"
+  pull_request:
+    paths:
+      - "patches/upstream/ntpd-rs-*"
+      - "ntpd-rs/**"
+      - ".github/workflows/ntpd-rs.yml"
+permissions:
+  contents: read
+env:
+  NTPD_RS_COMMIT: 46ec9bb4d5b6cb24f814f5543d85b9138afb4cba # v1.9.0
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The upstream source of the locked version, with the patch
+        run: |
+          version="$(grep -A1 -x 'name = "ntp-proto"' ntpd-rs/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')"
+          test -n "$version"
+          git clone -q --depth 1 --branch "v$version" https://github.com/pendulum-project/ntpd-rs.git "$RUNNER_TEMP/ntpd-rs"
+          test "$(git -C "$RUNNER_TEMP/ntpd-rs" rev-parse HEAD)" = "$NTPD_RS_COMMIT"
+          git -C "$RUNNER_TEMP/ntpd-rs" apply "$PWD/patches/upstream/ntpd-rs-wrong-clock.patch"
+      - name: Tests of ntp-proto
+        working-directory: ${{ runner.temp }}/ntpd-rs
+        run: cargo test --locked -p ntp-proto
