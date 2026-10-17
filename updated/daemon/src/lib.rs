@@ -28,7 +28,8 @@
 //! 6. A retraction to the version that is already the local rollback deployment uses
 //!    `bootc rollback` (bootc would answer "No changes" to a switch), once: when bootc already
 //!    reports that deployment as the next boot (`rollbackQueued`), a check before the reboot runs
-//!    nothing, because a second `bootc rollback` would swap the boot order back.
+//!    nothing, because a second `bootc rollback` would swap the boot order back. Not for a version
+//!    forgiven under rule 12: that one is staged afresh, as there.
 //! 7. The image is pulled pinned by digest, and the staged digest must be the sheet's; a wrong
 //!    staged deployment is discarded: it is never finalized ([`System::discard_staged`]), whatever
 //!    the rollback deployment is, and nothing else is staged until the next reboot.
@@ -46,8 +47,8 @@
 //! 12. A version is marked failed (rule 5) only when the version the machine fell back to passes its
 //!     health checks. When the older version fails them too (a boot that is not on trial), the
 //!     version fallen back from is forgiven instead, once: the machine's own settings (`/etc`) are
-//!     what is broken. Once they are repaired the version is offered again; a second fallback from
-//!     it marks it failed. Its deployment, the
+//!     what is broken. Once they are repaired the version is offered again (as an update or as the
+//!     target of a retraction); a second fallback from it marks it failed. Its deployment, the
 //!     rollback one by then, kept the `/etc` it was tried with (bootc keeps one per deployment), so
 //!     it is deleted ([`System::delete_rollback`]) and the version staged afresh, on trial again.
 //!
@@ -666,7 +667,7 @@ pub fn check(
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        if retraction {
+        if retraction && state.forgiven.as_ref() != Some(&target.digest) {
             // Rule 6, once: another `bootc rollback` would make the retracted version the next
             // boot again.
             if status.rollback_queued {
@@ -675,8 +676,10 @@ pub fn check(
             sys.rollback()?;
             return Ok(Outcome::RolledBack(target));
         }
-        // Rule 12: a newer version offered again. Its deployment would boot with the settings it
-        // was tried with, not today's: it goes, and the version is staged like any update.
+        // Rule 12: a version offered again after it was forgiven (a newer one, or the target of a
+        // retraction). Its deployment would boot with the settings it was tried with, not today's,
+        // and has no tries left (bootc still reports it as the next boot: `rollbackQueued` does
+        // not see boot counting): it goes, and the version is staged like any update.
         sys.delete_rollback()?;
     }
 

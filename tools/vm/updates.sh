@@ -61,8 +61,13 @@
 #  34  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
 #      request sent), the sheet server refused, unsigned images refused; the real servers back:
 #      corrected, up to date
-#  35  v16, the clock right: the shipped signature policy linked again; then the secure defaults
-#      check (T15)
+#  35  v16: the settings broken (systemd-resolved masked); v16 retracted, v13 (not a local
+#      deployment) staged by switch
+#  36  v13 fails its health check three times (the settings), systemd-boot falls back to v16, which
+#      fails it too: v13 forgiven; bootc still reports v13 as the next boot; the settings repaired
+#  37  v16: the retraction to the forgiven v13 deletes its deployment and stages it afresh
+#  38  v13 boots counted and is blessed; the shipped signature policy linked again; then the secure
+#      defaults check (T15)
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -217,6 +222,7 @@ sheet s13 sheet 1300 "$d13" 2026.10.13 "$d4" "$d6"
 sheet s14 sheet 1400 "$d14" 2026.10.14 "$d4" "$d6"
 sheet s15 sheet 1500 "$d15" 2026.10.15 "$d4" "$d6"
 sheet s16 sheet 1600 "$d16" 2026.10.16 "$d4" "$d6"
+sheet r16 sheet 1700 "$d13" 2026.10.13 "$d4" "$d6" "$d16"
 printf '<html><body>Welcome to the hotel network. Please log in.</body></html>\n' >"$u/sheets/portal"
 
 cat >"$u/sheet-server.py" <<'EOF'
@@ -610,10 +616,35 @@ if [ "$ke" -lt 1 ] || [ "$ntp" != 1 ]; then
   exit 1
 fi
 
-# The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v16, with the
-# shipped signature policy linked again.
-vm "v16, the clock right again; the shipped signature policy again, for the secure defaults check" --poweroff \
-  --command "$lib; expect booted $d16 && running" \
+# A retraction to a forgiven version (rule 12, then rule 6): v16 retracted, v13 is no longer a local
+# deployment and is staged by switch, and the settings are broken as in boot 16. v13 fails its tries,
+# systemd-boot falls back to v16, which fails too: v13 is forgiven. bootc does not see boot counting,
+# so it still reports v13 as the next boot (rollbackQueued), with the /etc v13 failed with. Once the
+# settings are repaired, the retraction must not wait for a reboot that would boot v16 again: v13's
+# deployment is deleted and v13 staged afresh; it boots counted and is blessed.
+vm "v16: the settings broken (systemd-resolved masked); v16 retracted, v13 staged by switch" --poweroff \
+  --command "$lib; expect booted $d16 && expect rollback $d15 && running && systemctl mask systemd-resolved.service" \
+  --command "$lib; outcome r16 Staged && expect staged $d13"
+
+vm "v13 fails its health check three times (the settings), back on v16, which fails it too" --poweroff --boots 4 \
+  --command "$lib; expect booted $d16 && expect rollback $d13 && test \"\$(queued)\" = true && entries | grep -F +0-3" \
+  --command "systemctl is-failed nyra-health-system.service && journalctl -b -u nyra-updated-health-failed -o cat --no-pager | grep -F 'Stay(Some(' | grep -F $d13" \
+  --command "$lib; outcome r16 NotHealthy && python3 -c 'import json, sys; s = json.load(open(\"/var/lib/nyra-updated/state.json\")); d = sys.argv[1]; sys.exit(s.get(\"pending\") == d or d in s.get(\"failed\", []) or s.get(\"forgiven\") != d)' $d13 && echo 'v13 is forgiven, neither pending nor failed'" \
+  --command 'systemctl unmask systemd-resolved.service'
+l="$logs/serial-updates-$n.log"
+echo "kernel starts: $(grep -c 'Linux version' "$l")"
+[ "$(grep -c 'Linux version' "$l")" = 4 ]
+
+vm "v16, the settings repaired: the retraction to the forgiven v13 deletes its deployment, stages it afresh" --poweroff \
+  --command "$lib; expect booted $d16 && running && expect rollback $d13 && test \"\$(queued)\" = true" \
+  --command "$lib; outcome r16 Staged && expect staged $d13 && expect rollback none" \
+  --command 'bootc status --format json'
+
+# The secure defaults (tools/vm/security-defaults.sh, T15) after these updates: on v13, with the
+# shipped signature policy linked again. The first check on v13 also proves that it booted with a
+# boot counter (rule 9).
+vm "v13, counted and blessed; the shipped signature policy again, for the secure defaults check" --poweroff \
+  --command "$lib; expect booted $d13 && running && blessed && outcome r16 UpToDate && expect staged none" \
   --command 'ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && readlink /etc/containers/policy.json'
 mkdir -p "$u/t15"
 tools/vm/security-defaults.sh "$u/disk.qcow2" "$u/t15" "$summary"
