@@ -119,7 +119,7 @@ esp add
 
 # The prompts: systemd-cryptsetup's for the PIN and for the disk, nyra-tpm-enroll's for a new PIN.
 pinask="Please enter TPM2 PIN:"
-ask="Please enter (passphrase or )?recovery key for disk [^\r\n]*:"
+ask="Please enter (passphrase or )?recovery key for disk [^\r\n:]*:"
 either="($pinask|$ask)"
 choose="Choose a TPM2 PIN for the disk"
 again="Type the same PIN again:"

@@ -156,7 +156,7 @@ check() { # check WHAT EXPECTED GOT
 }
 { echo "| Check | Result | |"; echo "|---|---|---|"; } >> "$summary"
 
-ask="Please enter (passphrase or )?recovery key for disk [^\r\n]*:"
+ask="Please enter (passphrase or )?recovery key for disk [^\r\n:]*:"
 pinask="Please enter TPM2 PIN:"
 either="($pinask|$ask)"
 # The PINs: 20 random digits each (nothing else on the console looks like them).
