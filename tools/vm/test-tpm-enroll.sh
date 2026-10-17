@@ -24,9 +24,11 @@
 #   f. a PIN asked for from the running system (tpm-pin): a new one on a disk without, none on a disk
 #      with one (unlocked with the PIN typed in this boot), another one (systemd-cryptenroll replaces
 #      the old enrollments itself, and no slot that is gone is removed); the request is removed, the
-#      PIN leaves /run and the cache;
-#   g. after a refusal on a disk with a PIN: the user chooses a new one (a wrong one first), the disk is
-#      enrolled with it, never without a PIN; without a choice, nothing changes;
+#      PIN leaves /run and the cache; a request that is not 6 to 20 digits (letters, 5 or 21 digits)
+#      enrolls nothing and is removed;
+#   g. after a refusal on a disk with a PIN: the user chooses a new one (one too short and one with
+#      letters first), the disk is enrolled with it, never without a PIN; without a choice, nothing
+#      changes;
 #   h. tpm-pin: only 6 to 20 digits, a request only root can read, and only on a disk with a record;
 #   i. a run cut off between removing slots and writing the record (a power cut): tpm-retire and the
 #      re-enrollment leave out the slots that are gone; and when the record cannot be written (a full
@@ -411,6 +413,25 @@ enroll KEY-B$newpin$unlock2" ] || { echo "not enrolled for A and B as asked: $(c
   [ "$(grep -c . "$st/slots")" = 3 ] || { echo "the key slots: $(cat "$st/slots")"; return; }
   echo ok
 }
+# f. A request that is not 6 to 20 digits, on a disk without a PIN: nothing enrolled, the request
+# removed.
+case_bad_request() { # case_bad_request SCRIPT REQUEST
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" tpm
+  local st="$d/root/state" r="$d/root/$record" req="$d/root/sysroot/var/lib/nyra/tpm2-pin-request"
+  mkdir -p "$d/root/sysroot/var/lib/nyra"
+  printf '0 tpm2 KEY-A\n1 recovery\n2 tpm2 KEY-B\n' > "$st/slots"
+  printf '0 %s\n2 %s\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$r"
+  local before
+  before="$(cat "$r")"
+  echo "$2" > "$req"
+  run "$1" "$d"
+  grep -q '^\(wipe\|enroll\)' "$st/calls" && { echo "enrolled with the request '$2': $(cat "$st/calls")"; return; }
+  [ "$(cat "$r")" = "$before" ] || { echo "the record changed: $(cat "$r")"; return; }
+  [ ! -e "$req" ] || { echo "the request left"; return; }
+  echo ok
+}
 # g. A refusal on a disk with a PIN: the recovery key typed, a new PIN chosen at the prompt.
 case_again_pin() { # case_again_pin SCRIPT chosen|not-chosen
   local d
@@ -422,7 +443,7 @@ case_again_pin() { # case_again_pin SCRIPT chosen|not-chosen
   printf '0 tpm2 KEY-A 11223344\n1 tpm2\n2 tpm2 KEY-B 11223344\n' > "$st/slots"
   printf '0 %s pin\n1 %s pin\n2 %s pin\n' "$(fp KEY-A)" "$(fp KEY-X)" "$(fp KEY-B)" > "$r"
   if [ "$2" = chosen ]; then
-    printf '12345\n13579135\n13579135\n' > "$st/answers" # too short first
+    printf '12345\n1357a135\n13579135\n13579135\n' > "$st/answers" # too short, then letters first
   else
     printf '13579135\n13579130\n12345678\n12345670\n' > "$st/answers" # never the same twice
   fi
@@ -440,7 +461,7 @@ case_again_pin() { # case_again_pin SCRIPT chosen|not-chosen
 enroll KEY-B pin=13579135" ] || { echo "not enrolled with the chosen PIN: $(cat "$st/calls") $(cat "$d/out")"; return; }
   [ "$(cat "$r")" = "3 $(fp KEY-A) pin
 4 $(fp KEY-B) pin" ] || { echo "the record: $(cat "$r")"; return; }
-  [ "$(grep -c '^ask' "$st/calls")" = 3 ] || { echo "asked $(grep -c '^ask' "$st/calls") times"; return; }
+  [ "$(grep -c '^ask' "$st/calls")" = 4 ] || { echo "asked $(grep -c '^ask' "$st/calls") times"; return; }
   echo ok
 }
 # h. tpm-pin in the running system.
@@ -505,6 +526,9 @@ check "the next key not enrolled without the PIN" ok "$(case_next_pin "$enroll" 
 check "a PIN asked for, on a disk without one" ok "$(case_request "$enroll" new)"
 check "no PIN asked for, on a disk with one" ok "$(case_request "$enroll" none)"
 check "another PIN asked for" ok "$(case_request "$enroll" change)"
+check "a PIN request with letters" ok "$(case_bad_request "$enroll" 24a81357)"
+check "a PIN request of 5 digits" ok "$(case_bad_request "$enroll" 24681)"
+check "a PIN request of 21 digits" ok "$(case_bad_request "$enroll" 123456789012345678901)"
 check "a new PIN chosen after a refusal" ok "$(case_again_pin "$enroll" chosen)"
 check "no PIN chosen after a refusal: nothing changes" ok "$(case_again_pin "$enroll" not-chosen)"
 check "tpm-pin" ok "$(case_cmd "$boot/tpm-pin")"
@@ -549,6 +573,14 @@ mutant no-new-cred "$enroll" 's/^  if \[ -n "\${CREDENTIALS_DIRECTORY:-}" \] && 
 check "without the new PIN to unlock for the next key" fails "$(case_request "$t/no-new-cred" change)"
 mutant no-umask "$boot/tpm-pin" 's/^umask 077$/umask 022/'
 check "tpm-pin without the umask" fails "$(case_cmd "$t/no-umask")"
+mutant no-request-digits "$enroll" 's/^      \*\[!0-9\]\*|"") log/      "") log/'
+check "without the request's digits check" fails "$(case_bad_request "$t/no-request-digits" 24a81357)"
+mutant no-request-min "$enroll" 's/\[ "\${#want}" -lt 6 \]/[ "${#want}" -lt 5 ]/'
+check "without the request's 6 digits minimum" fails "$(case_bad_request "$t/no-request-min" 24681)"
+mutant no-request-max "$enroll" 's/\[ "\${#want}" -gt 20 \]/[ "${#want}" -gt 21 ]/'
+check "without the request's 20 digits maximum" fails "$(case_bad_request "$t/no-request-max" 123456789012345678901)"
+mutant no-choose-digits "$enroll" '/^    case "\$p" in /d'
+check "without the digits check at the PIN prompt" fails "$(case_again_pin "$t/no-choose-digits" chosen)"
 
 [ "$fail" = 0 ] && echo "test-tpm-enroll: passed"
 exit "$fail"
