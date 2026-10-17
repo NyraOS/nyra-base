@@ -59,7 +59,8 @@
 #  31  v13, the hardware clock in 2099 (T9): ntpd-rs corrects it through NTS; v15 staged
 #  32  v15, the hardware clock in 1970: the same; v16 staged
 #  33  v16, the hardware clock in 2035: the same; up to date; ntpd-rs's cost measured
-#  34  v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong (no NTP
+#  34  v16, the hardware clock in 2035, the NTS servers spoofed by a real NTS server with an
+#      untrusted certificate: its times refused, the clock stays wrong (no unauthenticated NTP
 #      request sent), the sheet server refused, unsigned images refused; the real servers back:
 #      corrected, up to date
 #  35  v16: the settings broken (systemd-resolved masked); v16 retracted, v13 (not a local
@@ -544,17 +545,19 @@ echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 
 [ "$(grep -c 'Linux version' "$l")" = 4 ] && [ "$(grep -ac 'Kernel panic' "$l")" -ge 3 ]
 
 # A wrong clock (T9). The hardware clock in 2099 and in 1970: systemd sets the clock to the image's
-# build time at boot (/usr/lib/clock-epoch; a clock more than about 15 years after it counts as wrong
-# too), still before the real time;
+# date at boot (/usr/lib/clock-epoch, the Debian snapshot date; a clock more than about 15 years
+# after it counts as wrong too), still before the real time;
 # in 2035 systemd keeps it, years ahead, outside the validity of every certificate. Each time ntpd-rs
 # corrects it through NTS by itself (our patch: docs/DEFAULTS.md, "Time") and the update works,
 # without anyone setting the clock. Then, with the clock in 2035 again, a hostile network: the NTS
-# servers' names point to the runner (as a spoofed DNS answer would), where a TLS server with a
-# certificate the guest does not trust answers on the NTS-KE port, ends each connection after the
-# handshake without keys, and an NTP server answers every request, unauthenticated, with a time in
-# 2001. The clock stays in 2035 and ntpd-rs sends not one NTP request (no unauthenticated fallback):
-# the server counts exactly one, a probe the test sends itself to show that UDP 123 reaches it from
-# the guest and its answer comes back; the sheet server's certificate is refused (expired) and
+# servers' names point to the runner (as a spoofed DNS answer would). There a real NTS server, the
+# image's own ntp-daemon, completes the key exchange with a certificate the guest does not trust and
+# serves the runner's time over NTS (UDP 1123), and an NTP server on UDP 123 answers every request,
+# unauthenticated, with a time in 2001. The guest takes keys from the NTS server, but refuses every
+# time it gives ("the server's certificate is not valid at that time", our patch): the clock stays in
+# 2035 (with the certificate check removed, four agreeing sources would move it). ntpd-rs sends not
+# one unauthenticated NTP request (no fallback): the server on UDP 123 counts exactly one, a probe
+# the test sends itself to show that UDP 123 reaches it from the guest and its answer comes back; the sheet server's certificate is refused (expired) and
 # nothing is staged; unsigned and wrongly signed images are still refused (image signatures do not
 # depend on the clock). With the real servers back (once name resolution no longer answers with the runner:
 # resolved can answer from its old copy of /etc/hosts right after the edit), ntpd-rs is restarted,
@@ -563,27 +566,20 @@ echo "kernel starts: $(grep -c 'Linux version' "$l"), kernel panics: $(grep -ac 
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=time.cloudflare.com \
   -addext subjectAltName=DNS:time.cloudflare.com,DNS:nts.netnod.se,DNS:ptbtime1.ptb.de,DNS:nts.time.nl \
   -keyout "$u/time.key" -out "$u/time.crt" 2>/dev/null
+printf '%s\n' '[synchronization]' 'local-stratum = 1' '[[server]]' 'listen = "127.0.0.1:1123"' \
+  '[[nts-ke-server]]' 'listen = "127.0.0.1:4460"' 'certificate-chain-path = "/k/time.crt"' \
+  'private-key-path = "/k/time.key"' 'ntp-port = 1123' >"$u/fake-nts.toml"
+sudo podman run -d --rm --name nyra-fake-nts --network host -v "$u/time.crt:/k/time.crt:ro" \
+  -v "$u/time.key:/k/time.key:ro" -v "$u/fake-nts.toml:/k/fake-nts.toml:ro" "$image" \
+  /usr/bin/ntp-daemon --config /k/fake-nts.toml >/dev/null
 cat >"$u/fake-time.py" <<'EOF'
-import socket, ssl, struct, sys, threading
-cert, key, log = sys.argv[1:4]
+import socket, struct, sys
+log = sys.argv[1]
 
 def note(what):
     with open(log, "a") as f:
         f.write(what + "\n")
 
-def ntske():  # TCP 4460: TLS with a certificate that is not from a trusted CA
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(cert, key)
-    server = socket.create_server(("127.0.0.1", 4460))
-    while True:
-        conn, _ = server.accept()
-        note("nts-ke")
-        try:
-            ctx.wrap_socket(conn, server_side=True).close()
-        except (ssl.SSLError, OSError):
-            conn.close()
-
-threading.Thread(target=ntske, daemon=True).start()
 ntp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ntp.bind(("127.0.0.1", 123))
 t = 3187296000  # 2001-01-01 in NTP seconds
@@ -595,9 +591,9 @@ while True:  # UDP 123: every request answered without authentication, with the 
                    struct.pack("!II", t, 0) + req[40:48] + struct.pack("!IIII", t, 0, t, 0), addr)
 EOF
 : >"$u/fake-time.log"
-sudo python3 -I "$u/fake-time.py" "$u/time.crt" "$u/time.key" "$u/fake-time.log" &
-timeout 30 sh -c 'until ss -Htln "sport = :4460" | grep -q . && ss -Huln "sport = :123" | grep -qF 127.0.0.1:123; do sleep 1; done'
-trap 'sudo pkill -f sheet-server.py || true; sudo pkill -f fake-time.py || true; sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
+sudo python3 -I "$u/fake-time.py" "$u/fake-time.log" &
+timeout 30 sh -c 'until ss -Htln "sport = :4460" | grep -q . && ss -Huln "sport = :1123" | grep -q . && ss -Huln "sport = :123" | grep -qF 127.0.0.1:123; do sleep 1; done'
+trap 'sudo pkill -f sheet-server.py || true; sudo pkill -f fake-time.py || true; sudo podman rm -f -t 0 nyra-fake-nts >/dev/null 2>&1 || true; sudo tc qdisc del dev lo root 2>/dev/null || true' EXIT
 tls_time='SSL certificate .*certificate (has expired|is not yet valid)'
 unsigned="refused_switch updates.nyraos.com/nyra-base:v0 'A signature was required, but no signature exists' && refused_switch updates.nyraos.com/nyra-base:attacker 'cryptographic signature verification failed'"
 vm "v13, the hardware clock in 2099: corrected through NTS; v15 staged" --poweroff \
@@ -617,15 +613,18 @@ vm "v16, the hardware clock in 2035: corrected through NTS; up to date" --powero
 vm "v16, the hardware clock in 2035, the NTS servers spoofed: the clock stays wrong, certificate refused, unsigned refused; the real servers back: corrected, up to date" --poweroff \
   --rtc 2035-06-01T00:00:00 \
   --command "$lib; expect booted $d16 && running && not_synced && date -u && test \"\$(date +%Y)\" = 2035" \
+  --command 'for _ in $(seq 60); do journalctl -b -u ntpd-rs -o cat | grep -F "the server'"'"'s certificate is not valid at that time" && break; sleep 1; done && journalctl -b -u ntpd-rs -o cat | grep -qF "the server'"'"'s certificate is not valid at that time" && date -u && test "$(date +%Y)" = 2035' \
   --command "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(bytes([0x23]) + bytes(47), (\"10.0.2.2\", 123)); print(\"NTP probe: answer of\", len(s.recv(512)), \"bytes\")'" \
   --command "$lib; refused s16 '$tls_time' && expect staged none" \
   --command "$lib; $unsigned" \
   --command 'date -u && test "$(date +%Y)" = 2035 && sed -i "/ time.cloudflare.com /d" /etc/hosts && for _ in $(seq 10); do getent ahosts time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl | grep -q "^10\.0\.2\.2 " || break; sleep 1; done && getent ahostsv4 time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl && ! getent ahosts time.cloudflare.com nts.netnod.se ptbtime1.ptb.de nts.time.nl | grep -q "^10\.0\.2\.2 " && systemctl restart ntpd-rs.service' \
   --command "$lib; synced $(date +%s) && outcome s16 UpToDate && expect staged none"
-ke="$(grep -c '^nts-ke$' "$u/fake-time.log" || true)" ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
-echo "spoofed time servers: $ke NTS-KE connections (no keys given), $ntp NTP requests (1 expected: the test's own probe)"
-if [ "$ke" -lt 1 ] || [ "$ntp" != 1 ]; then
-  echo "::error::ntpd-rs must try NTS-KE with the spoofed servers and never send them an unauthenticated NTP request; the probe must reach the NTP server"
+sudo podman logs nyra-fake-nts 2>&1 | tail -5
+sudo podman rm -f -t 0 nyra-fake-nts >/dev/null
+ntp="$(grep -c '^ntp$' "$u/fake-time.log" || true)"
+echo "spoofed time servers: $ntp unauthenticated NTP requests (1 expected: the test's own probe)"
+if [ "$ntp" != 1 ]; then
+  echo "::error::ntpd-rs must never send the spoofed servers an unauthenticated NTP request; the probe must reach the NTP server"
   exit 1
 fi
 

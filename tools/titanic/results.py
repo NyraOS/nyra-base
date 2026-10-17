@@ -83,8 +83,9 @@ TESTS = {
            "the network and the basic services work."),
     "T9": ("Wrong clock", "full", [UPDATES],
            "Hardware clock in 2099, 1970 and 2035: ntpd-rs corrects it through NTS by itself and the "
-           "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
-           "request is sent, the update server's certificate and unsigned images are refused."),
+           "update works. With the NTS servers spoofed (an untrusted NTS server): the clock stays "
+           "wrong, no unauthenticated NTP request is sent, the update server's certificate and "
+           "unsigned images are refused."),
     "T10": ("Disk encryption", "partial", [ENCRYPTION, ENCRYPTION_TPM],
             "Without a TPM: the password and the recovery key unlock the disk in the initrd (found by its "
             "partition type), a wrong password is asked again, the recovery key typed 120 s later and "
