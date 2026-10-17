@@ -39,6 +39,10 @@ then a root shell prompt must follow (for a boot that asks for something else th
 a login, like recovery).
 With --chat-then-login a login prompt follows instead (the guest reboots after the
 chat, for example), and the script logs in there as usual.
+--blind boots without a login, as a machine without the test console add-on (whose measurement
+would change PCR 12): it answers the --chat steps (a passphrase prompt on the serial console), then
+presses the power button every 10 s and passes when the guest powers itself off within --timeout
+seconds, which only a booted system does.
 --tpm DIR gives the VM a TPM 2.0 (swtpm, CRB interface) whose state is kept in DIR, so it
 persists across runs like a machine's TPM; swtpm is started here and ends with QEMU.
 --tpm-fail-at REGEX kills swtpm as soon as REGEX shows up on the console (a TPM that stops answering).
@@ -67,6 +71,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -189,7 +194,7 @@ def expect_reboot(con, timeout):
     with con.lock:
         before = con.buf[:m.start()] if m else con.buf
     if b"login: " in before:
-        raise RuntimeError("a login prompt came after the TPM failed")
+        raise RuntimeError("a login prompt came before the reboot")
     if not m:
         raise RuntimeError(f"no reboot within {timeout} s of the start")
     failed = f"TPM failed {con.tpm_failed:.1f} s after the start; " if con.tpm_failed is not None else ""
@@ -258,6 +263,37 @@ def login(con, a, password, start):
             con.type(password + "\r")
     if not con.wait_for(rb"# ", 60, start):
         raise RuntimeError("no root shell after logging in on the console")
+
+
+def blind(con, monitor, chat, timeout):
+    """No login: answer the --chat steps on the console (a passphrase prompt), then press the power
+    button every 10 s until the guest powers off, within `timeout` seconds of the start."""
+    s = socket.socket(socket.AF_UNIX)
+    for _ in range(50):
+        try:
+            s.connect(monitor)
+            break
+        except OSError:
+            time.sleep(0.2)
+    start, answered = 0, ""
+    for step in chat:
+        expect, _, send = step.partition("=>")
+        m = con.wait_for(expect.encode(), timeout, start)
+        if not m:
+            raise RuntimeError(f"no {expect!r} on the console within {timeout} s")
+        start += m.end()
+        con.type(send + "\r")
+        answered = f"{len(chat)} prompt(s) answered, "
+    while con.proc.poll() is None and time.monotonic() - con.t0 < timeout:
+        s.sendall(b"system_powerdown\n")
+        try:
+            con.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+    if con.proc.poll() is None:
+        raise RuntimeError(f"{answered}the guest did not power off on the power button within {timeout} s: "
+                           "it did not boot")
+    return f"{answered}powered off on the power button {time.monotonic() - con.t0:.0f} s after the start"
 
 
 def poweroff_problem(console, seconds):
@@ -368,6 +404,29 @@ def self_test():
                                            "Failed unmounting var.mount - /var.")
     assert poweroff_problem(b"[  OK  ] Unmounted var.mount - /var.\r\r\n", 3) is None
     assert poweroff_problem(b"", 92).startswith("power-off took 92 s")
+    # --expect-reboot, and --tpm-fail-at: a process that sleeps stands in for swtpm.
+    def reboot(console, fail_at=None):
+        proc = subprocess.Popen(["bash", "-c", 'printf %s "$1"; exec sleep 30', "bash", console],
+                                stdout=subprocess.PIPE, bufsize=0)
+        tpm = subprocess.Popen(["sleep", "30"]) if fail_at else None
+        try:
+            con = Console(proc, open(os.devnull, "wb"), tpm_fail=(fail_at, tpm) if tpm else None)
+            return expect_reboot(con, 2)
+        except RuntimeError as e:
+            return str(e)
+        finally:
+            for x in (proc, tpm):
+                if x:
+                    x.kill()
+                    x.wait()
+
+    restart = "[   9.01] reboot: Restarting system\r\n"
+    unlocked = "[  OK  ] Finished systemd-cryptsetup@root.service - Cryptography Setup for root.\r\n"
+    assert reboot(boot + restart).startswith("rebooted ")
+    assert reboot(boot + shell + restart) == "a login prompt came before the reboot"
+    assert reboot(boot).startswith("no reboot within 2 s")
+    assert reboot(boot + unlocked + restart, rb"Finished .{0,80}Cryptography Setup for root\.").startswith("TPM failed ")
+    assert reboot(boot + restart, rb"Cryptography Setup for root").startswith("the TPM was never made to fail")
     print("vm-boot.py: self-test passed")
 
 
@@ -388,6 +447,7 @@ def main():
     p.add_argument("--title", default="VM boot")
     p.add_argument("--autologin", action="store_true", help="root login on the console without a password")
     p.add_argument("--marker", metavar="PATTERN", help="no login: check PATTERN on the console after boot")
+    p.add_argument("--blind", action="store_true", help="no console: the guest must power off on the power button")
     p.add_argument("--marker-expected", choices=["yes", "no"], default="yes")
     p.add_argument("--credential", action="append", default=[], metavar="NAME=TEXT",
                    help="one more systemd credential over SMBIOS")
@@ -405,6 +465,8 @@ def main():
     a = p.parse_args()
     if a.keep_vars and not a.secure_boot:
         p.error("--keep-vars needs --secure-boot")
+    if a.tpm_fail_at and not a.tpm:
+        p.error("--tpm-fail-at needs --tpm")
 
     password = secrets.token_urlsafe(12)
     tmp = tempfile.mkdtemp()
@@ -416,7 +478,8 @@ def main():
         if a.secure_boot else ["q35,accel=kvm"]
     disk = f"file={a.disk},format={'raw' if a.disk.endswith('.raw') else 'qcow2'},if=virtio"
     cmd = ["qemu-system-x86_64", "-machine", *machine, "-cpu", "host", "-smp", "2", "-m", "2048",
-           "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "stdio",
+           "-nodefaults", "-display", "none", "-serial", "stdio",
+           "-monitor", f"unix:{tmp}/monitor,server,nowait" if a.blind else "none",
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE_SECBOOT if a.secure_boot else OVMF_CODE}",
            "-drive", f"if=pflash,format=raw,file={vars_fd}",
            "-drive", disk if a.persist else disk + ",snapshot=on",
@@ -464,6 +527,8 @@ def main():
         try:
             if a.expect_reboot:
                 rows.append(("Reboot", expect_reboot(con, a.timeout)))
+            elif a.blind:
+                rows.append(("Blind boot", blind(con, f"{tmp}/monitor", a.chat, a.timeout)))
             elif a.refused:
                 rows.append(("Boot refused", refused(con, a.refused, a.timeout)))
             elif a.marker:

@@ -528,6 +528,37 @@ Each line is something that broke or surprised us once.
   included). `systemd.image_policy=` on the command line limits it (`designator=flags:...:=default`;
   `ignore` skips a type without failing the dissection). To see what it would do, run it by hand into
   a temporary directory; `SYSTEMD_PROC_CMDLINE=` replaces the kernel command line for it.
+- **LUKS2 tokens are not authenticated**: anyone with the disk can add, change or point a token at
+  another key slot, without any key. Never decide from the header whether a disk is enrolled for the
+  TPM, nor which key slot to remove (`--wipe-slot=tpm2` follows the tokens); keep that inside the
+  encrypted volume.
+- Debian's keyutils is more than `keyctl`: it installs the kernel's `request-key` upcall (`request-key`,
+  `key.dns_resolver`, `/etc/request-key.conf` with debug handlers on), through which the kernel runs
+  programs as root on behalf of any user. Remove those files when only `keyctl` is needed.
+- Test a script that runs as root in the initrd without a hook in it: an environment variable that
+  moves its paths is one more input, and the manager's environment can be set from the kernel command
+  line (`systemd.setenv=`). Run it unchanged in a mount namespace instead (`unshare -rm`, or `sudo
+  unshare -m` where user namespaces cannot mount), chrooted into a directory of stand-ins with the
+  host's `/usr` bound read-only; unmount before removing anything, and remove with
+  `--one-file-system`.
+- An initrd that writes into the root's `/var` (the running system's, so its root's) must not follow
+  symbolic links there: check every component of the path before reading or writing.
+- `cryptsetup open --test-passphrase -v` says which key slot a key opens ("Key slot N unlocked.") on
+  stderr.
+- **`systemd-cryptenroll` does nothing when the same policy is already enrolled** (it compares the
+  policy hash, not the TPM): after a TPM is cleared or replaced, the PCR values, so the policy, are the
+  same, and it keeps the old enrollment that the new TPM cannot open, then exits with success. Remove
+  the old enrollment first.
+- systemd-stub did not set `StubPcrKernelParameters` when it measured add-ons into PCR 12 (systemd 262,
+  in a VM): to know whether anything but the OS separator went into PCR 12, compare its value
+  (`/sys/class/tpm/tpm0/pcr-sha256/12`) with SHA-256(32 zero bytes, SHA-256("os-separator")).
+- A key typed at systemd-cryptsetup's prompt stays in root's user keyring for 150 s (keyname
+  `cryptsetup`, also after switch-root), but a service's private session keyring does not see it:
+  `KeyringMode=shared`, then `keyctl search @u user cryptsetup`, `keyctl pipe` (NUL-separated) and
+  `keyctl invalidate`.
+- QEMU keeps running when its swtpm dies: the guest's TPM commands fail (`tpm_recv: error -5`), which
+  is how a test makes a measurement fail at a chosen moment. With QEMU, swtpm's state must also be under
+  `RUNNER_TEMP` (Ubuntu's AppArmor profile, above); its control socket can be in `/tmp`.
 - In a container without udev, device-mapper waits for udev's confirmation forever (closing a LUKS volume
   hung): `DM_DISABLE_UDEV=1` makes it create its nodes itself.
 - An ext4 that was not cleanly unmounted cannot be mounted read-only on a read-only device: `-o

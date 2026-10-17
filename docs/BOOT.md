@@ -186,11 +186,51 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   boot unlocks by itself; `nyra-tpm-enroll.service` (`/usr/lib/nyra/boot/tpm-enroll`, initrd only)
   then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11 signed for the initrd with the
   reference `initrd`, and PCR 7 and 12, checks it by unsealing it, and removes the temporary one. It
-  does that only with Secure Boot on (not in setup mode) and a TPM; whatever happens, the temporary
-  enrollment is removed, and without the new one the disk asks for its recovery key. It reads the LUKS2
-  header (as data), what systemd-stub put in `/.extra` from the UKI and the Secure Boot variables,
-  nothing from `/etc` or `/var`. The window: until that first boot, the disk opens on that machine
-  with any boot chain. The recovery key stays in every case.
+  does that only with Secure Boot on (not in setup mode) and a TPM; otherwise it removes the temporary
+  enrollment, and the disk asks for its recovery key. If that removal itself fails (a write error on
+  the header), the temporary enrollment stays until the next boot, which tries again; until then it
+  opens the disk without any policy, even from the running system. Failing closed instead would loop
+  on reboots. It reads the LUKS2 header (as data), what systemd-stub put in `/.extra` from the UKI,
+  the Secure Boot variables, PCR 12, the kernel's password cache and, only through a path that has no
+  symbolic link and stays in the root's `/var`, the record below; nothing else from `/etc` or `/var`.
+  The recovery key stays in every case.
+
+**Enrolled again after the TPM refused.** When the TPM refuses the enrollment (a firmware update of
+the Secure Boot database changed PCR 7, the TPM was cleared or replaced, PCR 12 no longer what was
+enrolled), the disk asks for its recovery key. Once it is typed, `nyra-tpm-enroll` in the same initrd
+enrolls the disk again, as the first boot does, and removes the old enrollment, so the next boots
+unlock by themselves:
+- **only a disk enrolled for the TPM.** The LUKS2 header cannot tell: its tokens are not
+  authenticated, and anyone with the disk can add a TPM2 token to a disk set up with a password. The
+  first enrollment (which only the temporary enrollment, unsealed by the TPM, can make) writes the key
+  slot numbers of the disk's TPM2 enrollment to a record inside the encrypted root,
+  `/var/lib/nyra/tpm2-slots` (`/sysroot/state/os/default/var/...` in the initrd, read after the root is
+  mounted and before bootc sets it up). Only a disk with that record is enrolled again, and only when a
+  key was typed in this boot. Root in the running system could write the record too, and gain nothing
+  from it: the secret stays in the TPM, released only in the initrd. Since that `/var` is the running
+  system's, the initrd uses the record only if no component of its path is a symbolic link and the
+  path stays in the root's `/var`; otherwise it reads and writes nothing there;
+- only with Secure Boot on (not in setup mode) and a TPM: with Secure Boot off the old enrollment stays,
+  and it unlocks again once Secure Boot is back on;
+- only when PCR 12 is clean: its value after nothing but systemd's `os-separator`, so no add-on,
+  credentials, command line from outside the UKI or confext was measured in this boot. An enrollment
+  never takes in such a boot (PCR 12 is bound because a signed add-on can change the command line);
+  systemd-stub's `StubPcrKernelParameters` variable is not used for this, since it did not show the
+  add-ons in a test;
+- with the key the user just typed, which systemd-cryptsetup put in root's kernel keyring
+  (`nyra-tpm-enroll.service` has `KeyringMode=shared` to see it there). Nothing is asked twice;
+- the old enrollment is removed by the slot numbers in the record, never by what the header's tokens
+  say, and never the slot that the typed key opens (`cryptsetup open --test-passphrase`), so a changed
+  header cannot make it remove the recovery key's slot. It is removed before the new enrollment is made:
+  a new or cleared TPM gives the same PCR values, so the same policy, and systemd-cryptenroll would
+  otherwise keep the old enrollment, which this TPM cannot open, and do nothing. If the new enrollment
+  then fails, the record stays and the next boot where the key is typed tries again.
+
+Whatever the case, `nyra-tpm-enroll` removes the typed key from the kernel's cache (`keyctl`, from
+keyutils, without its `request-key` upcall, which the image does not ship) before the running system
+starts, also when it is stopped by a signal, where systemd would otherwise keep it for
+150 s, readable by root. The same holds on a disk set up with a password: another encrypted disk in the
+running system cannot use the password typed at boot without asking for it again.
 
 **Never locked out.** In the initrd (all three in the initramfs):
 - the root device has no time limit (`dev-gpt\x2dauto\x2droot.device.d`): an encrypted root appears only
@@ -247,6 +287,16 @@ enrolled state.
 | With the TPM back | unlocks by itself again |
 | The TPM stops answering after the disk is unlocked (swtpm killed), before `leave-initrd` is measured | `systemd-pcrphase-initrd` fails and its `FailureAction=reboot-force` reboots at once: no login prompt, never a running system with PCR 11 at the signed value |
 | Then, with the TPM answering again | unlocks by itself |
+| Secure Boot off (PCR 7) | the recovery key unlocks it; not enrolled again ("Secure Boot is off"); once the system runs, the typed key is no longer in the kernel's cache (also checked in the add-on row) |
+| Secure Boot on again | unlocks by itself, with the old enrollment |
+| The recovery profile | asks for the disk (its PCR 11 is not signed) |
+| One more add-on on the ESP (PCR 12) | the recovery key unlocks it; not enrolled again (PCR 12 not clean); without it, unlocks by itself; the enrollment unchanged by these five rows |
+| Without the test console add-on (PCR 12 as a machine measures it), no login: the recovery key typed at the prompt, the guest powered off on the power button, the result read offline | the three rows below |
+| PCR 12 no longer the enrolled one | enrolled again (a new enrollment in the header); the next boot unlocks by itself |
+| A new Secure Boot database (PCR 7, Secure Boot still on) | the same |
+| A new TPM (a new swtpm state) | the same: the old enrollment of the same policy removed first |
+| The disk's journal | three re-enrollments, and the reasons for the refusals above |
+| A disk set up with a password, whose header got a forged TPM2 token (a copy of the enrollment above, pointing at the password's key slot), booted on this machine with its TPM and Secure Boot | the password unlocks it; not enrolled (no record inside it); its key slots and tokens unchanged |
 | The recovery key, searched for | as above |
 
 **What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
@@ -256,15 +306,27 @@ header, which anyone with the disk can read) put on another LUKS2 volume, such a
 else's on this disk or on a USB stick that boots the signed chain, would be unsealed there, but the
 secret only opens the key slot it was made for, on this disk: nothing comes out of it.
 
-**PCR 15, evaluated and not bound.** systemd-cryptsetup measures the opened volume's key into PCR 15
-(gpt-auto sets `tpm2-measure-pcr=yes`). Binding the enrollment to PCR 15's initial value would let the
-TPM release the key only before any volume was opened in that boot. It is not bound: the first-boot
+**PCR 15, evaluated and not bound.** gpt-auto asks systemd-cryptsetup to measure the opened volume's
+key into PCR 15 (`tpm2-measure-pcr=yes`, and the key slot into an NvPCR). It does that through
+systemd-pcrextend's Varlink socket, which the image blocks (docs/DEFAULTS.md), so today nothing is
+measured and each encrypted boot logs "Could not extend PCR" and "Could not extend NvPCR": PCR 15
+stays at its initial value. Binding the enrollment to PCR 15's initial value would let the TPM release
+the key only before any volume was opened in that boot, which needs that measurement. It is not bound: the first-boot
 enrollment checks the new enrollment by unsealing it after the disk is open, and the policy key's
 rotation will enroll the next key from the initrd after the disk is open (docs/SIGNING.md), both of
 which that binding would stop; and, as above, nothing else in the initrd asks the TPM. Revisit if the
 initrd ever opens another volume.
 
 **Known limits.**
+- After a change of PCR 7 the disk is enrolled again with the new Secure Boot state as it is: if
+  someone changed the machine's Secure Boot keys, whoever controls them could also read the recovery key
+  typed at that prompt; the enrollment adds nothing to that.
+- The temporary enrollment the installer leaves has no policy, and enrolling does not change the
+  volume key. Whoever copies the header before the first boot (or reads the removed key slot back from
+  an SSD, which does not always erase it) and later has the machine with its TPM can get the disk's key
+  with any boot chain. Binding the temporary enrollment to the signed PCR 11 would not close it (with
+  Secure Boot off the stub takes a command line from the boot loader, measured only in PCR 12). The
+  installer reboots straight into the first boot.
 - The passphrase prompt is on the console until the graphical unlock screen comes: what is typed
   before the prompt appears, or in the second between two prompts after a wrong passphrase, is shown on
   the screen in the clear (never in a log).
@@ -277,8 +339,14 @@ initrd ever opens another volume.
   prompt of their own and take the passphrase (encryption without attestation cannot tell). With a TPM,
   the disk unlocks only for the measured, signed boot ("TPM2 unlock").
 
-Not covered yet: updates, Secure Boot turned off, a changed PCR 7 or 12, a cleared TPM, the recovery
-profile, the policy key's rotation, the PIN.
+Offline (`tools/vm/test-tpm-enroll.sh`, in the shellcheck workflow): the real `tpm-enroll`,
+unchanged (it has no test hook), runs in a mount namespace, chrooted into a directory with stand-ins
+at the paths it uses and stand-ins for cryptsetup, systemd-cryptenroll and keyctl. A symbolic link on the record's path makes it write
+nothing outside the root's `/var` and remove no key slot, and the slot the typed key opens is never
+removed even when the record lists it; each case fails on a copy of the script without that check.
+
+Not covered yet: updates, the first boot without a TPM or with Secure Boot off (checked by hand only,
+with swtpm), the policy key's rotation, the PIN.
 
 ## TPM2 unlock: the signed PCR policy
 

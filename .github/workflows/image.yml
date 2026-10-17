@@ -596,10 +596,12 @@ jobs:
       # Titanic T10 with a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM
       # (a recovery key and a temporary TPM2 enrollment in the VM's swtpm), booted with Secure Boot:
       # the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR policy,
-      # the next boots unlock by themselves, without the TPM the recovery key unlocks it.
+      # the next boots unlock by themselves, without the TPM the recovery key unlocks it, and after
+      # the TPM refused (PCR 7, PCR 12, a new TPM) the recovery key unlocks it and it is enrolled
+      # again, never with Secure Boot off or an add-on measured.
       - name: Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)
         if: ${{ !cancelled() && steps.load.outcome == 'success' }}
-        timeout-minutes: 30
+        timeout-minutes: 50
         env:
           UKI_CERT: ${{ needs.build.outputs.uki_cert }}
         run: |
