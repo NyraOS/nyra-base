@@ -607,7 +607,8 @@ Each line is something that broke or surprised us once.
   session as local only when it has a seat: a logind session without one (`systemd-run -p
   PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
   `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
-  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
+  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. A user
+  with a login has two sessions: the login's and their manager's (class `manager`, no TTY). systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
   a shell script passed to it needs `--expand-environment=no`.
 
 ## Testing in CI
