@@ -629,6 +629,12 @@ Each line is something that broke or surprised us once.
   `bootc-cache` workflow saves it on `main` and is never cancelled while it runs. If a pull request
   still misses (the cache is evicted after 7 days without use), run it by hand on `main`
   (`gh workflow run bootc-cache.yml`) and push the pull request after it finishes.
+- **Compare the times of two units only when something orders them.** Units with no `After=` or
+  `Before=` between them start in parallel, and which one finishes first changes from boot to boot. A
+  check that a broken `/etc/fstab` mount failed before `boot.mount` passed run after run, then failed
+  by 4 ms. When a scenario needs an order, the test sets it (there, `x-systemd.before=` on the test's
+  own fstab line), checks the declared order (`systemctl show -P Before`) and then the observed times.
+  A margin of seconds between unordered units is still a guess about timing, not an order.
 - `set -e` also applies inside an `EXIT` trap: a failing command there skips the rest of the trap.
   Clean-up steps that may fail get `|| true` before anything that must run (deleting keys).
 - **Keep CI runs to what a change needs.** Every job counts rounded up to a whole minute. While this
