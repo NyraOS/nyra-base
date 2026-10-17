@@ -206,8 +206,8 @@ impl System for Fake {
             .unwrap_or_else(|| image_ref.rsplit('@').next().unwrap().to_string());
         self.status.staged = Some(Deployment {
             image: Some(format!("updates.nyraos.com/nyra@{digest}")),
+            version: Some(version(&digest).into()),
             digest,
-            version: None,
         });
         Ok(())
     }
@@ -544,6 +544,51 @@ fn only_a_failed_download_without_a_network_counts_as_offline() {
     assert!(matches!(run_check(&mut fake, &dir), Err(Error::Sheet(_))));
 }
 
+#[test]
+fn a_refusal_is_not_reported_as_no_network_when_the_link_drops_at_the_same_moment() {
+    let refusals = [
+        "error: Switching: Opening image docker://updates.nyraos.com/nyra@sha256:cc: failed to \
+         invoke method OpenImage: A signature was required, but no signature exists",
+        "failed to invoke method OpenImage: cryptographic signature verification failed",
+        "Failed to pull config Descriptor { media_type: ImageConfig, digest: Digest { .. } }: \
+         failed to invoke method FinishPipe: corrupted blob, expecting sha256:26a4",
+        "Manifest does not match provided manifest digest sha256:cc",
+        "Source image rejected: Running image docker://updates.nyraos.com/nyra:x is rejected by policy.",
+    ];
+    for refusal in refusals {
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+        fake.offline = true;
+        fake.stage_error = Some(Error::Command(refusal.into()));
+        assert_eq!(
+            run_check(&mut fake, &dir),
+            Err(Error::Command(refusal.into()))
+        );
+    }
+    // The sheet's server certificate, refused by curl.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    let tls = Error::Command(
+        "curl: (60) SSL: no alternative certificate subject name matches target hostname".into(),
+    );
+    fake.offline = true;
+    fake.fetch_error = Some(tls.clone());
+    assert_eq!(run_check(&mut fake, &dir), Err(tls));
+    // bootc names the config's digest in the context of any failed pull: that is no refusal.
+    let lost = Error::Command(
+        "Failed to pull config Descriptor { media_type: ImageConfig, digest: Digest { .. } }: \
+         dial tcp 10.0.2.2:80: connect: network is unreachable"
+            .into(),
+    );
+    let mut fake = Fake::new(&dir, A, sheet(101, C, &[]));
+    fake.offline = true;
+    fake.stage_error = Some(lost.clone());
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Offline(Box::new(lost)))
+    );
+}
+
 // --- rule 2: sequence persisted before acting -------------------------------------------------
 
 #[test]
@@ -681,6 +726,41 @@ fn a_signed_retraction_to_an_older_version_is_staged() {
     let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
     fake.status.rollback = dep(Z);
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(A))));
+}
+
+#[test]
+fn a_failed_download_off_a_retracted_version_still_says_it_runs_one() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, B, sheet(100, A, &[B]));
+    fake.stage_error = Some(Error::Timeout("bootc".into()));
+    let refused = run_check(&mut fake, &dir).unwrap_err();
+    assert_eq!(
+        refused,
+        Error::RetractedRunning {
+            running: B.into(),
+            reason: Box::new(Error::Timeout("bootc".into()))
+        }
+    );
+    assert!(refused
+        .to_string()
+        .starts_with(&format!("the running version {B} was retracted")));
+    // Without a network too.
+    fake.offline = true;
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::RetractedRunning {
+            running: B.into(),
+            reason: Box::new(Error::Offline(Box::new(Error::Timeout("bootc".into()))))
+        })
+    );
+    // Not when the running version is not retracted.
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.stage_error = Some(Error::Timeout("bootc".into()));
+    assert_eq!(
+        run_check(&mut fake, &dir),
+        Err(Error::Timeout("bootc".into()))
+    );
 }
 
 // --- rule 5: failed versions ------------------------------------------------------------------
@@ -972,6 +1052,34 @@ fn a_staged_version_below_the_floor_or_failed_is_discarded() {
     }
 }
 
+#[test]
+fn a_staged_or_rollback_version_without_a_readable_version_is_unacceptable() {
+    for label in [None, Some("garbage"), Some("")] {
+        let unlabeled = Some(Deployment {
+            version: label.map(String::from),
+            ..dep(C).unwrap()
+        });
+        // Staged: discarded, as one below the floor would be.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+        fake.status.staged = unlabeled.clone();
+        assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
+        // A rollback queued to it: undone; and never offered.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, A, &[]));
+        fake.status.rollback = unlabeled;
+        assert_eq!(
+            offered_rollback(&fake.status, &State::default(), FLOOR),
+            None
+        );
+        fake.status.rollback_queued = true;
+        assert_eq!(
+            run_check(&mut fake, &dir),
+            Ok(Outcome::RollbackUndone(C.into()))
+        );
+    }
+}
+
 fn rollbacks(fake: &Fake) -> usize {
     fake.calls
         .iter()
@@ -1057,6 +1165,24 @@ fn a_version_the_user_went_back_from_is_not_staged_again() {
         Ok(Outcome::WaitingForReboot(image(C)))
     );
     assert!(fake.status.rollback_queued);
+}
+
+#[test]
+fn a_version_held_back_is_reported_as_a_warning_in_words() {
+    let (priority, message) = Outcome::HeldBack(image(C)).report();
+    assert_eq!(priority, 4);
+    assert_eq!(
+        message,
+        format!(
+            "this machine went back from 2026.10.3 ({C}) to an older version, without the latest \
+             fixes: 2026.10.3 is not installed again, the next version the channel offers will be"
+        )
+    );
+    assert_eq!(Outcome::ForeignImage(None).report().0, 4);
+    assert_eq!(
+        Outcome::Staged(image(C)).report(),
+        (6, format!("{:?}", Outcome::Staged(image(C))))
+    );
 }
 
 #[test]
@@ -1431,7 +1557,8 @@ fn a_retraction_target_that_fails_again_leaves_a_clear_report() {
         }
     );
     assert!(refused.to_string().starts_with(&format!(
-        "the running version {B} was retracted and there is no version to go to"
+        "the running version {B} was retracted and this check could not move the machine off it: \
+         refusing {A}: this machine fell back from it"
     )));
     assert_eq!(fake.staged().len(), 1);
 }
@@ -1525,9 +1652,95 @@ fn the_last_check_is_reported_privately() {
     let report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(
         report,
-        json!({"time": NOW, "ok": false, "message": "no signature"})
+        json!({"time": NOW, "ok": false, "message": "no signature", "last_success": NOW})
     );
     assert_eq!(mode(&path), 0o600);
+}
+
+#[test]
+fn checks_that_fail_for_two_weeks_say_so_whatever_the_cause() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    let offline = "no network connection (curl failed): the running version stays";
+    assert_eq!(
+        store
+            .save_report(NOW, true, "UpToDate")
+            .unwrap()
+            .last_success,
+        NOW
+    );
+    let report = store.save_report(NOW + DAY, false, offline).unwrap();
+    assert_eq!(
+        (report.last_success, report.message.as_str()),
+        (NOW, offline)
+    );
+    assert_eq!(report.days_without_success(), None);
+    let report = store
+        .save_report(NOW + 14 * DAY - 1, false, offline)
+        .unwrap();
+    assert_eq!(report.days_without_success(), None);
+    let report = store.save_report(NOW + 14 * DAY, false, offline).unwrap();
+    assert_eq!(report.days_without_success(), Some(14));
+    assert_eq!(
+        report.message,
+        format!("no successful check for 14 days: {offline}")
+    );
+    let written: Report =
+        serde_json::from_slice(&fs::read(store.dir.join("last-check.json")).unwrap()).unwrap();
+    assert_eq!(written, report);
+    // A successful check ends it.
+    let report = store.save_report(NOW + 15 * DAY, true, "UpToDate").unwrap();
+    assert_eq!(
+        (report.last_success, report.days_without_success()),
+        (NOW + 15 * DAY, None)
+    );
+    assert_eq!(report.message, "UpToDate");
+}
+
+#[test]
+fn days_without_a_successful_check_count_from_the_first_report_and_never_from_the_future() {
+    // No successful check yet: from the first report.
+    let dir = TempDir::new();
+    let store = dir.store();
+    assert_eq!(
+        store.save_report(NOW, false, "x").unwrap().last_success,
+        NOW
+    );
+    assert_eq!(
+        store
+            .save_report(NOW + 20 * DAY, false, "x")
+            .unwrap()
+            .message,
+        "no successful check for 20 days: x"
+    );
+    // A success with the clock years ahead does not hide the days after the clock is put right.
+    let dir = TempDir::new();
+    let store = dir.store();
+    store
+        .save_report(NOW + 3000 * DAY, true, "UpToDate")
+        .unwrap();
+    assert_eq!(
+        store.save_report(NOW, false, "x").unwrap().last_success,
+        NOW
+    );
+    assert!(store
+        .save_report(NOW + 14 * DAY, false, "x")
+        .unwrap()
+        .days_without_success()
+        .is_some());
+    // A report written by an older nyra-updated (no `last_success`): the count starts now.
+    let dir = TempDir::new();
+    let store = dir.store();
+    fs::create_dir_all(&store.dir).unwrap();
+    fs::write(
+        store.dir.join("last-check.json"),
+        br#"{"time": 1, "ok": true, "message": "UpToDate"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        store.save_report(NOW, false, "x").unwrap().last_success,
+        NOW
+    );
 }
 
 fn pem(key: &SigningKey) -> String {

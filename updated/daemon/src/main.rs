@@ -13,8 +13,7 @@
 
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
-    check, on_health_failure, set_channel, Config, Error, HealthAction, Lock, Outcome, Store,
-    System,
+    check, on_health_failure, set_channel, Config, Error, HealthAction, Lock, Store, System,
 };
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -57,13 +56,8 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
                 Err(e @ Error::Offline(_)) => return Ok((4, false, e.to_string())),
                 result => result?,
             };
-            // An owner's own image gets no updates from us: say so, every time.
-            let priority = if matches!(outcome, Outcome::ForeignImage(_)) {
-                4
-            } else {
-                6
-            };
-            Ok((priority, true, format!("{outcome:?}")))
+            let (priority, message) = outcome.report();
+            Ok((priority, true, message))
         }
         ("health-failed", None) => {
             // Every call has its limit (SHORT); the unit's TimeoutStartSec= is above their sum.
@@ -129,7 +123,7 @@ fn main() -> ExitCode {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let result = run(command, arg, now);
+    let mut result = run(command, arg, now);
     if command == "check" {
         let (ok, message) = match &result {
             Ok((_, ok, m)) => (*ok, m.clone()),
@@ -138,8 +132,14 @@ fn main() -> ExitCode {
         let store = Store {
             dir: STATE_DIR.into(),
         };
-        if let Err(e) = store.save_report(now, ok, &message) {
-            eprintln!("<4>nyra-updated: last-check.json not written: {e}");
+        match store.save_report(now, ok, &message) {
+            // Updates stopped for two weeks, whatever the cause (no network, no key included): an
+            // error, so the unit fails and the machine is `degraded`.
+            Ok(report) if report.days_without_success().is_some() => {
+                result = Err(Error::NoSuccessfulCheck(report.message));
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("<4>nyra-updated: last-check.json not written: {e}"),
         }
     }
     match result {
