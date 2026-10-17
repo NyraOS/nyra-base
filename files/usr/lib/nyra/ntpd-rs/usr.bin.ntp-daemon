@@ -20,7 +20,7 @@ profile ntp-daemon /usr/bin/ntp-daemon {
   network inet6 stream,
   # The machine's own addresses, and their changes (route netlink).
   network netlink raw,
-  # The observation socket for ntp-ctl, systemd's notification socket, systemd-resolved.
+  # The observation socket for ntp-ctl, systemd-resolved.
   unix,
 
   /usr/bin/ntp-daemon mr,
@@ -32,7 +32,6 @@ profile ntp-daemon /usr/bin/ntp-daemon {
   /var/lib/{,private/}ntpd-rs/ r,
   /var/lib/{,private/}ntpd-rs/last-clock-update rw,
   @{run}/ntpd-rs/observe rw,
-  @{run}/systemd/notify w,
   @{run}/systemd/resolve/io.systemd.Resolve rw,
 
   include if exists <local/usr.bin.ntp-daemon>
