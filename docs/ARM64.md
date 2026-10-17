@@ -61,7 +61,7 @@ would not fit the timeouts made for KVM, so it does not run.
 | Boot files on the ESP | `shimx64.efi`, `grubx64.efi`, `mmx64.efi`, fallback `\EFI\BOOT\BOOTX64.EFI` | `shimaa64.efi`, `grubaa64.efi`, `mmaa64.efi`, fallback `\EFI\BOOT\BOOTAA64.EFI` (`esp-sync` picks them by `uname -m`) |
 | Signed shim and systemd-boot | Debian: `shim-signed`, `systemd-boot-efi-amd64-signed` | Debian ships both for arm64: `shim-signed` (with `shim-helpers-arm64-signed`), `systemd-boot-efi-arm64-signed` |
 | UKI and add-on stubs | `linuxx64.efi.stub`, `addonx64.efi.stub` | `linuxaa64.efi.stub`, `addonaa64.efi.stub` |
-| UKI sections | | ukify adds a `.hwids` section by itself (systemd ships hardware IDs for arm64 laptops, used to pick a devicetree from `.dtbauto` sections). The UKI has no `.dtbauto`, and the PCR policy tools refuse sections they do not model, so `ci/ukify.sh` turns it off (`--hwids ''`, no change on x86_64) |
+| UKI sections | | ukify adds a `.hwids` section by itself (systemd ships hardware IDs for arm64 laptops, used to pick a devicetree from `.dtbauto` sections). The UKI has no `.dtbauto`, and the PCR policy tools refuse sections they do not model, so every ukify run on the UKI turns it off (`--hwids ''` in `ci/ukify.sh` and where `ci/build-image.sh` joins the PCR signature; no change on x86_64) |
 | Test firmware | OVMF, Secure Boot variables protected by SMM | AAVMF; ARM has no SMM, so in a VM the guest can write the variable store (a limit of the test machine, not of the image) |
 | Serial console in the tests | `ttyS0`, no kernel messages without `console=` | `ttyAMA0`; the kernel finds it by itself (ACPI SPCR), so its messages show up on it |
 | TPM in the tests | `tpm-crb` | `tpm-tis-device` |
