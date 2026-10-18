@@ -676,6 +676,19 @@ Each line is something that broke or surprised us once.
   does (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session of
   seat0, but may return before logind reports it: wait for `Active=yes`. A user with a login has
   two sessions: the login's and their manager's (class `manager`, no TTY).
+- A FAT stick pulled out while it is written stays damaged: the next mount says `Volume was not
+  properly unmounted`, and a write that hits the damage (a lost directory entry, a cluster chain the
+  FAT no longer has) is a FAT error, which makes the file system read-only (`errors=remount-ro`). In
+  T14 the writer of boot 2 once stopped with "Read-only file system" before its stick was pulled,
+  most likely so; boot 2 repairs the stick with `fsck.vfat -a` first and pulls it only while a `dd`
+  runs.
+- When a disk goes away, the kernel (7.2) syncs its file system as it can (`del_gendisk`, I/O to the
+  device already fails), then unregisters its writeback (`bdi_unregister`): the flusher never writes
+  the pages dirtied after that. A writer throttled on them sleeps in `balance_dirty_pages()` in a
+  killable state, which the hung task detector does not report. Once in T14 (boot 2, the stick
+  pulled during an update) the writer did not end within 300 s and printed nothing; where it waited
+  was not recorded. Boot 2 now prints the writer's `wchan` and kernel stack and the blocked tasks if
+  it still runs after 110 s.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
@@ -971,3 +984,7 @@ Each line is something that broke or surprised us once.
   (`SUB_UID_MIN`, `SUB_GID_MIN`; `/etc/subuid` and `/etc/subgid` exist, empty). Lower IDs are the
   system's, the users' and systemd's own (dynamic users, `nobody`): what Reset settings keeps from an
   old `/etc` must start at 100000 or above.
+- A guest command's own `timeout` must end before `vm-boot.py` stops waiting for the command's result
+  (300 s from when it is typed), and so must the diagnostics after it; otherwise a hang gives only
+  "no result from" and no state. T14's writer during the update had `timeout 300`, started after the
+  command, so its exit never came.
