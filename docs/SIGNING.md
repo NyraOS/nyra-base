@@ -395,7 +395,7 @@ certificate for it, made once: in Cloud Shell, as the account that may use the k
     tools/signing/kms-uki-cert.sh > nyra.crt
 
 The script downloads Google's PKCS#11 library for Cloud KMS (a pinned release, checked against its
-SHA-256), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
+SHA-256; the pin lives in `tools/signing/kms-pkcs11.sh`), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
 15 years, `CA:FALSE`, digital signature, code signing), checks that its public key is the KMS key's
 and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Run it
 from a fresh clone of `main`, not from a branch. Commit that PEM as
