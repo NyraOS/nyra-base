@@ -812,11 +812,11 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     and a fallback pointing to a deleted image could not boot at all. The running version has at
     least booted to the point of shutting down cleanly; once a later version is blessed, the
     fallback moves to it.
-  - **Space on the ESP.** One UKI is about 63 MB (kernel and initramfs). At most these sit on the ESP
+  - **Space on the ESP.** One UKI is about 68 MB (kernel and initramfs). At most these sit on the ESP
     at once: bootc's UKIs for the booted, the rollback and a staged version, the fallback, and,
     for a moment, a second fallback (the new copy is written before the old one is removed): five
-    UKIs, about 315 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`
-    creates, that leaves about 700 MB. When the ESP is full anyway, the copy fails before anything
+    UKIs, about 340 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`
+    creates, that leaves about 680 MB. When the ESP is full anyway, the copy fails before anything
     is replaced (a new file next to the old one, then a rename), the old fallback stays: at boot
     `esp-sync repair` fails visibly (the unit fails, the system shows as degraded); at shutdown the
     move only logs the failure, so the shutdown and bootc's swap go on.
@@ -947,9 +947,12 @@ the profile (systemd-boot passes `@1`, systemd-stub honours it and reports it in
   `/usr/lib/nyra/boot/recovery-shell` instead of sulogin (a drop-in in `/usr`): it asks for a user
   name, accepts only members of the `sudo` group (the administrators) whose account has a usable
   password (`passwd -S` status `P`: PAM's `nullok` would let an empty password through), and checks
-  the password with `su` through PAM, run as `nobody` so that it has to ask. `nobody` is given by
-  number (UID and GID 65534): name lookups read only `/etc/passwd` and `/etc/group`, which may have
-  lost the account exactly when recovery is needed (Titanic T8). Only then a root shell
+  the password with `su` (sudo-rs's, docs/DEFAULTS.md "su") through PAM, run as that administrator
+  so that it has to ask. The script reads the password without echo and gives it to `su` on its
+  input, so a wrong one costs one try, not sudo-rs's three. The administrator's IDs are given by
+  number: sudo-rs refuses to run for a user it cannot look up, and name lookups read only
+  `/etc/passwd` and `/etc/group`, which may have lost `nobody` exactly when recovery is needed
+  (Titanic T8), never the administrator who logs in. Only then a root shell
   starts; leaving it continues to the normal boot target. A wrong password or a non-administrator
   gives a message and the prompt again, after 3 s. Control-C and Control-Z do nothing at the prompt;
   Control-D continues the normal boot (as sulogin does). `emergency.service` (a failed boot) still uses sulogin, which refuses

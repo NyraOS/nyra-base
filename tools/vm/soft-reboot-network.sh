@@ -55,9 +55,10 @@ vm() { # vm ROUND TITLE --command ...
     --log "$logs/serial-soft-reboot-network-$1.log" --summary "$summary" \
     --title "Network across soft reboots, round $1 of $rounds: $2" "${@:3}"
 }
-# The system is running (systemd-networkd-wait-online passed) and the registry answers; otherwise
-# networkd's view of it, for the log.
-net='s="$(systemctl is-system-running --wait)"; echo "system: $s"; if test "$s" = running && systemctl is-active --quiet systemd-networkd-wait-online.service && curl -fsS -o /dev/null --max-time 10 http://10.0.2.2/v2/; then echo "network: up"; else systemctl --no-pager --failed; networkctl status --all --no-pager; ip -br address; journalctl -b -u systemd-networkd -u systemd-networkd-wait-online -o short-monotonic --no-pager | tail -150; false; fi'
+# The system is running, the network comes online (systemd-networkd-wait-online, run here: nothing
+# runs it at boot, docs/DEFAULTS.md) and the registry answers; otherwise networkd's view of it, for
+# the log.
+net='s="$(systemctl is-system-running --wait)"; echo "system: $s"; if test "$s" = running && /usr/lib/systemd/systemd-networkd-wait-online --timeout=120 && curl -fsS -o /dev/null --max-time 10 http://10.0.2.2/v2/; then echo "network: up"; else systemctl --no-pager --failed; networkctl status --all --no-pager; ip -br address; journalctl -b -u systemd-networkd -u systemd-networkd-wait-online -o short-monotonic --no-pager | tail -150; false; fi'
 setup='mkdir -p /etc/containers/registries.conf.d /etc/systemd/system/systemd-networkd.service.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf && printf "[Service]\nEnvironment=SYSTEMD_LOG_LEVEL=debug\n" > /etc/systemd/system/systemd-networkd.service.d/50-ci-debug.conf'
 
 for i in $(seq "$rounds"); do
