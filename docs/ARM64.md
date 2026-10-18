@@ -82,12 +82,22 @@ need their own firmware, device trees and drivers, and are a separate piece of w
 
 The VM disk image is the `nyra-base-arm64-vm` artifact of a run of the `arm64` workflow:
 `nyra-base-arm64.qcow2` (compressed; its virtual size is 12 GiB, it grows as it is used) and its
-`.sha256`. It is a test disk: like the CI disks, it carries an add-on that lets the VM's settings
-pass systemd credentials (the root password), and its UKI is signed with that run's throwaway key.
+`.sha256`. Take it **only from a run on `main`** (a push, after review): the workflow also runs on
+pull requests, forks included, and their artifacts can be downloaded the same way, so a disk from a
+pull request is built from code nobody has reviewed yet:
+`gh run list -R NyraOS/nyra-base -w arm64 -b main -e push`.
+
+It is a **test disk**, not a system to keep data on:
+
+- like the CI disks, it carries an add-on that lets the VM's settings pass systemd credentials:
+  whoever can change the VM's settings sets root's password;
+- its UKI is signed with that run's throwaway key;
+- its root is not encrypted, and it has no TPM (see "What remains");
+- it gets no updates: a newer image means a new disk.
 
 1. Download the artifact straight to the external SSD (the run's page, "Artifacts", or
-   `gh run download <run> -n nyra-base-arm64-vm -D /Volumes/<SSD>/nyra`), unzip it there, and check
-   it: `shasum -a 256 -c nyra-base-arm64.qcow2.sha256`.
+   `gh run download <run> -n nyra-base-arm64-vm -D /Volumes/<SSD>/nyra`, with `<run>` from the
+   command above), unzip it there, and check it: `shasum -a 256 -c nyra-base-arm64.qcow2.sha256`.
 2. In UTM: create a new virtual machine, "Virtualize", "Linux". Do not use Apple's Virtualization
    backend (it has neither a TPM nor Secure Boot); skip the boot ISO; 4 GiB of memory and 4 CPU
    cores are enough. Save it, then edit it:
