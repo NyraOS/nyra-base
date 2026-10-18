@@ -609,6 +609,12 @@ Each line is something that broke or surprised us once.
   `--one-file-system`.
 - An initrd that writes into the root's `/var` (the running system's, so its root's) must not follow
   symbolic links there: check every component of the path before reading or writing.
+- `systemd-cryptenroll --tpm2-signature=` checks a new enrollment by unsealing it, which needs a
+  signature by the enrolled key for the current PCR 11: a next policy key, which has signed nothing
+  yet, can only be enrolled without that check.
+- In the initrd, after bootc's `bootc-root-setup.service`, `/sysroot` is the composed root: `/usr` the
+  composefs image (pinned by the digest on the sealed command line, so a file read from it is the
+  image's), `/var` the shared `/var`; before it, `/sysroot` is the physical root.
 - `cryptsetup open --test-passphrase -v` says which key slot a key opens ("Key slot N unlocked.") on
   stderr.
 - **`systemd-cryptenroll` does nothing when the same policy is already enrolled** (it compares the
@@ -633,12 +639,32 @@ Each line is something that broke or surprised us once.
   key included, on stderr: keep stderr out of the logs.
 - systemd-ask-password prints its prompt before it turns echo off: input that arrives at once is
   echoed. A test that types a secret on a console waits a moment after the prompt.
+- "Remove every enrollment for a key this boot neither uses nor carries as next" is wrong on a
+  fallback: the previous release, confirmed good, would remove the newer key's enrollment (and mark it
+  retired, so it is never enrolled again). Found while writing the rotation test in a VM; the record
+  keeps enrollments in the order they were made, and only older ones are removed.
 - **A `Type=oneshot` unit that is still running when the initrd ends fails.** initrd-cleanup's isolate
   stops it with SIGTERM, and for a oneshot only exit status 0 is a clean end (`Result=signal`). The
   console shows only "Stopped", the failed state crosses the switch to the real root, and the running
   system is `degraded` with no `FAILED` line anywhere on the console. A wait in the background that the
   initrd may cut short is `Type=simple`, for which SIGTERM is a clean end. Seen in CI, now and then: the
   root wait checked once a second, and the initrd took about as long after the root appeared.
+- **TPM2 PIN (systemd 262).** gpt-auto sets `tpm2-measure-pcr=yes`, which turns off libcryptsetup's
+  token plugin, so systemd-cryptsetup handles the PIN itself: up to five tries, then
+  the passphrase prompt; an empty PIN (with Argon2id) goes straight to it; a locked TPM
+  ("dictionary attack lock-out mode") too. It asks for the PIN before it unseals, so it asks even when
+  the PCRs no longer match (and the PIN typed is then never checked), and for a token of another policy
+  key; the next token takes the PIN from the kernel's cache (`tpm2-pin`), an empty one is asked again.
+  A correct PIN does not reset the TPM's failure counter: only time does.
+- systemd-cryptenroll takes `$PIN` (and `$NEWPIN`) once: the first TPM2 token it tries consumes it, and
+  for the next one it asks on the console. The credential `cryptenroll.tpm2-pin` (in
+  `$CREDENTIALS_DIRECTORY`) is read again for each token, and for each of its five tries: a wrong PIN
+  there counts five times against the TPM.
+- With a PIN, systemd-cryptenroll replaces an enrollment of the same policy (same key, same PCR values)
+  by itself, removing its slot after adding the new one; without a PIN it keeps it and does nothing.
+- swtpm (libtpms) locks after 3 wrong authorizations and forgives one every 1000 s of running time; a
+  shutdown that is not orderly also counts as one when a protected object was used. A test that needs
+  a known count copies the TPM state directory and puts it back.
 
 ## Removable media (docs/DEFAULTS.md)
 - **udisks2 needs polkitd, even for root.** It falls back to "root only" only when the polkit
@@ -676,6 +702,19 @@ Each line is something that broke or surprised us once.
   does (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session of
   seat0, but may return before logind reports it: wait for `Active=yes`. A user with a login has
   two sessions: the login's and their manager's (class `manager`, no TTY).
+- A FAT stick pulled out while it is written stays damaged: the next mount says `Volume was not
+  properly unmounted`, and a write that hits the damage (a lost directory entry, a cluster chain the
+  FAT no longer has) is a FAT error, which makes the file system read-only (`errors=remount-ro`). In
+  T14 the writer of boot 2 once stopped with "Read-only file system" before its stick was pulled,
+  most likely so; boot 2 repairs the stick with `fsck.vfat -a` first and pulls it only while a `dd`
+  runs.
+- When a disk goes away, the kernel (7.2) syncs its file system as it can (`del_gendisk`, I/O to the
+  device already fails), then unregisters its writeback (`bdi_unregister`): the flusher never writes
+  the pages dirtied after that. A writer throttled on them sleeps in `balance_dirty_pages()` in a
+  killable state, which the hung task detector does not report. Once in T14 (boot 2, the stick
+  pulled during an update) the writer did not end within 300 s and printed nothing; where it waited
+  was not recorded. Boot 2 now prints the writer's `wchan` and kernel stack and the blocked tasks if
+  it still runs after 110 s.
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
@@ -694,6 +733,16 @@ Each line is something that broke or surprised us once.
   (`systemd-analyze`: 9–11 s).
 - With root autologin the shell prompt can appear in the same instant as the login prompt: wait for it
   from the end of the login prompt, not from whatever the console buffer holds when you look.
+- A kernel message can land in the middle of any prompt on the serial console ("Type RESET" then
+  "[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then " to reset: "), and a
+  pattern matched on the raw console then waits until its timeout. `vm-boot.py` matches every prompt
+  (`--chat`, `--refused`, login, password, shell) without kernel messages (`clean()`) and maps the
+  end of the match back to the raw console (`raw_offset()`), so the next wait starts right after the
+  prompt and kernel starts are still counted up to it. Console triggers (`--power-cut-at`,
+  `--tpm-fail-at`, `--qmp`, `--marker`) and command results are mostly printed by units or commands,
+  so they split the same way; they match on the raw console or without kernel messages, since a
+  trigger can also be a kernel message itself (`Linux version`). A prompt pattern ending in
+  `[^\r\n:]*:` stops at the prompt's colon instead of running into a kernel message after it.
 - On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
   pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
@@ -824,7 +873,6 @@ Each line is something that broke or surprised us once.
   rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then "overy key for disk
   root:"), when the runner is busy. A pattern that must match the whole prompt is matched in the
   console without kernel messages (`clean()` in `vm-boot.py`), as the status lines already were.
-  `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
@@ -858,6 +906,17 @@ Each line is something that broke or surprised us once.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.
+- Emulated (QEMU TCG, GitHub's arm64 runners), the image's 10 s wait for a device ran out before udev
+  had even started: `ttyAMA0` and the ESP timed out, the serial getty and `boot.mount` failed with
+  them, and the boot reached `boot-complete.target` with no login prompt (seen in CI). A drop-in
+  passed as a credential with a later name (`systemd.unit-dropin.UNIT~20-emulated`) gives them
+  systemd's 90 s back. A credential drop-in for `dev-.device` would reach the initrd too, where a
+  drop-in with the image's name (`10-nyra`) hides the root's own `dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf`
+  (systemd keeps one drop-in per file name), and a later name overrides its "no limit".
+- QEMU's `virt` machine has only TIS TPMs (`tpm-tis-device`, `tpm-tis-i2c`, QEMU 8.2 to 10.0), and
+  Debian's arm64 kernel builds neither driver (`CONFIG_TCG_TIS`, `CONFIG_TCG_TIS_I2C` off; CRB is
+  built in): the guest gets the firmware's TPM2 table but no `/dev/tpm0`, and waits 90 s for it in
+  the initrd.
 
 ## Titanic (docs/TITANIC.md)
 - bootc 1.16 enables `bootc-sysusers-shadow-sync.service` (through its generator, on composefs boots
@@ -951,3 +1010,7 @@ Each line is something that broke or surprised us once.
   (`SUB_UID_MIN`, `SUB_GID_MIN`; `/etc/subuid` and `/etc/subgid` exist, empty). Lower IDs are the
   system's, the users' and systemd's own (dynamic users, `nobody`): what Reset settings keeps from an
   old `/etc` must start at 100000 or above.
+- A guest command's own `timeout` must end before `vm-boot.py` stops waiting for the command's result
+  (300 s from when it is typed), and so must the diagnostics after it; otherwise a hang gives only
+  "no result from" and no state. T14's writer during the update had `timeout 300`, started after the
+  command, so its exit never came.

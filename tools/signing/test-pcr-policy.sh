@@ -51,7 +51,7 @@ mv "$t"/out/*.efi "$t/unsigned.efi"
 
 # The control: signed, joined and checked as in ci/build-image.sh.
 policy sign "$t/unsigned.efi" "$t/pcr.key" > "$t/pcrsig.json"
-image -v "$t:/t" "$sealed" ukify build --join-pcrsig /t/unsigned.efi --pcrsig @/t/pcrsig.json --output /t/signed.efi
+image -v "$t:/t" "$sealed" ukify build --hwids '' --join-pcrsig /t/unsigned.efi --pcrsig @/t/pcrsig.json --output /t/signed.efi
 sudo chown -R "$(id -u):$(id -g)" "$t"
 policy check "$t/signed.efi" "$pub"
 

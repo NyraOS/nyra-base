@@ -14,10 +14,12 @@
 # that uses the image artifact checks it against the sha256 build reported (ci/check-artifact.sh).
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
-# and nyra-updated across real updates (docs/UPDATES.md).
-# CI runs only what a change needs (docs/LESSONS.md): the changes job runs build and install-boot
-# only when a file that can affect the image or its tests changed; a change only in tools/sbom/ runs
-# the scan against the last image built on main instead (sbom job). Skipped jobs count as passed.
+# and nyra-updated across real updates (docs/UPDATES.md). In parallel, the encryption job installs the
+# same oci-archive on encrypted disks of its own and runs the disk encryption tests (Titanic T10).
+# CI runs only what a change needs (docs/LESSONS.md): the changes job runs build, install-boot and
+# encryption only when a file that can affect the image or its tests changed; a change only in
+# tools/sbom/ runs the scan against the last image built on main instead (sbom job). Skipped jobs
+# count as passed.
 name: image
 on:
   push:
@@ -323,7 +325,7 @@ jobs:
         run: |
           sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
-            "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK"
+            "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/pcr-next/tpm2-pcr-public-key-next.pem" "$WORK"
 
       # The PCR policy signing and its check on a UKI that ci/ukify.sh builds with a policy key of the
       # test: only the main profile's enter-initrd policy is signed, computed independently (systemd-
@@ -602,31 +604,6 @@ jobs:
         if: ${{ !cancelled() && steps.load.outcome == 'success' }}
         run: tools/signing/tpm-unlock.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
-      # Titanic T10 without a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed on LUKS2
-      # with a password and a recovery key as the installer does it (tools/vm/install-encrypted.sh);
-      # the password and the recovery key unlock it in the initrd, a wrong password is asked again,
-      # neither secret is in the logs or on the disk outside LUKS. It needs only the loaded image.
-      - name: Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)
-        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
-        timeout-minutes: 30
-        run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
-
-      # Titanic T10 with a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM
-      # (a recovery key and a temporary TPM2 enrollment in the VM's swtpm), booted with Secure Boot:
-      # the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR policy,
-      # the next boots unlock by themselves, without the TPM the recovery key unlocks it, and after
-      # the TPM refused (PCR 7, PCR 12, a new TPM) the recovery key unlocks it and it is enrolled
-      # again, never with Secure Boot off or an add-on measured.
-      - name: Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)
-        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
-        timeout-minutes: 50
-        env:
-          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
-        run: |
-          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
-          tools/vm/encryption-tpm.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
-            "$GITHUB_STEP_SUMMARY"
-
       # Titanic T14 (docs/TITANIC.md): USB sticks pulled out during a write, during an update and
       # during the boot, a stick with ESP, root and swap partitions at boot, and the mount options of
       # trusted and untrusted media (docs/DEFAULTS.md, "Removable media"). Its own copy of the disk.
@@ -702,6 +679,147 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-boot-serial-log
+          path: ${{ runner.temp }}/serial*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Titanic T10, disk encryption (docs/BOOT.md, "Disk encryption"): every step installs the image on a
+  # disk of its own, so they run on a runner of their own, in parallel with install-boot, from the same
+  # image artifact. Same security notes as install-boot: GitHub-hosted runners only.
+  encryption:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      # The registry of the rotation and update tests (tools/signing/local-registry.sh).
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        uses: ./.github/actions/pinned-images
+        with:
+          images: registry
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+            python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-oci-archive
+          path: ${{ env.WORK }}
+
+      - name: Load the image
+        id: load
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+        run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
+          sudo podman load -i "$WORK/nyra-base.oci.tar"
+          rm "$WORK/nyra-base.oci.tar"
+
+      # Titanic T10 without a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed on LUKS2
+      # with a password and a recovery key as the installer does it (tools/vm/install-encrypted.sh);
+      # the password and the recovery key unlock it in the initrd, a wrong password is asked again,
+      # neither secret is in the logs or on the disk outside LUKS. It needs only the loaded image.
+      - name: Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 30
+        run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # Titanic T10 with a TPM (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM
+      # (a recovery key and a temporary TPM2 enrollment in the VM's swtpm), booted with Secure Boot:
+      # the first boot unlocks by itself and its initrd enrolls the disk with the signed PCR policy,
+      # the next boots unlock by themselves, without the TPM the recovery key unlocks it, and after
+      # the TPM refused (PCR 7, PCR 12, a new TPM) the recovery key unlocks it and it is enrolled
+      # again, never with Secure Boot off or an add-on measured.
+      - name: Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 50
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/encryption-tpm.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY"
+
+      # Titanic T10, the rotation of the TPM policy key (docs/BOOT.md, "Rotating the policy key"): test
+      # versions signed with policy keys made in this step (deleted once they are built), installed on
+      # their own disk for a TPM and switched between through a registry on the runner: the next key
+      # enrolled in advance, the old one removed only once the rotated release is confirmed good, a
+      # fallback before that unlocks by itself and after it asks for the recovery key, and a machine
+      # that missed a rotation asks once, then is enrolled again.
+      - name: Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        run: tools/vm/encryption-rotation.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # The same with a PIN, set before the rotation: the next key enrolled with the PIN typed at the
+      # rotated release's first boot, and a new PIN chosen when the disk is enrolled again.
+      - name: Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        run: tools/vm/encryption-rotation.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY" pin
+
+      # Titanic T10, the TPM2 PIN (docs/BOOT.md, "Disk encryption"): its own disk, installed for a TPM;
+      # a PIN asked for from the running system is enrolled at the next boot, a wrong PIN is asked again,
+      # an empty one and a TPM locked by wrong ones lead to the recovery key, which unlocks the disk; the
+      # PIN changed and removed; after the TPM refused, a new PIN is chosen in the initrd, never none.
+      - name: Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 50
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/encryption-pin.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY"
+
+      # Titanic T10, updates through nyra-updated on an encrypted disk (docs/BOOT.md, "Disk encryption";
+      # docs/UPDATES.md): test versions signed with keys made in this step (policy key, Secure Boot MOK,
+      # channel sheet, sigstore), installed for a TPM on their own disk and served as updates.nyraos.com
+      # from the runner: N to N+1 through a signed sheet, back to N by hand, and a version whose health
+      # check fails falls back to N, every boot unlocked by the TPM, the recovery key never asked.
+      - name: Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        run: tools/vm/encryption-updates.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # Titanic T10, a disk installed for a TPM whose first boot finds no TPM, or Secure Boot off (each
+      # on its own disk): the recovery key unlocks it, nothing is enrolled and the temporary enrollment
+      # goes; with the TPM and Secure Boot back, the recovery key once, then it is enrolled.
+      - name: First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 40
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/encryption-first-boot.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" \
+            "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the serial logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: encryption-serial-log
           path: ${{ runner.temp }}/serial*.log
           if-no-files-found: ignore
           retention-days: 14
@@ -822,7 +940,7 @@ jobs:
           echo "Reproducible: the release's bootc build is identical to the cached one ($cached)."
 
   sign:
-    needs: [build, install-boot, bootc-reproducible]
+    needs: [build, install-boot, encryption, bootc-reproducible]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
     if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
     runs-on: ubuntu-24.04
@@ -889,10 +1007,14 @@ jobs:
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$WORK/image-retired"
           sudo podman rm -f "$cid" >/dev/null
-          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot"
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem" "$WORK/image-retired"
           tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
-            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem" \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys "$WORK/image-retired"
 
       - name: Install cosign
         run: |

@@ -146,7 +146,7 @@ sudo cp "$work/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.ef
 sudo umount "$mnt" && sudo losetup -d "$loop" && loop=""
 
 # With a TPM the disk has no password: the prompt asks for the recovery key only.
-ask="Please enter (passphrase or )?recovery key for disk [^\r\n]*:"
+ask="Please enter (passphrase or )?recovery key for disk [^\r\n:]*:"
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
 # Units that failed in this boot, the initrd included (systemctl --failed sees only the running system).
 nofail='f="$(journalctl -b -o cat | grep -E "Failed to start|failed with result" || true)"; echo "${f:-no unit failed in this boot, the initrd included}"; test -z "$f"'
@@ -166,7 +166,7 @@ vm first "TPM 1: the first boot unlocks by itself and enrolls the disk" --tpm "$
   --command "$running" --command "$nofail" \
   --command "$enrolled && $enrolled | grep -q 'enrolled with the TPM'" || fail=1
 ! asked first || { echo "::error::the first boot asked for the disk"; fail=1; }
-expect_slots "after the first boot" "systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12"
+expect_slots "after the first boot" "systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12 tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12"
 vm second "TPM 2: the next boot unlocks by itself, nothing to enroll" --tpm "$tpm" --persist --poweroff \
   --command "$running" --command "$nofail" --command "! $enrolled && echo 'nyra-tpm-enroll: nothing to do'" || fail=1
 ! asked second || { echo "::error::the second boot asked for the disk"; fail=1; }
@@ -253,7 +253,7 @@ unlocked="$(printf '%s\n' "$lines" | grep -c -E 'Finished .{0,80}Cryptography Se
 check "unlocks by systemd-cryptsetup@root.service in the disk's journal ($unlocked)" found "$(if [ "$unlocked" -gt 0 ]; then echo found; else echo none; fi)"
 check "\"Could not extend PCR/NvPCR\" in the disk's journal (rows 1 to 17)" 0 "$(printf '%s\n' "$lines" | grep -c 'Could not extend' || true)"
 check "re-enrollments in the disk's journal (rows 12, 14, 16)" 3 "$(printf '%s\n' "$lines" | grep -c 'enrolled with the TPM again, after the TPM refused' || true)"
-expect_slots "at the end" "systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12"
+expect_slots "at the end" "systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12 tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12"
 
 # A disk set up with a password, on this machine with its TPM and Secure Boot, whose header someone
 # changed while it was off: a copy of the TPM2 enrollment of the disk above, pointing at its password
