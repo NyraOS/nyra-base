@@ -13,26 +13,34 @@ ARG TOOLS=localhost/nyra-tools
 # nyra-updated (updated/, docs/UPDATES.md), compiled on the CI tools image (Debian testing, like
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
 # Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
-# first build), mounted read-only; the build has no network. Cargo does not check a crate already in
-# its download cache against Cargo.lock, and takes features from the registry index, which nothing
-# pins. So neither cargo's cache nor the index is used: each .crate the lock lists is copied, checked
-# against the lock's checksum, and unpacked into a directory source that replaces crates.io.
+# first build), mounted read-only, each checked against Cargo.lock (ci/vendor-crates.sh); the build
+# has no network.
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
-    set -- /crates/registry/cache/*/ && \
-    { [ $# = 1 ] || { echo "expected one crate cache directory, found: $*" >&2; exit 1; }; } && \
-    c="$1" && mkdir -p /root/vendor /root/.cargo && \
-    awk -F'"' '/^name = /{n=$2} /^version = /{v=$2} /^checksum = /{print $2 " " n "-" v}' /src/Cargo.lock > /root/sums && \
-    test -s /root/sums && \
-    while read -r sum crate; do \
-      cp "$c$crate.crate" /root/x.crate && echo "$sum  /root/x.crate" | sha256sum --quiet --strict -c - && \
-      tar -xzf /root/x.crate -C /root/vendor && \
-      printf '{"files":{},"package":"%s"}' "$sum" > "/root/vendor/$crate/.cargo-checksum.json" || exit 1; \
-    done < /root/sums && \
-    printf '[source.crates-io]\nreplace-with = "checked"\n[source.checked]\ndirectory = "/root/vendor"\n' > /root/.cargo/config.toml && \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
     cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
     strip target/release/nyra-updated
+
+# zlib-rs as the system's libz.so.1 (zlib/, docs/DEFAULTS.md "zlib"), from its crates like
+# nyra-updated: libz-rs-sys as a static library, linked into a shared library with zlib's soname and
+# symbol versions (the version script libz-rs-sys ships, include/zlib.map), as zlib-rs documents.
+# gzprintf and gzvprintf are missing: C variadic functions, which stable Rust cannot define.
+# Hardened like Debian's libraries: RELRO and immediate binding (-z relro -z now).
+FROM ${TOOLS} AS zlib
+COPY zlib/ /src/
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    set -- /root/vendor/libz-rs-sys-*/include/zlib.map && test -f "$1" && \
+    cc -shared -Wl,--gc-sections -Wl,--whole-archive target/release/libz_rs.a -Wl,--no-whole-archive \
+      -Wl,--version-script="$1" -Wl,--undefined-version -Wl,-soname,libz.so.1 -Wl,-z,relro,-z,now -lgcc_s -lc \
+      -o target/libz.so.1 && \
+    strip --strip-unneeded target/libz.so.1 && objdump -T target/libz.so.1 > /root/symbols && \
+    grep -Eq ' ZLIB_1\.2\.0 +deflateBound$' /root/symbols && grep -Eq ' ZLIB_1\.3\.2 +compress_z$' /root/symbols && \
+    readelf -d target/libz.so.1 | grep -q 'BIND_NOW' && readelf -l target/libz.so.1 | grep -q GNU_RELRO
 
 FROM ${ROOTFS} AS base
 
@@ -70,6 +78,31 @@ RUN test ! -e /usr/bin/apt && test ! -e /usr/bin/apt-get && mkdir -p /usr/lib/ny
 # user adds rules in /etc/udev/hwdb.d.
 RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /etc/udev/hwdb.bin
 
+# su from sudo-rs (docs/DEFAULTS.md, "su") in place of util-linux's, setuid root like it (its package
+# script set the mode). Nothing else of sudo-rs stays: no sudo, sudoedit or visudo on the desktop.
+RUN test "$(stat -c '%a %U %G' /usr/lib/cargo/bin/su)" = '4755 root root' && test -f /etc/pam.d/su && \
+    mv -f /usr/lib/cargo/bin/su /usr/bin/su && \
+    rm /usr/lib/cargo/bin/sudo /usr/lib/cargo/bin/visudo /usr/bin/su-rs /usr/bin/sudo-rs /usr/bin/sudoedit-rs \
+      /usr/bin/visudo-rs && rmdir /etc/sudoers.d && \
+    su --version 2>&1 | grep -q '^su-rs ' && ! command -v sudo && ! command -v sudoedit && ! command -v visudo
+
+# uutils coreutils (docs/DEFAULTS.md, "Core utilities"): every GNU coreutils command that uutils has
+# becomes a link to its multi-call binary, which runs the command its link is named after; the rest
+# of the build (dracut, the initramfs) already uses them. GNU's basenc, factor and stty stay (uutils
+# has none in Debian's build); the build fails when that list changes.
+RUN cd /usr/lib/cargo/bin/coreutils && for u in *; do \
+      for d in /usr/bin /usr/sbin; do \
+        [ -e "$d/$u" ] || continue; \
+        grep -q 'GNU coreutils' "$d/$u" || { echo "$d/$u is not GNU's" >&2; exit 1; }; \
+        if [ "$d" = /usr/bin ]; then ln -sf coreutils "$d/$u"; else ln -sf ../bin/coreutils "$d/$u"; fi || exit 1; \
+      done; \
+    done && cd / && rm -r /usr/lib/cargo/bin/coreutils && \
+    gnu="$(for f in /usr/bin/* /usr/sbin/*; do \
+      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" != /usr/bin/coreutils ] && grep -q 'GNU coreutils' "$f"; then echo "${f##*/}"; fi; \
+    done | tr '\n' ' ')" && \
+    { [ "$gnu" = 'basenc factor stty ' ] || { echo "GNU coreutils left: $gnu" >&2; exit 1; }; } && \
+    ls --version | grep -q '(uutils coreutils)' && test "$(readlink /usr/sbin/chroot)" = ../bin/coreutils
+
 # Our files in /usr: the signature policy (docs/SIGNING.md), the boot settings (docs/BOOT.md) and
 # the update units and configuration (docs/UPDATES.md).
 # Our systemd-firstboot drop-in repeats systemd's command line without --prompt-root-password
@@ -81,6 +114,14 @@ RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
       /usr/lib/systemd/system/systemd-firstboot.service
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
+
+# zlib-rs (docs/DEFAULTS.md, "zlib"): our libz.so.1 in place of the file Debian's libz.so.1 link points
+# to, so every program and library that uses zlib loads it. A program that uses gzprintf or gzvprintf
+# would not load: none in the image does, and the build fails if one appears.
+COPY --from=zlib /src/target/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1.nyra
+COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
+RUN cd /usr/lib/x86_64-linux-gnu && f="$(readlink libz.so.1)" && test -f "$f" && mv libz.so.1.nyra "$f" && \
+    grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
 
 # Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
 # configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
@@ -145,6 +186,18 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       test -f "/usr/lib/systemd/system/$u" && mkdir -p "/usr/lib/systemd/system/$u.d" && \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
+
+# Without a network (docs/DEFAULTS.md): nothing in the base pulls in network-online.target, so
+# systemd-networkd-wait-online never runs at boot. Two of the blocked units wanted it from
+# default.target; our preset disables them. An update check waits for the network on its own, for a
+# finite time shorter than the timer's 6 hours, so a check always runs and reports.
+RUN --mount=type=tmpfs,dst=/run systemctl preset podman-restart.service podman-auto-update.service && \
+    test "$(systemctl is-enabled podman-restart.service)" = disabled && \
+    test "$(systemctl is-enabled podman-auto-update.service)" = disabled && \
+    systemd-analyze verify --man=no --recursive-errors=no /usr/lib/systemd/system/nyra-updated-wait-online.service && \
+    t="$(sed -n 's/^ExecStart=.*systemd-networkd-wait-online .*--timeout=\([0-9]*\)$/\1/p' \
+      /usr/lib/systemd/system/nyra-updated-wait-online.service)" && \
+    test "${t:-0}" -gt 0 && test "$t" -lt 21600
 
 # No NvPCRs (docs/DEFAULTS.md, "TPM measurement units that stay"): without their definitions
 # systemd-tpm2-setup-early allocates no NV index in the TPM, and dracut copies none into the initramfs;

@@ -189,6 +189,7 @@ by hand is discarded with it.
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
+| `nyra-updated-wait-online.service` | before every check: `systemd-networkd-wait-online --any --timeout=3600`, so a check that comes due without a network waits up to an hour for one and runs once a link is online, or when the hour is over (below, and docs/DEFAULTS.md, "Without a network"); a dynamic user without capabilities, `IPAddressDeny=any` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
@@ -266,13 +267,15 @@ possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutSt
 **What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
 Settings, which will read it through the daemon (the file is root-only, like the rest of the state).
-**Without a network** (a laptop offline, a link lost in the middle of a pull): when the download of
-the sheet or of the version fails and systemd-networkd reports the machine `offline` (its
-`OnlineState`), the check says "no network connection (…): the running version stays, the next check
-tries again", as a warning (`ok: false`), and the unit does not fail: a check without a network
-does not make the machine `degraded`. Nothing is marked failed, and the next check (the timer, every
-6 hours) stages the update. Only the machine's own link state counts: a server or a network that
-stops answering while the link is up is still an error.
+**Without a network** (a laptop offline, a link lost in the middle of a pull): a check that comes
+due without a network waits for one (`nyra-updated-wait-online.service`, up to an hour) and runs as
+soon as a link is online, or when the hour is over. When the download of the sheet or of the version fails and
+systemd-networkd reports the machine `offline` (its `OnlineState`), the check says "no network
+connection (…): the running version stays, the next check tries again", as a warning (`ok: false`),
+and the unit does not fail: a check without a network does not make the machine `degraded`. Nothing
+is marked failed, and the next check (the timer, every 6 hours) stages the update. Only the
+machine's own link state counts: a server or a network that stops answering while the link is up is
+still an error.
 When the state file is broken, every check fails with a message naming it, and updates stop (fail
 closed: forgetting it would forget the sequence and the retractions). The repair, until Settings
 offers it: move `/var/lib/nyra-updated/state.json` away; the next check starts over, and the version
@@ -321,7 +324,7 @@ bootc reads it.
 | T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: an untrusted certificate on the NTS-KE port, an NTP server that answers with a time in 2001 | the clock stays in 2035, chronyd sends not one NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 | T3 | a retraction to an older version that is not a local deployment, the settings broken after it was staged | it fails its health check three times and systemd-boot falls back to the retracted version, which fails it too: the older version is forgiven, and bootc still reports it as the next boot (`rollbackQueued`). Settings repaired: the retraction deletes its deployment (with the old `/etc`) and stages it afresh instead of waiting for a reboot; it boots counted and is blessed |
-| T3 | a dead network: the guest's link down before a check, then cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 10 s into a ~16 MiB pull) | the check says "no network connection" (a journal warning, `ok: false`), the unit does not fail, nothing is staged or marked failed, the running version stays; with the link back the next check stages the update, which boots counted and is blessed |
+| T3 | a dead network: the guest's link down before a check, then cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 10 s into a ~16 MiB pull) | before the check: it waits for the network (not started after 20 s), nothing fails; the cut: the check says "no network connection" (a journal warning, `ok: false`), the unit does not fail, nothing is staged or marked failed, the running version stays; with the link back the next check stages the update, which boots counted and is blessed |
 
 **Version jumps and channels** (`tools/vm/channels.sh`, Titanic T11): on its own copy of the
 installed disk, set up the same way, with two sheet keys and the test versions 2026.11.1-11, each

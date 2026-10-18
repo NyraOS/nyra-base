@@ -17,6 +17,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
 signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
@@ -76,8 +77,10 @@ ConditionPathExists=
 (`systemctl edit <unit>` creates the same file.) The same goes for the other pairs:
 `podman-auto-update.timer` + `.service`, `netavark-dhcp-proxy.socket` + `.service`,
 `dpkg-db-backup.timer` + `.service`, `e2scrub_all.timer` + `e2scrub_all.service`; enable the
-socket or timer. `podman-restart.service` is on its own (Debian already enables it): once unblocked, it
-starts root's containers with `--restart=always` at every boot.
+socket or timer. `podman-restart.service` is on its own: unblocked and enabled
+(`systemctl enable podman-restart.service`; our preset disables it, see "Without a network"), it
+starts root's containers with `--restart=always` at every boot, after waiting for the network
+(`network-online.target`): a boot without a network then waits 2 minutes for it and ends `degraded`.
 
 Per systemd.unit(5), any `Condition…=` assigned the empty string resets the whole list, conditions
 of every kind, including any in the unit file itself (`systemctl cat <unit>` shows them). Drop-ins
@@ -174,6 +177,57 @@ time: chronyd opens no server port and no command port (see "Time").
   it. Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule.
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
+
+## Without a network
+
+A boot without any network (a laptop away from its Wi-Fi, the cable unplugged) is an ordinary boot:
+the system is `running`, no unit failed, and nothing waits for the network on the way to the login.
+
+**Nothing in the base pulls in `network-online.target`.** Its unit,
+`systemd-networkd-wait-online.service`, waits for the network and fails after 2 minutes without
+one: the system would be `degraded`, and everything ordered after the target, `graphical.target` with
+it, would wait those 2 minutes. Debian enables `podman-restart.service` and
+`podman-auto-update.service` in `default.target`, and both want the target. They are blocked (see
+"Units"), but a blocked unit still pulls in what it wants, so our preset also disables both
+(`/usr/lib/systemd/system-preset/80-nyra.preset`, applied in the image build and again at the first
+boot). A machine installed before keeps their links, since `/etc` is its own (docs/LESSONS.md,
+"Configuration"); `systemctl disable podman-restart.service podman-auto-update.service` removes them.
+wait-online keeps its defaults: with nothing pulling it in, a shorter time limit or `--any` would
+only change what a layer that needs it gets.
+
+**The update check waits for the network on its own.** `nyra-updated.service` wants and is ordered
+after `nyra-updated-wait-online.service`, which runs
+`systemd-networkd-wait-online --any --timeout=3600` before every check: it waits until
+systemd-networkd reports one link online (configured, DHCP included), for up to an hour, and does not
+stay active, so the next check waits again. A check that comes due without a network (the timer,
+15 minutes after boot and every 6 hours) waits as a queued start job, and runs as soon as a link is
+online instead of at the next timer run, up to 6 hours later; nothing retries or fails in the
+meantime. When the hour is over, or the wait fails, the check runs anyway (`-`) and reports what it
+finds: "no network connection" without a network (docs/UPDATES.md, "What a machine shows"), or the
+update itself on a machine that is online through a link networkd does not manage.
+
+The time limit is finite on purpose, and shorter than the timer's 6 hours (the image build fails
+otherwise): a check that never ran would write nothing and fail nothing, so a machine whose updates
+stopped, because its link never counts as online for networkd or because the local network keeps it
+from being configured, would show nothing. With the limit, every timer run ends in a check that
+reports.
+
+- `--any`: one link online is enough; a second port without a cable does not hold the check back.
+- Only links that systemd-networkd manages count (the wired ones in the base). When the desktop
+  brings its own network manager, this wait follows it.
+- Cost: while it waits, one process (the `systemd-networkd-wait-online` binary, run as a dynamic
+  user without capabilities or IP traffic, `IPAddressDeny=any`) that sleeps until a link or its state
+  changes or the hour is over; no polling. Its memory is printed by the test.
+- A check started by hand and waited for (`systemctl start nyra-updated.service`) waits that long
+  too: whatever starts a check on request, Settings later, starts it without waiting (`--no-block`).
+
+**Checked in the VM** (`tools/vm/no-network.sh`, on the installed disk): with the cable unplugged
+from the start (QEMU's link down before the CPU starts), the system is `running`, no unit failed,
+neither wait-online nor `network-online.target` started, and `graphical.target` came within 60 s; an
+update check started then is still waiting after 150 s (past wait-online's 2 minutes), with the
+shipped limit of an hour, and nothing failed; with the limit shortened to 20 s for the test, the check
+runs once it is over and succeeds, and nothing failed. With the network, the same holds at boot; with
+the link taken down a check waits, and once the link is up again it runs and succeeds within 90 s.
 
 ## Time
 
@@ -330,3 +384,94 @@ For developer tools, use apt in a Distrobox container: distrobox create, then di
 The message is help, not the protection: `/usr` stays read-only for dpkg itself too. Titanic T12
 (docs/TITANIC.md) checks both: the message from all three commands, and "Read-only file system" from
 `/usr/lib/nyra/dpkg -i`, with `/usr` unchanged.
+
+## Rust components
+
+Some of Debian's tools are replaced with rewrites in Rust, where the rewrite does what the base
+needs. Each was tried against the scripts and tests of the base; what failed stays Debian's, with
+the reason below.
+
+### su
+
+`su` is the one from [sudo-rs](https://github.com/trifectatechfoundation/sudo-rs) (Debian's
+`sudo-rs` package), moved to `/usr/bin/su` over util-linux's and setuid root like it (the package's
+script sets the mode; `ci/setuid.txt` still lists `/usr/bin/su`). The rest of the package goes in
+the Containerfile: there is no `sudo`, `sudoedit` or `visudo` on the desktop. It uses the same PAM
+services as util-linux's (`/etc/pam.d/su`, and `su-l` for a login shell).
+
+Two differences matter for the base, both handled in recovery (docs/BOOT.md, "Recovery"):
+- sudo-rs asks for the password up to three times; recovery reads it once itself and gives it to `su`
+  on its input, so a wrong one is one try, as before.
+- sudo-rs refuses to run for a calling user it cannot look up ("user 'current user' not found"),
+  where util-linux's ran as UID 65534 without a `nobody` line in `/etc/passwd`. Recovery therefore
+  runs `su` as the administrator who logs in, by UID, instead of `nobody`.
+
+### zlib
+
+The image's `libz.so.1` is [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), built in the
+image build: Debian has its crates, but no package with the library. `zlib/` holds a small crate
+that builds `libz-rs-sys` (pinned in `zlib/Cargo.lock`, each crate checked against it, without
+network: `ci/vendor-crates.sh`) as a static library; the Containerfile links it into a shared
+library with zlib's soname and symbol versions (`zlib.map` from `libz-rs-sys`), as zlib-rs documents
+for a drop-in, and puts it over the file Debian's `libz.so.1` link points to. Debian's `zlib1g`
+package stays installed for its link and in the SBOM (docs/SBOM.md). The features are those of
+zlib-rs's own C library build (the C allocator, CPU features detected at run time) plus the `gz*` file
+functions. Not used: the crate `libz-rs-sys-cdylib`, which also carries about 66 MB of test
+binaries and profiling data.
+
+Missing: `gzprintf` and `gzvprintf`. They are C variadic functions, which stable Rust cannot define
+(zlib-rs builds them only with a nightly compiler). A program that uses one would not load; none in
+the image does, and the build fails if one appears (a search of `/usr` for the names). `zlibVersion()`
+returns `1.3.0-zlib-rs-<version>`.
+
+Checked before: Python's `zlib` and `gzip` modules (compression levels -1 to 9, zlib, raw and gzip
+streams, data from both libraries decompressed by the other) and curl's `--compressed`. Size: about
+500 KB against Debian's 120 KB.
+
+### Core utilities
+
+The commands of GNU coreutils are those of [uutils coreutils](https://github.com/uutils/coreutils)
+(Debian's `rust-coreutils`): `/usr/bin/<command>` (and `/usr/sbin/chroot`) is a link to its
+multi-call binary `/usr/bin/coreutils`, which runs the command its link is named after. GNU's
+`basenc`, `factor` and `stty` stay: Debian's build of uutils has none of them. GNU coreutils stays
+installed for them; the build fails when that list changes. The image build itself (dracut, the
+initramfs) already runs with uutils.
+
+Checked against GNU before, on the same input, for what the base's scripts and tests use: `mv -T
+--exchange` (the switch of Reset settings), `cp -a` (modes with setuid, setgid and sticky bits, owners,
+times, links, hard links, FIFOs, ACLs, extended attributes, `cp -a SRC/. DEST/`,
+`--one-file-system`), `chmod` and `chown --reference`, `install -m` and `-D`, `date` (`-d` with ISO
+and `@seconds`, `+FORMAT`, `-u`), `sort` (`-r`, `-V`, `-u`, `-z`, the C locale), `stat -c` (`%a`,
+`%U`, `%G`, `%s`, `%t %T`) and `stat -f`, `head`, `tail` (`-c +N`, `-n +N`, `-1`), `cut`, `tr`, `od
+-An -tu1 -N5` (the TPM enrollment in the initramfs: not `-j`, below), `seq -w`, `id -nG`, `readlink -f`,
+`mktemp -d`, `truncate`, `du`, `base64`, `sha256sum -c`, `ln -sT` and `-sfn`, `mkdir -m`, `tee -a`,
+`timeout`, `dd ... conv=fsync status=none`: same output and exit codes. The initramfs stays
+reproducible.
+
+Cost, measured in CI against main (the three Rust components together, uutils' share by far the
+largest): the image (OCI archive) 24 MB larger (+4.2%); the UKI 4.9 MB larger, the initramfs in it
+12.6 MB larger uncompressed (the multi-call binary, about 13.8 MB, instead of the few GNU commands it
+needs); no measurable difference in boot time.
+
+Every Rust program, uutils' commands among them, aborts at its start (SIGABRT, exit 134) when it is
+started with standard input, output or error closed and `/dev/null` cannot be opened: Rust's runtime
+opens `/dev/null` in place of a closed descriptor and aborts if it cannot. GNU's commands run on.
+That needs both a closed descriptor and no `/dev/null`: systemd always gives services open
+descriptors, and recovery and Reset settings start on a fresh devtmpfs, which has `/dev/null`. It
+happened in Titanic T12, after `rm -rf /`: GNU xargs, unable to open `/dev/null`, started
+`sha256sum` with standard input closed (the test now hashes with `find -exec`, docs/TITANIC.md). In a
+shell where `/dev/null` was deleted, `mknod -m 666 /dev/null c 1 3` brings it back.
+
+One difference was found only in a VM: `od -j N` skips by the size the file system reports, and
+efivarfs in the initramfs reported less than the variable holds, so `od -An -tu1 -j4 -N1` on
+`SecureBoot` failed and the TPM enrollment took Secure Boot for off. GNU reads to skip. The enrollment
+now reads the first five bytes (`od -N5`) and takes the fifth, which both do the same.
+
+### What stays Debian's
+
+| Component | Why it is not replaced (yet) |
+|---|---|
+| chrony, not ntpd-rs (1.9.0) | ntpd-rs checks the NTS server's certificate against the system clock, with no way to skip the dates until the first clock update (chrony's `nocerttimecheck`, see "Time"). A clock in 2035 or 2099 therefore never gets corrected: every key exchange fails with an expired certificate (tried with the clock moved, against `time.cloudflare.com` and `nts.netnod.se`), and the update tests (T9) need that correction |
+| GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
+| GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
+
