@@ -515,7 +515,8 @@ LOGO=nyra-logo
   the name and version of the image an installation started from. Programs read `/etc/os-release`
   first.
 - **`ID_LIKE=debian`** for programs that look for Debian. Nothing else of Debian's file stays:
-  `VERSION_CODENAME=sid`, `SUPPORT_URL` and Debian's URLs have no reader in the image.
+  `VERSION_CODENAME` (`sid` in the image built from the pinned snapshot), `SUPPORT_URL` and
+  Debian's URLs have no reader in the image.
 - **No `VERSION_ID`; the version is in `IMAGE_VERSION`** (and in `PRETTY_NAME`). The reason is the
   boot menu: bootc titles its boot entry with `PRETTY_NAME` followed by `VERSION_ID`, so the title
   would repeat the version ("Nyra OS 2026.10.401 2026.10.401"). Without it the title is
@@ -529,9 +530,10 @@ LOGO=nyra-logo
   the health notice (`/run/issue.d`, docs/UPDATES.md) is still at the prompt. `/etc/issue.net`
   stays Debian's: only a telnet or SSH server would show it, and the base has neither.
 - **The logo** is the icon `nyra-logo` (`LOGO=`, an icon name):
-  `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg`, from `branding/logo/nyra-icon.svg`,
-  which is not under the GPL (`branding/README.md`). Only the scalable icon: nothing in the build
-  renders PNG sizes.
+  `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg` from `branding/logo/nyra-icon.svg`, and
+  the same name in `16x16`, `22x22`, `24x24` and `32x32` from `branding/logo/nyra-icon-small.svg`,
+  the drawing for small sizes. All are SVG (valid in the fixed-size directories too), none under the
+  GPL (`branding/README.md`).
 
 Who reads it:
 
@@ -547,5 +549,5 @@ Who reads it:
 
 AppArmor's profiles name no os-release file, and nothing in `nyra-updated`, `files/` or the
 tests checks for `ID=debian`. CI checks it in the `install-boot` job: `ID`, `ID_LIKE`,
-`PRETTY_NAME` and `IMAGE_VERSION` against the run's version, the link, the logo file named by
-`LOGO`, no `/etc/issue`, and `agetty --show-issue` starting with "Nyra OS <version>".
+`PRETTY_NAME` and `IMAGE_VERSION` against the run's version, the link, the logo named by `LOGO`
+(scalable and 16x16), no `/etc/issue`, and `agetty --show-issue` starting with "Nyra OS <version>".

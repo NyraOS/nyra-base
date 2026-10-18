@@ -264,9 +264,14 @@ RUN test -x /usr/bin/keyctl && \
 # always shows /etc/issue when there is one (util-linux 2.42, the image's: in place of /usr/lib/issue;
 # 2.41: before it), so Debian's goes; the drop-ins of /etc, /run and /usr/lib/issue.d still show (the
 # health notice in /run/issue.d). The logo is the os-release LOGO, an icon name (branding/README.md:
-# not under the GPL).
+# not under the GPL): the scalable icon, and the drawing made for small sizes in the fixed-size
+# directories (SVG is valid there too, so nothing is rendered).
 ARG NYRA_VERSION=dev
 COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/22x22/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/24x24/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/32x32/apps/nyra-logo.svg
 RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
       { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
     printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
@@ -274,7 +279,7 @@ RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev
       'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
     ln -sfn ../usr/lib/os-release /etc/os-release && rm /etc/issue && test -f /usr/lib/issue && \
     . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
-    test -f "/usr/share/icons/hicolor/scalable/apps/$LOGO.svg"
+    for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),

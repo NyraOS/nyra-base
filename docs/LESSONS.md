@@ -142,8 +142,9 @@ Each line is something that broke or surprised us once.
   all three `issue.d` directories show with both. The image therefore has no `/etc/issue`
   (docs/DEFAULTS.md, "Name and version").
 - **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
-  from the UKI's `.osrel`), and the entry's version and file name come from `VERSION_ID` too (the
-  composefs digest without it). A `PRETTY_NAME` that carries the version needs no `VERSION_ID`.
+  from the UKI's `.osrel`; `VERSION` when there is no `VERSION_ID`), and the entry's version and file
+  name come from the same field (the composefs digest without either). A `PRETTY_NAME` that carries
+  the version needs neither: no `VERSION_ID`, and no `VERSION=` either.
 - **The image had `/etc/os-release` as a copy of `/usr/lib/os-release`** (a file, not Debian's link):
   replacing only `/usr/lib/os-release` would leave the old name in the file programs read first.
 - **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
