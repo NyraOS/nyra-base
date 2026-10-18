@@ -15,6 +15,7 @@ artifact:
 | `nyra-base.manifest.json` | the mkosi package list it is made from |
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
+| `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
 
 Once images are published, releases will attach the SBOM next to the image.
 
@@ -30,8 +31,11 @@ Components:
 - one per Debian package: `pkg:deb/debian/<name>@<version>?arch=<arch>&distro=sid&upstream=<source>`
   (`upstream` carries `@<source version>` when it differs, as syft writes it);
 - bootc itself: `pkg:github/bootc-dev/bootc@<commit>`;
-- one per crate in bootc's `Cargo.lock` and in `zlib/Cargo.lock` (zlib-rs, which the image build
-  compiles): `pkg:cargo/<name>@<version>` (git sources add `vcs_url`); a crate in both counts once.
+- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock` and `ntpd-rs/Cargo.lock` (zlib-rs and
+  ntpd-rs, which the image build compiles): `pkg:cargo/<name>@<version>` (git sources add
+  `vcs_url`); a crate in several counts once. ntpd-rs's crates `ntpd` and `ntp-proto` are listed at
+  their upstream version; the image's `ntp-proto` carries our patch
+  (`patches/upstream/ntpd-rs-wrong-clock.md`).
 
 Debian's `zlib1g` stays in the list: the package is installed, only its library file is replaced
 with zlib-rs (docs/DEFAULTS.md, "zlib"). A finding for Debian's zlib therefore blocks like any
@@ -39,12 +43,16 @@ other; its mitigation entry can say that the image does not use that library.
 
 The timestamp is the snapshot date, so the same inputs give the same file.
 
+The image's `/etc/os-release` names Nyra OS (`ID=nyra`, `ID_LIKE=debian`; docs/DEFAULTS.md, "Name
+and version"). The scan never reads it: the Debian packages come from the package list, and the
+script refuses a list without any.
+
 ## The scan
 
 | Question | Source |
 |---|---|
 | Is our version of a Debian source package affected? | [Debian Security Tracker](https://security-tracker.debian.org/tracker/data/json), release `sid`: open, undetermined, or fixed in a version newer than ours |
-| Is a crate of bootc or zlib-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
+| Is a crate of bootc, zlib-rs or ntpd-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
 A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
@@ -63,9 +71,9 @@ the point: the gate answers "is anything known now".
 
 1. **Fixed in Debian** (the report shows the version): the snapshot is older than the fix. Move
    `Snapshot=` in `mkosi/mkosi.conf` to a date that has it. This also rebuilds bootc (the snapshot is
-   part of its cache key). A crate of zlib-rs with a fixed version: update the version in
-   `zlib/Cargo.toml` and `zlib/Cargo.lock` (Dependabot opens that pull request for zlib-rs's own
-   crates).
+   part of its cache key). A crate of zlib-rs or ntpd-rs with a fixed version: update the version
+   in `zlib/` or `ntpd-rs/` (`Cargo.toml`, `Cargo.lock`; Dependabot opens that pull request). A new
+   version of `ntpd` or `ntp-proto` needs our patch made again for it.
 2. **No fix yet:** check whether the image is exposed. If it is not, or the damage is limited, add
    an entry to `tools/sbom/mitigations.toml`:
 

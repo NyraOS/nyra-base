@@ -6,10 +6,13 @@ Description=Nyra health check: bootc works
 Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
 # bootc reads its boot entries: after a boot through the fallback UKI (loader/entries lost),
 # esp-sync puts them back first, or this check would fail a healthy version and reboot it.
-After=nyra-boot-repair.service
+After=nyra-boot-repair.service boot.mount
 
 [Service]
 Type=oneshot
+# bootc status touches the ESP: without it mounted (after its file system check) the check is
+# skipped, not failed, so bootc cannot reach an unchecked ESP. A skip passes the boot.
+ExecCondition=/usr/bin/findmnt -n -t vfat /boot
 ExecStart=/usr/libexec/nyra-updated health
 
 [Install]

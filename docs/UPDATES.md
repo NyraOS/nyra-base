@@ -81,7 +81,8 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    accepted sheet may still go back.
 4. No downgrade, and no target below the image's version floor, not even a signed retraction (a leaked
    old key cannot send machines back to any image ever signed).
-5. A version the machine fell back from is marked failed and never staged or offered again.
+5. A version the machine fell back from is marked failed and never staged or offered again (one
+   exception: rule 15).
 6. A retraction to the local rollback deployment uses `bootc rollback` (a switch would answer
    "No changes"), once: `bootc rollback` swaps the boot order every time it runs, so when `bootc status`
    already reports the rollback deployment as the next boot (`rollbackQueued`), a check before the
@@ -120,6 +121,9 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
     machine goes to it, once, but only with a sheet issued after the change, and never to a version
     rules 3-5 refuse (below, "Channels"). It is staged afresh, never reached by `bootc rollback`.
     Within a channel an older version stays refused (rule 4).
+15. A version marked failed only by the network health check is tried once more: a day later, or
+    as soon as the machine is on another network (below, "The network"). A second fallback from it
+    is final; any other failure is final at once.
 
 **Going back by hand.** The version Settings will offer to go back to (`offered_rollback`) is the
 rollback deployment, unless it is retracted, failed, below the version floor, forgiven, or already
@@ -194,13 +198,14 @@ by hand is discarded with it.
 
 | Path | What |
 |---|---|
-| `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` in `/usr/share/doc/nyra-updated/` |
+| `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` and third-party crate licence notices in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
 | `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. The 14-day rule (below, "Updates that stop") does not make it an error: nothing is held up, there is nothing to update from. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-updated-wait-online.service` | before every check: `systemd-networkd-wait-online --any --timeout=3600`, so a check that comes due without a network waits up to an hour for one and runs once a link is online, or when the hour is over (below, and docs/DEFAULTS.md, "Without a network"); a dynamic user without capabilities, `IPAddressDeny=any` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
 | `nyra-health-bootc.service` | a health check: `bootc status` reports the booted image, so this version can still update itself |
+| `nyra-health-network.service` | a health check, on a version on trial: the links that had a routable address at the last update check get one again (below, "The network"); `/usr/lib/nyra/health/network`, which also writes that list (`/var/lib/nyra-updated/network-links`, before every check of `nyra-updated.service`) |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
@@ -268,6 +273,60 @@ Any failed health check on a boot that is not on trial shows the notice, with or
 a version that is not on trial passed its checks before, so what changed is the machine. The cost of
 not knowing at once: the new version's three tries before the fallback.
 
+**The network.** A version that breaks the network must fall back like any unhealthy one, but a
+machine without a network must not make a good version fall back. `nyra-health-network.service`
+judges only what is clearly the version's fault: a link that systemd-networkd configured with a
+routable address (IPv4, or IPv6 beyond link-local) at the last update check before now has carrier,
+but no routable address within 60 s. A link without carrier for 20 s (no cable; Ethernet takes a few
+seconds to negotiate), waiting for authentication (`dormant`) or not there at all (a USB adapter
+unplugged) is not judged. networkd or resolved not running is the core services check's.
+
+- **The record.** Before every update check (`ExecStartPre=` of `nyra-updated.service`: 15 minutes
+  after boot, then every 6 hours), on a healthy boot (`boot-complete.target` active),
+  `/var/lib/nyra-updated/network-links` becomes the list of links networkd configured (setup state
+  `configured`) with a routable address at that moment. With none (the machine is offline), the list
+  stays as it was. Links networkd does not manage (a container bridge) are left out. An update is
+  staged by such a check, so the list holds the links that worked when the version was downloaded.
+  A change of the settings is followed at the next check: a port that is bridged or bonded (its
+  bridge has the address), no longer managed, or only carries VLANs is no longer judged, so it never
+  makes every new version fail. The new list is written to the disk (`sync`) before it replaces the
+  old one: a power cut never leaves an empty list, which would judge nothing.
+- **When it judges.** Only on a boot on trial (systemd-boot started an entry that counts its tries:
+  `LoaderBootCountPath`, and no soft reboot since, which leaves that variable from the last full
+  boot; nothing is blessed after a soft reboot either, and the next full boot is counted), so a
+  version that passed its checks never waits for an address at boot, and a router that is down
+  does not delay the login on it. And on the boot after a trial boot that failed it
+  (`/var/lib/nyra-updated/network-failed`, written only when no other health check failed on that
+  boot), which is the version fallen back to: rule 12 needs to know whether that one gets an
+  address. If it does, the new version is marked failed; if it does not, the network or the
+  settings are to blame, as for any check both versions fail: the new version is forgiven, and the
+  notice says to reset the settings. If that boot judges nothing (no carrier, the link not there,
+  `networkctl` lists no links), it passes too, and the new version is marked failed, with its one
+  more try (below): at most one try more, simpler than telling those cases apart.
+- **One more try (rule 15).** A version marked failed that way, by the network check alone, may
+  still have met a network that was down only then (a router restarting during all three tries). The
+  boot after the fallback, when it passes the check (an address, or nothing judged), leaves
+  `/var/lib/nyra-updated/network-fallback`; the next update check takes it, marks the version failed
+  as usual and remembers it (`network_retry` in the state: the digest, the time, the list of links
+  with an address then). The version is staged once more, afresh (its old deployment, with the
+  `/etc` of its tries, is deleted, as for rule 12), as soon as a check finds a day has passed or the
+  list of links with an address is another (the machine moved from Wi-Fi to a cable, or to a dock):
+  the simplest sign of another network the machine already keeps. The same link on another network
+  (another Wi-Fi) is not told apart; the day covers it. If the version fails the network check
+  again, it stays failed until the next version; if it boots healthy, nothing is left of the first
+  failure. One version at a time, like a forgiven one; an older `nyra-updated` (after a rollback)
+  drops the field and keeps the version failed.
+- **The cost.** A version on trial whose link has carrier but gets no address delays the login by
+  60 s; a version that breaks the network takes three times that longer to fall back. On trial, a
+  recorded link without carrier (or not there) delays the login by 20 s before it counts as unplugged.
+  If `networkctl` lists no links at all (networkd not running, or a format it no longer understands),
+  nothing is judged and the journal has a warning.
+- **Not covered.** A link that a new version names differently (another naming scheme) is "not
+  there" and not judged, and a new kernel whose driver never reports carrier looks like a cable
+  unplugged: such a version keeps running without a network. A router that answers no DHCP during
+  all three tries, but answers again by the fallback boot, costs a good version its first try; it
+  gets a second one (rule 15). Wi-Fi is not in the base yet.
+
 A broken kernel or initramfs never reaches the health checks: the sealed command line has `panic=10`
 (`/usr/lib/bootc/kargs.d/10-nyra-panic.toml`), so a kernel panic reboots instead of halting, and the
 version uses up its tries like any unhealthy one.
@@ -281,11 +340,13 @@ which still has its `+3`, is counted from then on.
 
 **Sandboxing.** `nyra-updated.service` runs bootc, which needs root, its own mount namespace (it
 remounts `/sysroot` and the read-only ESP read-write there; `esp-sync discard` does the same through
-`esp-writable`), the network, `/sysroot` and `/var`: it gets
-`ProtectSystem=full`, `ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup
-protections and a list of address families (`systemd-analyze security`: 6.5). The health checks and
-`health-failed` only read state and ask systemd for a reboot: no network, no capabilities where
-possible. The pull itself is stopped by `nyra-updated` after 2 hours; `TimeoutStartSec` is above that.
+`esp-writable`), the network, `/sysroot` and `/var`: it gets `ProtectSystem=full`,
+`ProtectHome=tmpfs`, `PrivateTmp`, `NoNewPrivileges`, the kernel and cgroup protections and a list
+of address families (`systemd-analyze security`: 6.5). The health checks and `health-failed` only
+read state and ask systemd for a reboot: no network, no capabilities where possible. The network
+check sees the machine's links (no private network namespace), but opens no network socket (only
+`AF_UNIX` and `AF_NETLINK`). The pull itself is stopped by `nyra-updated` after 2 hours;
+`TimeoutStartSec` is above that.
 
 **What a machine shows.** Every check writes its outcome to the journal (an error at priority 3, a
 foreign image at 4) and to `/var/lib/nyra-updated/last-check.json` (`time`, `ok`, `message`), for
@@ -372,8 +433,8 @@ bootc reads it.
 | T5 | the registry stops answering in the middle of a pull | the pull is stopped at the time limit, nothing staged; staged once the registry answers |
 | T2 | power cuts at random moments while `nyra-updated` pulls and stages (5 rounds, seed printed) | the running version comes back every time; the update is staged in the end |
 | T15 | the secure defaults after these updates (`tools/vm/security-defaults.sh` on the updated disk) | as after the installation |
-| T9 | the hardware clock in 2099 and in 1970 (systemd sets both to its build time at boot, before the real time), and in 2035 (kept, ahead, outside the validity of every certificate) | chronyd corrects the clock through NTS by itself (docs/DEFAULTS.md, "Time"), the update is staged or the system is up to date; chronyd's memory, context switches and CPU time are printed |
-| T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: an untrusted certificate on the NTS-KE port, an NTP server that answers with a time in 2001 | the clock stays in 2035, chronyd sends not one NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
+| T9 | the hardware clock in 2099 and in 1970 (systemd sets both to the image's date at boot, the Debian snapshot date, before the real time), and in 2035 (kept, ahead, outside the validity of every certificate) | ntpd-rs corrects the clock through NTS by itself (docs/DEFAULTS.md, "Time"), the update is staged or the system is up to date; ntpd-rs's memory, context switches and CPU time are printed |
+| T9 | the hardware clock in 2035 and the NTS servers' names pointing to the runner: a real NTS server (the image's ntp-daemon) with an untrusted certificate, which gives keys and the runner's time over NTS, and an NTP server that answers with a time in 2001 | the clock stays in 2035, every time from the NTS server refused ("the server's certificate is not valid at that time"), ntpd-rs sends not one unauthenticated NTP request (the server counts only the test's own probe, which shows UDP 123 reaches it); the sheet server's certificate refused (expired), nothing staged; unsigned and wrongly signed images refused; with the real servers back, the clock is corrected and the system is up to date |
 | T4 | a valid layer with other content and exactly the same size served in place of the right one (`tools/vm/same-size-layer.py`) | refused: the image proxy checks each layer's digest against the signed manifest (`corrupted blob, expecting …` at `FinishPipe`), nothing staged; staged once the registry is repaired |
 | T3 | a retraction to an older version that is not a local deployment, the settings broken after it was staged | it fails its health check three times and systemd-boot falls back to the retracted version, which fails it too: the older version is forgiven, and bootc still reports it as the next boot (`rollbackQueued`). Settings repaired: the retraction deletes its deployment (with the old `/etc`) and stages it afresh instead of waiting for a reboot; it boots counted and is blessed |
 | T3 | a dead network: the guest's link down before a check, then cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 10 s into a ~16 MiB pull) | before the check: it waits for the network (not started after 20 s), nothing fails; the cut: the check says "no network connection" (a journal warning, `ok: false`), the unit does not fail, nothing is staged or marked failed, the running version stays; with the link back the next check stages the update, which boots counted and is blessed |
@@ -398,6 +459,25 @@ with its own update configuration (sheet key, repository, default channel, versi
 | 11 | 2026.11.11 from `nyra-next` | up to date |
 
 The versions the jump skips never boot: every boot checks which version runs.
+
+**A version that breaks the network** (`tools/vm/network-health.sh`, Titanic T3): on its own copy of
+the installed disk, set up the same way, with the test versions 2026.12.1 (good), 2026.12.2 and
+2026.12.3 (the image's wired network without DHCP and router advertisements: the link has carrier and
+only an IPv6 link-local address).
+
+| Boot | Scenario | Expected |
+|---|---|---|
+| 1-2 | 2026.12.1 boots on trial | the network check has no record yet and passes; the next update check records the link with its address, and a link recorded before but not there now is dropped at the next check; 2026.12.2 staged |
+| 3-6 | 2026.12.2 | no routable address within 60 s, three times: it reboots by itself and systemd-boot falls back to 2026.12.1, which checks the network too (the boot after a failed trial) and passes (`network-fallback`); 2026.12.2 is marked failed, remembered for one more try (`network_retry`, not due on the same network the same day), bootc's order set right (`RollbackUndone`) and the version refused; 2026.12.3 staged |
+| 7 | 2026.12.3 with the cable unplugged (`vm-boot.py --no-carrier`: the NIC's link down from the start) | the link is not judged (no carrier), the boot is healthy and blessed, the version is not marked failed |
+
+The check's own cases run without a VM on every pull request (`tools/vm/test-network-health.sh`, a
+stand-in for `networkctl`): the list replaced at each check and kept while offline, synced before the
+rename; a recorded port that is bridged or no longer managed judged until the next check and not
+after it; a soft reboot, no cable, a link not there, `dormant` and an empty `networkctl` not judged;
+the boot after a failed trial judged, and the only one off trial; `network-fallback` left when that
+boot passes, with an address or with nothing judged (no cable), never when it gets no address
+either and never on a trial boot; no marker when another health check failed too.
 
 **Network across soft reboots** (`tools/vm/soft-reboot-network.sh`): on its own copy of the installed
 disk, ROUNDS rounds of a full boot (of the version the last round soft-rebooted into) and a soft

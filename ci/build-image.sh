@@ -13,21 +13,25 @@
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check);
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
 # Before step 1, the next PCR policy key's public half is put in place for the image (below). Then
-# the only two downloads of the build: the crates of nyra-updated and zlib-rs, fetched into
-# UKI_DIR/crates (cargo fetch --locked: the checksums in updated/Cargo.lock and zlib/Cargo.lock), and
-# the nyra-polkit release tarball, into UKI_DIR/nyra-polkit (its sha256 pinned in
+# the only two downloads of the build: the crates of nyra-updated, zlib-rs and ntpd-rs, fetched into
+# UKI_DIR/crates (cargo fetch --locked: the checksums in the Cargo.lock of updated/, zlib/ and
+# ntpd-rs/), and the nyra-polkit release tarball, into UKI_DIR/nyra-polkit (its sha256 pinned in
 # ci/nyra-polkit.sha256). The Containerfile checks each of them against its pin again, and compiles
 # the crates without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates and UKI_DIR/nyra-polkit there, those are, and nothing is
 # downloaded.
-#   ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
+# The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
+# a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
+# without it (a local build).
+#   VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
 set -euo pipefail
 
 rootfs="$1" tag="$2" uki="$3"
 shift 3
 build() {
-  sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-context crates="$uki/crates" \
+  sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-arg NYRA_VERSION="${VERSION:-dev}" \
+    --build-context crates="$uki/crates" \
     --build-context pcrnext="$uki/pcr-next" --build-context nyra-polkit="$uki/nyra-polkit" "$@" -f Containerfile .
 }
 
@@ -48,7 +52,7 @@ fi
 # 10 retries instead of cargo's 3: these span over a minute for each request, cargo's about 10 s.
 if [ ! -d "$uki/crates" ]; then
   mkdir -p "$uki/crates"
-  for src in updated zlib; do
+  for src in updated zlib ntpd-rs; do
     sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$PWD/$src:/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
       cargo fetch --locked --manifest-path /src/Cargo.toml
   done

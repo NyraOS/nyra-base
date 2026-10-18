@@ -43,7 +43,8 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
 the ESP and a boot entry of type `uki` (`loader/entries/*.conf` with a single `uki` line, no `linux`,
-`initrd` or `options`). Updates do the same. External kernel arguments are refused
+`initrd` or `options`), titled with the UKI's `PRETTY_NAME`, "Nyra OS <version>" (its `.osrel`
+section, docs/DEFAULTS.md "Name and version"). Updates do the same. External kernel arguments are refused
 (`bootc install --karg` fails with a UKI), so the test console is set up differently, below.
 
 Test versions built on top of the image (boot counting) need their own UKI, because any change
@@ -187,7 +188,9 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   after bootc set the root up) then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11
   signed for the initrd with the reference `initrd`, and PCR 7 and 12, checks it by unsealing it,
   enrolls it the same way for the next policy key (in the image's `/usr`, "Rotating the policy key"
-  below), and removes the temporary one. A first boot is one whose header has a TPM2 token without any
+  below), and removes the temporary one last, once the new ones are in the record (below), which lists
+  it before them as an enrollment of no key (64 zeros) until then: a boot cut off before it is removed
+  (a power cut) removes it at the next boot. A first boot is one whose header has a TPM2 token without any
   policy and whose record (below) is the installer's, there and empty: the header can be changed by
   anyone who has the disk, so such a token on a disk enrolled before, or on one without a record (set
   up with a password), is ignored and said so in the journal, and no key slot is removed for it (the
@@ -216,7 +219,25 @@ unlock by themselves:
   Secure Boot off is enrolled once they are back. The first enrollment (which only the temporary
   enrollment, unsealed by the TPM, can make) writes the key slot numbers of the disk's TPM2
   enrollments, each with its policy key (the SHA-256 of the key's PEM file) and whether it has a PIN, to a record inside the encrypted root, `/var/lib/nyra/tpm2-slots` (`/sysroot/var/...` in the
-  initrd, after bootc set the root up). Only a disk with that record is enrolled again, and only when a
+  initrd, after bootc set the root up). Each enrollment goes into the record, written to the disk
+  (`sync`), as soon as it is made, before the next enrollment and before any key slot is removed; if
+  the record cannot be written, that enrollment is removed at once. An enrollment the record does not
+  list would never be retired ("Rotating the policy key"), and a key slot that a run cut off left
+  behind would keep the old chain able to unlock the disk. Every run of `nyra-tpm-enroll` first
+  removes the record's enrollments that such a run (or a removal that failed) left: the temporary one,
+  and those of a key that the record lists again later (replaced: after a PIN asked for, the old
+  enrollments without it), by their slot numbers and only from slots the header has as TPM2
+  enrollments, never a slot number that a later line lists (LUKS2 gives a new enrollment the lowest
+  free slot). The record forgets an enrollment only once the header no longer has its key slot at all,
+  or a later line lists that number, never because the header labels the slot as something else. A
+  listing of the key slots that fails, or that has none at all, changes nothing: no slot is removed
+  and the record is not rewritten, and the first boot does not start without the temporary
+  enrollment listed; the first boot says the temporary enrollment is removed only once the header
+  has no TPM2 token without any policy left. When the next key's latest enrollment is older than the
+  current key's (a run cut off between the two, with a PIN asked for or after a refusal), a boot that
+  the TPM unlocked enrolls the next key again, as the current key is (with the PIN typed in that boot
+  if it has one), and removes its older enrollment in the same boot.
+  Only a disk with that record is enrolled again, and only when a
   key was typed in this boot. Root in the running system could write the record too, and gain nothing
   from it: the secret stays in the TPM, released only in the initrd. Since that `/var` is the running
   system's, the initrd uses the record only if no component of its path is a symbolic link and the
@@ -241,7 +262,8 @@ unlock by themselves:
   a new or cleared TPM gives the same PCR values, so the same policy, and systemd-cryptenroll would
   otherwise keep the old enrollment, which this TPM cannot open, and do nothing. If the new enrollment
   then fails, the record stays and the next boot where the key is typed tries again;
-- on a disk with a PIN (the record says so), the new enrollments have a PIN too, never none: the one
+- on a disk with a PIN (the record says so for the current key's latest enrollment, or the disk's
+  latest when it has none for that key), the new enrollments have a PIN too, never none: the one
   asked for from the running system if a request waits, or else one the user chooses right after the
   recovery key, at a prompt of `nyra-tpm-enroll` ("Choose a TPM2 PIN for the disk", 6 to 20 digits, then
   the same again; three tries, and the prompt's 90 s). This is also how a forgotten PIN is replaced. With
@@ -273,7 +295,10 @@ A rotation is a release signed with that next key only:
   missed a rotation and was enrolled again from scratch never saw the old keys retired, and a key no
   longer trusted. Without that list, the recovery key typed on an old version from the boot menu
   would enroll the disk for that version's chain again. When the record has no enrollment for the
-  key this boot used, it says so in the journal and retires only the listed keys. For the rotation,
+  key this boot used, it says so in the journal (not on a disk not enrolled yet, whose record is the
+  installer's, empty) and retires only the listed keys. It removes nothing if the header's key slots
+  cannot be listed, never a slot number that a later line of the record lists, and the record forgets
+  an enrollment it did not remove only once its slot is gone. For the rotation,
   only if the record has an enrollment for the key this boot used, and only the enrollments made
   before it (the record keeps them in the order they were
   made): a fallback to the previous release that is confirmed good keeps the next key's enrollment,
@@ -298,7 +323,8 @@ through Argon2id (with a salt in the token) before the TPM sees it, and the TPM 
   disk's key only in the initrd ("TPM2 unlock"). `/usr/lib/nyra/boot/tpm-pin set` (the PIN on standard
   input), `tpm-pin remove` and `tpm-pin status`, as root, leave a request in the encrypted root,
   `/var/lib/nyra/tpm2-pin-request` (mode 0600: the new PIN, or `none`), only on a disk with the record.
-  At the next boot `nyra-tpm-enroll` reads it and removes it at once, whatever happens next; if the TPM
+  At the next boot `nyra-tpm-enroll` reads it (only its first 32 bytes, which must hold one valid line;
+  trailing blank lines are allowed) and removes it at once, whatever happens next; if the TPM
   unlocked that boot, it enrolls the disk again with the new PIN (or none), for the current and next
   policy keys, then removes the old enrollments, an older policy key's too: a change applied after a
   rotation, before the release is confirmed good, makes a fallback to the previous release ask for
@@ -434,8 +460,10 @@ the test console add-on until the last four rows.
 | A new TPM: the PIN, the recovery key, a PIN too short, then a new one | the same |
 | The disk's journal | three PINs applied, two re-enrollments with a PIN |
 | The recovery key and the PINs typed only at prompts, searched for | not in the serial logs, the ESP or LUKS2 header, or the decrypted root file system |
+| The PINs asked for with `tpm-pin set`, searched for | not in the ESP or LUKS2 header, or the decrypted root file system: the requests left no copy |
 
-The PINs typed in the test's commands are in its serial logs (test PINs).
+The PINs typed in the test's commands are in its serial logs (test PINs); those commands unset the
+shell's `HISTFILE`, so that its history does not keep them.
 
 **What can ask the TPM for the disk's key.** In the initrd, only systemd-cryptsetup for the root that
 systemd-gpt-auto-generator found (no `/etc/crypttab` in the initramfs, no `rd.luks.*` on the sealed
@@ -530,10 +558,28 @@ systemd-ask-password:
   disk (unlocked by the TPM, or with the recovery key typed, then enrolled again as after any refusal,
   never removing the recovery key's slot and keeping the retired keys), on a disk set up with a
   password (no record made) and on a disk with a PIN, nothing is enrolled through it and no key slot
-  is removed for it.
+  is removed for it;
+- the first boot enrolls the current and next keys, then removes the temporary enrollment;
+- a power cut (the script killed) as key slots are removed, after the new enrollments: at the first
+  boot and for a PIN asked for, the record already lists every new enrollment, and the next boot
+  removes what the run left (the temporary enrollment; the enrollments without the PIN, which would
+  otherwise still open the disk);
+- the PIN that counts is the current key's enrollment's, not another one's that the record still lists;
+- `tpm-retire` says nothing on a disk not enrolled yet;
+- a PIN request longer than 32 bytes (a valid first line, then more) is refused;
+- a header whose key slots cannot be listed changes nothing (at the first boot, the temporary
+  enrollment stays listed until a later boot removes it, and is never said to be gone while the header
+  still has it; a PIN asked for keeps the old enrollments in the record), also in `tpm-retire`;
+- a power cut between the current key's new enrollment and the next key's (a PIN asked for, another
+  PIN, a re-enrollment without a PIN): the next boot enrolls the next key as the current one is and
+  removes its old enrollment;
+- slot numbers used again (the stand-in, like LUKS2, takes the lowest free slot) and slots the header
+  has as another kind of key are never removed, and the record forgets them only when gone or listed
+  again; `tpm-retire` keeps a slot number used again too;
+- a missed rotation on a disk with a PIN (no enrollment of the current key): a new PIN is chosen.
 
-Each check but the plain rotation's, the full `/var`'s and the empty record's fails on a copy of the
-script without it.
+Each check but the plain rotation's, the full `/var`'s, the empty record's and the plain first boot's
+fails on a copy of the script without it.
 
 Updates through `nyra-updated` (`tools/vm/encryption-updates.sh`): test versions built and signed as
 for the rotation, all with policy key A (next key B) and a channel sheet key, served as
@@ -901,7 +947,7 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | 12 | `loader/entries` deleted (what a power cut during the swap can leave) | boots through the fallback UKI; the entry is put back |
 | 13 | `loader/entries` emptied | the same |
 | 14 | | boots through bootc's entry again; one fallback UKI, still `+0` |
-| 15 | a drop-in in `/etc` that makes the ESP's file system check fail | `boot.mount` fails; `esp-writable` refuses with an error in the journal and the random seed on the ESP is unchanged; no FAT file system mounted; `nyra-updated` does not run; the health checks pass and the system starts, with only the check and the random seed failed |
+| 15 | a drop-in in `/etc` that makes the ESP's file system check fail | `boot.mount` fails; `esp-writable` refuses with an error in the journal and the random seed on the ESP is unchanged; no FAT file system mounted; `nyra-updated` does not run; the health checks pass (`nyra-health-bootc` skipped) and the system starts, with only the check and the random seed failed |
 | 16 | that drop-in removed | the ESP checked and mounted read-only again, the repair runs, `esp-writable` writes (a new random seed) |
 
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
@@ -1170,11 +1216,11 @@ later; nothing here depends on it.
   newest earlier copy that is not dated after now, never from the copy just made: a clock set far
   ahead (a new copy dated 2099) removes nothing a right clock would not, and with a clock behind every
   copy nothing goes. A copy dated after now (made with a wrong clock) goes only once the clock is
-  synchronised (`timedatectl`'s `NTPSynchronized`: the kernel's flag, which chronyd sets once NTS
+  synchronised (`timedatectl`'s `NTPSynchronized`: the kernel's flag, which ntpd-rs sets once NTS
   corrected it; when that cannot be read, it counts as not synchronised); until then it is listed
   first. `tools/vm/test-etc-copy.sh` checks these cases (CI, the shellcheck workflow). The timer does
-  not wait for the clock (`chrony-wait` is off, docs/DEFAULTS.md), so a copy can be named from a wrong
-  clock; only the removal depends on it.
+  not wait for the clock (nothing waits for ntpd-rs's first update, docs/DEFAULTS.md), so a copy can
+  be named from a wrong clock; only the removal depends on it.
 - **Space:** the image's `/etc` is 971 files, 734 KiB of data and 2.9 MiB on disk (ext4 gives each
   small file a 4 KiB block); a whole copy took 2,992 KiB. A copy of the differences, on the image's
   `/etc` with what a first boot and one user change (machine ID, host name, the account files and
@@ -1301,7 +1347,9 @@ the units that write to the ESP are ordered after `boot.mount` itself:
   `esp-writable` mounting the ESP read-write while it was checked, and `boot.mount` then fail;
 - `nyra-boot-repair` has `RequiresMountsFor=/boot`; `systemd-bless-boot` and `nyra-updated` come after
   `boot-complete.target`, whose health checks come after `nyra-boot-repair`; bootc writes when
-  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`.
+  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`;
+- `nyra-health-bootc` (`bootc status` touches the ESP) is ordered after `boot.mount` and has
+  `ExecCondition=findmnt -n -t vfat /boot`: without the ESP mounted it is skipped, not failed.
 
 `/tmp` (a tmpfs, `tmp.mount`) is the other local mount. The boot's tmpfiles
 (`systemd-tmpfiles-setup`, which makes `/tmp/.X11-unix` and the like) are ordered after `tmp.mount`
@@ -1312,7 +1360,9 @@ If the ESP itself cannot be mounted (a damaged partition), the boot goes on as b
 the kernel refuses to mount the ESP, a health check may fail as well: a version on trial then falls
 back after its three tries, and a version that is not on trial stays up with that check failed. There
 is no reboot loop either way. When only the file system check failed (the partition itself can be
-mounted), the health checks pass (CI, below). Nyra's own writes to the ESP need it checked and
+mounted), the health checks pass, `nyra-health-bootc` skipped because `/boot` is not mounted (CI,
+below). `nyra-updated` wants `nyra-boot-repair`, which stays active once run: if the ESP is mounted
+only when `nyra-updated` starts, a stale `entries.staged` is still removed before bootc stages. Nyra's own writes to the ESP need it checked and
 mounted: `esp-writable` refuses (an error in the journal, pointing to
 `journalctl -u boot.mount`), so the boot loader random seed fails visibly and a counted boot is not
 blessed; `nyra-updated` does not run (`RequiresMountsFor=/boot`; each start tries the check and the

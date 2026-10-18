@@ -24,8 +24,10 @@
 #   14. the disk's journal: the PINs applied, the two re-enrollments with a PIN; read offline: two TPM2
 #      enrollments with a PIN;
 #   15. the recovery key and the PINs typed only at prompts (rows 10 to 13) are nowhere in the serial
-#      logs, in the unencrypted part of the disk or in the decrypted root file system.
-# The PINs typed in the commands (rows 1, 6, 7, 8) are in the serial logs: they are test PINs.
+#      logs, in the unencrypted part of the disk or in the decrypted root file system; the PINs asked
+#      for with tpm-pin set (1 to 3) are nowhere on the disk either: the requests left no copy.
+# The PINs typed in the commands (rows 1, 6, 7, 8) are in the serial logs: they are test PINs. Those
+# commands start with "unset HISTFILE", so that the shell's history does not keep them on the disk.
 #   tools/vm/encryption-pin.sh IMAGE UKI_CERT WORKDIR LOGDIR SUMMARY
 set -euo pipefail
 
@@ -47,6 +49,8 @@ pins=()
 for _ in 1 2 3 4 5 6; do pins+=("$(python3 -I -c 'import secrets; print("".join(secrets.choice("0123456789") for _ in range(20)))')"); done
 pin1="${pins[0]}" pin2="${pins[1]}" pin3="${pins[2]}" pin4="${pins[3]}" pin5="${pins[4]}" wrong="${pins[5]}"
 printf '%s\n' "$key" "$pin4" "$pin5" > "$secrets/patterns"
+# What must not be on the disk: those, and the PINs asked for with tpm-pin set.
+printf '%s\n' "$key" "$pin4" "$pin5" "$pin1" "$pin2" "$pin3" > "$secrets/disk-patterns"
 {
   echo "## Disk encryption with a TPM and a PIN (Titanic T10)"
   echo
@@ -145,14 +149,14 @@ blind() { # blind NAME TITLE ARGS...
     --log "$logs/serial-encryption-pin-$name.log" --summary "$summary" --title "$title" "$@"
 }
 asked() { # asked NAME: did the console of that boot ask for the disk's recovery key?
-  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-pin-$1.log"
+  python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-pin-$1.log"
 }
-pinasked() { grep -q -a -F "$pinask" "$logs/serial-encryption-pin-$1.log"; }
+pinasked() { python3 -B tools/vm/vm-boot.py --on-console "$pinask" "$logs/serial-encryption-pin-$1.log"; }
 
 vm first "PIN 1: the first boot unlocks by itself; tpm-pin asks for a PIN" \
   --command "$running" --command "$log | grep -q 'enrolled with the TPM'" --command "$(status "pin no")" \
   --command "r=refused; for p in 12345 123456789012345678901 12a4567 ''; do echo \"\$p\" | $tpmpin set && r=accepted; done; test \$r = refused && test ! -e /var/lib/nyra/tpm2-pin-request && echo 'refused: 5 digits, 21, a letter, empty'" \
-  --command "echo $pin1 | $tpmpin set && test \"\$(stat -c '%a %U' /var/lib/nyra/tpm2-pin-request)\" = '600 root'" \
+  --command "unset HISTFILE; echo $pin1 | $tpmpin set && test \"\$(stat -c '%a %U' /var/lib/nyra/tpm2-pin-request)\" = '600 root'" \
   --command "$(status "pin no requested pin")" || fail=1
 vm pin-set "PIN 2: the next boot unlocks by itself, and its initrd enrolls the disk with the PIN" \
   --command "$running" --command "$log | grep 'with the new PIN'" --command "test ! -e /var/lib/nyra/tpm2-pin-request" \
@@ -178,7 +182,7 @@ vm lockout "PIN 5: wrong PINs until the TPM locks itself: the recovery key unloc
   --chat "$ask=>$key" --chat-then-login --command "$running" --command "$locked" || fail=1
 vm locked "PIN 6: while the TPM is locked, the right PIN is refused and the recovery key unlocks the disk" \
   --chat "$pinask=>$pin1" --chat "$either=>" --chat "$ask=>$key" --chat-then-login --command "$running" \
-  --command "$locked" --command "echo $pin2 | $tpmpin set" || fail=1
+  --command "$locked" --command "unset HISTFILE; echo $pin2 | $tpmpin set" || fail=1
 check "The enrollment, unchanged by rows 5 and 6" "$before" "$(policy)"
 sudo rm -rf "$tpm" && sudo cp -a "$saved" "$tpm"
 vm change "PIN 7: another PIN, applied with the old one typed" \
@@ -186,7 +190,7 @@ vm change "PIN 7: another PIN, applied with the old one typed" \
   --command "$(status "pin yes")" --command "$gone" --command "$tpmpin remove" || fail=1
 vm remove "PIN 8: no PIN, applied with the PIN typed" \
   --chat "$pinask=>$pin2" --chat-then-login --command "$running" --command "$log | grep 'without a PIN'" \
-  --command "$(status "pin no")" --command "$gone" --command "echo $pin3 | $tpmpin set" || fail=1
+  --command "$(status "pin no")" --command "$gone" --command "unset HISTFILE; echo $pin3 | $tpmpin set" || fail=1
 check "Key slots without the PIN" "systemd-recovery $enrolled $enrolled" "$(slots)"
 vm set-again "PIN 9: a PIN again, applied in a boot that unlocked by itself" \
   --command "$running" --command "$log | grep 'with the new PIN'" --command "$(status "pin yes")" || fail=1
@@ -235,7 +239,7 @@ found=""
 for f in "$logs"/serial-encryption-pin-*.log "$summary"; do
   if grep -q -a -F -f "$secrets/patterns" "$f"; then found+=" $(basename "$f")"; fi
 done
-n="$(head -c $(((root_start + 32768) * 512)) "$work/disk.raw" | grep -c -a -F -f "$secrets/patterns" || true)"
+n="$(head -c $(((root_start + 32768) * 512)) "$work/disk.raw" | grep -c -a -F -f "$secrets/disk-patterns" || true)"
 [ "$n" = 0 ] || found+=" the unencrypted part of the disk"
 loop="$(sudo losetup -P --show -f "$work/disk.raw")"
 for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 || true; sleep 0.2; done
@@ -246,7 +250,7 @@ cryptsetup open --readonly --key-file /secrets/recovery-key "$1" nyra-check-root
 trap 'umount -q /target 2>/dev/null || true; cryptsetup close nyra-check-root' EXIT
 mkdir -p /target && mount -o ro,noload /dev/mapper/nyra-check-root /target
 test -n "$(find /target/state -name '*.journal' -print -quit)"
-grep -r -l -a -F -f /secrets/patterns /target | sed 's|^/target|the root file system: |' || true
+grep -r -l -a -F -f /secrets/disk-patterns /target | sed 's|^/target|the root file system: |' || true
 EOF
 )" || inside="the root file system could not be checked"
 sudo losetup -d "$loop" && loop=""
@@ -256,6 +260,6 @@ if [ -n "$found" ]; then
   printf '| Recovery key and PINs | **found in:%s** | WRONG |\n\n' "$found" >> "$summary"
   fail=1
 else
-  printf '| Recovery key and PINs typed at prompts | not in the serial logs, the ESP and LUKS2 header, or the decrypted root file system | OK |\n\n' >> "$summary"
+  printf '| Recovery key and PINs | the ones typed at prompts not in the serial logs; none, the ones asked for with tpm-pin set too, in the ESP and LUKS2 header or the decrypted root file system | OK |\n\n' >> "$summary"
 fi
 exit "$fail"
