@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Flatpak's own polkit rules (/usr/share/polkit-1/rules.d/org.freedesktop.Flatpak.rules in Debian's
+# flatpak package), which polkitd read, in nyra-polkit's form (docs/DEFAULTS.md, "polkit").
+
+# A member of sudo in the active local session installs and removes apps and runtimes, and changes
+# the repository settings, without a password.
+[[rule]]
+actions = [
+    "org.freedesktop.Flatpak.app-install",
+    "org.freedesktop.Flatpak.runtime-install",
+    "org.freedesktop.Flatpak.app-uninstall",
+    "org.freedesktop.Flatpak.runtime-uninstall",
+    "org.freedesktop.Flatpak.modify-repo",
+]
+groups = ["sudo"]
+session = "active"
+result = "yes"
+
+# Overriding parental controls always needs an administrator's password.
+[[rule]]
+actions = ["org.freedesktop.Flatpak.override-parental-controls"]
+result = "auth_admin"
