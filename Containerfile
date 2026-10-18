@@ -30,13 +30,17 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
 # nyra-updated: libz-rs-sys as a static library, linked into a shared library with zlib's soname and
 # symbol versions (the version script libz-rs-sys ships, include/zlib.map), as zlib-rs documents.
 # gzprintf and gzvprintf are missing: C variadic functions, which stable Rust cannot define.
-# Hardened like Debian's libraries: RELRO and immediate binding (-z relro -z now).
+# Hardened like Debian's libraries: RELRO and immediate binding (-z relro -z now). The licence
+# notices of every crate in the library go to target/doc/third-party (ci/crate-licenses.sh).
 FROM ${TOOLS} AS zlib
 COPY zlib/ /src/
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
     --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
     sh /vendor-crates.sh /src/Cargo.lock && \
     cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && \
+    set -- target/doc/third-party/libz-rs-sys-*/ && [ $# = 1 ] && \
     set -- /root/vendor/libz-rs-sys-*/include/zlib.map && test -f "$1" && \
     cc -shared -Wl,--gc-sections -Wl,--whole-archive target/release/libz_rs.a -Wl,--no-whole-archive \
       -Wl,--version-script="$1" -Wl,--undefined-version -Wl,-soname,libz.so.1 -Wl,-z,relro,-z,now -lgcc_s -lc \
@@ -143,7 +147,7 @@ COPY --from=pcrnext tpm2-pcr-public-key-next.pem /usr/lib/nyra/secureboot/tpm2-p
 # would not load: none in the image does, and the build fails if one appears. The library directory
 # is the architecture's (x86_64-linux-gnu, aarch64-linux-gnu): exactly one must have libz.so.1.
 COPY --from=zlib /src/target/libz.so.1 /usr/lib/libz.so.1.nyra
-COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
+COPY --from=zlib /src/Cargo.lock /src/target/doc/ /usr/share/doc/nyra-zlib/
 RUN set -- /usr/lib/*-linux-gnu/libz.so.1 && test "$#" = 1 && cd "${1%/*}" && \
     f="$(readlink libz.so.1)" && test -f "$f" && mv /usr/lib/libz.so.1.nyra "$f" && \
     grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
@@ -166,6 +170,11 @@ RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
     ntp-ctl validate -c /usr/lib/nyra/ntpd-rs/ntp.toml && \
     test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && \
     grep -qx 'minimum-agreeing-sources = 3' /usr/lib/nyra/ntpd-rs/ntp.toml && test -f /usr/lib/clock-epoch
+
+# A Rust program's Cargo.lock and licence notices must not drop out of the image silently.
+RUN for p in ntpd-rs nyra-updated nyra-zlib; do \
+      test -s /usr/share/doc/$p/Cargo.lock && test -n "$(ls -A /usr/share/doc/$p/third-party)" || exit 1; \
+    done
 
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
@@ -349,7 +358,8 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/lib/nyra/boot/tpm-enroll usr/lib/systemd/system/nyra-tpm-enroll.service \
       'usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service -> ' \
       usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl usr/bin/sha256sum \
-      usr/bin/systemd-ask-password usr/bin/head usr/bin/sync; do \
+      usr/bin/systemd-ask-password usr/bin/head usr/bin/sync \
+      usr/lib/sysctl.d/90-nyra-console.conf; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 
