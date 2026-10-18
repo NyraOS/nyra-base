@@ -349,7 +349,8 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/lib/nyra/boot/tpm-enroll usr/lib/systemd/system/nyra-tpm-enroll.service \
       'usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service -> ' \
       usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl usr/bin/sha256sum \
-      usr/bin/systemd-ask-password usr/bin/head usr/bin/sync; do \
+      usr/bin/systemd-ask-password usr/bin/head usr/bin/sync \
+      usr/lib/sysctl.d/90-nyra-console.conf; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 

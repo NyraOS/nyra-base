@@ -423,6 +423,22 @@ Each line is something that broke or surprised us once.
   "Time").
 - chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
   resolves to another address starts with a new key exchange.
+- Without an audit daemon the kernel prints every audit record (`audit: type=1334 ... op=LOAD`,
+  `type=1130 ... unit=...`) through printk, at "notice", even while systemd-journald collects the
+  same records from `systemd-journald-audit.socket`: journald only listens to the records, it does
+  not register as the audit daemon, and the kernel prints whenever no daemon is registered
+  (`kauditd_hold_skb` in `kernel/audit.c`). The summary of the rate limit (`kauditd_printk_skb: N
+  callbacks suppressed`) is a "warning" (`lib/ratelimit.c`), so a console threshold that still shows
+  warnings still shows that line: the image shows errors only (`kernel.printk = 4 4 1 7`, the
+  threshold of `quiet`). There is one threshold for all consoles; the kernel log and the journal
+  keep everything.
+- Since that threshold, the serial logs of the VM tests show the kernel's own lines only up to the
+  initrd's `systemd-sysctl` (about a second into the initrd), then errors only; the rest is in the
+  journal (`journalctl -k`). Each boot starts at the kernel's default again, so `Linux version`
+  still marks every kernel start, and `reboot: Restarting system` is an emergency message. For a
+  run that needs all kernel lines on the serial log (timestamps of a flaky boot), pass
+  `--credential 'sysctl.extra=kernel.printk = 7 4 1 7'` to `vm-boot.py`: the test console imports
+  credentials, the image does not.
 
 ## Rust components (docs/DEFAULTS.md)
 

@@ -118,8 +118,6 @@ It is a **test disk**, not a system to keep data on:
    - QEMU: UEFI boot on; **"TPM 2.0 Device" off** (switching it on also loads the Secure Boot keys,
      see below);
    - QEMU arguments: add
-     `-smbios type=11,value=io.systemd.credential:firstboot.timezone=Europe/Bucharest` (or any
-     time zone; only the first boot reads it) and
      `-smbios type=11,value=io.systemd.credential.binary:systemd.unit-dropin.getty@tty1.service=W1NlcnZpY2VdCkV4ZWNTdGFydD0KRXhlY1N0YXJ0PS0vc2Jpbi9hZ2V0dHkgLS1hdXRvbG9naW4gcm9vdCAtLW5vcmVzZXQgLS1ub2NsZWFyIC0gJHtURVJNfQo=`
      (in one piece: UTM splits the arguments at spaces, and this one has none). The long value is
      a drop-in for the console's login prompt, in base64, like the one CI uses on the serial console:
@@ -130,11 +128,13 @@ It is a **test disk**, not a system to keep data on:
      ```
      It logs root in on the console at every boot where it is passed.
 
+   The image is set to UTC; set the time zone after login with `timedatectl set-timezone <Zone>`.
+
    Then "Save".
 5. Start it. The console shows the boot messages, then a root shell (the first boot takes longer).
    `systemctl is-system-running` should print `running`.
 6. To log in with a password instead: set root's password with `passwd`, shut the VM down
-   (`poweroff`), remove the second argument, and start it again. The password stays (it is in
+   (`poweroff`), remove the argument, and start it again. The password stays (it is in
    `/etc/shadow` on the disk); the console now asks for it.
 
 **Why not a password credential:** the image's root account is locked (`*` in `/etc/shadow`), and
