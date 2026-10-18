@@ -583,7 +583,9 @@ jobs:
 
       - name: The login shows the Nyra OS message of the day only
         if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
-        run: tools/vm/check-motd.sh "$RUNNER_TEMP/serial.log"
+        run: |
+          tools/vm/check-motd.sh --self-test
+          tools/vm/check-motd.sh "$RUNNER_TEMP/serial.log"
 
       - name: Root partition found when the first probe fails (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
