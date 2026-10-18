@@ -396,7 +396,7 @@ names the signature, which counts as a refusal (the prudent side as well).
 
 ## Tests in a VM (`tools/vm/updates.sh`)
 
-The `install-boot` job follows one installed VM through 40 boots and real updates. Everything the
+The `install-boot-updates` job follows one installed VM through 40 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
 only into the test versions, and a CA signs the certificate of a sheet server on the runner. The

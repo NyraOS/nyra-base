@@ -11,7 +11,8 @@ and one result: `pass`, `partial`, `fail` or `not-implemented`.
   the image workflow's own tests, and the pull request check validates `titanic.yml` with actionlint
   and runs the offline self-test of the results script.
 - `titanic.yml` calls [`image.yml`](../.github/workflows/image.yml) unchanged: the image is built
-  once, then its `install-boot` job runs every boot, update and security test on it, and in parallel
+  once, then its `install-boot-system`, `install-boot-updates` and `install-boot-updates-more` jobs run
+  every boot, update and security test on it (`install-boot` only reports that all three passed), and in parallel
   its `encryption` job the disk encryption tests (T10), each on a disk of its own. A nightly run
   builds with the caches; a manual run on `main` builds without caches, like a release, but is never signed, and it never
   delays or replaces a release build of `image.yml` (its own concurrency group).
@@ -256,5 +257,5 @@ The `titanic-results` artifact holds `titanic-results.json`:
 
 `result` is `pass`, `partial`, `fail` or `not-implemented`. The step summary shows the same table.
 The workflow only publishes the file as an artifact; it has no token for anything outside this
-repository. The serial console logs are the artifacts `install-boot-serial-log`,
-`encryption-serial-log`, `titanic-power-cuts-serial-log` and `titanic-stress-serial-log`.
+repository. The serial console logs are the artifacts `install-boot-system-serial-log`,
+`install-boot-updates-serial-log`, `install-boot-updates-more-serial-log`, `encryption-serial-log`, `titanic-power-cuts-serial-log` and `titanic-stress-serial-log`.
