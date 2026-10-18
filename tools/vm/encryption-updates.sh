@@ -252,10 +252,12 @@ enrolled='journalctl -b -o cat -u nyra-tpm-enroll.service | grep nyra-tpm-enroll
 fail=0
 n=0
 vm() { # vm TITLE ARGS...
+  local title="$1"
+  shift
   n=$((n + 1))
   python3 -B tools/vm/vm-boot.py --secure-boot "$work/vars.fd" --keep-vars --tpm "$tpm" --disk "$work/disk.raw" \
     --persist --poweroff --autologin --timeout 240 --log "$logs/serial-encryption-updates-$n.log" \
-    --summary "$summary" --title "Encrypted updates, boot $n: $1" "$@" || fail=1
+    --summary "$summary" --title "Encrypted updates, boot $n: $title" "$@" || fail=1
   # Nothing is typed in this test: a boot that asks for the disk did not unlock with the TPM.
   if grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-updates-$n.log"; then
     echo "::error::encrypted updates, boot $n asked for the disk"
@@ -285,8 +287,9 @@ vm "u3 fails its health check three times, each boot unlocked by the TPM; back o
   --command "$lib; outcome s3 RollbackUndone && test \"\$(queued)\" = false && expect rollback $d3" \
   --command "$lib; refused s3 'this machine fell back from it' && expect staged none"
 l="$logs/serial-encryption-updates-$n.log"
-echo "kernel starts: $(grep -c 'Linux version' "$l")"
-[ "$(grep -c 'Linux version' "$l")" = 4 ] || { echo "::error::the fallback from u3 took $(grep -c 'Linux version' "$l") kernel starts, not 4"; fail=1; }
+starts="$(grep -c 'Linux version' "$l" || true)"
+echo "kernel starts: ${starts:-none (no serial log)}"
+[ "$starts" = 4 ] || { echo "::error::the fallback from u3 took ${starts:-no} kernel starts, not 4"; fail=1; }
 
 # Read offline: the header and the disk's journal (with the recovery key).
 root_start="$(sfdisk -J "$work/disk.raw" | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["partitiontable"]["partitions"][1]["start"])')"
@@ -315,6 +318,8 @@ EOF
 )"
 sudo losetup -d "$loop" && loop=""
 printf '%s\n' "$lines"
+# No line at all (the root could not be read) is not "no other line".
+[ -n "$lines" ] || lines="(nothing read from the disk's journal)"
 check "Enrollments in the disk's journal (boot 1)" 1 "$(printf '%s\n' "$lines" | grep -c '^nyra-tpm-enroll: enrolled with the TPM (' || true)"
 check "Other lines of nyra-tpm-enroll in the disk's journal" 0 "$(printf '%s\n' "$lines" | grep -vc '^nyra-tpm-enroll: enrolled with the TPM (' || true)"
 echo >> "$summary"
