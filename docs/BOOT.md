@@ -226,7 +226,16 @@ unlock by themselves:
   removes the record's enrollments that such a run (or a removal that failed) left: the temporary one,
   and those of a key that the record lists again later (replaced: after a PIN asked for, the old
   enrollments without it), by their slot numbers and only from slots the header has as TPM2
-  enrollments, never a slot number that a later line lists.
+  enrollments, never a slot number that a later line lists (LUKS2 gives a new enrollment the lowest
+  free slot). The record forgets an enrollment only once the header no longer has its key slot at all,
+  or a later line lists that number, never because the header labels the slot as something else. A
+  listing of the key slots that fails, or that has none at all, changes nothing: no slot is removed
+  and the record is not rewritten, and the first boot does not start without the temporary
+  enrollment listed; the first boot says the temporary enrollment is removed only once the header
+  has no TPM2 token without any policy left. When the next key's latest enrollment is older than the
+  current key's (a run cut off between the two, with a PIN asked for or after a refusal), a boot that
+  the TPM unlocked enrolls the next key again, as the current key is (with the PIN typed in that boot
+  if it has one), and removes its older enrollment in the same boot.
   Only a disk with that record is enrolled again, and only when a
   key was typed in this boot. Root in the running system could write the record too, and gain nothing
   from it: the secret stays in the TPM, released only in the initrd. Since that `/var` is the running
@@ -286,7 +295,9 @@ A rotation is a release signed with that next key only:
   longer trusted. Without that list, the recovery key typed on an old version from the boot menu
   would enroll the disk for that version's chain again. When the record has no enrollment for the
   key this boot used, it says so in the journal (not on a disk not enrolled yet, whose record is the
-  installer's, empty) and retires only the listed keys. For the rotation,
+  installer's, empty) and retires only the listed keys. It removes nothing if the header's key slots
+  cannot be listed, never a slot number that a later line of the record lists, and the record forgets
+  an enrollment it did not remove only once its slot is gone. For the rotation,
   only if the record has an enrollment for the key this boot used, and only the enrollments made
   before it (the record keeps them in the order they were
   made): a fallback to the previous release that is confirmed good keeps the next key's enrollment,
@@ -311,8 +322,8 @@ through Argon2id (with a salt in the token) before the TPM sees it, and the TPM 
   disk's key only in the initrd ("TPM2 unlock"). `/usr/lib/nyra/boot/tpm-pin set` (the PIN on standard
   input), `tpm-pin remove` and `tpm-pin status`, as root, leave a request in the encrypted root,
   `/var/lib/nyra/tpm2-pin-request` (mode 0600: the new PIN, or `none`), only on a disk with the record.
-  At the next boot `nyra-tpm-enroll` reads it (its first 32 bytes: a request that is not one valid line
-  is refused) and removes it at once, whatever happens next; if the TPM
+  At the next boot `nyra-tpm-enroll` reads it (only its first 32 bytes, which must hold one valid line;
+  trailing blank lines are allowed) and removes it at once, whatever happens next; if the TPM
   unlocked that boot, it enrolls the disk again with the new PIN (or none), for the current and next
   policy keys, then removes the old enrollments, an older policy key's too: a change applied after a
   rotation, before the release is confirmed good, makes a fallback to the previous release ask for
@@ -554,7 +565,17 @@ systemd-ask-password:
   otherwise still open the disk);
 - the PIN that counts is the current key's enrollment's, not another one's that the record still lists;
 - `tpm-retire` says nothing on a disk not enrolled yet;
-- a PIN request longer than 32 bytes (a valid first line, then more) is refused.
+- a PIN request longer than 32 bytes (a valid first line, then more) is refused;
+- a header whose key slots cannot be listed changes nothing (at the first boot, the temporary
+  enrollment stays listed until a later boot removes it, and is never said to be gone while the header
+  still has it; a PIN asked for keeps the old enrollments in the record), also in `tpm-retire`;
+- a power cut between the current key's new enrollment and the next key's (a PIN asked for, another
+  PIN, a re-enrollment without a PIN): the next boot enrolls the next key as the current one is and
+  removes its old enrollment;
+- slot numbers used again (the stand-in, like LUKS2, takes the lowest free slot) and slots the header
+  has as another kind of key are never removed, and the record forgets them only when gone or listed
+  again; `tpm-retire` keeps a slot number used again too;
+- a missed rotation on a disk with a PIN (no enrollment of the current key): a new PIN is chosen.
 
 Each check but the plain rotation's, the full `/var`'s, the empty record's and the plain first boot's
 fails on a copy of the script without it.
