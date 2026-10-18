@@ -696,12 +696,11 @@ Each line is something that broke or surprised us once.
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
   needed and nobody can answer it), which tells a policy apart without an agent.
-- polkit counts a session as local only when it has a seat: a logind session without one
-  (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
-  `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual console
-  does (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session of
-  seat0, but may return before logind reports it: wait for `Active=yes`. A user with a login has
-  two sessions: the login's and their manager's (class `manager`, no TTY).
+- polkit counts a session as local only when it has a seat: a logind session without one is
+  `Active=yes` for logind but gets a policy's `allow_any` answer. A login on a virtual console has
+  a seat (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session
+  of seat0, but may return before logind reports it: wait for `Active=yes`.
+- A user with a login has two sessions: the login's and their manager's (class `manager`, no TTY).
 - A FAT stick pulled out while it is written stays damaged: the next mount says `Volume was not
   properly unmounted`, and a write that hits the damage (a lost directory entry, a cluster chain the
   FAT no longer has) is a FAT error, which makes the file system read-only (`errors=remount-ro`). In
