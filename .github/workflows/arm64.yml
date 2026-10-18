@@ -64,6 +64,9 @@ jobs:
             echo "BOOTC_REF=$ref"
             echo "BOOTC_COMMIT=$commit"
             echo "SNAPSHOT=$snapshot"
+            # The image version as in image.yml (year.month.run), with this workflow's run number: it
+            # only grows, so arm64 versions compare among themselves (docs/DEFAULTS.md, "Name and version").
+            echo "VERSION=${m[1]}.$((10#${m[2]})).$GITHUB_RUN_NUMBER"
             echo "SOURCE_DATE_EPOCH=$(date -u -d "${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z" +%s)"
             echo "WORK=$work"
           } >> "$GITHUB_ENV"
@@ -160,7 +163,8 @@ jobs:
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
           ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
-            --label org.opencontainers.image.version="$SNAPSHOT" \
+            --annotation org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.version="$VERSION" \
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
           echo "uki_cert=$(base64 -w0 "$WORK/uki/uki.crt")" >> "$GITHUB_OUTPUT"
@@ -184,6 +188,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Debian snapshot | \`$SNAPSHOT\` (unstable, arm64) |"
+            echo "| Version | \`$VERSION\` (arm64 run number) |"
             echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`), two builds identical: sha256 \`$BOOTC_SHA256\` |"
             echo "| Kernel | linux-image-arm64 $(jq -r '.packages[] | select(.name == "linux-image-arm64") | .version' "$m") |"
             echo "| Boot files | shim-signed $(jq -r '.packages[] | select(.name == "shim-signed") | .version' "$m"), systemd-boot-efi-arm64-signed $(jq -r '.packages[] | select(.name == "systemd-boot-efi-arm64-signed") | .version' "$m") |"

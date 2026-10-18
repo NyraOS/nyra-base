@@ -18,9 +18,9 @@
 # Containerfile checks each one against its Cargo.lock again and compiles them without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
-# The image version (year.month.run) comes from the environment, VERSION (image.yml): every build of
+# The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
 # a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
-# without it (a local build, arm64.yml).
+# without it (a local build).
 #   VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
 set -euo pipefail
 

@@ -501,16 +501,25 @@ LOGO=nyra-logo
 - **The version** is the release version (year.month.run, docs/UPDATES.md), the same value as the
   manifest annotation `org.opencontainers.image.version` that bootc reports. `image.yml` computes it
   once per run; `ci/build-image.sh` passes it to every build of the run (`NYRA_VERSION`), so the
-  reproducibility check builds the same file. A build without it (a local one, `arm64.yml`) says
-  `dev`. Anything else fails the build.
+  reproducibility check builds the same file. A build without it (a local one) says `dev`. Anything
+  else fails the build.
+- **arm64** (`arm64.yml`) computes it the same way, with its own run number: year.month of the
+  snapshot and the arm64 workflow's run number. Each workflow's run number only grows, so versions
+  compare correctly among the images of one architecture, which is all an update ever compares
+  (a machine only gets images of its own architecture). The same number on x86_64 and arm64 does
+  not mean the same commit: the image's `org.opencontainers.image.revision` label says which commit
+  it is. A shared counter would need one workflow to wait for the other, or a lookup in the GitHub
+  API, for nothing an update needs today; when arm64 images are published, the release that builds
+  both architectures under one version will give them one number.
 - **`/etc/os-release` is a link**, as the os-release specification asks: a file there would keep
   the name and version of the image an installation started from. Programs read `/etc/os-release`
   first.
 - **`ID_LIKE=debian`** for programs that look for Debian. Nothing else of Debian's file stays:
   `VERSION_CODENAME=sid`, `SUPPORT_URL` and Debian's URLs have no reader in the image.
-- **No `VERSION_ID`:** bootc titles its boot entry with `PRETTY_NAME` followed by `VERSION_ID`, so
-  the menu would say "Nyra OS 2026.10.401 2026.10.401"; without it the title is `PRETTY_NAME` and
-  bootc's entry version stays the composefs digest, as before. `IMAGE_VERSION` carries the version.
+- **No `VERSION_ID`; the version is in `IMAGE_VERSION`** (and in `PRETTY_NAME`). The reason is the
+  boot menu: bootc titles its boot entry with `PRETTY_NAME` followed by `VERSION_ID`, so the title
+  would repeat the version ("Nyra OS 2026.10.401 2026.10.401"). Without it the title is
+  `PRETTY_NAME`, and bootc's entry version stays the composefs digest, as before.
 - **The login prompt** is `/usr/lib/issue` (`\S \n \l`: `PRETTY_NAME`, the host name, the
   terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty reads it only when
   there is no `/etc/issue`, so Debian's `/etc/issue` is removed from the image; a user's own
