@@ -198,7 +198,7 @@ blind() { # blind NAME TITLE ARGS...
     --log "$logs/serial-encryption-rotation$sfx-$name.log" --summary "$summary" --title "$title" "$@"
 }
 asked() { # asked NAME: did the console of that boot ask for the disk?
-  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-rotation$sfx-$1.log"
+  python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-rotation$sfx-$1.log"
 }
 by_itself() { ! asked "$1" || { echo "::error::$1 asked for the disk"; fail=1; }; }
 

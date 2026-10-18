@@ -133,8 +133,8 @@ python3 -B tools/vm/vm-boot.py --disk "$work/disk-noroot.raw" --timeout 240 --ex
   --log "$logs/serial-encryption-noroot.log" --summary "$summary" \
   --title "No root partition: emergency mode after 90 s (nyra-root-wait), which reboots" || fail=1
 rm "$work/disk-noroot.raw"
-if ! grep -q -a "nyra-root-wait: no root partition" "$logs/serial-encryption-noroot.log" ||
-   ! grep -q -a "@@ emergency: diagnostics" "$logs/serial-encryption-noroot.log"; then
+if ! python3 -B tools/vm/vm-boot.py --on-console "nyra-root-wait: no root partition" "$logs/serial-encryption-noroot.log" ||
+   ! python3 -B tools/vm/vm-boot.py --on-console "@@ emergency: diagnostics" "$logs/serial-encryption-noroot.log"; then
   echo "::error::no root partition: nyra-root-wait's message or the emergency mode is missing"
   fail=1
 fi

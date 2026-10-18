@@ -31,7 +31,7 @@ old=""
 if grep -Eq "^[0-9]+ $current( pin)?\$" "$record"; then
   # The record's enrollments made before the current key's, for keys that are not kept.
   old="$(sed -n "/^[0-9][0-9]* $current\( pin\)\?\$/q; /^[0-9][0-9]* /p" "$record" | grep -v -F -f "$keep" || true)"
-else
+elif grep -q '^[0-9]' "$record"; then # not said on a disk not enrolled yet (the installer's empty record)
   log "the record has no enrollment for this boot's policy key ($current): no key retired by the rotation"
 fi
 # The keys the image lists as retired (never this boot's), with their enrollments.
@@ -43,19 +43,41 @@ gone="$(printf '%s\n' "$(echo "$old" | sed -n 's/^[0-9][0-9]* \([0-9a-f]*\).*/\1
   sort -u | while read -r k; do grep -qx "retired $k" "$record" || echo "retired $k"; done)"
 [ -n "$old" ] || [ -n "$gone" ] || exit 0
 
-wipe=""
+wipe="" forget=""
 if [ -n "$old" ]; then
   dev="$(cryptsetup status root | sed -n 's/^ *device: *//p')"
   [ -n "$dev" ] || { log "the encrypted root's device was not found"; exit 1; }
-  # Only key slots that the header has as TPM2 enrollments now: also leaves out slots that are gone
-  # (a run cut off after removing them and before writing the record, a power cut, leaves a record that
-  # lists them, and systemd-cryptenroll fails on those).
-  tpm2="$(systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) *tpm2\( .*\)\?$/\1/p')"
-  wipe="$(echo "$old" | sed 's/ .*//' | grep -xF "${tpm2:--}" | tr '\n' ',' | sed 's/,$//' || true)"
+  # The header's key slots: if they cannot be listed (or none is), nothing changes.
+  l="$(systemd-cryptenroll "$dev")" && all="$(printf '%s\n' "$l" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p')" &&
+    [ -n "$all" ] || { log "the key slots could not be listed"; exit 1; }
+  tpm2="$(printf '%s\n' "$l" | sed -n '2,$ s/^ *\([0-9][0-9]*\) *tpm2\( .*\)\?$/\1/p')"
+  # Removed: only key slots that the header has as TPM2 enrollments now, and never a slot number
+  # that a later line lists (used again by a newer enrollment). Forgotten by the record: those, and
+  # the enrollments whose slot is gone (a run cut off after removing them and before writing the
+  # record, a power cut, leaves a record that lists them, and systemd-cryptenroll fails on those);
+  # one whose slot is there as another kind of key stays.
+  while read -r line; do
+    s="${line%% *}"
+    n="$(grep -nxF "$line" "$record" | sed -n '1s/:.*//p')"
+    if sed "1,${n}d" "$record" | grep -q "^$s "; then
+      forget="$forget$line
+"
+    elif printf '%s\n' "$tpm2" | grep -qx "$s"; then
+      forget="$forget$line
+" wipe="$wipe,$s"
+    elif ! printf '%s\n' "$all" | grep -qx "$s"; then
+      forget="$forget$line
+"
+    fi
+  done <<EOF
+$old
+EOF
+  wipe="${wipe#,}"
 fi
+[ -n "$forget" ] || [ -n "$gone" ] || exit 0
 # The new record is written first: if it cannot be (a full /var), nothing is removed.
 {
-  if [ -n "$old" ]; then grep -v -x -F "$old" "$record" || true; else cat "$record"; fi
+  if [ -n "$forget" ]; then printf %s "$forget" | grep -v -x -F -f - "$record" || true; else cat "$record"; fi
   [ -z "$gone" ] || echo "$gone"
 } > "$record.new"
 [ -z "$wipe" ] || systemd-cryptenroll --wipe-slot="$wipe" "$dev"

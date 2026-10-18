@@ -296,7 +296,7 @@ ExecStartPost=/bin/sh -c 'a=\$\$(systemctl show -P ActiveState systemd-firstboot
 vm --log "$logs/serial-reset-settings-21.log" --credential "$root_locked" \
   --marker 'NYRA-FIRSTBOOT-RAN-ROOT-LOCKED' --marker-expected yes \
   --title "Reset settings 21: the normal boot with /etc emptied: no root password question, root locked"
-if grep -aE 'Please enter the new' "$logs/serial-reset-settings-21.log"; then
+if python3 -B tools/vm/vm-boot.py --on-console 'Please enter the new' "$logs/serial-reset-settings-21.log"; then
   echo "reset settings 21: systemd-firstboot asked a question"
   exit 1
 fi
