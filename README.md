@@ -42,3 +42,5 @@ Every change goes through a pull request and must keep the test battery green. S
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE). Our patches to other projects, in [`patches/upstream/`](patches/upstream/), are public domain
 ([Unlicense](patches/upstream/LICENSE)): anyone may take them, no questions asked.
+
+The Nyra OS logo is a trademark of Wagg Software and is not covered by this repository's GPL licence. It may be used to refer to Nyra OS, not for other products. The logo files: [`branding/`](branding/).

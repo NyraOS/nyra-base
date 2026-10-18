@@ -136,6 +136,14 @@ Each line is something that broke or surprised us once.
   drop-ins from `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` (`*.issue`), and `agetty
   --reload` makes the ones already at the login prompt show it again; Debian's `pam_motd` reads
   `/run/motd.d` after a login.
+- **agetty's main issue file is the first of `/etc/issue`, `/run/issue`, `/usr/lib/issue`** (the
+  drop-ins are added to it): with Debian's `/etc/issue` in the image, a `/usr/lib/issue` is never
+  shown. The image therefore has no `/etc/issue` (docs/DEFAULTS.md, "Name and version").
+- **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
+  from the UKI's `.osrel`), and the entry's version and file name come from `VERSION_ID` too (the
+  composefs digest without it). A `PRETTY_NAME` that carries the version needs no `VERSION_ID`.
+- **The image had `/etc/os-release` as a copy of `/usr/lib/os-release`** (a file, not Debian's link):
+  replacing only `/usr/lib/os-release` would leave the old name in the file programs read first.
 - **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
   with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
   since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from

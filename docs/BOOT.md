@@ -43,7 +43,8 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
 the ESP and a boot entry of type `uki` (`loader/entries/*.conf` with a single `uki` line, no `linux`,
-`initrd` or `options`). Updates do the same. External kernel arguments are refused
+`initrd` or `options`), titled with the UKI's `PRETTY_NAME`, "Nyra OS <version>" (its `.osrel`
+section, docs/DEFAULTS.md "Name and version"). Updates do the same. External kernel arguments are refused
 (`bootc install --karg` fails with a UKI), so the test console is set up differently, below.
 
 Test versions built on top of the image (boot counting) need their own UKI, because any change

@@ -123,6 +123,10 @@ def debian_sources(manifest, snapshot):
     cfg = manifest["config"]
     if (cfg["distribution"], cfg["release"], cfg["architecture"]) != ("debian", "unstable", "x86-64"):
         sys.exit(f"sbom.py: only Debian unstable x86-64 is supported, not {cfg}")
+    # The scan matches Debian packages from this list, never from the image's os-release (which names
+    # Nyra OS): an empty list would scan nothing and pass.
+    if not manifest["packages"]:
+        sys.exit("sbom.py: the manifest lists no Debian packages")
     index = {}
     for component in mkosi_setting("Repositories").split(","):
         url = f"https://snapshot.debian.org/archive/debian/{snapshot}/dists/unstable/{component}/binary-amd64/Packages.xz"

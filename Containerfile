@@ -253,6 +253,27 @@ RUN test -x /usr/bin/keyctl && \
       /usr/share/keyutils /sbin/request-key; do \
       ! test -e "$f" || { echo "keyutils left $f in the image"; exit 1; }; done
 
+# The system's name (docs/DEFAULTS.md, "Name and version"): Nyra OS, with the image version
+# NYRA_VERSION (year.month.run, the same as the manifest annotation org.opencontainers.image.version;
+# ci/build-image.sh passes it, dev for a build without one) in /usr/lib/os-release, and /etc/os-release
+# a link to it, as the os-release specification asks: a copy in /etc would keep an old version's
+# name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
+# PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
+# dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>"), which
+# agetty reads only when there is no /etc/issue, so Debian's goes. The logo is the os-release LOGO,
+# an icon name (branding/README.md: not under the GPL).
+ARG NYRA_VERSION=dev
+COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
+RUN { echo "$NYRA_VERSION" | grep -Eqx '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
+      { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
+    printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
+      "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \
+      'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
+    ln -sfn ../usr/lib/os-release /etc/os-release && rm /etc/issue && test -f /usr/lib/issue && \
+    . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
+    test -f "/usr/share/icons/hicolor/scalable/apps/$LOGO.svg"
+
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
 # and the udev rule that probes the boot disk once more when its first probe could not read
