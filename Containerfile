@@ -291,7 +291,12 @@ RUN test -x /usr/bin/keyctl && \
 # (tmpfiles skips a copy whose source is missing). The drop-ins of /etc, /run and /usr/lib/issue.d
 # still show (the health notice in /run/issue.d). The logo is the os-release LOGO, an icon name
 # (branding/README.md: not under the GPL): the scalable icon, and the drawing made for small sizes in
-# the fixed-size directories (SVG is valid there too, so nothing is rendered).
+# the fixed-size directories (SVG is valid there too, so nothing is rendered). The message after a
+# login is /usr/lib/motd: pam_motd (in login's PAM stack) reads the first found of /etc/motd,
+# /run/motd and /usr/lib/motd, so Debian's /etc/motd goes and one the administrator writes still
+# wins. The other source, "pam_motd.so motd=/run/motd.dynamic", builds a text from /etc/update-motd.d,
+# where Debian has one script (10-uname, base-files) that prints the uname line: it goes too.
+# pam_motd and the motd.d directories stay (the health notice in /run/motd.d).
 ARG NYRA_VERSION=dev
 COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
 COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
@@ -305,6 +310,8 @@ RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev
       'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
     ln -sfn ../usr/lib/os-release /etc/os-release && \
     rm /etc/issue /usr/share/factory/etc/issue && test -f /usr/lib/issue && \
+    rm /etc/motd /etc/update-motd.d/10-uname && test -f /usr/lib/motd && \
+    test -z "$(ls -A /etc/update-motd.d)" && \
     . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
     for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
 
