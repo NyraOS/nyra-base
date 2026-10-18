@@ -39,8 +39,13 @@
 #      never the recovery key's or another kind of key's, even when the record lists them;
 #   k. the installer's empty record, on a disk whose first boot found no TPM or Secure Boot off (the
 #      temporary enrollment removed, nothing enrolled): the recovery key typed with the TPM and Secure
-#      Boot back enrolls A and B, and no key slot is removed.
-# Checks a, b, d, e, f, g, i (but the full /var), j and the PIN of c are proven: the same case run on a copy of the script
+#      Boot back enrolls A and B, and no key slot is removed;
+#   l. a TPM2 token without any policy added to the header (it cannot be authenticated) is not taken
+#      for the first boot unless the record is the installer's empty one: on an enrolled disk (unlocked
+#      by the TPM, or with the recovery key typed), on a disk set up with a password (no record) and on
+#      a disk with a PIN, nothing is enrolled without the record's rules (never without the PIN), no
+#      key slot is removed and the record keeps its retired keys.
+# Checks a, b, d, e, f, g, i (but the full /var), j, l and the PIN of c are proven: the same case run on a copy of the script
 # without the check it relies on must fail. The namespace: unshare -rm (a user namespace) where
 # allowed, else sudo unshare -m; NYRA_TEST_NS=1 is refused outside a namespace of its own.
 #   tools/vm/test-tpm-enroll.sh
@@ -177,7 +182,8 @@ case_link() { # case_link SCRIPT first|typed: "ok" or what went wrong
   setup "$d" "$2"
   local st="$d/root/state" out="$d/root/outside"
   mkdir -p "$out/nyra"
-  [ "$2" = first ] || printf '0 %s\n' "$(fp KEY-A)" > "$out/nyra/tpm2-slots"
+  # The first boot: the installer's empty record (behind the link).
+  if [ "$2" = first ]; then : > "$out/nyra/tpm2-slots"; else printf '0 %s\n' "$(fp KEY-A)" > "$out/nyra/tpm2-slots"; fi
   ln -s /outside "$d/root/sysroot/var/lib"
   local before
   before="$(find "$out" -type f -exec md5sum {} + | sort)"
@@ -509,6 +515,48 @@ case_empty() { # case_empty SCRIPT: "ok" or what went wrong
   grep -q '^invalidate' "$st/calls" || { echo "the typed key left in the cache"; return; }
   echo ok
 }
+# l. A token without any policy (the stand-in header's) on a disk that is not at its first boot.
+case_fake() { # case_fake SCRIPT enrolled|typed|password|pin: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" first
+  local st="$d/root/state" before=""
+  mkdir -p "$d/root/sysroot/var/lib/nyra"
+  case "$2" in
+    enrolled|typed)
+      # Enrolled for A and B, C retired; the forged token claims the recovery key's slot (1).
+      printf '0 tpm2 KEY-A\n1 recovery\n2 tpm2 KEY-B\n' > "$st/slots"
+      printf '0 %s\n2 %s\nretired %s\n' "$(fp KEY-A)" "$(fp KEY-B)" "$(fp KEY-C)" > "$d/root/$record"
+      [ "$2" != typed ] || printf '%s\0' "$(cat "$st/recovery-key")" > "$st/cache" ;;
+    password) # a password (slot 0, typed), the recovery key; no record
+      printf '0 password\n1 recovery\n' > "$st/slots"
+      rm -rf "$d/root/sysroot/var/lib/nyra"
+      printf '%s\0' typed-password > "$st/cache" ;;
+    pin) # enrolled for A and B with a PIN, the PIN typed in this boot
+      printf '0 tpm2 KEY-A 24681357\n1 recovery\n2 tpm2 KEY-B 24681357\n' > "$st/slots"
+      printf '0 %s pin\n2 %s pin\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$d/root/$record"
+      printf '%s\0' 24681357 > "$st/pincache" ;;
+  esac
+  [ ! -f "$d/root/$record" ] || before="$(cat "$d/root/$record")"
+  run "$1" "$d"
+  if [ "$2" = typed ]; then
+    # Enrolled again as after any refusal: the record's old slots go, never the recovery key's.
+    if grep -Eq '^wipe (.*,)?1(,|$)|wipe tpm2' "$st/calls"; then echo "the recovery key's slot removed: $(cat "$st/calls")"; return; fi
+    grep -qx 'enroll KEY-A' "$st/calls" || { echo "not enrolled again: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  elif grep -q wipe "$st/calls"; then
+    echo "a key slot removed: $(cat "$st/calls")"; return
+  elif grep -q '^enroll' "$st/calls"; then
+    echo "enrolled through the forged token: $(cat "$st/calls")"; return
+  fi
+  if [ "$2" = password ]; then
+    [ ! -e "$d/root/$record" ] || { echo "a record made on a disk with a password"; return; }
+  elif [ "$2" != typed ] && [ "$(cat "$d/root/$record")" != "$before" ]; then
+    echo "the record changed: $(cat "$d/root/$record")"; return
+  fi
+  [ "$2" != typed ] || grep -qx "retired $(fp KEY-C)" "$d/root/$record" || { echo "the retired key lost: $(cat "$d/root/$record")"; return; }
+  grep -q 'without any policy.*ignored' "$d/out" || { echo "not logged: $(cat "$d/out")"; return; }
+  echo ok
+}
 
 fail=0
 check() { # check DESCRIPTION EXPECTED GOT
@@ -553,11 +601,20 @@ check "a new PIN chosen after a refusal" ok "$(case_again_pin "$enroll" chosen)"
 check "no PIN chosen after a refusal: nothing changes" ok "$(case_again_pin "$enroll" not-chosen)"
 check "tpm-pin" ok "$(case_cmd "$boot/tpm-pin")"
 check "the installer's empty record, the recovery key typed" ok "$(case_empty "$enroll")"
+check "a forged token without any policy, on an enrolled disk" ok "$(case_fake "$enroll" enrolled)"
+check "a forged token without any policy, on an enrolled disk, the recovery key typed" ok "$(case_fake "$enroll" typed)"
+check "a forged token without any policy, on a disk with a password" ok "$(case_fake "$enroll" password)"
+check "a forged token without any policy, on a disk with a PIN" ok "$(case_fake "$enroll" pin)"
 
 # The same cases without the checks they rely on must fail.
 mutant no-inroot "$enroll" 's/inroot && //g'
 check "without the path check, first boot" fails "$(case_link "$t/no-inroot" first)"
 check "without the path check, after a refusal" fails "$(case_link "$t/no-inroot" typed)"
+mutant no-empty-record "$enroll" 's/^  if inroot \&\& \[ -f "\$record" \] \&\& \[ ! -s "\$record" \]; then$/  if true; then/'
+check "without the empty record check, an enrolled disk" fails "$(case_fake "$t/no-empty-record" enrolled)"
+check "without the empty record check, the recovery key typed" fails "$(case_fake "$t/no-empty-record" typed)"
+check "without the empty record check, a disk with a password" fails "$(case_fake "$t/no-empty-record" password)"
+check "without the empty record check, a disk with a PIN" fails "$(case_fake "$t/no-empty-record" pin)"
 mutant no-opened "$enroll" 's/ | grep -vxF "\$opened"//'
 check "without excluding the typed key's slot" fails "$(case_slot "$t/no-opened")"
 mutant no-retired "$enroll" 's/^elif banned "\$curfp"; then$/elif false; then/'

@@ -10,8 +10,11 @@
 # sign with (docs/SIGNING.md, "The PCR policy key"). Four cases:
 #
 #   - The first boot of a disk installed for a TPM: the installer left a temporary TPM2 enrollment
-#     without any policy, so that this boot unlocked by itself. It is replaced, and it does not stay:
-#     without the new enrollments the disk asks for its recovery key.
+#     without any policy, so that this boot unlocked by itself, and an empty record (below). It is
+#     replaced, and it does not stay: without the new enrollments the disk asks for its recovery key.
+#     Only with that record, empty: the header can be changed by anyone who has the disk, so a token
+#     without any policy on a disk whose record is not empty (enrolled before), or without a record (a
+#     disk set up with a password), is ignored, and no key slot is removed.
 #   - The user typed the recovery key in this boot (the TPM refused: a firmware update changed PCR 7,
 #     the TPM was cleared or replaced, or the PIN was forgotten) on a disk with a record: the disk is
 #     enrolled again with the key the user typed, which systemd-cryptsetup left in the kernel's cache.
@@ -104,8 +107,18 @@ if [ -f "$next" ] && [ ! -L "$next" ]; then nextfp="$(fp "$next")"; fi
 printf '%s\n' "$curfp" $nextfp > "$keep"
 # The temporary enrollment is the TPM2 token without any policy (only a systemd-tpm2 token has a
 # tpm2-policy-hash).
+case=""
 if cryptsetup luksDump --dump-json-metadata "$dev" | grep -q "\"tpm2-policy-hash\": *\"$zero\""; then
-  case=first
+  # The installer's record: there and empty (an enrolled disk lists its key slots, and later its
+  # retired keys).
+  if inroot && [ -f "$record" ] && [ ! -s "$record" ]; then
+    case=first
+  else
+    log "a TPM2 token without any policy, on a disk that is not at its first boot for the TPM: ignored"
+  fi
+fi
+if [ -n "$case" ]; then
+  :
 elif inroot && [ -f "$record" ]; then
   # A PIN asked for from the running system: read and removed at once, whatever happens next.
   want=""
@@ -229,7 +242,7 @@ elif [ "$case" = first ]; then
       if n="$(enroll "$next" "" --unlock-tpm2-device=auto)"; then lines="$lines
 $n $nextfp"; else log "the next policy key was not enrolled"; fi
     fi
-    remember "$lines" || log "could not write the record of the enrollments (they will not be enrolled again)"
+    remember "$lines" || log "could not write the record of the enrollments (they are not in it: an enrollment again later does not remove them)"
     log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); temporary enrollment removed"
     exit 0
   fi

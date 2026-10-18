@@ -187,7 +187,11 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   after bootc set the root up) then enrolls the disk with the UKI's policy key (`.pcrpkey`), PCR 11
   signed for the initrd with the reference `initrd`, and PCR 7 and 12, checks it by unsealing it,
   enrolls it the same way for the next policy key (in the image's `/usr`, "Rotating the policy key"
-  below), and removes the temporary one. It
+  below), and removes the temporary one. A first boot is one whose header has a TPM2 token without any
+  policy and whose record (below) is the installer's, there and empty: the header can be changed by
+  anyone who has the disk, so such a token on a disk enrolled before, or on one without a record (set
+  up with a password), is ignored and said so in the journal, and no key slot is removed for it (the
+  boot goes on as any other: enrolled again only by the rules below). It
   does that only with Secure Boot on (not in setup mode) and a TPM; otherwise it removes the temporary
   enrollment, and the disk asks for its recovery key until the TPM and Secure Boot are back, when the
   recovery key typed once enrolls it ("Enrolled again after the TPM refused" below: the installer
@@ -518,9 +522,18 @@ systemd-ask-password:
 - a key the image lists as retired is never enrolled again (after a refusal) or as the next key, and
   `tpm-retire` removes its enrollment and marks it retired (also a key the disk was never enrolled
   for); neither script removes a slot that the header does not have as a TPM2 enrollment, even when
-  the record lists it (the recovery key's, another kind of key's).
+  the record lists it (the recovery key's, another kind of key's);
+- on a disk with the installer's empty record and only the recovery key's slot (a first boot that
+  found no TPM or Secure Boot off), the recovery key typed enrolls it for the current and next keys,
+  and no slot is removed;
+- a TPM2 token without any policy added to the header is not taken for a first boot: on an enrolled
+  disk (unlocked by the TPM, or with the recovery key typed, then enrolled again as after any refusal,
+  never removing the recovery key's slot and keeping the retired keys), on a disk set up with a
+  password (no record made) and on a disk with a PIN, nothing is enrolled through it and no key slot
+  is removed for it.
 
-Each check but the plain rotation's and the full `/var`'s fails on a copy of the script without it.
+Each check but the plain rotation's, the full `/var`'s and the empty record's fails on a copy of the
+script without it.
 
 Updates through `nyra-updated` (`tools/vm/encryption-updates.sh`): test versions built and signed as
 for the rotation, all with policy key A (next key B) and a channel sheet key, served as
