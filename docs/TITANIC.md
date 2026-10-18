@@ -225,7 +225,7 @@ How the base mounts them is in docs/DEFAULTS.md, "Removable media".
 | 1 | plugged in again | not mounted until asked; then mounts `noexec` |
 | 1 | a user logged in on a virtual console (an autologin on tty5, made the foreground console): an active local session on seat0 | polkit lets them mount a stick, but `loop-setup` and `modify-device` need an administrator: `udisksctl loop-setup` refused, no loop device; polkit loaded the rules without an error |
 | 1 | shutdown with the trusted stick mounted | clean |
-| 2 | a stick mounted and written, `bootc switch` to a test version, the stick pulled out half a second into the switch | the switch was still running, then succeeds with exactly the test version staged; clean shutdown, which finalizes it |
+| 2 | the stick from boot 1 repaired with `fsck.vfat`, mounted and written; `bootc switch` to a test version, the stick pulled out half a second into the switch, once the writer has written 1 MiB and while a `dd` runs | the switch was still running, then succeeds with exactly the test version staged; the writer stops by itself within 120 s (if not, its `wchan`, kernel stack and the blocked tasks are printed and the boot fails); clean shutdown, which finalizes it |
 | 3 | a boot with a stick that has an ESP, a root (x86-64), a swap and a /home partition, by their Discoverable Partitions types, and the FAT stick | the test version runs; the root, the ESP and `/dev/gpt-auto-root` are on the boot disk; no swap; nothing mounted from the sticks |
 | 4-6 | the same stick pulled out 3, 6 and 10 s after QEMU starts (the firmware, the kernel and its initrd, the start of the system) | each boot reaches the login prompt and `running`, no job waits; the kernel log says when the stick went; clean shutdown |
 
