@@ -72,8 +72,8 @@ unless:
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
 
-**Neither the certificate nor the policy key is committed yet** (the Nyra keys do not exist yet), so
-the gate refuses every image: fail closed, like the placeholder signer address in the policy.
+**The certificate is not committed yet**, so the gate refuses every image: fail closed, like the
+placeholder signer address in the policy. (The two policy keys are committed, see "The PCR policy key".)
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
@@ -246,12 +246,20 @@ it is made in the same signing step.
   that asks for anything else (docs/BOOT.md). A signature over PCR 11 is a credential that unlocks
   every boot with that PCR value until the key is rotated, so a wrong one cannot be taken back.
 - **Only the public half is committed**, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`
-  next to `nyra.crt`; the release gate refuses any other. Nothing is created yet.
+  next to `nyra.crt`; the release gate refuses any other. It is `pcr-policy-1` in Cloud KMS (key ring
+  `nyra`, RSA 2048, HSM, PKCS#1 v1.5 SHA-256), the **current** key; its file's SHA-256 is
+  `e8baddbcbd70accf5525644bc766a5e79f9fcffdac69890348307f363793d0f1`.
 - **The next key's public half is committed too**, as
   `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`, and goes into the image
   (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`; in CI, a next key made for the run, whose private
   half is deleted at once). The release gate refuses an image whose next key is not that file, or is the
-  current key (compared as DER, so not even in another encoding). Nothing is created yet.
+  current key (compared as DER, so not even in another encoding). It is `pcr-policy-2` in the same key
+  ring and kind, the **next** key; its file's SHA-256 is
+  `677ff7820feb0c1eb0c606fced968cfe7f5cdf905bdc0321cd4ee1689e4299ae`. CI's signing identity may sign
+  only with `pcr-policy-1` (IAM on that key); `pcr-policy-2` has no signer until a rotation. Builds
+  and tests do not need either private half: the build job and the encryption tests use their own
+  per-run keys for the current key, and the tests that need a private next key (rotation, updates)
+  replace the image's next key with one of their own.
 - **A key is known by the SHA-256 of its PEM file**, on every disk (the record of its enrollments). So
   the release gate also requires the UKI's `.pcrpkey` to be the committed key's file byte for byte:
   the same key in another encoding would leave the disk unable to tell that it is the key it was
