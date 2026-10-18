@@ -1016,8 +1016,8 @@ jobs:
 
       # Before anything is signed: the image's /boot holds exactly one UKI, the sealed one
       # (ci/uki-cmdline.txt), with its main profile's PCR policy signed by the Nyra policy key and the
-      # whole file signed with the Nyra certificate, both committed here. Until the policy keys are
-      # committed, every image is refused (docs/SIGNING.md).
+      # whole file signed with the Nyra certificate, both committed here. Until a release UKI is signed
+      # with the Nyra key and its PCR policy with pcr-policy-1, every image is refused (docs/SIGNING.md).
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
