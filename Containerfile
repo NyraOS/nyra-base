@@ -49,7 +49,7 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
 # build context "nyra-polkit" (ci/build-image.sh), checked again against its sha256 in
 # ci/nyra-polkit.sha256, laid out where the image takes it: the daemon, pkcheck, and from its dist/
 # the unit, the bus policy, the bus activation file and the system user (each dist/ file names where
-# it is installed; the build fails if that is not where it goes here), and the licences.
+# it is installed; the build fails if that is not where it goes here), and the licences, Cargo.lock and the list of compiled crates (docs/SBOM.md).
 FROM ${TOOLS} AS polkit
 RUN --network=none --mount=type=bind,from=nyra-polkit,target=/release \
     --mount=type=bind,source=ci/nyra-polkit.sha256,target=/nyra-polkit.sha256 \
@@ -64,7 +64,7 @@ RUN --network=none --mount=type=bind,from=nyra-polkit,target=/release \
       nyra-polkit.sysusers:/usr/lib/sysusers.d/nyra-polkit.conf; do \
       head -3 "/x/dist/${f%%:*}" | grep -qF " ${f#*:}" || { echo "dist/${f%%:*} is not installed at ${f#*:}" >&2; exit 1; }; \
       install -D -m 0644 "/x/dist/${f%%:*}" "/tree${f#*:}" || exit 1; done && \
-    mkdir -p /tree/usr/share/doc/nyra-polkit && cp -r /x/LICENSE /x/third-party /tree/usr/share/doc/nyra-polkit/
+    mkdir -p /tree/usr/share/doc/nyra-polkit && cp -r /x/LICENSE /x/third-party /x/Cargo.lock /tree/usr/share/doc/nyra-polkit/
 
 # ntpd-rs, the time client (ntpd-rs/, docs/DEFAULTS.md "Time"), from its crates like nyra-updated,
 # with our patch for a clock that is far off (patches/upstream/ntpd-rs-wrong-clock.md) applied to the

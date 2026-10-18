@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CycloneDX SBOM and vulnerability gate for nyra-base (docs/SBOM.md).
 
-usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
+usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK|CRATES...]
   MANIFEST    mkosi JSON manifest (exact Debian package versions)
   CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc); after SBOM_OUT, the
               Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
-              counts once
+              counts once. A file named ...CRATES (nyra-polkit's third-party/CRATES, the crates compiled
+              into a release we only download) lists "name version: licence" per line instead
   SBOM_OUT    CycloneDX 1.6 JSON written here
 Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf.
 
@@ -36,6 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MKOSI_CONF = os.path.join(HERE, "..", "..", "mkosi", "mkosi.conf")
 MITIGATIONS = os.path.join(HERE, "mitigations.toml")
 TRACKER = "https://security-tracker.debian.org/tracker/data/json"
+CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 OSV = "https://api.osv.dev/v1"
 BLOCKING = ("critical", "high", "unknown")
 MAX_DAYS = 90
@@ -243,7 +245,12 @@ def main():
     manifest = json.load(open(manifest_path))
     crates = {}
     for path in [lock_path, *sys.argv[4:]]:
-        for p in tomllib.load(open(path, "rb"))["package"]:
+        if path.endswith("CRATES"):
+            packages = [{"name": line.split()[0], "version": line.split()[1].rstrip(":"), "source": CRATES_IO}
+                        for line in open(path) if line.strip()]
+        else:
+            packages = tomllib.load(open(path, "rb"))["package"]
+        for p in packages:
             if "source" in p:
                 crates.setdefault((p["name"], p["version"], p["source"]), p)
     crates = list(crates.values())

@@ -168,8 +168,8 @@ replug='echo "@@REPLUG""-1@@"; for i in $(seq 30); do test -e '"$U"' && break; s
 # counts a session as local only when it has a seat. As root, pkcheck asks polkit about that
 # session: it may mount a stick, but a file becomes a loop device or a disk is changed only
 # with an administrator (49-nyra.toml). The process asked about is the user's shell (its .profile
-# writes its PID; the session's leader, login, runs as root, which polkit allows everything,
-# 10-root.toml). In the session itself (its .profile, once it is active), udisksctl loop-setup is
+# writes its PID; the session's leader, login, runs as root, which polkit allows everything).
+# In the session itself (its .profile, once it is active), udisksctl loop-setup is
 # refused, since nobody can give that password. nyra-polkit (docs/DEFAULTS.md, "polkit") is the one
 # that answers, it read every rule file of the image and none is broken (it would deny everything),
 # and no directory of JavaScript rules exists.

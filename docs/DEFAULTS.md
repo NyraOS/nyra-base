@@ -331,7 +331,7 @@ unattended machine reads nothing that is plugged into it.
 | Trusted media | a file system in `/etc/nyra/trusted-media` is mounted without `noexec`; `nosuid` and `nodev` stay (below) |
 | File systems | vfat, exfat, NTFS (the kernel's `ntfs` driver: kernel 7.2 has no ntfs3, and udisks2, which tries ntfs3 first, goes on to it), ext4 (also ext2 and ext3, read by the ext4 driver), btrfs, xfs, iso9660, udf. Only kernel drivers: no FUSE drivers, no new checking tools. Every other file system is refused (below) |
 | Services | `udisks2.service` and `nyra-polkit.service` (see "polkit") start through D-Bus on the first request, never at boot: our preset disables `udisks2.service`, which Debian enables in `graphical.target`. udisks2 runs as root, with a hardening drop-in (`udisks2.service.d/10-nyra.conf`: no new privileges, only Unix and netlink sockets, no namespaces, no real-time scheduling, no writable and executable memory, native system calls only); it keeps the system's mount namespace, since its mounts must be the system's. nyra-polkit runs as the user `polkitd`, with no capabilities, sandboxed by its unit; it has no setuid helper |
-| Who may mount | root always (polkitd allowed root everything; with nyra-polkit, `10-root.toml`). Other users by udisks2's polkit policy: a removable file system from an active local session without a password; an internal disk with an administrator's password. Two things udisks2 allows any active session need an administrator's password too (`/usr/share/nyra-polkit/rules.d/49-nyra.toml`): setting up a file as a loop device (`udisksctl loop-setup`), since a user's file would otherwise become a file system for the kernel to read, with no stick at all; and changing a removable disk (`modify-device`: its label, formatting, partitions), since libblockdev passes a new label to `fatlabel` unchecked (CVE-2026-111581, low). Nothing in the base needs either yet |
+| Who may mount | root always (nyra-polkit allows root every known action, as polkitd did). Other users by udisks2's polkit policy: a removable file system from an active local session without a password; an internal disk with an administrator's password. Two things udisks2 allows any active session need an administrator's password too (`/usr/share/nyra-polkit/rules.d/49-nyra.toml`): setting up a file as a loop device (`udisksctl loop-setup`), since a user's file would otherwise become a file system for the kernel to read, with no stick at all; and changing a removable disk (`modify-device`: its label, formatting, partitions), since libblockdev passes a new label to `fatlabel` unchecked (CVE-2026-111581, low). Nothing in the base needs either yet |
 | Passwords through polkit | none today. Every "administrator's password" above needs polkit's password helper, whose socket (`polkit-agent-helper.socket`) is disabled (our preset) until something in the base asks users for a password through polkit and the helper has no known open issue (`tools/sbom/mitigations.toml`); until then those actions are refused for everyone but root. The administrators are the group `sudo` (`49-nyra.toml`, as Debian's default) |
 | Logins | `libpam-systemd`, which polkit needs: every login gets a logind session, which is how polkit knows an active local session. With it every user who logs in, root on the console too, gets their user manager (`user@UID.service`) and `/run/user/UID`; the user manager starts the user units Debian enables for every user. At shutdown `/run/user/UID` is unmounted only after the user manager has stopped (`user-runtime-dir@.service.d/10-nyra.conf`) |
 
@@ -459,7 +459,7 @@ streams, data from both libraries decompressed by the other) and curl's `--compr
 
 ### polkit
 
-[nyra-polkit](https://github.com/NyraOS/nyra-polkit) (MIT, 0.1.1) answers
+[nyra-polkit](https://github.com/NyraOS/nyra-polkit) (MIT, 0.1.2) answers
 `org.freedesktop.PolicyKit1` in place of Debian's polkitd. It has the same D-Bus interface, so
 udisks2, logind, Flatpak and the polkit libraries stay as they are; its rules are TOML instead of
 JavaScript, and when several match, the most restrictive result wins (its `docs/DESIGN.md`).
@@ -485,13 +485,14 @@ The JavaScript rules that polkitd read, and what reads them now:
 | `org.freedesktop.Flatpak.rules` (flatpak): members of `sudo` in the active local session install and remove apps and runtimes and change the repositories without a password; overriding parental controls needs an administrator | `60-flatpak.toml`, the same |
 | `systemd-networkd.rules` (systemd): the user `systemd-network` may set the hostname and the time zone, read the product UUID and control ModemManager | `60-systemd-networkd.toml`, the same |
 | `empower.rules` (systemd): every action for the group `empower` (`run0 --empower`) | not translated: nyra-polkit allows a rule over every action only with `no`. The image has no group `empower`, and `run0` needs polkit's password check, which only root passes in the base |
-| polkitd itself: every action for root, before any rule | `10-root.toml`: every action under `io.` and `org.` for root. Unlike polkitd, an image rule that asks everyone for an administrator (`loop-setup`, `modify-device`, Flatpak's parental controls) asks root too |
+| polkitd itself: every action for root, before any rule | nyra-polkit itself, since 0.1.2, when root's uid is certain: every known action, before any rule, so an image rule that asks everyone for an administrator (`loop-setup`, `modify-device`, Flatpak's parental controls) does not ask root |
 
-Not in nyra-polkit 0.1.1, with no effect on the base today: the `imply` annotation (it only counts
+Not in nyra-polkit 0.1.2, with no effect on the base today: the `imply` annotation (it only counts
 after a password, and the base asks for none), translations through `gettext-domain` (systemd's
 action texts are shown in English), `unix-netgroup`. The SBOM lists Debian's `polkitd` package, for
-what stays of it, but not the crates in nyra-polkit's binaries: the release has no `Cargo.lock`;
-their licences are in `/usr/share/doc/nyra-polkit/third-party`.
+what stays of it, and the crates in nyra-polkit's binaries, from the release's `third-party/CRATES`
+(docs/SBOM.md); that file, the release's `Cargo.lock` and the crates' licences are in
+`/usr/share/doc/nyra-polkit/`.
 
 ### Core utilities
 

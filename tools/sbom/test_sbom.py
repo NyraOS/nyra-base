@@ -163,6 +163,19 @@ class Gate(unittest.TestCase):
         self.assertEqual(purls.count("pkg:cargo/baz@0.1.0"), 1)
         self.assertIn("pkg:cargo/qux@1.0.0", purls)
 
+    def test_crates_list(self):
+        # A CRATES file ("name version: licence"): its crates are in the SBOM and scanned; one already
+        # listed counts once.
+        with open(self.path("CRATES"), "w") as f:
+            f.write("baz 0.1.0: MIT\nqux 1.0.0: Apache-2.0 OR MIT\n")
+        code, report = self.run_gate(extra_locks=[self.path("CRATES")])
+        self.assertEqual(code, 1)
+        self.assertIn("(2 Debian packages, 2 Rust crates, bootc)", report)
+        with open(self.path("sbom.json")) as f:
+            purls = [c.get("purl") for c in json.load(f)["components"]]
+        self.assertEqual(purls.count("pkg:cargo/baz@0.1.0"), 1)
+        self.assertIn("pkg:cargo/qux@1.0.0", purls)
+
     def test_no_debian_packages_refused(self):
         with open(self.path("manifest.json")) as f:
             manifest = json.load(f)

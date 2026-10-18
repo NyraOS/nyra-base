@@ -359,6 +359,9 @@ jobs:
           cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
           cp zlib/Cargo.lock dist/nyra-zlib.Cargo.lock
           cp ntpd-rs/Cargo.lock dist/nyra-ntpd.Cargo.lock
+          c="$(sudo podman create -q localhost/nyra-base:ci)"
+          sudo podman cp "$c:/usr/share/doc/nyra-polkit/third-party/CRATES" dist/nyra-polkit.CRATES
+          sudo podman rm -f "$c" >/dev/null
           sudo chown -R "$(id -u):$(id -g)" dist
           m=dist/nyra-base.manifest.json
           {
@@ -369,7 +372,7 @@ jobs:
             echo "| Debian snapshot | \`$SNAPSHOT\` (unstable) |"
             echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`) |"
             echo "| Kernel | linux-image-amd64 $(jq -r '.packages[] | select(.name == "linux-image-amd64") | .version' "$m") |"
-            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs, $(grep -c '^source = ' dist/nyra-ntpd.Cargo.lock) in ntpd-rs |"
+            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs, $(grep -c '^source = ' dist/nyra-ntpd.Cargo.lock) in ntpd-rs, $(grep -c . dist/nyra-polkit.CRATES) in nyra-polkit |"
             echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), $(du -h dist/nyra-base.oci.tar | cut -f1) oci-archive |"
             echo
             echo "\`bootc container lint --fatal-warnings\`"
@@ -396,7 +399,7 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock dist/nyra-ntpd.Cargo.lock \
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock dist/nyra-ntpd.Cargo.lock dist/nyra-polkit.CRATES \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
           echo "sbom_sha256=$(sha256sum < dist/nyra-base.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -414,6 +417,7 @@ jobs:
             dist/bootc-*.Cargo.lock
             dist/nyra-zlib.Cargo.lock
             dist/nyra-ntpd.Cargo.lock
+            dist/nyra-polkit.CRATES
           retention-days: 90
 
   # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
@@ -448,13 +452,14 @@ jobs:
           [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::No SBOM artifact from a successful build on main"; exit 1; }
           mkdir -p dist
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/sbom.zip"
-          unzip -q -o "$RUNNER_TEMP/sbom.zip" nyra-base.manifest.json "bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" -d dist
+          unzip -q -o "$RUNNER_TEMP/sbom.zip" nyra-base.manifest.json "bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" nyra-polkit.CRATES -d dist
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           # zlib/ and ntpd-rs/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
+          # nyra-polkit.CRATES comes with the artifact: the pinned release changes only with ci/nyra-polkit.sha256 (an image change).
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock dist/nyra-polkit.CRATES >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot, then esp-sync install for the boot

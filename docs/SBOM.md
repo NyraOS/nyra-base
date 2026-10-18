@@ -16,6 +16,7 @@ artifact:
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 | `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
+| `nyra-polkit.CRATES` | the crates compiled into nyra-polkit (`third-party/CRATES` of its release, as installed in the image: `name version: licence` per line) |
 
 Once images are published, releases will attach the SBOM next to the image.
 
@@ -35,7 +36,12 @@ Components:
   ntpd-rs, which the image build compiles): `pkg:cargo/<name>@<version>` (git sources add
   `vcs_url`); a crate in several counts once. ntpd-rs's crates `ntpd` and `ntp-proto` are listed at
   their upstream version; the image's `ntp-proto` carries our patch
-  (`patches/upstream/ntpd-rs-wrong-clock.md`).
+  (`patches/upstream/ntpd-rs-wrong-clock.md`);
+- one per crate in nyra-polkit's `third-party/CRATES` (docs/DEFAULTS.md, "polkit"): the release is
+  downloaded, not built here, so the list it ships is the source (the crates compiled into its
+  binaries, from the crates.io registry; its own crates are not in it). The same file is in the
+  image as `/usr/share/doc/nyra-polkit/third-party/CRATES`, next to the release's `Cargo.lock`, a
+  superset of the compiled crates.
 
 Debian's `zlib1g` stays in the list: the package is installed, only its library file is replaced
 with zlib-rs (docs/DEFAULTS.md, "zlib"). A finding for Debian's zlib therefore blocks like any
@@ -52,7 +58,7 @@ script refuses a list without any.
 | Question | Source |
 |---|---|
 | Is our version of a Debian source package affected? | [Debian Security Tracker](https://security-tracker.debian.org/tracker/data/json), release `sid`: open, undetermined, or fixed in a version newer than ours |
-| Is a crate of bootc, zlib-rs or ntpd-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
+| Is a crate of bootc, zlib-rs, ntpd-rs or nyra-polkit affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
 A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
@@ -113,7 +119,7 @@ python3 -m venv /tmp/sbom-venv
 gh run download <run-id> -n nyra-base-sbom -D /tmp/sbom
 BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.py \
   /tmp/sbom/nyra-base.manifest.json /tmp/sbom/bootc-*.Cargo.lock /tmp/sbom/nyra-base.cdx.json \
-  /tmp/sbom/nyra-zlib.Cargo.lock
+  /tmp/sbom/nyra-zlib.Cargo.lock /tmp/sbom/nyra-polkit.CRATES
 ```
 
 The offline tests (canned tracker and OSV data) run first in CI:
