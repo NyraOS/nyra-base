@@ -80,8 +80,9 @@ docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallb
 (`EFI/Linux/nyra-fallback-<digest>+0.efi`) exists only on a machine's ESP: `esp-sync` copies the UKI
 bootc installed there, so it is the same signed file and nothing new is signed for it.
 
-The same checks guard the signing step itself (`ci/build-image.sh`, step 3): it signs exactly one file,
-and only if `uki-check.py` accepts it and, once its PCR policy is signed, `pcr-policy.py check` too, so the key that signs UKIs never signs an add-on (which would
+The same checks guard the signing step itself (`tools/signing/sign-uki.sh`, called by step 3 of
+`ci/build-image.sh`, the only script that signs a UKI; `tools/signing/test-sign-uki.sh` tests it with
+stub `sbsign`/`sbverify`): it signs exactly one file, and only if `uki-check.py` accepts it and, once its PCR policy is signed, `pcr-policy.py check` too, so the key that signs UKIs never signs an add-on (which would
 apply to every Nyra UKI) or a UKI with another command line. A change to the sealed command line
 (`kargs.d`, the profiles in `ci/ukify.sh`) therefore needs a matching change to `ci/uki-cmdline.txt`
 in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose

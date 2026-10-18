@@ -10,7 +10,9 @@
 #      this run only, deleted right after signing; the UKI certificate and the policy's public key stay
 #      in UKI_DIR for the tests. The real Nyra keys will sign at this point, without CI ever holding
 #      them. Only one file is signed, and only if it is the sealed UKI (tools/signing/uki-check.py,
-#      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check);
+#      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check): both
+#      checks, the signature and its verification are tools/signing/sign-uki.sh, the only script
+#      that signs a UKI, here with the run's key and later with the real one;
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
 # Before step 1, the next PCR policy key's public half is put in place for the image (below), and
 # the crates of nyra-updated, zlib-rs and ntpd-rs are fetched into UKI_DIR/crates (cargo fetch
@@ -99,14 +101,13 @@ if [ ! -d "$uki/signed" ]; then
     ukify build --hwids '' --join-pcrsig "/in/${f##*/}" --pcrsig @/pcr/pcrsig.json --output "/out/${f##*/}"
   sudo chown -R "$(id -u):$(id -g)" "$uki/policy"
   f="$uki/policy/${f##*/}"
-  python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
-  python3 -I tools/signing/pcr-policy.py check "$f" "$uki/pcr/tpm2-pcr-public-key.pem"
   openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI per-run UKI key" \
     -keyout "$key/uki.key" -out "$uki/uki.crt" 2>/dev/null
-  mkdir -p "$uki/signed.tmp"
-  sbsign --key "$key/uki.key" --cert "$uki/uki.crt" --output "$uki/signed.tmp/${f##*/}" "$f"
+  # The one script every UKI signature goes through: it repeats the checks above on the joined file,
+  # signs, and verifies with the certificate (tools/signing/sign-uki.sh).
+  PCR_PUBKEY="$uki/pcr/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$uki/policy" "$uki/signed.tmp" -- \
+    --key "$key/uki.key" --cert "$uki/uki.crt"
   rm -rf "$key"
-  sbverify --cert "$uki/uki.crt" "$uki"/signed.tmp/*.efi
   mv "$uki/signed.tmp" "$uki/signed"
 fi
 build "$@" --build-arg SEALED="$tag-sealed" --build-context uki="$uki/signed" -t "$tag"
