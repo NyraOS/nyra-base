@@ -72,8 +72,9 @@ unless:
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
 
-**The certificate is not committed yet**, so the gate refuses every image: fail closed, like the
-placeholder signer address in the policy. (The two policy keys are committed, see "The PCR policy key".)
+The certificate and both PCR policy keys are committed (see "The PCR policy key"), but no release UKI
+is signed with the Nyra key yet, so the gate refuses every image until one is: fail closed, like the
+placeholder signer address in the policy.
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
@@ -365,9 +366,10 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
-0. The Nyra UKI certificate is committed (see "Making the UKI certificate"). Until the UKI is signed
-   with the Nyra key (docs/BOOT.md, "What remains for the real Nyra key") and the PCR policy keys
-   are committed, the `sign` job refuses every image (the UKI release gate above).
+0. The Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI certificate"
+   and "The PCR policy key"). Until a release UKI is signed with the Nyra key (docs/BOOT.md, "What
+   remains for the real Nyra key") and its PCR policy with pcr-policy-1, the `sign` job refuses every
+   image (the UKI release gate above).
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
