@@ -10,7 +10,8 @@ After=bootc-finalize-staged.service boot.mount
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStop=/usr/lib/nyra/boot/esp-sync boot-counter
+# Without /boot mounted there is nothing to count, and esp-sync would log an error at every shutdown.
+ExecStop=/bin/sh -c 'findmnt -n -t vfat /boot >/dev/null || exit 0; exec /usr/lib/nyra/boot/esp-sync boot-counter'
 
 [Install]
 WantedBy=multi-user.target

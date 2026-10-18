@@ -30,7 +30,7 @@
 #  14. bootc's entry boots again, the fallback UKI is still there, with no tries left (sorted last).
 #  15. the ESP's file system check fails (a drop-in in /etc): boot.mount fails, esp-writable refuses
 #      and writes nothing (the random seed is unchanged), nyra-updated does not run, the health checks
-#      pass and the system starts;
+#      pass (bootc status skipped) and the system starts;
 #  16. the drop-in removed: the ESP is checked and mounted read-only again, esp-writable writes.
 # "Newer" and "older" are made by changing the first digit of the Debian version in the file's
 # SBAT section; that copy is never started (the boots go through EFI/nyra), so its signature does
@@ -280,7 +280,7 @@ vm --log "$logs/serial-boot-protection-15.log" \
   --command "$refused"' && test -z "$(findmnt -n -t vfat)" && echo "esp-writable refused; no FAT file system mounted"' \
   --command "$seed_ro"'; a="$(seed)"; systemctl restart systemd-boot-random-seed.service; r=$?; b="$(seed)"; echo "before: $a"; echo "after:  $b"; test "$r" != 0 && test -n "$a" && test "$a" = "$b" && test "$('"$refused"' | wc -l)" = 2 && test -z "$(findmnt -n -t vfat)" && echo "the random seed on the ESP is unchanged"' \
   --command 'systemctl start nyra-updated.service; r=$?; systemctl show -p ExecMainStartTimestampMonotonic nyra-updated.service; test "$r" != 0 && test "$(systemctl show -P ExecMainStartTimestampMonotonic nyra-updated.service)" = 0 && ! mountpoint -q /boot && echo "nyra-updated did not run"' \
-  --command 'journalctl -b -k -o cat --no-pager | grep -i fat; systemctl is-active boot-complete.target && systemctl show -p Result nyra-health-system.service nyra-health-bootc.service && test "$(systemctl show -P Result nyra-health-system.service)" = success && test "$(systemctl show -P Result nyra-health-bootc.service)" = success && echo "the health checks passed, bootc status among them"'
+    --command 'journalctl -b -k -o cat --no-pager | grep -i fat; systemctl is-active boot-complete.target && test "$(systemctl show -P Result nyra-health-system.service)" = success && test "$(systemctl show -P ActiveState nyra-health-bootc.service)" = inactive && test "$(systemctl show -P Result nyra-health-bootc.service)" = success && test "$(systemctl show -P ExecMainStartTimestampMonotonic nyra-health-bootc.service)" = 0 && echo "the health checks passed, bootc status skipped without the ESP"'
 
 # The drop-in removed: the normal boot is as before (the ESP checked and mounted read-only, the
 # repair ran), and esp-writable writes again (a new random seed on the ESP).
