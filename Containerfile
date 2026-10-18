@@ -45,6 +45,27 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
     grep -Eq ' ZLIB_1\.2\.0 +deflateBound$' /root/symbols && grep -Eq ' ZLIB_1\.3\.2 +compress_z$' /root/symbols && \
     readelf -d target/libz.so.1 | grep -q 'BIND_NOW' && readelf -l target/libz.so.1 | grep -q GNU_RELRO
 
+# nyra-polkit (docs/DEFAULTS.md, "polkit"): its release tarball for the image's architecture, from the
+# build context "nyra-polkit" (ci/build-image.sh), checked again against its sha256 in
+# ci/nyra-polkit.sha256, laid out where the image takes it: the daemon, pkcheck, and from its dist/
+# the unit, the bus policy, the bus activation file and the system user (each dist/ file names where
+# it is installed; the build fails if that is not where it goes here), and the licences, Cargo.lock and the list of compiled crates (docs/SBOM.md).
+FROM ${TOOLS} AS polkit
+RUN --network=none --mount=type=bind,from=nyra-polkit,target=/release \
+    --mount=type=bind,source=ci/nyra-polkit.sha256,target=/nyra-polkit.sha256 \
+    line="$(grep -E -- "-$(uname -m)-linux-gnu\.tar\.gz$" /nyra-polkit.sha256)" && \
+    (cd /release && echo "$line" | sha256sum --strict -c -) && \
+    mkdir /x && tar -C /x --strip-components=1 --no-same-owner --no-same-permissions -xzf "/release/${line#*  }" && \
+    install -D -m 0755 /x/bin/nyra-polkitd /tree/usr/libexec/nyra-polkitd && \
+    install -D -m 0755 /x/bin/pkcheck /tree/usr/bin/pkcheck && \
+    for f in nyra-polkit.service:/usr/lib/systemd/system/nyra-polkit.service \
+      org.freedesktop.PolicyKit1.conf:/usr/share/dbus-1/system.d/org.freedesktop.PolicyKit1.conf \
+      org.freedesktop.PolicyKit1.service:/usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service \
+      nyra-polkit.sysusers:/usr/lib/sysusers.d/nyra-polkit.conf; do \
+      head -3 "/x/dist/${f%%:*}" | grep -qF " ${f#*:}" || { echo "dist/${f%%:*} is not installed at ${f#*:}" >&2; exit 1; }; \
+      install -D -m 0644 "/x/dist/${f%%:*}" "/tree${f#*:}" || exit 1; done && \
+    mkdir -p /tree/usr/share/doc/nyra-polkit && cp -r /x/LICENSE /x/third-party /x/Cargo.lock /tree/usr/share/doc/nyra-polkit/
+
 # ntpd-rs, the time client (ntpd-rs/, docs/DEFAULTS.md "Time"), from its crates like nyra-updated,
 # with our patch for a clock that is far off (patches/upstream/ntpd-rs-wrong-clock.md) applied to the
 # checked ntp-proto crate. ntpd's build script takes a commit and a date from git, or today's date
@@ -167,15 +188,36 @@ RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
     test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && \
     grep -qx 'minimum-agreeing-sources = 3' /usr/lib/nyra/ntpd-rs/ntp.toml && test -f /usr/lib/clock-epoch
 
+# polkit (docs/DEFAULTS.md, "polkit"): nyra-polkit answers org.freedesktop.PolicyKit1 in place of
+# Debian's polkitd, with the image's rules in TOML (files/usr/share/nyra-polkit/rules.d, root's
+# alone: nyra-polkit denies everything otherwise), and its pkcheck in place of Debian's. Debian's
+# daemon, its unit, system user line and configuration, and every JavaScript rule go (the rules of
+# Debian's polkit, systemd and Flatpak are translated into those TOML files), with the directories
+# polkitd read rules from; its password helper (polkit-agent-helper-1), pkaction, pkttyagent and
+# the action files of every package stay. The build fails if any JavaScript rule is left.
+COPY --from=polkit /tree/ /
+RUN --mount=type=tmpfs,dst=/run \
+    rm /usr/lib/polkit-1/polkitd /usr/lib/systemd/system/polkit.service /usr/lib/sysusers.d/polkit.conf \
+      /usr/lib/tmpfiles.d/polkit-tmpfiles.conf /usr/share/polkit-1/polkitd.conf && \
+    rm -r /usr/share/polkit-1/rules.d /etc/polkit-1 && \
+    j="$(find / -xdev -path /proc -prune -o \( -name '*.rules' -o -name '*.rules.*' \) -path '*polkit*' -print)" && \
+    { test -z "$j" || { echo "polkit JavaScript rules left: $j" >&2; exit 1; }; } && \
+    chmod 0755 /usr/share/nyra-polkit /usr/share/nyra-polkit/rules.d && chmod 0644 /usr/share/nyra-polkit/rules.d/*.toml && \
+    test "$(stat -c '%u %g' /usr/share/nyra-polkit/rules.d /usr/share/nyra-polkit/rules.d/*.toml | sort -u)" = '0 0' && \
+    test -x /usr/lib/polkit-1/polkit-agent-helper-1 && test -f /usr/share/polkit-1/actions/org.freedesktop.UDisks2.policy && \
+    grep -qx 'SystemdService=nyra-polkit.service' /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \
+    getent passwd polkitd && pkcheck --version | grep -q '(nyra-polkit)$' && \
+    systemd-analyze verify --man=no --recursive-errors=no nyra-polkit.service
+
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
-# (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
+# (90-nyra-udisks.rules); it and nyra-polkit start through D-Bus, not at boot (our preset).
 RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
     test "$(systemctl is-enabled udisks2.service)" = disabled && \
     test "$(systemctl is-enabled polkit-agent-helper.socket)" = disabled && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \
     test -x /usr/lib/nyra/media/trusted && test -f /usr/lib/udev/rules.d/90-nyra-udisks.rules && \
-    test -f /usr/share/polkit-1/rules.d/49-nyra.rules && test -f /usr/share/polkit-1/rules.d/50-default.rules && \
+    test -f /usr/share/nyra-polkit/rules.d/49-nyra.toml && \
     grep -q pam_systemd /etc/pam.d/common-session && \
     test "$(/usr/lib/nyra/media/trusted)" = NYRA_MEDIA_TRUSTED=0
 

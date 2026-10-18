@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra's rules (docs/DEFAULTS.md, "Removable media" and "polkit"). nyra-polkit reads every file of
+# /usr/share/nyra-polkit/rules.d and /etc/nyra-polkit/rules.d, in no particular order: when several
+# rules match, the most restrictive result wins. A file in /etc with the same name replaces this one.
+
+# The administrators, whose password an "auth_admin" answer asks for: the group sudo, as Debian's
+# polkit default, named here so that Nyra decides it.
+[administrators]
+groups = ["sudo"]
+
+# Only with an administrator's password, for everyone, although udisks2 allows them to any active
+# local session:
+# - loop-setup: attaching a file as a loop device makes the kernel read a file system that the
+#   user built;
+# - modify-device: changing a removable disk (its label, formatting, partitions). libblockdev passes
+#   a new label to fatlabel unchecked, so a label starting with "-" becomes an option of fatlabel
+#   (CVE-2026-111581, low, not fixed in Debian yet). Nothing in the base needs it yet.
+[[rule]]
+actions = ["org.freedesktop.udisks2.loop-setup", "org.freedesktop.udisks2.modify-device"]
+result = "auth_admin"

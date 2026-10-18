@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# systemd's polkit rule for systemd-networkd (/usr/share/polkit-1/rules.d/systemd-networkd.rules in
+# Debian's systemd package), which polkitd read, in nyra-polkit's form (docs/DEFAULTS.md, "polkit"):
+# networkd, as its user systemd-network, sets the hostname and the time zone it gets from DHCP,
+# reads the product UUID and controls ModemManager (not in the base: an action nobody defines is
+# refused whatever the rules say).
+[[rule]]
+actions = [
+    "org.freedesktop.hostname1.set-hostname",
+    "org.freedesktop.hostname1.get-product-uuid",
+    "org.freedesktop.timedate1.set-timezone",
+    "org.freedesktop.ModemManager1.Device.Control",
+]
+users = ["systemd-network"]
+result = "yes"
