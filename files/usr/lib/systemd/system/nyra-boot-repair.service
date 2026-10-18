@@ -13,6 +13,9 @@ Before=nyra-updated.service
 
 [Service]
 Type=oneshot
+# Stays active: nyra-updated wants it, and a boot whose ESP was mounted late repairs once, not at
+# every update check.
+RemainAfterExit=yes
 ExecStart=/usr/lib/nyra/boot/esp-sync repair
 
 [Install]

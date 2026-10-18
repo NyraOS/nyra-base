@@ -7,10 +7,12 @@ Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
 # The check waits for the network, up to an hour (nyra-updated-wait-online.service), not for
 # network-online.target, which nothing in the base pulls in (docs/DEFAULTS.md, "Without a network").
 After=boot-complete.target nyra-updated-wait-online.service
-Wants=nyra-updated-wait-online.service
+Wants=nyra-updated-wait-online.service nyra-boot-repair.service
 # Only with the ESP mounted at /boot, after its file system check: bootc writes there when it stages
 # an update, and the boot counter at shutdown goes through esp-writable, which refuses without that
 # mount (docs/BOOT.md, "Mounts from /etc/fstab"). Each start tries the check and the mount again.
+# nyra-boot-repair is wanted too: when boot.mount failed at boot and only this start mounts the ESP,
+# the repair (it removes a stale entries.staged) runs now, before bootc stages anything.
 RequiresMountsFor=/boot
 
 [Service]

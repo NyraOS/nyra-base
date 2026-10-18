@@ -559,6 +559,12 @@ LOGO=nyra-logo
   docs/UPDATES.md) is still at the prompt. Both consoles (`getty@tty1`, `serial-getty@ttyS0`) run
   agetty without `--issue-file`, so both show this. `/etc/issue.net`
   stays Debian's: only a telnet or SSH server would show it, and the base has neither.
+- **The message after a login** is `/usr/lib/motd`: "Welcome to Nyra OS." and "Help and news:
+  https://nyraos.com". `pam_motd` (login's PAM stack) shows the first found of `/etc/motd`,
+  `/run/motd` and `/usr/lib/motd`, so Debian's `/etc/motd` is removed from the image (one the
+  administrator writes still wins), and so is `/etc/update-motd.d/10-uname`, the only script of the
+  dynamic part (`motd=/run/motd.dynamic`) that printed the `uname` line; the `motd.d` directories
+  (the health notice in `/run/motd.d`) still show.
 - **The logo** is the icon `nyra-logo` (`LOGO=`, an icon name):
   `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg` from `branding/logo/nyra-icon.svg`, and
   the same name in `16x16`, `22x22`, `24x24` and `32x32` from `branding/logo/nyra-icon-small.svg`,
