@@ -13,7 +13,8 @@
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check): both
 #      checks, the signature and its verification are tools/signing/sign-uki.sh, the only script
 #      that signs a UKI, here with the run's key and later with the real one;
-#   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
+#   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux
+#      (ci/final-image.sh, the only script that builds it).
 # Before step 1, the next PCR policy key's public half is put in place for the image (below), and
 # the crates of nyra-updated, zlib-rs and ntpd-rs are fetched into UKI_DIR/crates (cargo fetch
 # --locked: the checksums in the Cargo.lock of updated/, zlib/ and ntpd-rs/), the only download of
@@ -111,4 +112,4 @@ if [ ! -d "$uki/signed" ]; then
   rm -rf "$key"
   mv "$uki/signed.tmp" "$uki/signed"
 fi
-build "$@" --build-arg SEALED="$tag-sealed" --build-context uki="$uki/signed" -t "$tag"
+ci/final-image.sh "$tag-sealed" "$uki/signed" "$tag" "$@"
