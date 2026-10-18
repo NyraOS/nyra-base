@@ -90,9 +90,10 @@ TESTS = {
            "files are the image's, the file in /home is the same, the user logs in with their password, "
            "the network and the basic services work."),
     "T9": ("Wrong clock", "full", [UPDATES],
-           "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
-           "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
-           "request is sent, the update server's certificate and unsigned images are refused."),
+           "Hardware clock in 2099, 1970 and 2035: ntpd-rs corrects it through NTS by itself and the "
+           "update works. With the NTS servers spoofed (an untrusted NTS server): the clock stays "
+           "wrong, no unauthenticated NTP request is sent, the update server's certificate and "
+           "unsigned images are refused."),
     "T10": ("Disk encryption", "full", [ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN,
                                         ENCRYPTION_UPDATES, FIRST_BOOT],
             "Without a TPM: the password and the recovery key unlock the disk in the initrd (found by its "
