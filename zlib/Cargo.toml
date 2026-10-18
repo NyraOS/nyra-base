@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# zlib-rs as the system's libz.so.1 (docs/DEFAULTS.md, "zlib"): libz-rs-sys built as a static
+# library, which the Containerfile links into a shared library with zlib's symbol versions.
+[package]
+name = "nyra-zlib"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "z_rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The features of libz-rs-sys-cdylib's default build (the C allocator, run-time CPU feature
+# detection through std) plus the gz* file functions, which zlib's libz.so.1 has too.
+libz-rs-sys = { version = "=0.6.8", default-features = false, features = ["export-symbols", "std", "c-allocator", "gz"] }
+
+[profile.release]
+# Unwinding into C is undefined behaviour: a bug in the library aborts the program instead.
+panic = "abort"

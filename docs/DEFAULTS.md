@@ -17,6 +17,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick, `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
 signed refused) and boot counting are proven in the same job (docs/BOOT.md); signing with the real
@@ -383,3 +384,94 @@ For developer tools, use apt in a Distrobox container: distrobox create, then di
 The message is help, not the protection: `/usr` stays read-only for dpkg itself too. Titanic T12
 (docs/TITANIC.md) checks both: the message from all three commands, and "Read-only file system" from
 `/usr/lib/nyra/dpkg -i`, with `/usr` unchanged.
+
+## Rust components
+
+Some of Debian's tools are replaced with rewrites in Rust, where the rewrite does what the base
+needs. Each was tried against the scripts and tests of the base; what failed stays Debian's, with
+the reason below.
+
+### su
+
+`su` is the one from [sudo-rs](https://github.com/trifectatechfoundation/sudo-rs) (Debian's
+`sudo-rs` package), moved to `/usr/bin/su` over util-linux's and setuid root like it (the package's
+script sets the mode; `ci/setuid.txt` still lists `/usr/bin/su`). The rest of the package goes in
+the Containerfile: there is no `sudo`, `sudoedit` or `visudo` on the desktop. It uses the same PAM
+services as util-linux's (`/etc/pam.d/su`, and `su-l` for a login shell).
+
+Two differences matter for the base, both handled in recovery (docs/BOOT.md, "Recovery"):
+- sudo-rs asks for the password up to three times; recovery reads it once itself and gives it to `su`
+  on its input, so a wrong one is one try, as before.
+- sudo-rs refuses to run for a calling user it cannot look up ("user 'current user' not found"),
+  where util-linux's ran as UID 65534 without a `nobody` line in `/etc/passwd`. Recovery therefore
+  runs `su` as the administrator who logs in, by UID, instead of `nobody`.
+
+### zlib
+
+The image's `libz.so.1` is [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs), built in the
+image build: Debian has its crates, but no package with the library. `zlib/` holds a small crate
+that builds `libz-rs-sys` (pinned in `zlib/Cargo.lock`, each crate checked against it, without
+network: `ci/vendor-crates.sh`) as a static library; the Containerfile links it into a shared
+library with zlib's soname and symbol versions (`zlib.map` from `libz-rs-sys`), as zlib-rs documents
+for a drop-in, and puts it over the file Debian's `libz.so.1` link points to. Debian's `zlib1g`
+package stays installed for its link and in the SBOM (docs/SBOM.md). The features are those of
+zlib-rs's own C library build (the C allocator, CPU features detected at run time) plus the `gz*` file
+functions. Not used: the crate `libz-rs-sys-cdylib`, which also carries about 66 MB of test
+binaries and profiling data.
+
+Missing: `gzprintf` and `gzvprintf`. They are C variadic functions, which stable Rust cannot define
+(zlib-rs builds them only with a nightly compiler). A program that uses one would not load; none in
+the image does, and the build fails if one appears (a search of `/usr` for the names). `zlibVersion()`
+returns `1.3.0-zlib-rs-<version>`.
+
+Checked before: Python's `zlib` and `gzip` modules (compression levels -1 to 9, zlib, raw and gzip
+streams, data from both libraries decompressed by the other) and curl's `--compressed`. Size: about
+500 KB against Debian's 120 KB.
+
+### Core utilities
+
+The commands of GNU coreutils are those of [uutils coreutils](https://github.com/uutils/coreutils)
+(Debian's `rust-coreutils`): `/usr/bin/<command>` (and `/usr/sbin/chroot`) is a link to its
+multi-call binary `/usr/bin/coreutils`, which runs the command its link is named after. GNU's
+`basenc`, `factor` and `stty` stay: Debian's build of uutils has none of them. GNU coreutils stays
+installed for them; the build fails when that list changes. The image build itself (dracut, the
+initramfs) already runs with uutils.
+
+Checked against GNU before, on the same input, for what the base's scripts and tests use: `mv -T
+--exchange` (the switch of Reset settings), `cp -a` (modes with setuid, setgid and sticky bits, owners,
+times, links, hard links, FIFOs, ACLs, extended attributes, `cp -a SRC/. DEST/`,
+`--one-file-system`), `chmod` and `chown --reference`, `install -m` and `-D`, `date` (`-d` with ISO
+and `@seconds`, `+FORMAT`, `-u`), `sort` (`-r`, `-V`, `-u`, `-z`, the C locale), `stat -c` (`%a`,
+`%U`, `%G`, `%s`, `%t %T`) and `stat -f`, `head`, `tail` (`-c +N`, `-n +N`, `-1`), `cut`, `tr`, `od
+-An -tu1 -N5` (the TPM enrollment in the initramfs: not `-j`, below), `seq -w`, `id -nG`, `readlink -f`,
+`mktemp -d`, `truncate`, `du`, `base64`, `sha256sum -c`, `ln -sT` and `-sfn`, `mkdir -m`, `tee -a`,
+`timeout`, `dd ... conv=fsync status=none`: same output and exit codes. The initramfs stays
+reproducible.
+
+Cost, measured in CI against main (the three Rust components together, uutils' share by far the
+largest): the image (OCI archive) 24 MB larger (+4.2%); the UKI 4.9 MB larger, the initramfs in it
+12.6 MB larger uncompressed (the multi-call binary, about 13.8 MB, instead of the few GNU commands it
+needs); no measurable difference in boot time.
+
+Every Rust program, uutils' commands among them, aborts at its start (SIGABRT, exit 134) when it is
+started with standard input, output or error closed and `/dev/null` cannot be opened: Rust's runtime
+opens `/dev/null` in place of a closed descriptor and aborts if it cannot. GNU's commands run on.
+That needs both a closed descriptor and no `/dev/null`: systemd always gives services open
+descriptors, and recovery and Reset settings start on a fresh devtmpfs, which has `/dev/null`. It
+happened in Titanic T12, after `rm -rf /`: GNU xargs, unable to open `/dev/null`, started
+`sha256sum` with standard input closed (the test now hashes with `find -exec`, docs/TITANIC.md). In a
+shell where `/dev/null` was deleted, `mknod -m 666 /dev/null c 1 3` brings it back.
+
+One difference was found only in a VM: `od -j N` skips by the size the file system reports, and
+efivarfs in the initramfs reported less than the variable holds, so `od -An -tu1 -j4 -N1` on
+`SecureBoot` failed and the TPM enrollment took Secure Boot for off. GNU reads to skip. The enrollment
+now reads the first five bytes (`od -N5`) and takes the fifth, which both do the same.
+
+### What stays Debian's
+
+| Component | Why it is not replaced (yet) |
+|---|---|
+| chrony, not ntpd-rs (1.9.0) | ntpd-rs checks the NTS server's certificate against the system clock, with no way to skip the dates until the first clock update (chrony's `nocerttimecheck`, see "Time"). A clock in 2035 or 2099 therefore never gets corrected: every key exchange fails with an expired certificate (tried with the clock moved, against `time.cloudflare.com` and `nts.netnod.se`), and the update tests (T9) need that correction |
+| GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
+| GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
+

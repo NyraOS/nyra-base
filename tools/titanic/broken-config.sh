@@ -3,7 +3,7 @@
 # CI only (titanic.yml): Titanic T8, the configuration broken by the user (docs/TITANIC.md). One
 # system on a copy of the installed test disk, with Secure Boot on (tools/titanic/secure-boot-system.sh):
 #   1    a user, an administrator with a password, and a file in their home; control: the user logs
-#        in with the password (su through PAM, run as nobody so that it has to ask), a wrong one is
+#        in with the password (su through PAM, run as the user so that it has to ask), a wrong one is
 #        refused, and the network works (a file served by the runner, through QEMU's 10.0.2.2); then
 #        the daily copy of /etc (nyra-etc-copy@daily.service), and /etc as it was then, kept aside in
 #        /var to compare with
@@ -29,9 +29,9 @@
 #        serial-broken-config-<n>-restore.log). The next breakage starts from that system.
 #   6    all four at once; the "Nyra OS Recovery" entry is picked for the next boot
 #   7    that boot: recovery asks for an administrator although /etc/passwd has no nobody (the
-#        password is checked as UID 65534); a wrong password gives no shell, the right one a root
-#        shell in rescue.target; the shadow sync failed on the line that is not an account; then
-#        "Nyra OS Restore earlier settings" is picked for the next boot
+#        password is checked as the administrator, by UID); a wrong password gives no shell, the right
+#        one a root shell in rescue.target; the shadow sync failed on the line that is not an account;
+#        then "Nyra OS Restore earlier settings" is picked for the next boot
 #   8    that boot: the copy from boot 1 restored; the normal boot after it is healthy (as above) and
 #        the file in /home is the same; then all four broken again, "Nyra OS Reset settings" picked
 #   9    that boot: RESET; the system restarts by itself into the normal boot: /etc/fstab,
@@ -61,9 +61,10 @@ python3 -m http.server 8088 --bind 127.0.0.1 --directory "$t8/www" > "$t8/http.l
 # --- guest commands (as in tools/titanic/secure-boot-system.sh) -----------------------------------
 units="systemd-journald.service dbus.service systemd-logind.service systemd-networkd.service systemd-resolved.service chronyd-restricted.service nyra-firewall.service apparmor.service nyra-updated.timer"
 net="curl -fsS --max-time 10 http://10.0.2.2:8088/t8 | grep -qx $token"
-# The user's password through PAM: su, run as nobody so that it has to ask, reads it from its input.
-# nobody by number (65534): the broken /etc/passwd has no such account.
-su="setpriv --reuid=65534 --regid=65534 --clear-groups -- su -c id -- $user"
+# The user's password through PAM: su, run as the user so that it has to ask, reads it from its input.
+# By UID: su (sudo-rs) refuses to run for a user it cannot look up, and the broken /etc/passwd has no
+# nobody, but the user's line stays.
+su="setpriv --reuid=\$(id -u $user) --regid=\$(id -g $user) --clear-groups -- su -c id -- $user"
 login_ok="printf '%s\\n' '$pw' | $su | grep '^uid=[0-9]*($user)'"
 login_wrong="! printf 'wrong\\n' | $su"
 # bootc's shadow sync (it removes /etc/shadow and /etc/gshadow lines of accounts that are gone) stops
@@ -153,7 +154,7 @@ vm --poweroff --log "$logs/serial-broken-config-6.log" \
   --command "$break_fstab" \
   --command 'bootctl set-oneshot nyra-recovery.CONF && echo "next boot: Recovery (as picked in the boot menu)"' || fail=1
 
-# Recovery checks the password through su run as UID 65534, by number: /etc/passwd has no nobody now.
+# Recovery checks the password through su run as the administrator, by UID: /etc/passwd has no nobody now.
 again='Wrong user name or password, or not an administrator\.(.|\n)*Administrator user name: '
 if vm --poweroff --log "$logs/serial-broken-config-7.log" \
     --chat "Administrator user name: =>$user" --chat "Password: =>wrong-$token" \

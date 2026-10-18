@@ -5,10 +5,12 @@
 # sulogin (root's password) this asks for the user name and password of an administrator: a member
 # of the "sudo" group whose account has a usable password ("passwd -S" status P, so not an empty
 # or locked one, which PAM's nullok would otherwise let through). The password is checked by su
-# through PAM, run as nobody so that it has to ask; only then does the root shell start. nobody by
-# number (65534): with a broken /etc/passwd or /etc/group (nsswitch reads only the files) the name may
-# be gone, exactly when recovery is needed. Control-C and Control-Z do nothing here; Control-D, or
-# leaving the root shell, continues the normal boot.
+# through PAM, run as that administrator so that it has to ask; only then does the root shell start.
+# This script reads the password (without echo) and gives it to su on its input: su (sudo-rs) would
+# otherwise ask up to three times. su runs under the administrator's own IDs, by number: sudo-rs refuses
+# to run for a user it cannot look up, and with a broken /etc/passwd (nsswitch reads only the files)
+# nobody may be gone, exactly when recovery is needed. Control-C and Control-Z do nothing here;
+# Control-D, or leaving the root shell, continues the normal boot.
 set -u
 trap '' INT QUIT TSTP
 
@@ -22,15 +24,27 @@ while :; do
 	case "$user" in
 	'' | -* | *[!a-z0-9_.-]*) echo "Not a user name." ;;
 	*)
+		# Not an account with UID 0 (root under another name): its su would not ask for a password.
 		if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx sudo &&
-			[ "$(passwd -S "$user" 2>/dev/null | cut -d ' ' -f 2)" = P ] &&
-			setpriv --reuid=65534 --regid=65534 --clear-groups -- su -c true -- "$user"; then
-			echo "Recovery shell (root). Leave it with exit to continue booting."
-			# The shell gets the usual Control-C and Control-Z back.
-			trap - INT QUIT TSTP
-			/bin/bash -l
-			break
+			[ "$(id -u "$user" 2>/dev/null)" != 0 ] &&
+			[ "$(passwd -S "$user" 2>/dev/null | cut -d ' ' -f 2)" = P ]; then
+			printf 'Password: '
+			stty -echo 2>/dev/null
+			password=""
+			IFS= read -r password || true
+			stty echo 2>/dev/null
+			echo
+			if printf '%s\n' "$password" | setpriv --reuid="$(id -u "$user")" --regid="$(id -g "$user")" \
+				--clear-groups -- su -c true -- "$user" 2>/dev/null; then
+				password=""
+				echo "Recovery shell (root). Leave it with exit to continue booting."
+				# The shell gets the usual Control-C and Control-Z back.
+				trap - INT QUIT TSTP
+				/bin/bash -l
+				break
+			fi
 		fi
+		password=""
 		echo "Wrong user name or password, or not an administrator."
 		sleep 3
 		;;
