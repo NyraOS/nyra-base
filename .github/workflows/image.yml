@@ -919,6 +919,7 @@ jobs:
   # here, on a runner of its own, without permissions and without the repository; sign needs it.
   # The jobs after it check the image artifact against build's output (ci/check-artifact.sh).
   bootc-reproducible:
+    name: ${{ github.event_name == 'pull_request' && 'bootc-reproducible (pull request)' || 'bootc-reproducible' }}
     needs: build
     if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
@@ -955,6 +956,7 @@ jobs:
           echo "Reproducible: the release's bootc build is identical to the cached one ($cached)."
 
   sign:
+    name: ${{ github.event_name == 'pull_request' && 'sign (pull request)' || 'sign' }}
     needs: [build, install-boot, encryption, bootc-reproducible]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
     if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
