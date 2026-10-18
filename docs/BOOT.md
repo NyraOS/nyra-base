@@ -1055,9 +1055,10 @@ mounts nothing from it (its `/etc` has no `fstab`).
    the directory is made as `etc.nyra-tmp` with the marker inside and only then renamed to
    `etc.nyra-new`, so an `etc.nyra-new` without the marker can only be the previous `/etc`. That tells
    the leftovers of an interrupted reset apart: `etc.nyra-tmp` (cut right after the directory was
-   made) and an `etc.nyra-new` with the marker (cut before the switch) are removed by the next reset;
-   an `etc.nyra-new` without it is the previous `/etc` (cut right after the switch), and the next reset
-   keeps it as `etc.nyra-old`. Then the machine restarts into the normal boot.
+   made) and an `etc.nyra-new` with the marker (cut before the switch) are removed by the next reset,
+   and so is `etc.nyra-scratch`, the root-only temporary copy of an account file (cut while it was in
+   use); an `etc.nyra-new` without the marker is the previous `/etc` (cut right after the switch), and
+   the next reset keeps it as `etc.nyra-old`. Then the machine restarts into the normal boot.
 4. **The previous `/etc`** stays as `etc.nyra-old` next to it, mode `0700`, for the user (or support)
    to look at. Only one is kept: the next reset replaces it, and bootc removes it with the rest of
    that version's state when the version itself is removed. That includes a previous `/etc` kept from

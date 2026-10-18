@@ -21,6 +21,11 @@ the console shows that the system reached multi-user.target, waits 20 s more,
 and checks whether PATTERN was printed (by a unit, for example).
 Password requests (a disk's passphrase in the initrd) are answered on the serial
 console, where --chat can type them.
+Prompts (--chat, --refused, the login and shell prompts) are matched on the console without
+kernel messages and colour codes: a kernel message can land in the middle of a prompt. The
+console triggers (--power-cut-at, --tpm-fail-at, --qmp, --marker), mostly lines from a unit or a
+command but sometimes a kernel message itself ("Linux version"), match on the console as it is or
+without kernel messages, and so do the command results.
 --credential NAME=TEXT passes one more systemd credential over SMBIOS. The
 sealed command line does not import them (docs/BOOT.md); the test disks carry an
 add-on that does (tools/vm/test-addon.sh).
@@ -122,6 +127,22 @@ def clean(buf):
     return ANSI.sub(b"", KERNEL_LINE.sub(b"", buf))
 
 
+def on_console(pattern, buf):
+    """PATTERN on the console as it is (a kernel message itself, for example) or without kernel
+    messages and colour codes (which can split a line printed by the system)."""
+    return re.search(pattern, buf) or re.search(pattern, clean(buf))
+
+
+def raw_offset(buf, offset):
+    """The offset in buf of `offset` in clean(buf): the kernel messages and colour codes that clean()
+    removed before it are counted back in, one step at a time, the last step first."""
+    for removed, text in ((ANSI, KERNEL_LINE.sub(b"", buf)), (KERNEL_LINE, buf)):
+        for m in removed.finditer(text):
+            if m.start() < offset:
+                offset += m.end() - m.start()
+    return offset
+
+
 def qmp_now(path, *commands):
     """Send QMP commands (dicts) to QEMU's QMP socket, in order; each must succeed."""
     with socket.socket(socket.AF_UNIX) as s:
@@ -179,7 +200,7 @@ class Qmp:
 
     def check(self, buf):
         """Send the commands whose pattern is now on the console."""
-        for item in [p for p in self.pending if p[0].search(buf)]:
+        for item in [p for p in self.pending if on_console(p[0], buf)]:
             self.pending.remove(item)
             t = threading.Thread(target=self.send, args=item[1:], daemon=True)
             self.threads.append(t)
@@ -232,18 +253,19 @@ class Console:
                 self.buf += chunk
             self.log.write(chunk)
             self.log.flush()
-            if self.cut_at and self.cut is None and re.search(self.cut_at, self.buf):
+            if self.cut_at and self.cut is None and on_console(self.cut_at, self.buf):
                 self.proc.kill()
                 self.cut = time.monotonic() - self.t0
-            if self.tpm_fail and self.tpm_failed is None and re.search(self.tpm_fail[0], self.buf):
+            if self.tpm_fail and self.tpm_failed is None and on_console(self.tpm_fail[0], self.buf):
                 self.tpm_fail[1].kill()
                 self.tpm_failed = time.monotonic() - self.t0
             if self.qmp:
                 self.qmp.check(self.buf)
 
     def wait_for(self, pattern, timeout, start=0, cleaned=False):
-        """Wait for `pattern` after offset `start` (in clean(buf) with `cleaned`, whose offsets
-        differ); None on timeout or if QEMU exits. An unexpected kernel start before it raises."""
+        """Wait for `pattern` after offset `start` (in clean(buf[start:]) with `cleaned`, whose offsets
+        raw_offset() maps back); None on timeout or if QEMU exits. An unexpected kernel start before it
+        raises."""
         deadline = time.monotonic() + timeout
         while True:
             exited = self.proc.poll() is not None
@@ -252,7 +274,10 @@ class Console:
             with self.lock:
                 buf = self.buf
             m = re.search(pattern, clean(buf[start:]) if cleaned else buf[start:])
-            self.check_kernels(buf, start + m.start() if m and not cleaned else len(buf))
+            end = len(buf)
+            if m:
+                end = start + (raw_offset(buf[start:], m.end()) if cleaned else m.start())
+            self.check_kernels(buf, end)
             if m or exited or time.monotonic() >= deadline:
                 return m
             time.sleep(0.2)
@@ -276,14 +301,12 @@ class Console:
 def refused(con, pattern, timeout):
     """PATTERN shows up on the console, and no system has started 60 s later: no kernel message
     (only with console=ttyS0) and no login prompt (the getty on ttyS0 comes from a credential).
-    PATTERN is matched without kernel messages, which can split a prompt in two; the 60 s are
-    watched from what the console held then (a few tenths of a second after the prompt)."""
+    PATTERN and the login prompt are matched without kernel messages too, which can split them."""
     m = con.wait_for(pattern.encode(), timeout, cleaned=True)
     if not m:
         raise RuntimeError(f"no {pattern!r} on the console within {timeout} s")
-    with con.lock:
-        seen = len(con.buf)
-    if con.wait_for(rb"Linux version|login: ", 60, seen):
+    end = raw_offset(con.buf, m.end())
+    if con.wait_for(rb"Linux version|login: ", 60, end) or con.wait_for(rb"login: ", 0, end, cleaned=True):
         raise RuntimeError("a system started")
     return f"`{m.group().decode(errors='replace')}`, no system started within 60 s"
 
@@ -296,7 +319,7 @@ def expect_reboot(con, timeout):
         raise RuntimeError("the TPM was never made to fail (--tpm-fail-at did not match)")
     with con.lock:
         before = con.buf[:m.start()] if m else con.buf
-    if b"login: " in before:
+    if b"login: " in clean(before):
         raise RuntimeError("a login prompt came before the reboot")
     if not m:
         raise RuntimeError(f"no reboot within {timeout} s of the start")
@@ -308,7 +331,7 @@ def marker(con, pattern, expected, timeout):
     """multi-user.target is reached, 20 s pass, and PATTERN was printed or not, as expected."""
     m = con.wait_for(rb"Reached target multi-user\.target|@@ emergency: diagnostics", timeout, cleaned=True)
     if m and m.group() != b"Reached target multi-user.target":
-        con.wait_for(rb"@@ end of diagnostics", 300)
+        con.wait_for(rb"@@ end of diagnostics", 300, cleaned=True)
         raise RuntimeError("the boot ended in emergency mode (diagnostics in the serial log)")
     if not m:
         raise RuntimeError(f"multi-user.target not reached within {timeout} s")
@@ -316,22 +339,23 @@ def marker(con, pattern, expected, timeout):
     with con.lock:
         buf = con.buf
     con.check_kernels(buf, len(buf))
-    seen = any(re.search(pattern.encode(), b) for b in (buf, clean(buf)))
+    seen = bool(on_console(pattern.encode(), buf))
     if seen != expected:
         raise RuntimeError(f"{pattern!r} {'not ' if expected else ''}on the console")
     return f"`{pattern}` {'printed' if seen else 'not printed'}, as expected"
 
 
 def login(con, a, password, start):
-    """Wait for a login prompt after offset `start` and log in as root on the console."""
+    """Wait for a login prompt after offset `start` and log in as root on the console. Prompts are
+    matched without kernel messages, which can land in the middle of one."""
     if a.chat:
         chat, a.chat = a.chat, []  # the chat happens once, at the first login
         for step in chat:
             expect, _, send = step.partition("=>")
-            m = con.wait_for(expect.encode(), a.timeout, start)
+            m = con.wait_for(expect.encode(), a.timeout, start, cleaned=True)
             if not m:
                 raise RuntimeError(f"no {expect!r} on the console within {a.timeout} s")
-            start += m.end()
+            start += raw_offset(con.buf[start:], m.end())
             # A second after the prompt, as a person would type: systemd-ask-password prints its
             # prompt before it turns echo off, so input that arrives at once could be echoed.
             time.sleep(1)
@@ -340,31 +364,31 @@ def login(con, a, password, start):
                 time.sleep(int(seconds))
             con.type("\x04" if send == "@ctrl-d" else send + "\r")
         if not a.chat_then_login:
-            if not con.wait_for(rb"# ", 60, start):
+            if not con.wait_for(rb"# ", 60, start, cleaned=True):
                 raise RuntimeError("no root shell after the chat")
             return
         con.kernels += 1  # the guest may reboot after the chat
-    m = con.wait_for(rb"login: |@@ emergency: diagnostics", a.timeout, start)
+    m = con.wait_for(rb"login: |@@ emergency: diagnostics", a.timeout, start, cleaned=True)
     if m and m.group() != b"login: ":
-        con.wait_for(rb"@@ end of diagnostics", 300, start)
+        con.wait_for(rb"@@ end of diagnostics", 300, start, cleaned=True)
         raise RuntimeError("the boot ended in emergency mode (diagnostics in the serial log)")
     if not m:
         if con.proc.poll() is not None:
             raise RuntimeError(f"QEMU exited with code {con.proc.returncode} after "
                                f"{time.monotonic() - con.t0:.1f} s, before the login prompt")
         raise RuntimeError(f"no login prompt within {a.timeout} s")
-    # A reboot that was allowed but did not happen (a soft reboot, a chat without one) is not
-    # allowed any more.
-    con.kernels = len(KERNEL_START.findall(con.buf, 0, start + m.start()))
     # From the end of the prompt, not the end of the buffer: with autologin the
     # shell prompt can already be there.
-    start += m.end()
+    start += raw_offset(con.buf[start:], m.end())
+    # A reboot that was allowed but did not happen (a soft reboot, a chat without one) is not
+    # allowed any more.
+    con.kernels = len(KERNEL_START.findall(con.buf, 0, start))
     if not a.autologin:
         con.type("root\r")
-        if con.wait_for(rb"Password: ", 10, start):
+        if con.wait_for(rb"Password: ", 10, start, cleaned=True):
             start = len(con.buf)
             con.type(password + "\r")
-    if not con.wait_for(rb"# ", 60, start):
+    if not con.wait_for(rb"# ", 60, start, cleaned=True):
         raise RuntimeError("no root shell after logging in on the console")
 
 
@@ -381,10 +405,10 @@ def blind(con, monitor, chat, timeout):
     start, answered = 0, ""
     for step in chat:
         expect, _, send = step.partition("=>")
-        m = con.wait_for(expect.encode(), timeout, start)
+        m = con.wait_for(expect.encode(), timeout, start, cleaned=True)
         if not m:
             raise RuntimeError(f"no {expect!r} on the console within {timeout} s")
-        start += m.end()
+        start += raw_offset(con.buf[start:], m.end())
         time.sleep(1)  # as in login(): input that arrives with the prompt could be echoed
         con.type(send + "\r")
         answered = f"{len(chat)} prompt(s) answered, "
@@ -430,7 +454,10 @@ def login_and_run(con, a, password, rows, outputs):
             continue
         # The quotes keep the echoed command line from matching the markers.
         con.type(f"echo @@S''TART{i}@@; {c}; echo @@E''XIT{i}=$?@@\r")
-        m = con.wait_for(rf"(?s)@@START{i}@@(.*)@@EXIT{i}=(\d+)@@".encode(), 300, start)
+        result = rf"(?s)@@START{i}@@(.*)@@EXIT{i}=(\d+)@@".encode()
+        m = con.wait_for(result, 300, start, cleaned=True)
+        if m:  # the output as printed (dmesg lines included), unless a kernel message split a marker
+            m = re.search(result, con.buf[start:]) or m
         if not m:
             if con.cut is not None:
                 return
@@ -536,6 +563,79 @@ def self_test():
     assert reboot(boot + unlocked + restart, rb"Finished .{0,80}Cryptography Setup for root\.").startswith("TPM failed ")
     assert reboot(boot + restart, rb"Cryptography Setup for root").startswith("the TPM was never made to fail")
 
+    # Every prompt matched with a kernel message in the middle of it.
+    kmsg = "[    4.007221] clocksource: Watchdog remote CPU 1 read timed out\r\n"
+    # Where the match ends on the console itself: after the prompt, before what follows it.
+    m = re.search(target, clean(split))
+    assert split[raw_offset(split, m.end()):].startswith(b"\x1b[0[    9.857548] clocksource")
+    assert raw_offset(prompt + b"x", len(clean(prompt))) == len(prompt)
+    # The login prompt (with the autologin shell prompt already after it), the kernel starts
+    # counted up to it, the password and shell prompts, the --chat prompts, the emergency markers.
+    login_split = "localhost lo" + kmsg + "gin: root (automatic login)\r\n\r\nroot@localhost:~# "
+    assert run(boot + login_split) == "passed"
+    assert run(boot + boot + login_split).startswith("unexpected reboot: kernel start 2")
+    assert run(boot + "localhost login: ", "Pass" + kmsg + "word: ", "\r\nroot@localhost:~#" + kmsg + " ",
+               autologin=False) == "passed"
+    ask_split = "Type RESET" + kmsg + " to reset: "
+    assert run(boot + ask_split, ask_split, boot + login_split,
+               chat=[ask + "=>no", ask + "=>RESET"], chat_then_login=True) == "passed"
+    assert run(boot + ask_split, "root@localhost:~#" + kmsg + " ", chat=[ask + "=>x"]) == "passed"
+    emergency = "@@ emergency: diag" + kmsg + "nostics\r\n@@ end of diag" + kmsg + "nostics\r\n"
+    assert run(boot + emergency) == "the boot ended in emergency mode (diagnostics in the serial log)"
+    # --expect-reboot: a login prompt before the reboot.
+    assert reboot(boot + login_split + restart) == "a login prompt came before the reboot"
+    # A command's result markers.
+    assert run(boot + shell, "@@START0@@\r\n@@EX" + kmsg + "IT0=0@@\r\n# ", command=["true"]) == "passed"
+    # Triggers printed by a unit or a command: --tpm-fail-at (a status line), --power-cut-at.
+    unlocked_split = ("[  OK  ] Finished systemd-cryptsetup@root.service - Cryptography Se" + kmsg
+                      + "tup for root.\r\n")
+    assert reboot(boot + unlocked_split + restart,
+                  rb"Finished .{0,80}Cryptography Setup for root\.").startswith("TPM failed ")
+    proc = subprocess.Popen(["bash", "-c", 'printf %s "$1"; exec sleep 30', "bash", "POW" + kmsg + "ERCUT\r\n"],
+                            stdout=subprocess.PIPE, bufsize=0)
+    con = Console(proc, open(os.devnull, "wb"), rb"POWERCUT")
+    try:
+        proc.wait(timeout=5)  # killed at the pattern
+    finally:
+        proc.kill()
+    assert con.cut is not None
+
+    def ends(console, check, *args, answered=False):
+        """check(Console, *args) on a console that a process prints, then exits (after a line is typed,
+        with `answered`). The result or the error."""
+        sh = 'printf %s "$1"' + ('; IFS= read -r -d "$(printf "\\r")" _' if answered else "")
+        proc = subprocess.Popen(["bash", "-c", sh, "bash", console], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                bufsize=0)
+        try:
+            return check(Console(proc, open(os.devnull, "wb")), *args)
+        except RuntimeError as e:
+            return str(e)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    # --refused: the prompt, then no system (a kernel start before it is not one), or a login prompt.
+    ask_disk, disk_split = "Please enter (passphrase or )?recovery key for disk [^\r\n:]*:", prompt.decode()
+    assert ends(boot + disk_split, refused, ask_disk, 2).endswith("no system started within 60 s")
+    assert ends(disk_split + boot, refused, ask_disk, 2) == "a system started"
+    assert ends(disk_split + "\r\n" + login_split, refused, ask_disk, 2) == "a system started"
+    # --blind: the passphrase prompt is answered, then the guest powers off (the process exits).
+    with tempfile.TemporaryDirectory() as tmp:
+        monitor = socket.socket(socket.AF_UNIX)
+        monitor.bind(f"{tmp}/monitor")
+        monitor.listen()
+        assert ends(boot + disk_split, blind, f"{tmp}/monitor", [ask_disk + "=>key"], 5,
+                    answered=True).startswith("1 prompt(s) answered")
+        monitor.close()
+    # The console of a CI run whose chat timed out: kernel lines inside the prompt and right after
+    # its colon.
+    ata = "[    3.32{}] ata{}: SATA link down (SStatus 0 SControl 300)\r\n"
+    ci = ("Please enter rec" + ata.format("7335", 1) + "overy key for disk root:" + ata.format("9089", 2)
+          + " (press TAB for no echo) " + ata.format("0746", 3)
+          + "[   81.748225] clocksource: Watchdog remote CPU 1 read timed out\r\n")
+    assert run(boot + ci, boot + shell, chat=[ask_disk + "=>key"], chat_then_login=True) == "passed"
+    assert ends(boot + ci, refused, ask_disk, 2).endswith("no system started within 60 s")
+
     # --qmp: a command at its time, one at its console pattern, one whose pattern never comes, and
     # QEMU's error answer, with a stand-in for QEMU's QMP socket.
     tmp = tempfile.mkdtemp()
@@ -572,6 +672,11 @@ def self_test():
     q.start()
     time.sleep(0.3)
     assert not q.results()[1]
+    # A pattern split by a kernel message.
+    q = Qmp(f"{tmp}/qmp.sock", good[1:], time.monotonic())
+    q.check(b"@@UNPL" + kmsg.encode() + b"UG@@\r\n")
+    time.sleep(0.5)
+    assert q.results()[1]
     server.close()
     shutil.rmtree(tmp)
     print("vm-boot.py: self-test passed")

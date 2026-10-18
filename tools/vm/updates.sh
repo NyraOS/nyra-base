@@ -71,7 +71,7 @@
 #      defaults check (T15)
 #  39  v13, the test policy again; a dead network (T3): the link down before a check (it waits for the
 #      network), then cut while v17 downloads: reported, the unit not failed, nothing staged or marked
-#      failed; the link back: v17 staged
+#      failed; with no success for 15 days the unit fails; the link back: v17 staged
 #  40  v17 boots counted and is blessed
 #   tools/vm/updates.sh IMAGE DISK.qcow2 WORKDIR LOGDIR SUMMARY
 set -euo pipefail
@@ -375,7 +375,7 @@ sudo tc qdisc del dev lo root
 
 vm "v1 after the power cut: v2 staged again; power cut before finalization" --power-cut-at POWERCUT \
   --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; outcome s1 Staged && expect staged $d2 && expect rollback $d0" \
+  --command "$lib; outcome s1 Staged && expect staged $d2 && expect_version staged 2026.10.2 && expect rollback $d0" \
   --command 'bootc status --format json' \
   --command 'echo POWER''CUT'
 
@@ -666,13 +666,16 @@ cp "$u/t15/serial-security-defaults.log" "$logs/serial-security-defaults-after-u
 # without a network waits for it (nyra-updated-wait-online.service; tools/vm/no-network.sh shows that
 # it runs once the link is back): it has not started after 20 s, and is cancelled here, so the pull
 # below starts when the test says. Each time the running version stays, nothing is staged, nothing is
-# marked failed and nothing fails; the cut pull reports "no network connection" as a warning. With the
-# link back, the next check stages v17, which boots counted and is blessed. The test policy comes back
-# first: boot 38 linked the shipped one.
+# marked failed and nothing fails; the cut pull reports "no network connection" as a warning. Unless no
+# check has succeeded for 14 days or more (the last success moved 15 days back, the link still down; the
+# check started at once, not after the network): then it is an error and the unit fails.
+# With the link back, the next check stages v17, which boots counted and is blessed. The test policy
+# comes back first: boot 38 linked the shipped one.
 vm "v13: a dead network, before a check and in the middle of the download of v17; the link back: v17 staged" --poweroff \
   --command "$lib; expect booted $d13 && running && ln -sfn /etc/nyra-test/policy.json /etc/containers/policy.json" \
   --command "$lib; select_sheet s17 && network down && systemctl start --no-block nyra-updated.service && sleep 20 && test \"\$(systemctl show -P ExecMainStartTimestampMonotonic nyra-updated.service)\" = 0 && systemctl list-jobs --no-legend --no-pager nyra-updated.service | grep -w start && systemctl stop nyra-updated.service && expect staged none && expect booted $d13 && running" \
   --command "$lib; network up && curl -fsS https://updates.nyraos.com/_test/rate/2000 && systemctl start --no-block nyra-updated.service && sleep 10 && test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating && expect staged none && network down && { while test \"\$(systemctl show -P ActiveState nyra-updated.service)\" = activating; do sleep 2; done; cat /var/lib/nyra-updated/last-check.json; offline_reported $d17; }" \
+  --command "$lib; no_success_since 15 && ! systemctl start --job-mode=ignore-dependencies nyra-updated.service; cat /var/lib/nyra-updated/last-check.json; grep -qF 'no successful check for 15 days: no network connection' /var/lib/nyra-updated/last-check.json && systemctl is-failed --quiet nyra-updated.service && systemctl reset-failed nyra-updated.service" \
   --command "$lib; expect staged none && expect booted $d13 && network up && curl -fsS https://updates.nyraos.com/_test/rate/0 && outcome s17 Staged && expect staged $d17 && running"
 vm "v17 boots counted and is blessed" --poweroff \
   --command "$lib; expect booted $d17 && running && blessed && outcome s17 UpToDate && expect staged none"

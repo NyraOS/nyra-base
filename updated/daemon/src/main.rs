@@ -13,8 +13,8 @@
 
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
-    check, on_health_failure, set_channel, Config, Error, HealthAction, Lock, Outcome, Store,
-    System,
+    check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
+    System, NOT_CONFIGURED,
 };
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -27,12 +27,29 @@ const LOCK: &str = "/run/nyra-updated.lock";
 /// Writes what the user sees when the system stays up after a failed health check (docs/UPDATES.md).
 const NOTICE: &str = "/usr/lib/nyra/health/notice";
 
-/// Updates are not configured: the image ships no channel sheet key yet (docs/UPDATES.md).
-const NOT_CONFIGURED: &str =
-    "updates are not configured: no channel sheet key in /usr/lib/nyra/updates/channel-sheet.pem";
-
 fn config() -> Result<Option<Config>, Error> {
     Config::load(Path::new(CONFIG), Path::new(KEYS))
+}
+
+/// One update check, with the lock held (`run`).
+fn check_once(store: &Store, now: u64) -> Result<(u8, bool, String), Error> {
+    // Not an error that leaves the unit failed: every machine would be degraded, which hides real
+    // failures. Every sheet stays refused.
+    let Some(cfg) = config()? else {
+        return Ok((4, false, NOT_CONFIGURED.into()));
+    };
+    let mut sys = Real {
+        stage_limit: cfg.stage_timeout,
+    };
+    match check(&mut sys, store, &cfg, now) {
+        // A machine without a network is not failing: a warning, like the above.
+        Err(e @ Error::Offline(_)) => Ok((4, false, e.to_string())),
+        Ok(outcome) => {
+            let (priority, message) = outcome.report();
+            Ok((priority, true, message))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The journal priority (sd-daemon prefix: 3 error, 4 warning, 6 info), whether the command did
@@ -40,30 +57,29 @@ fn config() -> Result<Option<Config>, Error> {
 fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String), Error> {
     match (command, arg) {
         ("check", None) => {
+            // The report is written under the lock too, so two checks never write it at once. A
+            // check that finds another one running (Busy) writes nothing.
             let _lock = Lock::acquire(Path::new(LOCK))?;
             let store = Store {
                 dir: STATE_DIR.into(),
             };
-            // Not an error that leaves the unit failed: every machine would be degraded, which
-            // hides real failures. Every sheet stays refused.
-            let Some(cfg) = config()? else {
-                return Ok((4, false, NOT_CONFIGURED.into()));
+            let result = check_once(&store, now);
+            let (ok, message) = match &result {
+                Ok((_, ok, m)) => (*ok, m.clone()),
+                Err(e) => (false, e.to_string()),
             };
-            let mut sys = Real {
-                stage_limit: cfg.stage_timeout,
-            };
-            let outcome = match check(&mut sys, &store, &cfg, now) {
-                // A machine without a network is not failing: a warning, like the above.
-                Err(e @ Error::Offline(_)) => return Ok((4, false, e.to_string())),
-                result => result?,
-            };
-            // An owner's own image gets no updates from us: say so, every time.
-            let priority = if matches!(outcome, Outcome::ForeignImage(_)) {
-                4
-            } else {
-                6
-            };
-            Ok((priority, true, format!("{outcome:?}")))
+            match store.save_report(now, ok, &message) {
+                // Updates stopped for two weeks, whatever the cause (no network included): an
+                // error, so the unit fails and the machine is `degraded`.
+                Ok(report) if report.days_without_success().is_some() => {
+                    Err(Error::NoSuccessfulCheck(report.message))
+                }
+                Ok(_) => result,
+                Err(e) => {
+                    eprintln!("<4>nyra-updated: last-check.json not written: {e}");
+                    result
+                }
+            }
         }
         ("health-failed", None) => {
             // Every call has its limit (SHORT); the unit's TimeoutStartSec= is above their sum.
@@ -78,9 +94,9 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
                     Ok(out) => eprintln!(
                         "<4>nyra-updated: {NOTICE} failed ({}): {}",
                         out.status,
-                        String::from_utf8_lossy(&out.stderr).trim()
+                        one_line(String::from_utf8_lossy(&out.stderr).trim())
                     ),
-                    Err(e) => eprintln!("<4>nyra-updated: {NOTICE}: {e}"),
+                    Err(e) => eprintln!("<4>nyra-updated: {NOTICE}: {}", one_line(&e.to_string())),
                 }
             }
             action.map(|a| (6, true, format!("{a:?}")))
@@ -129,26 +145,14 @@ fn main() -> ExitCode {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let result = run(command, arg, now);
-    if command == "check" {
-        let (ok, message) = match &result {
-            Ok((_, ok, m)) => (*ok, m.clone()),
-            Err(e) => (false, e.to_string()),
-        };
-        let store = Store {
-            dir: STATE_DIR.into(),
-        };
-        if let Err(e) = store.save_report(now, ok, &message) {
-            eprintln!("<4>nyra-updated: last-check.json not written: {e}");
-        }
-    }
-    match result {
+    // Every line is one_line: error messages carry what bootc and curl print.
+    match run(command, arg, now) {
         Ok((priority, _, message)) => {
-            println!("<{priority}>nyra-updated {command}: {message}");
+            println!("<{priority}>nyra-updated {command}: {}", one_line(&message));
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("<3>nyra-updated {command}: {e}");
+            eprintln!("<3>nyra-updated {command}: {}", one_line(&e.to_string()));
             ExitCode::FAILURE
         }
     }
