@@ -858,6 +858,17 @@ Each line is something that broke or surprised us once.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
   preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
   takes long and fails much later.
+- Emulated (QEMU TCG, GitHub's arm64 runners), the image's 10 s wait for a device ran out before udev
+  had even started: `ttyAMA0` and the ESP timed out, the serial getty and `boot.mount` failed with
+  them, and the boot reached `boot-complete.target` with no login prompt (seen in CI). A drop-in
+  passed as a credential with a later name (`systemd.unit-dropin.UNIT~20-emulated`) gives them
+  systemd's 90 s back. A credential drop-in for `dev-.device` would reach the initrd too, where a
+  drop-in with the image's name (`10-nyra`) hides the root's own `dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf`
+  (systemd keeps one drop-in per file name), and a later name overrides its "no limit".
+- QEMU's `virt` machine has only TIS TPMs (`tpm-tis-device`, `tpm-tis-i2c`, QEMU 8.2 to 10.0), and
+  Debian's arm64 kernel builds neither driver (`CONFIG_TCG_TIS`, `CONFIG_TCG_TIS_I2C` off; CRB is
+  built in): the guest gets the firmware's TPM2 table but no `/dev/tpm0`, and waits 90 s for it in
+  the initrd.
 
 ## Titanic (docs/TITANIC.md)
 - bootc 1.16 enables `bootc-sysusers-shadow-sync.service` (through its generator, on composefs boots

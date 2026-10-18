@@ -71,8 +71,9 @@ probe of each disk finds now, and the script fails there without waiting for the
 A failed boot names its serial log in the output, so the job log leads to the whole console.
 
 KVM is mandatory: accel=kvm, no fallback to emulation. On an aarch64 host the guest is aarch64
-(docs/ARM64.md): QEMU's virt machine with edk2 (AAVMF), the serial console on ttyAMA0, the TPM on
-tpm-tis-device, and KVM when the host has it, otherwise emulation (TCG).
+(docs/ARM64.md): QEMU's virt machine with edk2 (AAVMF), the serial console on ttyAMA0, no TPM
+(--tpm is refused), and KVM when the host has it, otherwise emulation (TCG), where the devices the
+boot waits for get systemd's 90 s instead of the image's 10 s (see TCG_DEVICES).
 """
 import argparse
 import base64
@@ -100,6 +101,12 @@ if ARM64:
     OVMF_CODE_SECBOOT = "/usr/share/AAVMF/AAVMF_CODE.secboot.fd"
     OVMF_VARS = "/usr/share/AAVMF/AAVMF_VARS.fd"
     SERIAL = "ttyAMA0"
+# Emulated (TCG), the running system's 10 s wait for a device (the image's dev-.device.d/10-nyra.conf)
+# is over before udev has even started, so the serial console and the ESP time out, and with them the
+# getty and the ESP mount. These get systemd's 90 s back, in a drop-in that sorts after the image's.
+# Not every dev-*.device: in the initrd that drop-in would also replace the root's own wait (no limit).
+TCG_DEVICES = ("dev-disk-.device", f"dev-{SERIAL}.device")
+TCG_DEVICE_TIMEOUT = "[Unit]\nJobRunningTimeoutSec=90s\n"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
 # A boot that ends in emergency mode prints what the disk looks like to udev first: the root account
@@ -628,6 +635,10 @@ def main():
         p.error("--keep-vars needs --secure-boot")
     if a.tpm_fail_at and not a.tpm:
         p.error("--tpm-fail-at needs --tpm")
+    # QEMU's virt machine has only TIS TPMs (tpm-tis-device, tpm-tis-i2c); Debian's arm64 kernel has
+    # neither driver (only CRB, built in), so the guest would see no TPM and wait for it.
+    if ARM64 and a.tpm:
+        p.error("--tpm: no TPM on aarch64 (Debian's arm64 kernel has no driver for QEMU virt's TPMs)")
 
     password = secrets.token_urlsafe(12)
     tmp = tempfile.mkdtemp()
@@ -657,6 +668,10 @@ def main():
             + base64.b64encode(EMERGENCY.encode()).decode()]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.systemd-ask-password-console.service="
             + base64.b64encode(ASK_PASSWORD.encode()).decode()]
+    if ARM64 and accel == "tcg":
+        for unit in TCG_DEVICES:
+            cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:systemd.unit-dropin.{unit}~20-emulated="
+                    + base64.b64encode(TCG_DEVICE_TIMEOUT.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
     if a.no_carrier:
@@ -673,7 +688,7 @@ def main():
         if not os.path.exists(sock):
             raise SystemExit(f"vm-boot: swtpm did not start (state in {a.tpm})")
         cmd += ["-chardev", f"socket,id=chrtpm,path={sock}", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
-                "-device", f"{'tpm-tis-device' if ARM64 else 'tpm-crb'},tpmdev=tpm0"]
+                "-device", "tpm-crb,tpmdev=tpm0"]
     qmp = Qmp(f"{tmp}/qmp.sock", a.qmp, 0) if a.qmp else None
     if qmp or a.no_carrier:
         cmd += ["-qmp", f"unix:{tmp}/qmp.sock,server=on,wait=off"]

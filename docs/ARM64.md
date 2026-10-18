@@ -42,12 +42,15 @@ The `boot` job installs the image as the installer does (`tools/vm/install-disk.
 `esp-sync install`) and boots it with QEMU's `virt` machine and edk2 (Ubuntu's `qemu-efi-aarch64`,
 AAVMF), with KVM when the runner has it and emulated (TCG) otherwise; its summary says which.
 GitHub's arm64 runners (`ubuntu-24.04-arm`) have no `/dev/kvm` (October 2026), so the boots are
-emulated.
+emulated. Emulated, the running system's 10 s wait for a device (docs/BOOT.md, "Mounts from
+/etc/fstab") is over before udev has even started: `vm-boot.py` gives the serial console and the
+`/dev/disk/...` devices systemd's 90 s back, as a drop-in passed as a credential, or the getty on
+`ttyAMA0` and the ESP mount fail with their devices.
 `tools/vm/arm64-boot.sh`:
 
-1. without Secure Boot, with a TPM (swtpm): the system starts with no failed unit, it runs the
-   image that was installed, `/usr` is read-only, the TPM is there, the ESP holds the arm64 boot
-   files and `esp-sync` created the "Nyra OS" firmware entry;
+1. without Secure Boot: the system starts with no failed unit, it runs the image that was
+   installed, `/usr` is read-only, the ESP holds the arm64 boot files and `esp-sync` created the
+   "Nyra OS" firmware entry;
 2. with Secure Boot and the Microsoft keys (`AAVMF_VARS.ms.fd`): Debian's shim for arm64 (signed by
    Microsoft) starts Debian's signed systemd-boot, which starts the UKI signed with the run's key
    (enrolled as a MOK, as on x86_64).
@@ -66,7 +69,7 @@ would not fit the timeouts made for KVM, so it does not run.
 | UKI sections | | ukify adds a `.hwids` section by itself (systemd ships hardware IDs for arm64 laptops, used to pick a devicetree from `.dtbauto` sections). The UKI has no `.dtbauto`, and the PCR policy tools refuse sections they do not model, so every ukify run on the UKI turns it off (`--hwids ''` in `ci/ukify.sh` and where `ci/build-image.sh` joins the PCR signature; no change on x86_64) |
 | Test firmware | OVMF, Secure Boot variables protected by SMM | AAVMF; ARM has no SMM, so in a VM the guest can write the variable store (a limit of the test machine, not of the image) |
 | Serial console in the tests | `ttyS0`, no kernel messages without `console=` | `ttyAMA0`; the kernel finds it by itself (ACPI SPCR), so its messages show up on it |
-| TPM in the tests | `tpm-crb` | `tpm-tis-device` |
+| TPM in the tests | `tpm-crb` | none: QEMU's `virt` machine has only TIS TPMs (`tpm-tis-device`, `tpm-tis-i2c`), and Debian's arm64 kernel has neither driver (its only built-in TPM driver is CRB) |
 | Root partition type | `4f68bce3-e8cd-4db1-96e7-fbcaf984b709` | `b921b045-1df0-41c3-af44-4c6f280d3fae` (bootc and systemd pick the right one) |
 
 `tools/vm/vm-boot.py`, `tools/vm/test-addon.sh` and `ci/pinned-images.sh` choose by the runner's
@@ -123,3 +126,6 @@ Secure Boot chain on aarch64 is proven in CI.
 - Updates on aarch64 from the update server: images signed and published per architecture (one
   image index with both), and `nyra-updated` following it.
 - The Nyra Secure Boot key for aarch64 images, so that Secure Boot can stay on in UTM.
+- A TPM on aarch64: Debian's arm64 kernel has no driver for QEMU's TIS TPMs (`CONFIG_TCG_TIS` and
+  `CONFIG_TCG_TIS_I2C` are off), so neither CI nor a plain QEMU VM has one; whether UTM's TPM 2.0
+  device works with it is to be checked in UTM.
