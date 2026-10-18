@@ -13,7 +13,7 @@
 #      boot as after a refusal, and no key slot is removed;
 #   b. after a refusal, the key slot that the typed key opens (here the recovery key's) is never
 #      removed, even when the record lists it; the other listed slot is, and the disk is enrolled for
-#      A and B again;
+#      A and B again (the record without an empty line, here and in k);
 #   c. a boot that unlocked with the TPM on a disk enrolled only for A, with B as the image's next key
 #      (the release after a rotation): B is enrolled, nothing removed; on a disk with a PIN, with the
 #      PIN typed in this boot (the last one in the cache), and not at all without it;
@@ -44,8 +44,17 @@
 #      for the first boot unless the record is the installer's empty one: on an enrolled disk (unlocked
 #      by the TPM, or with the recovery key typed), on a disk set up with a password (no record) and on
 #      a disk with a PIN, nothing is enrolled without the record's rules (never without the PIN), no
-#      key slot is removed and the record keeps its retired keys.
-# Checks a, b, d, e, f, g, i (but the full /var), j, l and the PIN of c are proven: the same case run on a copy of the script
+#      key slot is removed and the record keeps its retired keys;
+#   m. the first boot: A and B enrolled, the temporary enrollment removed, the record lists A and B;
+#   n. a power cut (the script killed) as an enrollment run removes key slots, after enrolling: at the
+#      first boot and for a PIN asked for, the record already lists every new enrollment; the next
+#      boot removes what the run left (the temporary enrollment, the enrollments without the PIN), so
+#      the disk no longer opens without the PIN it asked for;
+#   o. the PIN of the current key's enrollment, not of another one the record lists (a removal that
+#      failed): the next key enrolled without a PIN on a disk whose current key has none;
+#   p. tpm-retire says nothing on a disk not enrolled yet (the installer's empty record);
+#   q. a PIN request longer than 32 bytes (a valid first line, then more) is refused.
+# Checks a, b, d, e, f, g, i (but the full /var), j, l, n, o, p, q and the PIN of c are proven: the same case run on a copy of the script
 # without the check it relies on must fail. The namespace: unshare -rm (a user namespace) where
 # allowed, else sudo unshare -m; NYRA_TEST_NS=1 is refused outside a namespace of its own.
 #   tools/vm/test-tpm-enroll.sh
@@ -91,7 +100,8 @@ cat > "$t/bin/systemd-cryptenroll" <<'EOF'
 # Slots: "N tpm2 [KEY [PIN]]" or "N TYPE". Unlocking with the TPM needs an enrollment of the booted
 # UKI's key (or one without a key: the temporary one) whose PIN, if any, is the credential's; with a
 # PIN, an enrollment of the same key with a PIN is replaced (as systemd-cryptenroll does for the same
-# policy); removing a slot that is not there fails.
+# policy); removing a slot that is not there fails. With $T/cut, removing slots is a power cut: the
+# calling script is killed.
 key="$(printf '%s\n' "$@" | sed -n 's/^--tpm2-public-key=//p')"
 case "$*" in
   *--tpm2-device*)
@@ -111,6 +121,7 @@ case "$*" in
     echo "$n tpm2 $k$mark" >> "$T/slots" ;;
   --wipe-slot=*)
     w="${1#--wipe-slot=}"; echo "wipe $w" >> "$T/calls"
+    [ ! -e "$T/cut" ] || { echo "power cut" >> "$T/calls"; kill -KILL "$PPID"; exit 1; }
     # Removing a slot that is not there fails, as with systemd-cryptenroll.
     for n in ${w//,/ }; do grep -q "^$n " "$T/slots" || exit 1; sed -i "/^$n /d" "$T/slots"; done ;;
   *) echo "SLOT TYPE"; sed 's/^/   /' "$T/slots" ;;
@@ -212,6 +223,7 @@ case_slot() { # case_slot SCRIPT: "ok" or what went wrong
   grep -qx 'enroll KEY-A' "$st/calls" && grep -qx 'enroll KEY-B' "$st/calls" ||
     { echo "not enrolled again for A and B: $(cat "$st/calls") $(cat "$d/out")"; return; }
   [ "$(grep -c '^[0-9]' "$d/root/$record")" = 2 ] || { echo "the record is not the two new slots: $(cat "$d/root/$record")"; return; }
+  ! grep -qx '' "$d/root/$record" || { echo "an empty line in the record"; return; }
   echo ok
 }
 # c. Unlocked by the TPM (nothing typed), enrolled only for A; the image's next key is B.
@@ -512,6 +524,7 @@ case_empty() { # case_empty SCRIPT: "ok" or what went wrong
   grep -qx 'enroll KEY-A' "$st/calls" && grep -qx 'enroll KEY-B' "$st/calls" ||
     { echo "not enrolled for A and B: $(cat "$st/calls") $(cat "$d/out")"; return; }
   [ "$(grep -c '^[0-9]' "$d/root/$record")" = 2 ] || { echo "the record is not the two new slots: $(cat "$d/root/$record")"; return; }
+  ! grep -qx '' "$d/root/$record" || { echo "an empty line in the record"; return; }
   grep -q '^invalidate' "$st/calls" || { echo "the typed key left in the cache"; return; }
   echo ok
 }
@@ -555,6 +568,93 @@ case_fake() { # case_fake SCRIPT enrolled|typed|password|pin: "ok" or what went 
   fi
   [ "$2" != typed ] || grep -qx "retired $(fp KEY-C)" "$d/root/$record" || { echo "the retired key lost: $(cat "$d/root/$record")"; return; }
   grep -q 'without any policy.*ignored' "$d/out" || { echo "not logged: $(cat "$d/out")"; return; }
+  echo ok
+}
+
+# m. The first boot: the temporary enrollment (slot 0, no policy) and the installer's empty record.
+# n. With "cut": a power cut as the temporary enrollment is removed, then the next boot.
+case_first() { # case_first SCRIPT [cut]: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" first
+  local st="$d/root/state" r="$d/root/$record"
+  mkdir -p "$d/root/sysroot/var/lib/nyra" && : > "$r"
+  local ab
+  ab="2 $(fp KEY-A)
+3 $(fp KEY-B)"
+  if [ "${2:-}" = cut ]; then
+    touch "$st/cut"
+    run "$1" "$d"
+    grep -qx 'power cut' "$st/calls" || { echo "no power cut: $(cat "$st/calls") $(cat "$d/out")"; return; }
+    [ "$(grep -v " $(printf '%064d' 0)\$" "$r")" = "$ab" ] ||
+      { echo "the record after the power cut does not list the new enrollments: $(cat "$r")"; return; }
+    rm "$st/cut" && : > "$st/calls"
+    run "$1" "$d" # the next boot (the header still has the token without any policy)
+    [ "$(cat "$st/calls")" = "wipe 0" ] || { echo "the next boot: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  else
+    run "$1" "$d"
+    [ "$(cat "$st/calls")" = "enroll KEY-A
+enroll KEY-B
+wipe 0" ] || { echo "not A and B enrolled, then the temporary enrollment removed: $(cat "$st/calls") $(cat "$d/out")"; return; }
+    grep -q '^nyra-tpm-enroll: enrolled with the TPM (.*temporary enrollment removed$' "$d/out" || { echo "not logged: $(cat "$d/out")"; return; }
+  fi
+  [ "$(cat "$r")" = "$ab" ] || { echo "the record: $(cat "$r")"; return; }
+  [ "$(cat "$st/slots")" = "1 recovery
+2 tpm2 KEY-A
+3 tpm2 KEY-B" ] || { echo "the key slots: $(cat "$st/slots")"; return; }
+  echo ok
+}
+# n. A PIN asked for on a disk without one, and a power cut as the old enrollments are removed; then
+# the next boot (unlocked by the TPM: the old enrollments still open the disk).
+case_cut_request() { # case_cut_request SCRIPT: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" tpm
+  local st="$d/root/state" r="$d/root/$record"
+  mkdir -p "$d/root/sysroot/var/lib/nyra"
+  printf '0 tpm2 KEY-A\n1 recovery\n2 tpm2 KEY-B\n' > "$st/slots"
+  printf '0 %s\n2 %s\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$r"
+  echo 24681357 > "$d/root/sysroot/var/lib/nyra/tpm2-pin-request"
+  touch "$st/cut"
+  run "$1" "$d"
+  grep -qx 'power cut' "$st/calls" || { echo "no power cut: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  grep -qx "3 $(fp KEY-A) pin" "$r" && grep -qx "4 $(fp KEY-B) pin" "$r" ||
+    { echo "the record after the power cut does not list the new enrollments: $(cat "$r")"; return; }
+  rm "$st/cut" && : > "$st/calls"
+  run "$1" "$d"
+  [ "$(cat "$st/calls")" = "wipe 0,2" ] || { echo "the next boot: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  [ "$(cat "$r")" = "3 $(fp KEY-A) pin
+4 $(fp KEY-B) pin" ] || { echo "the record: $(cat "$r")"; return; }
+  echo ok
+}
+# o. Enrolled for A without a PIN, and the record still lists an enrollment of Z with a PIN (its
+# removal failed); unlocked by the TPM, nothing typed; the image's next key is B.
+case_other_pin() { # case_other_pin SCRIPT: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" tpm
+  local st="$d/root/state" r="$d/root/$record"
+  mkdir -p "$d/root/sysroot/var/lib/nyra"
+  printf '0 tpm2 KEY-A\n1 recovery\n3 tpm2 KEY-Z 11223344\n' > "$st/slots"
+  printf '0 %s\n3 %s pin\n' "$(fp KEY-A)" "$(fp KEY-Z)" > "$r"
+  run "$1" "$d"
+  [ "$(cat "$st/calls")" = "enroll KEY-B" ] || { echo "B not enrolled without a PIN: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  [ "$(cat "$r")" = "0 $(fp KEY-A)
+3 $(fp KEY-Z) pin
+4 $(fp KEY-B)" ] || { echo "the record: $(cat "$r")"; return; }
+  echo ok
+}
+# p. tpm-retire on a disk whose first boot enrolled nothing (the installer's empty record).
+case_retire_unpaired() { # case_retire_unpaired SCRIPT: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" tpm
+  local st="$d/root/state" r="$d/root/var/lib/nyra/tpm2-slots"
+  printf '%s\n%s\n' "$(fp KEY-A)" "$(fp KEY-B)" > "$d/root/run/nyra-tpm2-keep"
+  : > "$r"
+  run "$1" "$d"
+  [ ! -s "$d/out" ] || { echo "said: $(cat "$d/out")"; return; }
+  [ ! -s "$st/calls" ] && [ ! -s "$r" ] || { echo "changed: $(cat "$st/calls") $(cat "$r")"; return; }
   echo ok
 }
 
@@ -605,6 +705,12 @@ check "a forged token without any policy, on an enrolled disk" ok "$(case_fake "
 check "a forged token without any policy, on an enrolled disk, the recovery key typed" ok "$(case_fake "$enroll" typed)"
 check "a forged token without any policy, on a disk with a password" ok "$(case_fake "$enroll" password)"
 check "a forged token without any policy, on a disk with a PIN" ok "$(case_fake "$enroll" pin)"
+check "the first boot" ok "$(case_first "$enroll")"
+check "a power cut at the first boot, then the next boot" ok "$(case_first "$enroll" cut)"
+check "a power cut as a PIN asked for is applied, then the next boot" ok "$(case_cut_request "$enroll")"
+check "the current key's PIN, not another enrollment's" ok "$(case_other_pin "$enroll")"
+check "tpm-retire on a disk not enrolled yet" ok "$(case_retire_unpaired "$retire")"
+check "a PIN request longer than 32 bytes" ok "$(case_bad_request "$enroll" "$(printf '24681357\n%040d' 0)")"
 
 # The same cases without the checks they rely on must fail.
 mutant no-inroot "$enroll" 's/inroot && //g'
@@ -659,6 +765,23 @@ mutant no-request-max "$enroll" 's/\[ "\${#want}" -gt 20 \]/[ "${#want}" -gt 21 
 check "without the request's 20 digits maximum" fails "$(case_bad_request "$t/no-request-max" 123456789012345678901)"
 mutant no-choose-digits "$enroll" '/^    case "\$p" in /d'
 check "without the digits check at the PIN prompt" fails "$(case_again_pin "$t/no-choose-digits" chosen)"
+mutant no-early-record "$enroll" 's/^  if ! remember "\$(cat "\$record")" "\$before" .*; then$/  if false; then/'
+check "without the record written at each enrollment, a power cut at the first boot" fails "$(case_first "$t/no-early-record" cut)"
+check "without the record written at each enrollment, a power cut for a PIN" fails "$(case_cut_request "$t/no-early-record")"
+mutant no-before "$enroll" 's/^  before="\$(tpm2slots | sed .*$/  before=""/'
+check "without the temporary enrollment in the record, a power cut at the first boot" fails "$(case_first "$t/no-before" cut)"
+mutant no-tidy "$enroll" 's/^if inroot 2>\/dev\/null && \[ -f "\$record" \]; then tidy .*$/:/'
+check "without removing what a power cut left, at the first boot" fails "$(case_first "$t/no-tidy" cut)"
+check "without removing what a power cut left, for a PIN" fails "$(case_cut_request "$t/no-tidy")"
+mutant any-pin "$enroll" 's/^haspin() .*$/haspin() { grep -Eq "^[0-9]+ [0-9a-f]+ pin\$" "$record"; }/'
+check "with the PIN of any enrollment in the record" fails "$(case_other_pin "$t/any-pin")"
+mutant no-retire-quiet "$retire" "s/^elif grep -q '^\\[0-9\\]' \"\\\$record\"; then .*\$/else/"
+check "tpm-retire, said on a disk not enrolled yet" fails "$(case_retire_unpaired "$t/no-retire-quiet")"
+mutant empty-lines "$enroll" "s/ | sed '\\/^\\\$\\/d' > \"\\\$record.new\"/ > \"\\\$record.new\"/"
+check "with empty lines in the record, after a refusal" fails "$(case_slot "$t/empty-lines")"
+check "with empty lines in the record, the installer's empty record" fails "$(case_empty "$t/empty-lines")"
+mutant no-request-size "$enroll" 's/head -c 32 "\$request"/sed -n 1p "$request"/'
+check "without the request's size limit" fails "$(case_bad_request "$t/no-request-size" "$(printf '24681357\n%040d' 0)")"
 
 [ "$fail" = 0 ] && echo "test-tpm-enroll: passed"
 exit "$fail"

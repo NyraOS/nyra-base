@@ -31,7 +31,7 @@ old=""
 if grep -Eq "^[0-9]+ $current( pin)?\$" "$record"; then
   # The record's enrollments made before the current key's, for keys that are not kept.
   old="$(sed -n "/^[0-9][0-9]* $current\( pin\)\?\$/q; /^[0-9][0-9]* /p" "$record" | grep -v -F -f "$keep" || true)"
-else
+elif grep -q '^[0-9]' "$record"; then # not said on a disk not enrolled yet (the installer's empty record)
   log "the record has no enrollment for this boot's policy key ($current): no key retired by the rotation"
 fi
 # The keys the image lists as retired (never this boot's), with their enrollments.

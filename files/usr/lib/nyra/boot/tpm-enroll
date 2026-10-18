@@ -42,7 +42,12 @@
 # The disk's record of its TPM2 enrollments (one "SLOT KEY" line per enrollment, KEY the SHA-256 of
 # the key's PEM file, followed by " pin" for one with a PIN, and "retired KEY" for retired keys) is
 # inside the encrypted root, in its /var, where nobody can write it without a key of the disk: the
-# LUKS2 header can be changed by anyone who has the disk. The keys this boot keeps go to
+# LUKS2 header can be changed by anyone who has the disk. Every enrollment is in the record, on the
+# disk, before anything else happens (another enrollment, a removal), or it is removed at once: an
+# enrollment the record does not list would never be retired. At the first boot the temporary
+# enrollment is listed with them, as KEY 64 zeros, until it is removed. Every run first removes the
+# record's enrollments that a run cut off (a power cut) or a removal that failed left: that temporary
+# one, and those of a key the record lists again later (replaced). The keys this boot keeps go to
 # /run/nyra-tpm2-keep for nyra-tpm-retire.service. A key is never enrolled when the record says it was
 # retired or the image lists it as retired (/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys, checked by
 # the release gate). Old enrollments are removed only from key slots that the header has as TPM2
@@ -87,6 +92,35 @@ retired() { inroot 2>/dev/null && [ -f "$record" ] && grep -qx "retired $1" "$re
 banned() { # banned KEY: retired in the record, or listed as retired by the image
   retired "$1" || { [ -f "$list" ] && [ ! -L "$list" ] && grep -qx "$1" "$list"; }
 }
+slots() { # the disk's key slot numbers, one per line
+  systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p'
+}
+tpm2slots() { # the key slots that the header has as TPM2 enrollments, one per line
+  systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) *tpm2\( .*\)\?$/\1/p'
+}
+remember() { # remember LINE...: the record of the enrollments (without empty lines), on the disk
+  inroot && mkdir -p "${record%/*}" && inroot && printf '%s\n' "$@" | sed '/^$/d' > "$record.new" &&
+    sync && mv "$record.new" "$record" && sync
+}
+tidy() { # removes the record's enrollments that are replaced: the temporary one of a first boot, and
+  # those of a key that the record lists again later; never a key slot that a later line lists (a
+  # number used again), and only slots the header has as TPM2 enrollments. Fails if one stays.
+  n=0 drop="" wipe=""
+  while read -r s k _; do
+    n=$((n + 1))
+    case "$s" in *[!0-9]*|"") continue ;; esac # "retired KEY"
+    case "$k" in *[!0-9a-f]*|"") continue ;; esac
+    if [ "$k" = "$zero" ] || sed "1,${n}d" "$record" | grep -Eq "^$s |^[0-9]+ $k( |\$)"; then
+      drop="$drop${n}d;"
+      sed "1,${n}d" "$record" | grep -q "^$s " || wipe="$wipe$s
+"
+    fi
+  done < "$record"
+  [ -n "$drop" ] || return 0
+  wipe="$(printf %s "$wipe" | grep -xF "$(tpm2slots)" | tr '\n' ',' | sed 's/,$//' || true)"
+  if [ -n "$wipe" ]; then systemd-cryptenroll --wipe-slot="$wipe" "$dev" >&2 || return 1; fi
+  remember "$(sed "$drop" "$record")"
+}
 
 # The key and the PIN typed in this boot, if any (root's user keyring, linked here by
 # KeyringMode=shared).
@@ -105,6 +139,8 @@ curfp="$(fp "$current")"
 nextfp=""
 if [ -f "$next" ] && [ ! -L "$next" ]; then nextfp="$(fp "$next")"; fi
 printf '%s\n' "$curfp" $nextfp > "$keep"
+before="" # the lines that the record gets before the next enrollment's (enroll)
+if inroot 2>/dev/null && [ -f "$record" ]; then tidy || log "could not remove the replaced enrollments"; fi
 # The temporary enrollment is the TPM2 token without any policy (only a systemd-tpm2 token has a
 # tpm2-policy-hash).
 case=""
@@ -123,7 +159,8 @@ elif inroot && [ -f "$record" ]; then
   # A PIN asked for from the running system: read and removed at once, whatever happens next.
   want=""
   if [ -f "$request" ]; then
-    want="$(sed -n 1p "$request")"
+    # One line of at most 21 bytes (tpm-pin): only the first 32 are read, and anything longer is refused.
+    want="$(head -c 32 "$request")"
     rm -f "$request"
     case "$want" in
       none) ;;
@@ -152,14 +189,8 @@ var() { # the value byte of an EFI global variable (after its 4 attribute bytes)
   set -- $(od -An -tu1 -N5 "$efi/$1-$global")
   echo "${5-}"
 }
-slots() { # the disk's key slot numbers, one per line
-  systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p'
-}
-tpm2slots() { # the key slots that the header has as TPM2 enrollments, one per line
-  systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) *tpm2\( .*\)\?$/\1/p'
-}
 enroll() { # enroll KEY PIN OPTION...: a new TPM2 enrollment for the policy key KEY, with PIN unless
-  # it is empty; prints its key slot
+  # it is empty, added to the record at once (after the lines in $before); prints its key slot
   key="$1" newpin="$2"
   shift 2
   # Checked by unsealing it with this UKI's signature, which exists only for the current key: the next
@@ -172,12 +203,17 @@ enroll() { # enroll KEY PIN OPTION...: a new TPM2 enrollment for the policy key 
   NEWPIN="$newpin" systemd-cryptenroll "$@" --tpm2-device=auto \
     --tpm2-public-key="$key" --tpm2-public-key-pcrs=11 \
     --tpm2-public-key-policyref=initrd --tpm2-pcrs=7+12 $withpin $check "$dev" >&2 || return 1
-  slots | grep -vxF "$slots_before" || { log "no new key slot" >&2; return 1; }
+  slot="$(slots | grep -vxF "$slots_before")" || { log "no new key slot" >&2; return 1; }
+  # In the record before anything else happens: one it does not list would never be retired.
+  if ! remember "$(cat "$record")" "$before" "$slot $(fp "$key")$(mark "$newpin")"; then
+    log "could not write the record of the enrollments: the new enrollment is removed" >&2
+    systemd-cryptenroll --wipe-slot="$slot" "$dev" >&2 || log "could not remove it (key slot $slot)" >&2
+    return 1
+  fi
+  echo "$slot"
 }
-remember() { # remember LINE...: the record of the enrollments
-  inroot && mkdir -p "${record%/*}" && inroot && printf '%s\n' "$@" > "$record.new" && mv "$record.new" "$record"
-}
-haspin() { grep -Eq '^[0-9]+ [0-9a-f]+ pin$' "$record"; } # the disk's enrollments have a PIN
+# The current key's latest enrollment has a PIN (with none for that key, the disk's latest).
+haspin() { { grep -E "^[0-9]+ $curfp( pin)?\$" "$record" || grep -E '^[0-9]+ ' "$record"; } | sed -n '$p' | grep -q ' pin$'; }
 typedpin() { # the PIN typed in this boot (the last one), as systemd-cryptenroll's credential; also
   # sets $pin to it, which is how the next key is enrolled with that PIN ("next" below)
   [ -n "$pincache" ] || return 1
@@ -235,17 +271,22 @@ elif [ ! -e /dev/tpmrm0 ]; then
 elif [ "$case" = first ] && banned "$curfp"; then
   why="the policy key of this version was retired"
 elif [ "$case" = first ]; then
-  # The temporary enrollment goes in the same step (--wipe-slot keeps the new one).
-  if new="$(enroll "$current" "" --unlock-tpm2-device=auto --wipe-slot=tpm2)"; then
-    lines="$new $curfp"
+  # The temporary enrollment goes last, once the new ones are in the record. Until then the record
+  # lists it before them (no key: 64 zeros), so that a boot cut off before it goes removes it next time.
+  before="$(tpm2slots | sed "s/\$/ $zero/")"
+  if new="$(enroll "$current" "" --unlock-tpm2-device=auto)"; then
+    before=""
     if [ -n "$nextfp" ] && ! banned "$nextfp"; then
-      if n="$(enroll "$next" "" --unlock-tpm2-device=auto)"; then lines="$lines
-$n $nextfp"; else log "the next policy key was not enrolled"; fi
+      n="$(enroll "$next" "" --unlock-tpm2-device=auto)" || log "the next policy key was not enrolled"
     fi
-    remember "$lines" || log "could not write the record of the enrollments (they are not in it: an enrollment again later does not remove them)"
-    log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); temporary enrollment removed"
+    if tidy; then
+      log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); temporary enrollment removed"
+    else
+      log "enrolled with the TPM (signed PCR 11 policy for the initrd, PCR 7 and 12); the temporary enrollment could not be removed (the next boot tries again)"
+    fi
     exit 0
   fi
+  before=""
   why="the enrollment failed"
 elif [ "$case" = next ]; then
   # The TPM unlocked with the current key in this initrd, so it can be used to enroll the next one,
@@ -254,8 +295,8 @@ elif [ "$case" = next ]; then
   if haspin && ! typedpin; then
     why="the PIN typed in this boot is not in the kernel's cache: the next policy key was not enrolled"
   elif n="$(CREDENTIALS_DIRECTORY="$creds" enroll "$next" "$pin" --unlock-tpm2-device=auto)"; then
-    remember "$(cat "$record")" "$n $nextfp$(mark "$pin")" && log "enrolled the next policy key" && exit 0
-    why="could not write the record of the enrollments"
+    log "enrolled the next policy key"
+    exit 0
   else
     why="the next policy key could not be enrolled"
   fi
@@ -311,16 +352,17 @@ else
     # record leaves a record that lists slots that are gone, and systemd-cryptenroll fails on those.
     old="$(sed -n 's/^\([0-9][0-9]*\) .*/\1/p' "$record" | grep -vxF "$opened" | grep -xF "$(tpm2slots)" |
       tr '\n' ',' | sed 's/,$//' || true)"
+    # The record keeps listing them until the new enrollments are in it (a slot that is gone is left
+    # out of any later removal), so that it is never empty, like the installer's.
     gone="$(grep '^retired ' "$record" || true)"
     if [ -n "$old" ]; then
       systemd-cryptenroll --wipe-slot="$old" "$dev" >&2 || { why="the old enrollments could not be removed"; break; }
-      remember "$gone"
     fi
     if new="$(PASSWORD="$pw" enroll "$current" "")"; then
       lines="$new $curfp"
       if [ -n "$nextfp" ] && ! banned "$nextfp" && n="$(PASSWORD="$pw" enroll "$next" "")"; then lines="$lines
 $n $nextfp"; fi
-      remember "$gone" "$lines"
+      remember "$gone" "$lines" || log "could not write the record of the enrollments without the old ones"
       log "enrolled with the TPM again, after the TPM refused and the disk was unlocked by hand"
       exit 0
     fi
