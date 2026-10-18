@@ -521,10 +521,13 @@ LOGO=nyra-logo
   would repeat the version ("Nyra OS 2026.10.401 2026.10.401"). Without it the title is
   `PRETTY_NAME`, and bootc's entry version stays the composefs digest, as before.
 - **The login prompt** is `/usr/lib/issue` (`\S \n \l`: `PRETTY_NAME`, the host name, the
-  terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty reads it only when
-  there is no `/etc/issue`, so Debian's `/etc/issue` is removed from the image; a user's own
-  `/etc/issue` still wins. `/etc/issue.net` stays Debian's: only a telnet or SSH server would show
-  it, and the base has neither.
+  terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty always shows
+  `/etc/issue` when there is one: util-linux 2.42, the image's, takes the first of `/etc/issue`,
+  `/run/issue` and `/usr/lib/issue`, and 2.41 showed all three, `/etc/issue` first. Debian's
+  `/etc/issue` is therefore removed from the image; a user's own `/etc/issue` still shows. The
+  drop-ins in `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` show with either version, so
+  the health notice (`/run/issue.d`, docs/UPDATES.md) is still at the prompt. `/etc/issue.net`
+  stays Debian's: only a telnet or SSH server would show it, and the base has neither.
 - **The logo** is the icon `nyra-logo` (`LOGO=`, an icon name):
   `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg`, from `branding/logo/nyra-icon.svg`,
   which is not under the GPL (`branding/README.md`). Only the scalable icon: nothing in the build

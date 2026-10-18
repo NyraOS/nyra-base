@@ -260,12 +260,14 @@ RUN test -x /usr/bin/keyctl && \
 # name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
 # PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
 # dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
-# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>"), which
-# agetty reads only when there is no /etc/issue, so Debian's goes. The logo is the os-release LOGO,
-# an icon name (branding/README.md: not under the GPL).
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>"). agetty
+# always shows /etc/issue when there is one (util-linux 2.42, the image's: in place of /usr/lib/issue;
+# 2.41: before it), so Debian's goes; the drop-ins of /etc, /run and /usr/lib/issue.d still show (the
+# health notice in /run/issue.d). The logo is the os-release LOGO, an icon name (branding/README.md:
+# not under the GPL).
 ARG NYRA_VERSION=dev
 COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
-RUN { echo "$NYRA_VERSION" | grep -Eqx '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
+RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
       { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
     printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
       "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \

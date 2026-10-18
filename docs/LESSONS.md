@@ -136,9 +136,11 @@ Each line is something that broke or surprised us once.
   drop-ins from `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` (`*.issue`), and `agetty
   --reload` makes the ones already at the login prompt show it again; Debian's `pam_motd` reads
   `/run/motd.d` after a login.
-- **agetty's main issue file is the first of `/etc/issue`, `/run/issue`, `/usr/lib/issue`** (the
-  drop-ins are added to it): with Debian's `/etc/issue` in the image, a `/usr/lib/issue` is never
-  shown. The image therefore has no `/etc/issue` (docs/DEFAULTS.md, "Name and version").
+- **agetty always shows `/etc/issue` when there is one.** util-linux 2.42 (the image's) takes the
+  first of `/etc/issue`, `/run/issue`, `/usr/lib/issue` as the main file, so `/usr/lib/issue` never
+  shows next to Debian's `/etc/issue`; 2.41 showed all three, `/etc/issue` first. The drop-ins of
+  all three `issue.d` directories show with both. The image therefore has no `/etc/issue`
+  (docs/DEFAULTS.md, "Name and version").
 - **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
   from the UKI's `.osrel`), and the entry's version and file name come from `VERSION_ID` too (the
   composefs digest without it). A `PRETTY_NAME` that carries the version needs no `VERSION_ID`.
