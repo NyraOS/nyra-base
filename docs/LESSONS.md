@@ -88,6 +88,17 @@ Each line is something that broke or surprised us once.
 - **bootc's preset enables `bootc-fetch-apply-updates.timer`**, which reboots on its own after an update.
   It is blocked with a `/usr` drop-in. `xfs_healer@` (from `xfsprogs`) fails on a non-XFS root and is
   blocked the same way.
+- **A blocked unit still pulls in what it wants.** A condition only stops the unit itself: Debian
+  enables `podman-restart.service` and `podman-auto-update.service` in `default.target`, and though
+  both were blocked, their `Wants=network-online.target` started `systemd-networkd-wait-online` at
+  every boot. Without a network it fails after 2 minutes (`degraded`), and `graphical.target`, ordered
+  after them, waits those 2 minutes. Such a unit is disabled too, with a `disable` line in our preset:
+  systemd applies the presets again at the first boot, and a unit no preset line names is enabled
+  then, so a `systemctl disable` in the image build alone would not last.
+- **`network-online.target` stays reached for the whole boot.** Once
+  `systemd-networkd-wait-online.service` has passed, it stays active, so a later wait for the network
+  (an update check after the link was lost) does not wait. A unit that needs the network each time
+  runs `systemd-networkd-wait-online` itself, in a oneshot without `RemainAfterExit=`.
 - **A drop-in cannot remove a dependency.** `OnFailure=` (empty) in a `local-fs.target.d` drop-in leaves
   `OnFailure=emergency.target` in place (checked with systemd 262): a dependency goes away only with
   the unit file itself, so the image build edits `local-fs.target`. `OnFailureJobMode=fail` is no way
@@ -397,6 +408,38 @@ Each line is something that broke or surprised us once.
   update. Debian's configuration does not set it.
 - chrony names its saved NTS cookies after the server's IP address (`ntsdumpdir`): a name that
   resolves to another address starts with a new key exchange.
+
+## Rust components (docs/DEFAULTS.md)
+
+- sudo-rs's `su` (0.2.15) asks for the password up to three times, also when its input is not a
+  terminal; with the password on its input and nothing after it, the second read ends the attempt.
+  It also refuses a calling UID that has no `/etc/passwd` line ("user 'current user' not found"),
+  where util-linux's `su` only needs the target account.
+- zlib-rs as `libz.so.1`: a cdylib from `cargo build` has no soname and no symbol versions, and
+  programs linked against zlib ask for versioned symbols (`deflateBound@ZLIB_1.2.0`). zlib-rs's way
+  is a static library linked with `cc -shared` and zlib's version script (`--undefined-version`, since
+  the script names functions the build leaves out). Its `gzprintf` feature needs a nightly compiler
+  (`c_variadic`); a stable build simply lacks `gzprintf` and `gzvprintf`.
+- uutils (coreutils 0.12.0, findutils 0.10.0, diffutils 0.5.0) differs from GNU where it is not
+  obvious: `find -newermt` refuses every date form (dracut's `clamp_mtimes` relies on `@SECONDS`),
+  `find -printf %m` prints the mode without the setuid, setgid and sticky bits, and `diff` has no
+  `-r`. Compare a command's output with GNU's on the same input before relying on it; a listing made
+  with uutils `find` can hide a difference of `cp` (it looked as if `cp -a` dropped the setgid bit).
+- uutils `od -j N` skips by the size `stat` reports, also on its standard input, and fails ("cannot
+  skip past end of combined input") where that size is smaller than the content: procfs files, and
+  efivarfs in the initrd, where the TPM enrollment read `SecureBoot` as missing and gave up ("Secure
+  Boot is off"). GNU reads to skip. `od -N 5` and the fifth number, or a pipe, work with both.
+- A Rust program started with fd 0, 1 or 2 closed reopens it on `/dev/null`, and aborts (SIGABRT)
+  when it cannot: with `/dev/null` gone (`rm -rf /` in Titanic T12), uutils' `sha256sum` died at
+  once. GNU xargs starts its command with standard input closed when it cannot open `/dev/null`, so
+  `find | xargs -0 sha256sum` hashed nothing and printed the hash of an empty input, which looked
+  like a changed `/usr`. `find -exec cmd {} +` passes the shell's own descriptors; `set -o pipefail`
+  inside the command substitution turns such a failure into a failed check instead of a wrong hash.
+- GNU strings are no test for GNU binaries: uutils' multi-call binary contains "GNU coreutils" too.
+- ntpd-rs (1.9.0) checks NTS-KE certificates with rustls against the system clock and has no option
+  to skip the dates, so it cannot correct a clock outside their validity by itself. libfaketime
+  (`FAKETIME=@2035-06-01 00:00:00`) with `ntp-ctl force-sync` shows it without root: `ExpiredContext`
+  on every key exchange.
 
 ## Sealed UKI (docs/BOOT.md)
 - bootc v1.16 builds and installs sealed UKIs: `bootc container split-kernel-and-rootfs`, then
@@ -787,6 +830,11 @@ Each line is something that broke or surprised us once.
   with all the passing boots of the same run (the serial log artifact). The flaky root partition
   showed up only that way: a one-second stall of one CPU right when the boot disk was probed, in
   the two failed boots and in none of the 182 others.
+- A kernel message can land in the middle of a prompt on the serial console ("Please enter
+  rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then "overy key for disk
+  root:"), when the runner is busy. A pattern that must match the whole prompt is matched in the
+  console without kernel messages (`clean()` in `vm-boot.py`), as the status lines already were.
+  `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's
