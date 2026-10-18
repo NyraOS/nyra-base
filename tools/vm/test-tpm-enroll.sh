@@ -36,7 +36,10 @@
 #   j. the image's list of retired keys: such a key is never enrolled again (after a refusal) or as
 #      the next key, and tpm-retire removes its enrollment and marks it retired (also a key never
 #      enrolled); old enrollments are removed only from slots the header has as TPM2 enrollments,
-#      never the recovery key's or another kind of key's, even when the record lists them.
+#      never the recovery key's or another kind of key's, even when the record lists them;
+#   k. the installer's empty record, on a disk whose first boot found no TPM or Secure Boot off (the
+#      temporary enrollment removed, nothing enrolled): the recovery key typed with the TPM and Secure
+#      Boot back enrolls A and B, and no key slot is removed.
 # Checks a, b, d, e, f, g, i (but the full /var), j and the PIN of c are proven: the same case run on a copy of the script
 # without the check it relies on must fail. The namespace: unshare -rm (a user namespace) where
 # allowed, else sudo unshare -m; NYRA_TEST_NS=1 is refused outside a namespace of its own.
@@ -489,6 +492,23 @@ requested pin" ] || { echo "the status: $(cat "$d/out")"; return; }
   [ "$(cat "$req")" = none ] || { echo "the removal: $(cat "$d/out")"; return; }
   echo ok
 }
+# k. Only the recovery key's slot, the installer's empty record, the recovery key typed.
+case_empty() { # case_empty SCRIPT: "ok" or what went wrong
+  local d
+  d="$(mktemp -d -p "$t")"
+  setup "$d" typed
+  local st="$d/root/state"
+  printf '1 recovery\n' > "$st/slots"
+  printf '{"tokens":{"0":{"type":"systemd-recovery"}}}\n' > "$st/header.json"
+  mkdir -p "$d/root/sysroot/var/lib/nyra" && : > "$d/root/$record"
+  run "$1" "$d"
+  grep -q '^wipe' "$st/calls" && { echo "a key slot removed: $(cat "$st/calls")"; return; }
+  grep -qx 'enroll KEY-A' "$st/calls" && grep -qx 'enroll KEY-B' "$st/calls" ||
+    { echo "not enrolled for A and B: $(cat "$st/calls") $(cat "$d/out")"; return; }
+  [ "$(grep -c '^[0-9]' "$d/root/$record")" = 2 ] || { echo "the record is not the two new slots: $(cat "$d/root/$record")"; return; }
+  grep -q '^invalidate' "$st/calls" || { echo "the typed key left in the cache"; return; }
+  echo ok
+}
 
 fail=0
 check() { # check DESCRIPTION EXPECTED GOT
@@ -532,6 +552,7 @@ check "a PIN request of 21 digits" ok "$(case_bad_request "$enroll" 123456789012
 check "a new PIN chosen after a refusal" ok "$(case_again_pin "$enroll" chosen)"
 check "no PIN chosen after a refusal: nothing changes" ok "$(case_again_pin "$enroll" not-chosen)"
 check "tpm-pin" ok "$(case_cmd "$boot/tpm-pin")"
+check "the installer's empty record, the recovery key typed" ok "$(case_empty "$enroll")"
 
 # The same cases without the checks they rely on must fail.
 mutant no-inroot "$enroll" 's/inroot && //g'

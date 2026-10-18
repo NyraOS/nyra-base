@@ -11,6 +11,9 @@
 #   - With TPM_DIR, the state of the machine's TPM (swtpm): no password. A temporary TPM2 enrollment
 #     without any policy, made in that TPM, unlocks the first boot, whose initrd replaces it with the
 #     real enrollment (nyra-tpm-enroll.service). The key used during the installation is removed.
+#     An empty record of the TPM2 enrollments goes inside the encrypted root
+#     (/var/lib/nyra/tpm2-slots): the disk is one installed for the TPM, so a first boot without the
+#     TPM or with Secure Boot off is enrolled later, once the recovery key is typed with them back.
 #   tools/vm/install-encrypted.sh IMAGE WORKDIR SECRETS_DIR [TPM_DIR]
 set -euo pipefail
 
@@ -40,9 +43,9 @@ for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 
 # of waiting for udev's confirmation, which never comes there (closing the volume hung forever).
 timeout 900 sudo podman run --rm -i --privileged --pid=host --network none -e DM_DISABLE_UDEV=1 \
   -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v "$secrets:/secrets" \
-  "$image" bash -s "$loop" "$key" <<'EOF'
+  "$image" bash -s "$loop" "$key" "${tpm:+tpm}" <<'EOF'
 set -euo pipefail
-esp="${1}p1" root="${1}p2" key="/secrets/$2"
+esp="${1}p1" root="${1}p2" key="/secrets/$2" tpm="${3:-}"
 mkfs.fat -n EFI-SYSTEM "$esp" >/dev/null
 cryptsetup luksFormat -q --type luks2 --cipher aes-xts-plain64 --key-size 512 --sector-size 4096 \
   --pbkdf argon2id --key-file "$key" "$root"
@@ -64,6 +67,13 @@ mkdir -p /target
 mount /dev/mapper/nyra-install-root /target
 # No root= argument: the sealed command line has none, the initrd finds the root by its type.
 bootc install to-filesystem --composefs-backend --bootloader systemd --root-mount-spec "" /target
+if [ -n "$tpm" ]; then
+  # The shared /var that bootc made (state/os/default/var), mounted at /var in the running system.
+  var=/target/state/os/default/var
+  [ -d "$var" ] && [ ! -L "$var" ] || { echo "install-encrypted: no $var after bootc install" >&2; exit 1; }
+  install -d -m 0755 "$var/lib/nyra"
+  install -m 0644 /dev/null "$var/lib/nyra/tpm2-slots"
+fi
 EOF
 sudo chown "$(id -u):$(id -g)" "$secrets/recovery-key" && chmod 0600 "$secrets/recovery-key"
 
