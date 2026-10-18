@@ -4,7 +4,7 @@
 # bootc status --format json is canonical (sorted keys, one line): in .status, "booted" comes before
 # "rollback", "rollbackQueued" and "staged", and nothing after "staged" holds an image digest.
 
-digest() { # booted | staged | rollback: that deployment's image digest, or "none"
+deployment() { # booted | staged | rollback: that deployment's part of bootc status
 	s="$(bootc status --format json)"
 	case "$1" in
 	booted) s="$(bootc status --booted --format json)" ;;
@@ -14,8 +14,18 @@ digest() { # booted | staged | rollback: that deployment's image digest, or "non
 		s="${s%%'"rollbackQueued"'*}"
 		;;
 	esac
-	d="$(printf '%s' "$s" | grep -o '"imageDigest":"[^"]*"' | head -1 | cut -d'"' -f4)"
+	printf '%s' "$s"
+}
+
+digest() { # booted | staged | rollback: that deployment's image digest, or "none"
+	d="$(deployment "$1" | grep -o '"imageDigest":"[^"]*"' | head -1 | cut -d'"' -f4)"
 	echo "${d:-none}"
+}
+
+expect_version() { # expect_version booted|staged|rollback VERSION: the version bootc reports for it
+	v="$(deployment "$1" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)"
+	echo "$1 version: ${v:-none}"
+	[ "$v" = "$2" ]
 }
 
 expect() { # expect booted|staged|rollback DIGEST|none
@@ -61,6 +71,15 @@ run_check() { # nyra-updated check, as the timer starts it; prints last-check.js
 
 outcome() { # outcome SHEET PATTERN: the check succeeds with a result matching PATTERN
 	select_sheet "$1" && run_check && grep -q -- "$2" /var/lib/nyra-updated/last-check.json
+}
+
+no_success_since() { # no_success_since DAYS: last-check.json says the last successful check was
+	# DAYS days ago, as if updates had stopped then
+	python3 -c 'import json, sys, time
+p = "/var/lib/nyra-updated/last-check.json"
+r = json.load(open(p))
+r["last_success"] = int(time.time()) - int(sys.argv[1]) * 86400
+json.dump(r, open(p, "w"))' "$1"
 }
 
 refused() { # refused SHEET REGEX: the check fails with an error matching REGEX (grep -E)
