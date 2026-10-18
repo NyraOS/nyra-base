@@ -20,7 +20,8 @@
 #   2. N unlocks by itself; nyra-updated stages N+1 from the signed sheet;
 #   3. N+1 unlocks by itself and is blessed; back to N by hand (bootc rollback, "go back to the
 #      previous version");
-#   4. N unlocks by itself; N+1 is held back; a sheet offers u3, which nyra-updated stages;
+#   4. N unlocks by itself; N+1 is held back (HeldBack, reported as "went back from ... is not
+#      installed again"); a sheet offers u3, which nyra-updated stages;
 #   5. u3 fails its health check and reboots by itself, three times, each boot unlocked by the TPM;
 #      systemd-boot falls back to N, which unlocks by itself; u3 marked failed and refused;
 #   6. read offline: the recovery key slot and the two TPM2 enrollments of the first boot, unchanged;
@@ -280,7 +281,7 @@ vm "N+1 unlocks by itself; back to N by hand" \
   --command "$lib; bootc rollback && test \"\$(queued)\" = true"
 vm "N by hand unlocks by itself; N+1 held back; u3 staged" \
   --command "$(is u1)" --command "$lib; expect booted $d1 && expect rollback $d2 && running" \
-  --command "$lib; outcome s2 HeldBack && expect staged none" \
+  --command "$lib; outcome s2 'went back from 2026.10.2 .* is not installed again' && expect staged none" \
   --command "$lib; outcome s3 Staged && expect staged $d3"
 vm "u3 fails its health check three times, each boot unlocked by the TPM; back on N by itself" --boots 4 \
   --command "$(is u1)" --command "$lib; expect booted $d1 && running && entries | grep -F +0-3 && test \"\$(queued)\" = true" \
