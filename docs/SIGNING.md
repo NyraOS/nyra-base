@@ -251,8 +251,10 @@ it is made in the same signing step.
   `e8baddbcbd70accf5525644bc766a5e79f9fcffdac69890348307f363793d0f1`.
 - **The next key's public half is committed too**, as
   `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`, and goes into the image
-  (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`; in CI, a next key made for the run, whose private
-  half is deleted at once). The release gate refuses an image whose next key is not that file, or is the
+  (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`, CI images included). Images also carry the
+  committed current key at `/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`, which nothing reads at
+  runtime (`tpm-enroll` takes the current key from the UKI); in CI images it differs from the UKI's
+  `.pcrpkey`, which is the key made for the run. The release gate refuses an image whose next key is not that file, or is the
   current key (compared as DER, so not even in another encoding). It is `pcr-policy-2` in the same key
   ring and kind, the **next** key; its file's SHA-256 is
   `677ff7820feb0c1eb0c606fced968cfe7f5cdf905bdc0321cd4ee1689e4299ae`. CI's signing identity may sign
