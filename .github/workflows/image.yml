@@ -552,6 +552,7 @@ jobs:
           rm "$WORK/disk.raw"
 
       - name: Boot the installed disk with KVM
+        id: boot
         env:
           IMAGE_VERSION: ${{ needs.build.outputs.version }}
         run: |
@@ -579,6 +580,12 @@ jobs:
             --log "$RUNNER_TEMP/serial.log" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
+
+      - name: The login shows the Nyra OS message of the day only
+        if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
+        run: |
+          tools/vm/check-motd.sh --self-test
+          tools/vm/check-motd.sh "$RUNNER_TEMP/serial.log"
 
       - name: Root partition found when the first probe fails (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
