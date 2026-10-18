@@ -19,7 +19,8 @@
 #   - the image carries RETIRED, the committed list of retired policy keys, as IMAGE_RETIRED (its
 #     /usr/lib/nyra/secureboot/tpm2-pcr-retired-keys), every line of which is a comment or a key's
 #     SHA-256, and it lists neither PCR_KEY nor NEXT_KEY.
-#   No certificate or policy keys committed yet means every image is refused.
+#   The certificate and both policy keys are committed; until a release UKI is signed with the Nyra
+#   key and its PCR policy with pcr-policy-1, every image is refused.
 #   tools/signing/uki-gate.sh BOOT_DIR CERT PCR_KEY NEXT_KEY IMAGE_NEXT_KEY RETIRED IMAGE_RETIRED
 set -euo pipefail
 

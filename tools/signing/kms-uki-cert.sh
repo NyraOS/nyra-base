@@ -6,17 +6,11 @@
 # `libengine-pkcs11-openssl` (OpenSSL's PKCS#11 engine; Cloud Shell has OpenSSL 3, and this package
 # is the one Google's guide uses) and an account allowed to use and view the key.
 #   tools/signing/kms-uki-cert.sh > nyra.crt
-#
-# Google's PKCS#11 library for Cloud KMS, pinned: the exact release asset and its SHA-256, which
-# is the digest GitHub shows for the asset of release pkcs11-v1.9.
-# Usage guide: https://github.com/GoogleCloudPlatform/kms-integrations/blob/master/kmsp11/docs/user_guide.md
 set -euo pipefail
 
 key_ring=projects/nyra-signing-3076/locations/europe-west3/keyRings/nyra
 key=uki
 version=1
-lib_url=https://github.com/GoogleCloudPlatform/kms-integrations/releases/download/pkcs11-v1.9/libkmsp11-1.9-linux-amd64.tar.gz
-lib_sha256=5397f965073cd5d1e2c43e5148f102f31a7c835902f97eb41c7c9c0f1b876a40
 subject="/CN=Nyra OS Secure Boot 2026/O=Wagg Software"
 days=5479 # 15 years, 4 leap days
 
@@ -28,22 +22,8 @@ openssl engine pkcs11 >/dev/null 2>&1 ||
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-curl -fsSL --retry 3 -o "$tmp/lib.tar.gz" "$lib_url"
-echo "$lib_sha256  $tmp/lib.tar.gz" | sha256sum -c - >&2
-tar -xzf "$tmp/lib.tar.gz" -C "$tmp"
-lib="$(find "$tmp" -name libkmsp11.so | head -n 1)"
-[ -n "$lib" ] || die "libkmsp11.so not in the archive"
-
-# The library wants a config file that only its owner can write. It holds no secret: the library
-# authenticates with the account's gcloud credentials (Cloud Shell sets them up).
-cat >"$tmp/kmsp11.yaml" <<EOF
----
-tokens:
-  - key_ring: "$key_ring"
-    label: "nyra"
-EOF
-chmod 600 "$tmp/kmsp11.yaml"
-export KMS_PKCS11_CONFIG="$tmp/kmsp11.yaml" PKCS11_MODULE_PATH="$lib"
+# Downloads and checks Google's pinned PKCS#11 library and exports its config and module path.
+. "$(dirname "$0")/kms-pkcs11.sh" "$tmp" "$key_ring"
 
 # The key as KMS publishes it, fetched without the PKCS#11 library: the certificate must match it.
 gcloud kms keys versions get-public-key "$version" --key="$key" --keyring="${key_ring##*/}" \

@@ -51,7 +51,7 @@ A release signature says "Nyra machines may install this image". An image whose 
 with the Nyra Secure Boot key would install and then fail to boot under Secure Boot, so it must never
 get one. Before anything else, the `sign` job runs `tools/signing/uki-gate.sh` on the image's `/boot`
 with the Nyra UKI certificate committed in this repository,
-`files/usr/lib/nyra/secureboot/nyra.crt` (PEM; once committed, it also ships in the image, for the
+`files/usr/lib/nyra/secureboot/nyra.crt` (PEM; it also ships in the image, for the
 installer), and the public key of the Nyra PCR policy key,
 `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem` (see "The PCR policy key" below). It refuses
 unless:
@@ -72,16 +72,25 @@ unless:
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
 
-**Neither the certificate nor the policy key is committed yet** (the Nyra keys do not exist yet), so
-the gate refuses every image: fail closed, like the placeholder signer address in the policy.
+The certificate and both PCR policy keys are committed (see "The PCR policy key"), but no release UKI
+is signed with the Nyra key yet, so the gate refuses every image until one is: fail closed, like the
+placeholder signer address in the policy.
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
 (`EFI/Linux/nyra-fallback-<digest>+0.efi`) exists only on a machine's ESP: `esp-sync` copies the UKI
 bootc installed there, so it is the same signed file and nothing new is signed for it.
 
-The same checks guard the signing step itself (`ci/build-image.sh`, step 3): it signs exactly one file,
-and only if `uki-check.py` accepts it and, once its PCR policy is signed, `pcr-policy.py check` too, so the key that signs UKIs never signs an add-on (which would
+The same checks guard the signing step itself (`tools/signing/sign-uki.sh IN_DIR OUT_DIR --key KEY
+--cert CERT [--engine ENGINE]`, called by step 3 of `ci/build-image.sh`; KEY is a file, or a `pkcs11:`
+URI with `--engine`; no other option, repeated option or missing `--key`/`--cert` is accepted). It is
+the only script that signs a UKI (a lint in `shellcheck.yml` refuses `sbsign` with an engine or a
+`pkcs11` key anywhere else), and `tools/signing/test-sign-uki.sh` tests it with stub `sbsign` and
+`sbverify`. It signs exactly one regular file (a symlink is refused) of IN_DIR, read once into a private
+copy that is checked and signed; the input must carry no signature yet, OUT_DIR must not exist, and
+after signing `sbverify --cert CERT` and `uki-check.py` (exactly one signature) must accept the output.
+It signs only if `uki-check.py` accepts the copy and, once its PCR policy is signed,
+`pcr-policy.py check` too, so the key that signs UKIs never signs an add-on (which would
 apply to every Nyra UKI) or a UKI with another command line. A change to the sealed command line
 (`kargs.d`, the profiles in `ci/ukify.sh`) therefore needs a matching change to `ci/uki-cmdline.txt`
 in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose
@@ -246,12 +255,22 @@ it is made in the same signing step.
   that asks for anything else (docs/BOOT.md). A signature over PCR 11 is a credential that unlocks
   every boot with that PCR value until the key is rotated, so a wrong one cannot be taken back.
 - **Only the public half is committed**, as `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`
-  next to `nyra.crt`; the release gate refuses any other. Nothing is created yet.
+  next to `nyra.crt`; the release gate refuses any other. It is `pcr-policy-1` in Cloud KMS (key ring
+  `nyra`, RSA 2048, HSM, PKCS#1 v1.5 SHA-256), the **current** key; its file's SHA-256 is
+  `e8baddbcbd70accf5525644bc766a5e79f9fcffdac69890348307f363793d0f1`.
 - **The next key's public half is committed too**, as
   `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem`, and goes into the image
-  (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`; in CI, a next key made for the run, whose private
-  half is deleted at once). The release gate refuses an image whose next key is not that file, or is the
-  current key (compared as DER, so not even in another encoding). Nothing is created yet.
+  (`/usr/lib/nyra/secureboot`, by `ci/build-image.sh`, CI images included). Images also carry the
+  committed current key at `/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem`, which nothing reads at
+  runtime (`tpm-enroll` takes the current key from the UKI); in CI images it differs from the UKI's
+  `.pcrpkey`, which is the key made for the run. The release gate refuses an image whose next key is not that file, or is the
+  current key (compared as DER, so not even in another encoding). It is `pcr-policy-2` in the same key
+  ring and kind, the **next** key; its file's SHA-256 is
+  `677ff7820feb0c1eb0c606fced968cfe7f5cdf905bdc0321cd4ee1689e4299ae`. CI's signing identity may sign
+  only with `pcr-policy-1` (IAM on that key); `pcr-policy-2` has no signer until a rotation. Builds
+  and tests do not need either private half: the build job and the encryption tests use their own
+  per-run keys for the current key, and the tests that need a private next key (rotation, updates)
+  replace the image's next key with one of their own.
 - **A key is known by the SHA-256 of its PEM file**, on every disk (the record of its enrollments). So
   the release gate also requires the UKI's `.pcrpkey` to be the committed key's file byte for byte:
   the same key in another encoding would leave the disk unable to tell that it is the key it was
@@ -355,9 +374,10 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
-0. Commit the Nyra UKI certificate as `files/usr/lib/nyra/secureboot/nyra.crt`, together with the
-   signing of the UKI with the Nyra key (docs/BOOT.md, "What remains for the real Nyra key"). Until
-   then the `sign` job refuses every image (the UKI release gate above).
+0. The Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI certificate"
+   and "The PCR policy key"). Until a release UKI is signed with the Nyra key (docs/BOOT.md, "What
+   remains for the real Nyra key") and its PCR policy with pcr-policy-1, the `sign` job refuses every
+   image (the UKI release gate above).
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
@@ -395,15 +415,19 @@ certificate for it, made once: in Cloud Shell, as the account that may use the k
     tools/signing/kms-uki-cert.sh > nyra.crt
 
 The script downloads Google's PKCS#11 library for Cloud KMS (a pinned release, checked against its
-SHA-256), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
+SHA-256; the pin lives in `tools/signing/kms-pkcs11.sh`), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
 15 years, `CA:FALSE`, digital signature, code signing), checks that its public key is the KMS key's
 and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Run it
-from a fresh clone of `main`, not from a branch. Commit that PEM as
-`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request; without it no image gets a
-release signature (docs/BOOT.md, "What remains for the real Nyra key"). That pull request states the
-SHA-256 fingerprint the script printed on stderr. Its reviewer checks the certificate's public key
+from a fresh clone of `main`, not from a branch. The PEM is committed as
+`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request (docs/BOOT.md, "What remains for
+the real Nyra key"). That pull request states the SHA-256 fingerprint the script printed on stderr.
+Its reviewer checks the certificate's public key
 independently against `gcloud kms keys versions get-public-key 1 --key=uki ...`, not against the PEM
 alone.
+
+The committed certificate was made this way on 2026-10-18; its SHA-256 fingerprint is
+`6F:3E:51:F4:0B:61:A4:71:CE:49:C0:95:E1:57:27:BA:F1:75:10:80:4B:31:C3:50:16:56:97:97:68:75:44:F9`
+(`openssl x509 -noout -fingerprint -sha256 -in files/usr/lib/nyra/secureboot/nyra.crt`).
 
 ## Not covered here
 

@@ -39,6 +39,8 @@ jobs:
         run: python3 -I tools/vm/vm-boot.py --self-test
       - name: Offline test of the disk's TPM2 enrollment script (tools/vm/test-tpm-enroll.sh)
         run: tools/vm/test-tpm-enroll.sh
+      - name: Offline test of the released-image check (tools/signing/test-same-but-signature.sh)
+        run: tools/signing/test-same-but-signature.sh
       - name: Self-test of the Titanic results (tools/titanic/results.py)
         run: python3 -I tools/titanic/results.py --self-test
       - name: Self-test of the cached image check (ci/verify-oci.py)
@@ -47,6 +49,15 @@ jobs:
         run: python3 -I ci/check-release-cache.py --self-test && python3 -I ci/check-release-cache.py
       - name: Self-test of the artifact check (ci/check-artifact.sh)
         run: ci/check-artifact.sh --self-test
+      - name: Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)
+        run: tools/signing/test-sign-uki.sh
+      - name: Only sign-uki.sh signs with an engine or a pkcs11 key
+        run: |
+          # The brackets keep this line from matching itself.
+          if git grep -nE 'sbsign.*(--engin[e]| -[e]( |=|$)|pkcs1[1])' -- . ':!tools/signing/sign-uki.sh'; then
+            echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
+            exit 1
+          fi
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12

@@ -16,8 +16,10 @@ differ from the stub's, and on more than one Authenticode signature). Accepted o
     128 hex digits, the same in every profile;
   - exactly one .sbat section, with exactly one Nyra component line (nyra,<generation>,...), so that
     the UKI can be revoked with older Nyra UKIs (docs/BOOT.md, "SBAT").
-Runs before the UKI is signed (ci/build-image.sh) and in the release gate (tools/signing/uki-gate.sh).
-    python3 -I tools/signing/uki-check.py UKI EXPECTED
+Runs before the UKI is signed (tools/signing/sign-uki.sh) and in the release gate
+(tools/signing/uki-gate.sh). With SIGNATURES (0 or 1) the UKI must carry exactly that many
+Authenticode signatures; without it, none or one (more is always refused).
+    python3 -I tools/signing/uki-check.py UKI EXPECTED [SIGNATURES]
 """
 import os
 import re
@@ -26,10 +28,10 @@ import sys
 sys.dont_write_bytecode = True  # nothing written into the checkout
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pefile  # noqa: E402
-from pe_sections import Refused, sections  # noqa: E402
+from pe_sections import SECURITY, Refused, sections  # noqa: E402
 
 
-def check(uki, expected_path):
+def check(uki, expected_path, signatures=None):
     with open(expected_path, encoding="ascii") as f:
         expected = [line.rstrip("\n") for line in f if line.strip() and not line.startswith("#")]
     secs = sections(uki)
@@ -60,13 +62,17 @@ def check(uki, expected_path):
     nyra = [line for line in b"".join(sbat).split(b"\n") if line.startswith(b"nyra,")]
     if len(sbat) != 1 or len(nyra) != 1 or not re.fullmatch(rb"nyra,[1-9][0-9]*,.*", nyra[0]):
         return f"not one .sbat section with one Nyra component line (nyra,<generation>,...): {nyra}"
+    # sections() accepted the certificate table: it is empty or exactly one signature.
+    found = int(bool(pefile.PE(uki, fast_load=True).OPTIONAL_HEADER.DATA_DIRECTORY[SECURITY].Size))
+    if signatures is not None and found != signatures:
+        return f"{found} Authenticode signatures, not {signatures}"
     return None
 
 
 def main():
-    uki, expected_path = sys.argv[1:]
+    uki, expected_path, *signatures = sys.argv[1:]
     try:
-        error = check(uki, expected_path)
+        error = check(uki, expected_path, int(signatures[0]) if signatures else None)
     except Refused as e:
         error = str(e)
     except (OSError, ValueError, pefile.PEFormatError) as e:
