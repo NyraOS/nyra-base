@@ -146,7 +146,7 @@ sudo cp "$work/console.addon.efi" "$mnt/loader/addons/nyra-test-console.addon.ef
 sudo umount "$mnt" && sudo losetup -d "$loop" && loop=""
 
 # With a TPM the disk has no password: the prompt asks for the recovery key only.
-ask="Please enter (passphrase or )?recovery key for disk [^\r\n]*:"
+ask="Please enter (passphrase or )?recovery key for disk [^\r\n:]*:"
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
 # Units that failed in this boot, the initrd included (systemctl --failed sees only the running system).
 nofail='f="$(journalctl -b -o cat | grep -E "Failed to start|failed with result" || true)"; echo "${f:-no unit failed in this boot, the initrd included}"; test -z "$f"'
