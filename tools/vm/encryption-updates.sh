@@ -260,7 +260,7 @@ vm() { # vm TITLE ARGS...
     --persist --poweroff --autologin --timeout 240 --log "$logs/serial-encryption-updates-$n.log" \
     --summary "$summary" --title "Encrypted updates, boot $n: $title" "$@" || fail=1
   # Nothing is typed in this test: a boot that asks for the disk did not unlock with the TPM.
-  if grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-updates-$n.log"; then
+  if python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-updates-$n.log"; then
     echo "::error::encrypted updates, boot $n asked for the disk"
     fail=1
   fi

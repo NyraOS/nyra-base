@@ -145,9 +145,9 @@ blind() { # blind NAME TITLE ARGS...
     --log "$logs/serial-encryption-pin-$name.log" --summary "$summary" --title "$title" "$@"
 }
 asked() { # asked NAME: did the console of that boot ask for the disk's recovery key?
-  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-pin-$1.log"
+  python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-pin-$1.log"
 }
-pinasked() { grep -q -a -F "$pinask" "$logs/serial-encryption-pin-$1.log"; }
+pinasked() { python3 -B tools/vm/vm-boot.py --on-console "$pinask" "$logs/serial-encryption-pin-$1.log"; }
 
 vm first "PIN 1: the first boot unlocks by itself; tpm-pin asks for a PIN" \
   --command "$running" --command "$log | grep -q 'enrolled with the TPM'" --command "$(status "pin no")" \
