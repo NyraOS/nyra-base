@@ -261,12 +261,14 @@ RUN test -x /usr/bin/keyctl && \
 # name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
 # PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
 # dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
-# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>"). agetty
-# always shows /etc/issue when there is one (util-linux 2.42, the image's: in place of /usr/lib/issue;
-# 2.41: before it), so Debian's goes; the drop-ins of /etc, /run and /usr/lib/issue.d still show (the
-# health notice in /run/issue.d). The logo is the os-release LOGO, an icon name (branding/README.md:
-# not under the GPL): the scalable icon, and the drawing made for small sizes in the fixed-size
-# directories (SVG is valid there too, so nothing is rendered).
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>").
+# agetty (util-linux 2.42) shows only the first of /etc/issue, /run/issue and /usr/lib/issue, so
+# /etc/issue must not exist: Debian's goes, and so does systemd's /usr/share/factory/etc/issue, which
+# its tmpfiles line "C! /etc/issue" (debian.conf) would copy to /etc/issue on every boot it is missing
+# (tmpfiles skips a copy whose source is missing). The drop-ins of /etc, /run and /usr/lib/issue.d
+# still show (the health notice in /run/issue.d). The logo is the os-release LOGO, an icon name
+# (branding/README.md: not under the GPL): the scalable icon, and the drawing made for small sizes in
+# the fixed-size directories (SVG is valid there too, so nothing is rendered).
 ARG NYRA_VERSION=dev
 COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
 COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
@@ -278,7 +280,8 @@ RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev
     printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
       "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \
       'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
-    ln -sfn ../usr/lib/os-release /etc/os-release && rm /etc/issue && test -f /usr/lib/issue && \
+    ln -sfn ../usr/lib/os-release /etc/os-release && \
+    rm /etc/issue /usr/share/factory/etc/issue && test -f /usr/lib/issue && \
     . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
     for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
 

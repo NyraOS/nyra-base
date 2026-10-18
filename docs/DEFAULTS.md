@@ -522,12 +522,16 @@ LOGO=nyra-logo
   would repeat the version ("Nyra OS 2026.10.401 2026.10.401"). Without it the title is
   `PRETTY_NAME`, and bootc's entry version stays the composefs digest, as before.
 - **The login prompt** is `/usr/lib/issue` (`\S \n \l`: `PRETTY_NAME`, the host name, the
-  terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty always shows
-  `/etc/issue` when there is one: util-linux 2.42, the image's, takes the first of `/etc/issue`,
-  `/run/issue` and `/usr/lib/issue`, and 2.41 showed all three, `/etc/issue` first. Debian's
-  `/etc/issue` is therefore removed from the image; a user's own `/etc/issue` still shows. The
-  drop-ins in `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` show with either version, so
-  the health notice (`/run/issue.d`, docs/UPDATES.md) is still at the prompt. `/etc/issue.net`
+  terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty (util-linux 2.42,
+  the image's) shows only the first of `/etc/issue`, `/run/issue` and `/usr/lib/issue`, so there
+  must be no `/etc/issue`. Debian's is removed from the image, and so is systemd's
+  `/usr/share/factory/etc/issue` ("\S", then "Kernel \r on an \m (\l)"): Debian's systemd has the
+  tmpfiles line `C! /etc/issue` (`/usr/lib/tmpfiles.d/debian.conf`), which copies that file to
+  `/etc/issue` on every boot that finds none, and skips the line when the source is missing. A
+  user's own `/etc/issue` still shows. After the main file agetty shows the drop-ins (`*.issue`) of
+  `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d`, so the health notice (`/run/issue.d`,
+  docs/UPDATES.md) is still at the prompt. Both consoles (`getty@tty1`, `serial-getty@ttyS0`) run
+  agetty without `--issue-file`, so both show this. `/etc/issue.net`
   stays Debian's: only a telnet or SSH server would show it, and the base has neither.
 - **The logo** is the icon `nyra-logo` (`LOGO=`, an icon name):
   `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg` from `branding/logo/nyra-icon.svg`, and
@@ -550,4 +554,5 @@ Who reads it:
 AppArmor's profiles name no os-release file, and nothing in `nyra-updated`, `files/` or the
 tests checks for `ID=debian`. CI checks it in the `install-boot` job: `ID`, `ID_LIKE`,
 `PRETTY_NAME` and `IMAGE_VERSION` against the run's version, the link, the logo named by `LOGO`
-(scalable and 16x16), no `/etc/issue`, and `agetty --show-issue` starting with "Nyra OS <version>".
+(scalable and 16x16), no `/etc/issue` after the boot, `agetty --show-issue` starting with "Nyra OS
+<version>", and a drop-in written to `/run/issue.d` shown after it.

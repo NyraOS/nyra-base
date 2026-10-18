@@ -138,9 +138,12 @@ Each line is something that broke or surprised us once.
   `/run/motd.d` after a login.
 - **agetty always shows `/etc/issue` when there is one.** util-linux 2.42 (the image's) takes the
   first of `/etc/issue`, `/run/issue`, `/usr/lib/issue` as the main file, so `/usr/lib/issue` never
-  shows next to Debian's `/etc/issue`; 2.41 showed all three, `/etc/issue` first. The drop-ins of
-  all three `issue.d` directories show with both. The image therefore has no `/etc/issue`
-  (docs/DEFAULTS.md, "Name and version").
+  shows next to an `/etc/issue`; the drop-ins of all three `issue.d` directories show after it.
+- **Removing a file from the image's `/etc` is not enough when tmpfiles makes it again.** With
+  Debian's `/etc/issue` gone, the first boot had one anyway: systemd's `C! /etc/issue`
+  (`/usr/lib/tmpfiles.d/debian.conf`) copies `/usr/share/factory/etc/issue` there whenever it is
+  missing. A `C` line whose source is missing is skipped, so the image removes the factory file
+  too. Check `systemd-tmpfiles --cat-config` for the path before relying on its absence.
 - **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
   from the UKI's `.osrel`; `VERSION` when there is no `VERSION_ID`), and the entry's version and file
   name come from the same field (the composefs digest without either). A `PRETTY_NAME` that carries
