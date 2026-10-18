@@ -159,7 +159,7 @@ vm() { # vm NAME TITLE ARGS...
     --title "$title" "$@"
 }
 asked() { # asked NAME: did the console of that boot ask for the disk?
-  grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-tpm-$1.log"
+  python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-tpm-$1.log"
 }
 
 vm first "TPM 1: the first boot unlocks by itself and enrolls the disk" --tpm "$tpm" --persist --poweroff \
@@ -181,7 +181,7 @@ vm back "TPM 4: with the TPM back, the disk unlocks by itself again" --tpm "$tpm
 vm leave-initrd "TPM 5: the TPM fails before leave-initrd is measured: a forced reboot, no running system" \
   --tpm "$tpm" --tpm-fail-at 'Finished .{0,80}Cryptography Setup for root\.' --expect-reboot || fail=1
 # The console shortens the unit's name: "Forcibly rebooting: unit systemd-pc…d.service failed".
-LC_ALL=C grep -q -a -E "Forcibly rebooting: unit systemd-pc(rphase-initrd|.{1,3}d)\.service failed" \
+python3 -B tools/vm/vm-boot.py --on-console "Forcibly rebooting: unit systemd-pc(rphase-initrd|.{1,3}d)\.service failed" \
   "$logs/serial-encryption-tpm-leave-initrd.log" ||
   { echo "::error::the forced reboot did not come from the failed leave-initrd measurement"; fail=1; }
 vm after-fail "TPM 6: then, with the TPM answering again, the disk unlocks by itself" --tpm "$tpm" \

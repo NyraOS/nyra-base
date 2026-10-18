@@ -111,7 +111,7 @@ print(" ".join(sorted(out)))'
       --persist --blind --timeout 300 --log "$logs/serial-encryption-first-boot-$mode-$name.log" \
       --summary "$summary" --title "$title" "$@"
   }
-  asked() { grep -q -a -E "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-first-boot-$mode-$1.log"; }
+  asked() { python3 -B tools/vm/vm-boot.py --on-console "Please enter (passphrase or )?recovery key for disk" "$logs/serial-encryption-first-boot-$mode-$1.log"; }
   only='systemd-recovery'
   enrolled='systemd-recovery tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12 tpm2:pubkey-pcrs=11,ref=initrd,pcrs=7+12'
   { echo "| Check | Result | |"; echo "|---|---|---|"; } >> "$summary"

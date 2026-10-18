@@ -151,14 +151,15 @@ vm --poweroff --log "$logs/serial-hostile-root-3.log" --chat "$answer=>RESET" \
 # this names it. When systemd-firstboot runs, the console shows "Initial Setup..." (starting) and
 # "Initial Setup." (finished), and "Please enter the new ..." for each question (systemd 262); a
 # skipped unit is at most "Initial Setup skipped, ...".
-if grep -aE 'Initial Setup\.|Please enter the new' "$logs/serial-hostile-root-3.log"; then
+if python3 -B tools/vm/vm-boot.py --on-console 'Initial Setup\.|Please enter the new' "$logs/serial-hostile-root-3.log"; then
   echo "hostile root 3: systemd-firstboot ran or asked a question"
   fail=1
 fi
 # AppArmor in the reset boot, with /etc empty: the profiles of the image from /usr. Up to the reset
 # question, the console must show apparmor.service finished and never failed.
-reset_boot="$(sed -n '1,/Type RESET to reset/p' "$logs/serial-hostile-root-3.log")"
-if ! grep -aq 'Finished.*apparmor\.service' <<<"$reset_boot" || grep -a 'Failed to start.*apparmor\.service' <<<"$reset_boot"; then
+before_reset='(?s:.*)Type RESET to reset'
+if ! python3 -B tools/vm/vm-boot.py --on-console "Finished.*apparmor\.service$before_reset" "$logs/serial-hostile-root-3.log" ||
+   python3 -B tools/vm/vm-boot.py --on-console "Failed to start.*apparmor\.service$before_reset" "$logs/serial-hostile-root-3.log"; then
   echo "hostile root 3: AppArmor did not start in the reset boot"
   fail=1
 fi

@@ -91,7 +91,7 @@ before the boot tests, so a failed run has one too:
 It is a **test disk**, not a system to keep data on:
 
 - like the CI disks, it carries an add-on that lets the VM's settings pass systemd credentials:
-  whoever can change the VM's settings sets root's password;
+  whoever can change the VM's settings gets a root shell;
 - its UKI is signed with that run's throwaway key, so it boots only with Secure Boot off;
 - its root is not encrypted;
 - it gets no updates: a newer image means a new disk.
@@ -118,15 +118,32 @@ It is a **test disk**, not a system to keep data on:
    - QEMU: UEFI boot on; **"TPM 2.0 Device" off** (switching it on also loads the Secure Boot keys,
      see below);
    - QEMU arguments: add
-     `-smbios type=11,value=io.systemd.credential:passwd.plaintext-password.root=<a password>` and
      `-smbios type=11,value=io.systemd.credential:firstboot.timezone=Europe/Bucharest` (or any
-     time zone). UTM splits the arguments at spaces: use a password without spaces. The first boot
-     sets the root password from it.
+     time zone; only the first boot reads it) and
+     `-smbios type=11,value=io.systemd.credential.binary:systemd.unit-dropin.getty@tty1.service=W1NlcnZpY2VdCkV4ZWNTdGFydD0KRXhlY1N0YXJ0PS0vc2Jpbi9hZ2V0dHkgLS1hdXRvbG9naW4gcm9vdCAtLW5vcmVzZXQgLS1ub2NsZWFyIC0gJHtURVJNfQo=`
+     (in one piece: UTM splits the arguments at spaces, and this one has none). The long value is
+     a drop-in for the console's login prompt, in base64, like the one CI uses on the serial console:
+     ```
+     [Service]
+     ExecStart=
+     ExecStart=-/sbin/agetty --autologin root --noreset --noclear - ${TERM}
+     ```
+     It logs root in on the console at every boot where it is passed.
 
    Then "Save".
-5. Start it. The console shows the boot messages, then a `login:` prompt (the first boot takes
-   longer). Log in as root with that password. `systemctl is-system-running` should print
-   `running`.
+5. Start it. The console shows the boot messages, then a root shell (the first boot takes longer).
+   `systemctl is-system-running` should print `running`.
+6. To log in with a password instead: set root's password with `passwd`, shut the VM down
+   (`poweroff`), remove the second argument, and start it again. The password stays (it is in
+   `/etc/shadow` on the disk); the console now asks for it.
+
+**Why not a password credential:** the image's root account is locked (`*` in `/etc/shadow`), and
+it is already there on the first boot, so neither systemd-sysusers (which uses
+`passwd.plaintext-password.root` only when it creates root) nor systemd-firstboot (only while root
+has no account or is `!unprovisioned`, docs/BOOT.md "No first-boot questions") sets a password
+from it: the login says "Login incorrect". CI logs in the same way, with autologin
+(`tools/vm/vm-boot.py --autologin`). The drop-in needs nothing from the first boot, so it works on a
+VM that has already booted: only its arguments change.
 
 Afterwards, delete the downloaded `.qcow2`: UTM keeps its own copy in the package.
 

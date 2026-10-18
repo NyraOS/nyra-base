@@ -1619,6 +1619,12 @@ fn the_state_is_written_atomically_and_privately() {
         channel: Some("beta".into()),
         following: Some("stable".into()),
         channel_changed: Some(NOW),
+        network_retry: Some(NetworkRetry {
+            digest: C.into(),
+            failed_at: NOW,
+            links: "enp1s0\n".into(),
+            retried: true,
+        }),
     };
     store.save(&state).unwrap();
     assert_eq!(store.load().unwrap(), state);
@@ -2384,4 +2390,143 @@ fn a_sheet_issued_at_the_very_moment_of_the_change_counts() {
     fake.sheet = channel_sheet("beta", 100, B, NOW);
     assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(B))));
     assert_eq!(dir.store().load().unwrap().channel_changed, None);
+}
+
+// --- a version failed only by the network health check (rule 15) -----------------------------
+
+/// What the network health check leaves in the state directory: the links with an address at this
+/// check, and, on the boot after a fallback it caused alone, `network-fallback`.
+fn network_check_says(dir: &TempDir, links: &str, fallback: bool) {
+    let state = dir.store().dir;
+    fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("network-links"), links).unwrap();
+    if fallback {
+        fs::write(state.join("network-fallback"), "").unwrap();
+    }
+}
+
+/// C staged on A, then C fell back three times: A runs, C is the rollback deployment.
+fn fell_back_from_c(fake: &mut Fake) {
+    fake.status = Status {
+        booted: dep(A),
+        staged: None,
+        rollback: dep(C),
+        ..Status::default()
+    };
+}
+
+#[test]
+fn a_version_failed_only_by_the_network_check_is_tried_once_more_a_day_later() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    fell_back_from_c(&mut fake);
+    network_check_says(&dir, "enp1s0\n", true);
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    let state = store.load().unwrap();
+    assert!(state.failed.contains(C));
+    assert_eq!(
+        state.network_retry,
+        Some(NetworkRetry {
+            digest: C.into(),
+            failed_at: NOW,
+            links: "enp1s0\n".into(),
+            retried: false
+        })
+    );
+    assert!(!store.dir.join("network-fallback").exists());
+    // Not before a day on the same network.
+    let day = NOW + DAY_SECONDS;
+    assert_eq!(
+        check(&mut fake, &store, &config(), day - 1),
+        Err(Error::Failed(C.into()))
+    );
+    // A day later: its old deployment goes (it kept the /etc of its tries), staged afresh.
+    assert_eq!(
+        check(&mut fake, &store, &config(), day),
+        Ok(Outcome::Staged(image(C)))
+    );
+    assert!(fake.calls.contains(&format!("delete rollback {C}")));
+    let state = store.load().unwrap();
+    assert!(!state.failed.contains(C));
+    assert_eq!(state.pending.as_deref(), Some(C));
+    assert!(state.network_retry.as_ref().unwrap().retried);
+    // It fails the network check again: final, even a day later or on another network.
+    fell_back_from_c(&mut fake);
+    network_check_says(&dir, "enp1s0\n", true);
+    assert_eq!(
+        check(&mut fake, &store, &config(), day + 60),
+        Err(Error::Failed(C.into()))
+    );
+    network_check_says(&dir, "wlan0\n", false);
+    assert_eq!(
+        check(&mut fake, &store, &config(), day + 2 * DAY_SECONDS),
+        Err(Error::Failed(C.into()))
+    );
+    assert_eq!(fake.staged().len(), 2);
+}
+
+#[test]
+fn a_version_failed_only_by_the_network_check_is_tried_at_once_on_another_network() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    run_check(&mut fake, &dir).unwrap();
+    fell_back_from_c(&mut fake);
+    network_check_says(&dir, "enp1s0\n", true);
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    network_check_says(&dir, "wlan0\n", false);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 60),
+        Ok(Outcome::Staged(image(C)))
+    );
+    // It boots healthy: nothing is left of its failure.
+    fake.status = Status {
+        booted: dep(C),
+        staged: None,
+        rollback: dep(A),
+        ..Status::default()
+    };
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 120),
+        Ok(Outcome::UpToDate)
+    );
+    let state = store.load().unwrap();
+    assert_eq!((state.pending, state.network_retry), (None, None));
+    assert!(state.failed.is_empty());
+}
+
+#[test]
+fn any_other_failure_stays_final() {
+    let dir = TempDir::new();
+    let store = dir.store();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    run_check(&mut fake, &dir).unwrap();
+    // The network check did not say the fallback was its alone (another check failed).
+    fell_back_from_c(&mut fake);
+    network_check_says(&dir, "enp1s0\n", false);
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    assert_eq!(store.load().unwrap().network_retry, None);
+    network_check_says(&dir, "wlan0\n", false);
+    assert_eq!(
+        check(&mut fake, &store, &config(), NOW + 2 * DAY_SECONDS),
+        Err(Error::Failed(C.into()))
+    );
+    assert_eq!(fake.staged().len(), 1);
+}
+
+#[test]
+fn the_network_checks_word_counts_for_the_next_check_only() {
+    // Left by a fallback no check settles (a version staged by hand): taken, and no later
+    // fallback for another reason becomes a network one.
+    let dir = TempDir::new();
+    let store = dir.store();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    network_check_says(&dir, "enp1s0\n", true);
+    assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+    assert!(!store.dir.join("network-fallback").exists());
+    fell_back_from_c(&mut fake);
+    assert_eq!(run_check(&mut fake, &dir), Err(Error::Failed(C.into())));
+    assert_eq!(store.load().unwrap().network_retry, None);
 }

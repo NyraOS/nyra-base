@@ -237,14 +237,15 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
     mkdir -p timers.target.wants boot-complete.target.requires boot-complete.target.wants && \
     ln -s ../nyra-updated.timer ../nyra-etc-copy.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
-    ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
+    ln -s ../nyra-health-system.service ../nyra-health-bootc.service ../nyra-health-network.service \
+      boot-complete.target.requires/ && \
     ln -s ../nyra-tpm-retire.service boot-complete.target.wants/ && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer nyra-tpm-retire.service \
       nyra-etc-copy@daily.service nyra-etc-copy.timer \
-      nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
+      nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service nyra-health-network.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
-    test -x /usr/lib/nyra/health/notice && /usr/libexec/nyra-updated check-config && \
+    test -x /usr/lib/nyra/health/notice && test -x /usr/lib/nyra/health/network && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf
 
 # keyutils without its request-key upcall (mkosi/mkosi.conf, RemoveFiles=): only keyctl.
@@ -299,7 +300,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       /usr/lib/systemd/system/initrd.target.wants/ && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
-    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl /usr/bin/sha256sum /usr/bin/systemd-ask-password "' \
+    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl /usr/bin/sha256sum /usr/bin/systemd-ask-password /usr/bin/head /usr/bin/sync "' \
       >> /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver" && \
     lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initrd.txt && \
@@ -312,7 +313,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/lib/nyra/boot/tpm-enroll usr/lib/systemd/system/nyra-tpm-enroll.service \
       'usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service -> ' \
       usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl usr/bin/sha256sum \
-      usr/bin/systemd-ask-password; do \
+      usr/bin/systemd-ask-password usr/bin/head usr/bin/sync; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 

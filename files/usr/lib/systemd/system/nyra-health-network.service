@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Health check (nyra-health-.service.d): on a version on trial, the links that had a routable address
+# before get one again; a link without carrier is not judged (/usr/lib/nyra/health/network). A
+# version that breaks the network falls back (docs/UPDATES.md, "The network").
+[Unit]
+Description=Nyra health check: the network comes up as before
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+CapabilityBoundingSet=
+ExecStart=/usr/lib/nyra/health/network
+# It waits up to 60 s for an address, on a boot that is judged.
+TimeoutStartSec=2min
+
+[Install]
+RequiredBy=boot-complete.target
