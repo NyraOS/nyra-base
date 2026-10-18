@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512">
+  <title>Nyra OS</title>
+  <rect width="64" height="64" rx="16" fill="#2459D8"/>
+  <path d="M55.49 23.45A25 8.5 -20 0 1 34.91 39.99A25 8.5 -20 0 1 8.51 40.55A25 8.5 -20 0 1 29.09 24.01A25 8.5 -20 0 1 55.49 23.45" fill="none" stroke="#fff" stroke-width="4.2" stroke-linecap="round"/>
+  <path d="M16.70 32.00a15.3 15.3 0 1 0 30.6 0a15.3 15.3 0 1 0 -30.6 0z" fill="#2459D8"/>
+  <path d="M19.50 32.00a12.5 12.5 0 1 0 25.0 0a12.5 12.5 0 1 0 -25.0 0z" fill="#fff"/>
+  <path d="M37.06 35.00a8.6 8.6 0 1 0 17.2 0a8.6 8.6 0 1 0 -17.2 0z" fill="#2459D8"/>
+  <path d="M39.86 35.00a5.8 5.8 0 1 0 11.6 0a5.8 5.8 0 1 0 -11.6 0z" fill="#fff"/>
+</svg>

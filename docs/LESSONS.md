@@ -136,6 +136,20 @@ Each line is something that broke or surprised us once.
   drop-ins from `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` (`*.issue`), and `agetty
   --reload` makes the ones already at the login prompt show it again; Debian's `pam_motd` reads
   `/run/motd.d` after a login.
+- **agetty always shows `/etc/issue` when there is one.** util-linux 2.42 (the image's) takes the
+  first of `/etc/issue`, `/run/issue`, `/usr/lib/issue` as the main file, so `/usr/lib/issue` never
+  shows next to an `/etc/issue`; the drop-ins of all three `issue.d` directories show after it.
+- **Removing a file from the image's `/etc` is not enough when tmpfiles makes it again.** With
+  Debian's `/etc/issue` gone, the first boot had one anyway: systemd's `C! /etc/issue`
+  (`/usr/lib/tmpfiles.d/debian.conf`) copies `/usr/share/factory/etc/issue` there whenever it is
+  missing. A `C` line whose source is missing is skipped, so the image removes the factory file
+  too. Check `systemd-tmpfiles --cat-config` for the path before relying on its absence.
+- **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
+  from the UKI's `.osrel`; `VERSION` when there is no `VERSION_ID`), and the entry's version and file
+  name come from the same field (the composefs digest without either). A `PRETTY_NAME` that carries
+  the version needs neither: no `VERSION_ID`, and no `VERSION=` either.
+- **The image had `/etc/os-release` as a copy of `/usr/lib/os-release`** (a file, not Debian's link):
+  replacing only `/usr/lib/os-release` would leave the old name in the file programs read first.
 - **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
   with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
   since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from

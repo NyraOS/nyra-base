@@ -19,13 +19,17 @@
 # without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
-#   ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
+# The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
+# a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
+# without it (a local build).
+#   VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
 set -euo pipefail
 
 rootfs="$1" tag="$2" uki="$3"
 shift 3
 build() {
-  sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-context crates="$uki/crates" \
+  sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-arg NYRA_VERSION="${VERSION:-dev}" \
+    --build-context crates="$uki/crates" \
     --build-context pcrnext="$uki/pcr-next" "$@" -f Containerfile .
 }
 

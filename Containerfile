@@ -277,6 +277,37 @@ RUN test -x /usr/bin/keyctl && \
       /usr/share/keyutils /sbin/request-key; do \
       ! test -e "$f" || { echo "keyutils left $f in the image"; exit 1; }; done
 
+# The system's name (docs/DEFAULTS.md, "Name and version"): Nyra OS, with the image version
+# NYRA_VERSION (year.month.run, the same as the manifest annotation org.opencontainers.image.version;
+# ci/build-image.sh passes it, dev for a build without one) in /usr/lib/os-release, and /etc/os-release
+# a link to it, as the os-release specification asks: a copy in /etc would keep an old version's
+# name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
+# PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
+# dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>").
+# agetty (util-linux 2.42) shows only the first of /etc/issue, /run/issue and /usr/lib/issue, so
+# /etc/issue must not exist: Debian's goes, and so does systemd's /usr/share/factory/etc/issue, which
+# its tmpfiles line "C! /etc/issue" (debian.conf) would copy to /etc/issue on every boot it is missing
+# (tmpfiles skips a copy whose source is missing). The drop-ins of /etc, /run and /usr/lib/issue.d
+# still show (the health notice in /run/issue.d). The logo is the os-release LOGO, an icon name
+# (branding/README.md: not under the GPL): the scalable icon, and the drawing made for small sizes in
+# the fixed-size directories (SVG is valid there too, so nothing is rendered).
+ARG NYRA_VERSION=dev
+COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/22x22/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/24x24/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/32x32/apps/nyra-logo.svg
+RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
+      { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
+    printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
+      "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \
+      'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
+    ln -sfn ../usr/lib/os-release /etc/os-release && \
+    rm /etc/issue /usr/share/factory/etc/issue && test -f /usr/lib/issue && \
+    . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
+    for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
+
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
 # and the udev rule that probes the boot disk once more when its first probe could not read

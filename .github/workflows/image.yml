@@ -572,6 +572,8 @@ jobs:
             --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; systemd-analyze; test "$s" = running' \
             --command 'bootc status && d="$(bootc status --booted --format json | grep -o "\"imageDigest\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted imageDigest: $d" && test "$d" = '"$IMAGE_DIGEST" \
             --command 'v="$(bootc status --booted --format json | grep -o "\"version\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted version: $v" && test "$v" = '"$IMAGE_VERSION" \
+            --command 'cat /etc/os-release && . /etc/os-release && [ "$ID" = nyra ] && [ "$ID_LIKE" = debian ] && [ "$PRETTY_NAME" = "Nyra OS '"$IMAGE_VERSION"'" ] && [ "$IMAGE_VERSION" = '"$IMAGE_VERSION"' ] && test "$(readlink /etc/os-release)" = ../usr/lib/os-release && [ "$LOGO" = nyra-logo ] && test -s "/usr/share/icons/hicolor/scalable/apps/$LOGO.svg" && test -s "/usr/share/icons/hicolor/16x16/apps/$LOGO.svg" && echo "os-release: Nyra OS, like Debian, with its logo"' \
+            --command 'i="$(agetty --show-issue)"; echo "$i"; test ! -e /etc/issue && case "$i" in "Nyra OS '"$IMAGE_VERSION"' "*) echo "the login prompt names Nyra OS" ;; *) false ;; esac && mkdir -p /run/issue.d && echo "a drop-in" > /run/issue.d/99-nyra-test.issue && agetty --show-issue | tail -n 1 | grep -qx "a drop-in" && rm /run/issue.d/99-nyra-test.issue && echo "the drop-ins of /run/issue.d after it"' \
             --command 'findmnt -T /usr; findmnt -T /usr -no OPTIONS | tr , "\n" | grep -qx ro && touch /usr/.nyra-rw-test 2>&1 | grep "Read-only file system"' \
             --command 'cat /proc/cmdline' \
             --log "$RUNNER_TEMP/serial.log" \
