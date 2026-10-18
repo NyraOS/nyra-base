@@ -15,6 +15,9 @@ RequiresMountsFor=/boot
 
 [Service]
 Type=oneshot
+# The links with a routable address on this healthy boot, for the network health check of the next
+# version (/usr/lib/nyra/health/network); never fails the check.
+ExecStartPre=-/usr/lib/nyra/health/network record
 ExecStart=/usr/libexec/nyra-updated check
 # nyra-updated stops a pull after 2 h itself (bootc and its helpers); this is only a backstop.
 TimeoutStartSec=2h30min
