@@ -189,7 +189,9 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   enrolls it the same way for the next policy key (in the image's `/usr`, "Rotating the policy key"
   below), and removes the temporary one. It
   does that only with Secure Boot on (not in setup mode) and a TPM; otherwise it removes the temporary
-  enrollment, and the disk asks for its recovery key. If that removal itself fails (a write error on
+  enrollment, and the disk asks for its recovery key until the TPM and Secure Boot are back, when the
+  recovery key typed once enrolls it ("Enrolled again after the TPM refused" below: the installer
+  leaves the record, empty, inside the encrypted root). If that removal itself fails (a write error on
   the header), the temporary enrollment stays until the next boot, which tries again; until then it
   opens the disk without any policy, even from the running system. Failing closed instead would loop
   on reboots. It reads the LUKS2 header (as data), what systemd-stub put in `/.extra` from the UKI,
@@ -205,9 +207,11 @@ enrolls the disk again, as the first boot does, and removes the old enrollment, 
 unlock by themselves:
 - **only a disk enrolled for the TPM.** The LUKS2 header cannot tell: its tokens are not
   authenticated, and anyone with the disk can add a TPM2 token to a disk set up with a password. The
-  first enrollment (which only the temporary enrollment, unsealed by the TPM, can make) writes the key
-  slot numbers of the disk's TPM2 enrollments, each with its policy key (the SHA-256 of the key's PEM
-  file) and whether it has a PIN, to a record inside the encrypted root, `/var/lib/nyra/tpm2-slots` (`/sysroot/var/...` in the
+  installer, which has the disk's key, creates an empty record inside the encrypted root of a disk it
+  sets up for the TPM (never of one with a password), so that a disk whose first boot found no TPM or
+  Secure Boot off is enrolled once they are back. The first enrollment (which only the temporary
+  enrollment, unsealed by the TPM, can make) writes the key slot numbers of the disk's TPM2
+  enrollments, each with its policy key (the SHA-256 of the key's PEM file) and whether it has a PIN, to a record inside the encrypted root, `/var/lib/nyra/tpm2-slots` (`/sysroot/var/...` in the
   initrd, after bootc set the root up). Only a disk with that record is enrolled again, and only when a
   key was typed in this boot. Root in the running system could write the record too, and gain nothing
   from it: the secret stays in the TPM, released only in the initrd. Since that `/var` is the running
@@ -345,8 +349,9 @@ points at `/dev/gpt-auto-root`: for an encrypted root, the opened volume, whose 
 look for. `nyra-luks-root.service` (initrd only) points it at the LUKS2 partition first, as systemd
 itself finds the disk of an encrypted root file system; bootc keeps a link that is already there.
 
-**What CI proves** (`tools/vm/encryption.sh`, `install-boot` job, Titanic T10): the image installed on
-its own disk as above, booted without a TPM, the passphrase prompt answered on the serial console:
+**What CI proves** (the `encryption` job, Titanic T10, each script below on a disk of its own).
+`tools/vm/encryption.sh`: the image installed as above, booted without a TPM, the passphrase prompt
+answered on the serial console:
 
 | Check | Result |
 |---|---|
@@ -517,8 +522,34 @@ systemd-ask-password:
 
 Each check but the plain rotation's and the full `/var`'s fails on a copy of the script without it.
 
-Not covered yet: updates through nyra-updated on an encrypted disk, the first boot without a TPM or
-with Secure Boot off (checked by hand only, with swtpm).
+Updates through `nyra-updated` (`tools/vm/encryption-updates.sh`): test versions built and signed as
+for the rotation, all with policy key A (next key B) and a channel sheet key, served as
+`updates.nyraos.com` from the runner as in `tools/vm/updates.sh` (a registry with the versions signed
+with a sigstore key the guest trusts, and a server for the signed sheets); `u0` installed for the VM's
+swtpm, `u1` (N, the `stable` tag), `u2` (N+1) and `u3` (a health check that always fails). Secure Boot
+on, the test console add-on on the ESP; nothing is ever typed, and a boot fails if its console asks for
+the disk.
+
+| Check | Result |
+|---|---|
+| u0's first boot | unlocks by itself and enrolls the disk; then `bootc switch` to N by its channel tag |
+| N | unlocks by itself; `nyra-updated` stages N+1 from the signed sheet |
+| N+1 | unlocks by itself and is blessed; back to N by hand (`bootc rollback`) |
+| N, by hand | unlocks by itself; N+1 held back (`HeldBack`); a sheet offering u3, staged |
+| u3 | fails its health check and reboots by itself three times, each boot unlocked by the TPM; systemd-boot falls back to N, which unlocks by itself; u3 marked failed and refused |
+| Read offline | the recovery key slot and the two TPM2 enrollments of the first boot; in the disk's journal that one enrollment and no other line of `nyra-tpm-enroll` |
+
+The first boot without a TPM or with Secure Boot off (`tools/vm/encryption-first-boot.sh`): a disk of its
+own for each case, installed for the VM's swtpm as above (with the empty record), as when the firmware
+settings change between the installation and the first boot.
+
+| Check | Result |
+|---|---|
+| The first boot without the TPM (Secure Boot on) | asks for the recovery key, which unlocks it; not enrolled ("no TPM"), the temporary enrollment removed, the typed key no longer in the kernel's cache, no unit failed; the header: only the recovery key slot |
+| The first boot with Secure Boot off (with the TPM) | unlocks through the temporary enrollment (it has no policy, "Known limits"); not enrolled ("Secure Boot is off"), the temporary enrollment removed; the header: only the recovery key slot |
+| The next boot, Secure Boot still off | asks for the recovery key, which unlocks it; not enrolled ("Secure Boot is off"); only the recovery key slot |
+| Both: the TPM and Secure Boot back, without the test console add-on, no login | asks for the recovery key once, then enrolled (the two TPM2 enrollments of a first boot); the next boot unlocks by itself |
+| Read offline | the record: two enrollments; one re-enrollment in the disk's journal, and the refusals above; the recovery key nowhere |
 
 ## TPM2 unlock: the signed PCR policy
 
