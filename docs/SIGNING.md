@@ -51,7 +51,7 @@ A release signature says "Nyra machines may install this image". An image whose 
 with the Nyra Secure Boot key would install and then fail to boot under Secure Boot, so it must never
 get one. Before anything else, the `sign` job runs `tools/signing/uki-gate.sh` on the image's `/boot`
 with the Nyra UKI certificate committed in this repository,
-`files/usr/lib/nyra/secureboot/nyra.crt` (PEM; once committed, it also ships in the image, for the
+`files/usr/lib/nyra/secureboot/nyra.crt` (PEM; it also ships in the image, for the
 installer), and the public key of the Nyra PCR policy key,
 `files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem` (see "The PCR policy key" below). It refuses
 unless:
@@ -355,9 +355,9 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
-0. Commit the Nyra UKI certificate as `files/usr/lib/nyra/secureboot/nyra.crt`, together with the
-   signing of the UKI with the Nyra key (docs/BOOT.md, "What remains for the real Nyra key"). Until
-   then the `sign` job refuses every image (the UKI release gate above).
+0. The Nyra UKI certificate is committed (see "Making the UKI certificate"). Until the UKI is signed
+   with the Nyra key (docs/BOOT.md, "What remains for the real Nyra key") and the PCR policy keys
+   are committed, the `sign` job refuses every image (the UKI release gate above).
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
@@ -398,12 +398,16 @@ The script downloads Google's PKCS#11 library for Cloud KMS (a pinned release, c
 SHA-256; the pin lives in `tools/signing/kms-pkcs11.sh`), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
 15 years, `CA:FALSE`, digital signature, code signing), checks that its public key is the KMS key's
 and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Run it
-from a fresh clone of `main`, not from a branch. Commit that PEM as
-`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request; without it no image gets a
-release signature (docs/BOOT.md, "What remains for the real Nyra key"). That pull request states the
-SHA-256 fingerprint the script printed on stderr. Its reviewer checks the certificate's public key
+from a fresh clone of `main`, not from a branch. The PEM is committed as
+`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request (docs/BOOT.md, "What remains for
+the real Nyra key"). That pull request states the SHA-256 fingerprint the script printed on stderr.
+Its reviewer checks the certificate's public key
 independently against `gcloud kms keys versions get-public-key 1 --key=uki ...`, not against the PEM
 alone.
+
+The committed certificate was made this way on 2026-10-18; its SHA-256 fingerprint is
+`6F:3E:51:F4:0B:61:A4:71:CE:49:C0:95:E1:57:27:BA:F1:75:10:80:4B:31:C3:50:16:56:97:97:68:75:44:F9`
+(`openssl x509 -noout -fingerprint -sha256 -in files/usr/lib/nyra/secureboot/nyra.crt`).
 
 ## Not covered here
 

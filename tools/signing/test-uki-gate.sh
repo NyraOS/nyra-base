@@ -5,8 +5,10 @@
 # throwaway policy key (RUN_PCR_KEY, its public half), on every build:
 #   - accepted with RUN_CERT and RUN_PCR_KEY (the gate passes a correct image, so its refusals below
 #     mean something);
-#   - refused exactly as the sign job runs it, with the committed Nyra certificate and policy key: an
-#     image signed with test keys never gets a release signature;
+#   - refused with the committed Nyra certificate and this run's policy keys: an image signed with
+#     the run's key never gets a release signature;
+#   - refused exactly as the sign job runs it, with the committed Nyra certificate and policy keys
+#     (while a policy key is not committed, for that reason);
 #   - refused with a certificate that did not sign it, and with a policy key that did not sign its
 #     policy; refused when the image's next policy key (RUN_NEXT_KEY, which it carries) is not the one
 #     given, when the next key given is the current one (also in another encoding), when the image
@@ -85,7 +87,8 @@ sign() { sbsign --key "$t/gate.key" --cert "$t/gate.crt" --output "$2" "$1"; }
 
 # The image as built.
 gate "$t/image" "$run_cert"
-refused "no Nyra UKI certificate|no Nyra PCR policy public key|no next Nyra PCR policy public key|is not signed with|PCR policy signed with|next PCR policy key is not" \
+refused "is not signed with" "$t/image" "$nyra_cert"
+refused "no Nyra PCR policy public key|no next Nyra PCR policy public key|is not signed with|PCR policy signed with|next PCR policy key is not" \
   "$t/image" "$nyra_cert" "$nyra_pcr" "$nyra_next"
 refused "is not signed with" "$t/image" "$t/other.crt"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | openssl pkey -pubout -out "$t/other-pcr.pem"
