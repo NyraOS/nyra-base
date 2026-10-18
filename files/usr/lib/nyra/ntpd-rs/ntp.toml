@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra: ntpd-rs's configuration (docs/DEFAULTS.md, "Time"), passed with -c by ntpd-rs.service.
+
+# Authenticated time only: NTS servers of four operators (Cloudflare, Netnod, PTB, SIDN Labs), no
+# unauthenticated NTP, no pool and no servers from DHCP.
+[[source]]
+mode = "nts"
+address = "time.cloudflare.com"
+
+[[source]]
+mode = "nts"
+address = "nts.netnod.se"
+
+[[source]]
+mode = "nts"
+address = "ptbtime1.ptb.de"
+
+[[source]]
+mode = "nts"
+address = "nts.time.nl"
+
+[synchronization]
+# The clock follows only three or more servers that agree and are the majority: one or two
+# compromised or impersonated servers cannot move it, and one operator out of reach does not stop it.
+minimum-agreeing-sources = 3
+# A wrong clock is corrected at startup however far off it is, in either direction: what a server
+# can make it is bounded by our patch (patches/upstream/ntpd-rs-wrong-clock.md: the certificate valid
+# at the time it gives, never below the image's date or the last clock update). After that, a
+# single step of more than 1000 s ends the daemon (upstream's default); ntpd-rs.service starts it
+# again.
+startup-step-panic-threshold = { forward = "inf", backward = "inf" }
+
+[observability]
+# ntp-ctl reads the daemon's state here (-c with this file); only root can.
+observation-path = "/run/ntpd-rs/observe"
+observation-permissions = 0o600

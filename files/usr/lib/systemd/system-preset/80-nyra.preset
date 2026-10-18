@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra presets, applied in the image build and again by systemd at the first boot (docs/DEFAULTS.md).
-# Time: chronyd runs only as Debian's restricted NTS client (never root, only CAP_SYS_TIME).
-# chrony.service would start chronyd as root, and the two units conflict; chrony-wait.service asks
-# chronyd over UDP 323, which the restricted client does not open, and would only delay the boot.
-enable chronyd-restricted.service
-disable chrony.service
-disable chrony-wait.service
+# Time: ntpd-rs, our only time client (never root, only CAP_SYS_TIME).
+enable ntpd-rs.service
 # Nothing in the base waits for network-online.target at boot (docs/DEFAULTS.md, "Without a
 # network"). Debian enables these two in default.target; they are blocked, but their
 # Wants=network-online.target would still start systemd-networkd-wait-online at every boot.

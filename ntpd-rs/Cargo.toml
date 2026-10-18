@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# ntpd-rs, the time client (docs/DEFAULTS.md, "Time"): its daemon and ntp-ctl, built from the ntpd
+# crate. The Containerfile applies our patch for a clock that is far off
+# (patches/upstream/ntpd-rs-wrong-clock.md) to the crates it checked against Cargo.lock.
+[package]
+name = "nyra-ntpd"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "ntp-daemon"
+path = "src/ntp-daemon.rs"
+
+[[bin]]
+name = "ntp-ctl"
+path = "src/ntp-ctl.rs"
+
+[dependencies]
+# Upstream's default features without the two the base has no use for: PPS devices and the DNS SRV
+# lookup of NTS servers. TLS through aws-lc, the NTS packets through RustCrypto, as upstream.
+ntpd = { version = "=1.9.0", default-features = false, features = ["aws-lc", "rustcrypto"] }
+
+# As upstream: a panic ends the daemon instead of leaving it running without one of its tasks.
+[profile.release]
+lto = true
+panic = "abort"

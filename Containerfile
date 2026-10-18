@@ -42,6 +42,23 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
     grep -Eq ' ZLIB_1\.2\.0 +deflateBound$' /root/symbols && grep -Eq ' ZLIB_1\.3\.2 +compress_z$' /root/symbols && \
     readelf -d target/libz.so.1 | grep -q 'BIND_NOW' && readelf -l target/libz.so.1 | grep -q GNU_RELRO
 
+# ntpd-rs, the time client (ntpd-rs/, docs/DEFAULTS.md "Time"), from its crates like nyra-updated,
+# with our patch for a clock that is far off (patches/upstream/ntpd-rs-wrong-clock.md) applied to the
+# checked ntp-proto crate. ntpd's build script takes a commit and a date from git, or today's date
+# without git: both are given, so the build is the same every time. The licence notices of every
+# crate in the programs go to target/doc/third-party (ci/crate-licenses.sh).
+FROM ${TOOLS} AS ntpd
+COPY ntpd-rs/ /src/
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
+    --mount=type=bind,source=patches/upstream/ntpd-rs-wrong-clock.patch,target=/ntpd-rs.patch \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /root/vendor && set -- ntp-proto-*/ && [ $# = 1 ] && git apply -p2 --directory="$1" /ntpd-rs.patch && \
+    cd /src && NTPD_RS_GIT_REV=nyra NTPD_RS_GIT_DATE=- CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    strip target/release/ntp-daemon target/release/ntp-ctl && \
+    CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/ntpd-*/ && [ $# = 1 ]
+
 FROM ${ROOTFS} AS base
 
 # bootc expects the kernel next to its modules.
@@ -128,18 +145,24 @@ RUN set -- /usr/lib/*-linux-gnu/libz.so.1 && test "$#" = 1 && cd "${1%/*}" && \
     f="$(readlink libz.so.1)" && test -f "$f" && mv /usr/lib/libz.so.1.nyra "$f" && \
     grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
 
-# Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our
-# configuration from /usr (drop-in). Our preset replaces the units that Debian's scripts and mkosi's
-# presets enabled; systemd applies it again at the first boot. systemd-timedated manages the same
-# unit (ntp-units.d/10-nyra.list). No systemd-timesyncd (chrony conflicts with it). The build fails
-# if the configuration does not parse.
-RUN systemctl preset chronyd-restricted.service chrony.service chrony-wait.service && \
-    test "$(systemctl is-enabled chronyd-restricted.service)" = enabled && \
-    test "$(systemctl is-enabled chrony.service)" = disabled && \
-    test "$(systemctl is-enabled chrony-wait.service)" = disabled && \
-    ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && \
-    test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = chronyd-restricted.service && \
-    chronyd -p -f /usr/lib/nyra/chrony/chrony.conf | grep -c ' nts$' | grep -qx 2
+# Authenticated time (docs/DEFAULTS.md, "Time"): ntpd-rs with our configuration and unit from /usr,
+# never root, CAP_SYS_TIME as its only capability, in a sandbox and under its AppArmor profile (moved
+# to /etc/apparmor.d, where apparmor.service reads profiles; the copy in /usr follows below). Enabled by
+# our preset, which systemd applies again at the first boot; systemd-timedated manages the same unit
+# (ntp-units.d/10-nyra.list). No other time client: no chrony, no systemd-timesyncd. The build fails
+# if the configuration does not parse or lacks its four NTS servers or three agreeing sources, if
+# /usr/lib/clock-epoch (the image's date, the floor of the clock; image.yml checks that its time is
+# SOURCE_DATE_EPOCH) is missing, or if the profile does not parse.
+COPY --from=ntpd /src/target/release/ntp-daemon /src/target/release/ntp-ctl /usr/bin/
+COPY --from=ntpd /src/Cargo.lock /src/target/doc/ /usr/share/doc/ntpd-rs/
+RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
+    apparmor_parser --skip-kernel-load --skip-cache /etc/apparmor.d/usr.bin.ntp-daemon && \
+    systemctl preset ntpd-rs.service && test "$(systemctl is-enabled ntpd-rs.service)" = enabled && \
+    ! test -e /usr/lib/systemd/system/systemd-timesyncd.service && ! test -e /usr/sbin/chronyd && \
+    test "$(cat /usr/lib/systemd/ntp-units.d/*.list | grep -v '^#' | head -1)" = ntpd-rs.service && \
+    ntp-ctl validate -c /usr/lib/nyra/ntpd-rs/ntp.toml && \
+    test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && \
+    grep -qx 'minimum-agreeing-sources = 3' /usr/lib/nyra/ntpd-rs/ntp.toml && test -f /usr/lib/clock-epoch
 
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
@@ -243,7 +266,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
     systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer nyra-tpm-retire.service \
       nyra-etc-copy@daily.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service nyra-health-network.service \
-      systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service chronyd-restricted.service \
+      systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service ntpd-rs.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
     test -x /usr/lib/nyra/health/notice && test -x /usr/lib/nyra/health/network && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf
@@ -253,6 +276,37 @@ RUN test -x /usr/bin/keyctl && \
     for f in /usr/sbin/request-key /usr/sbin/key.dns_resolver /etc/request-key.conf /etc/request-key.d \
       /usr/share/keyutils /sbin/request-key; do \
       ! test -e "$f" || { echo "keyutils left $f in the image"; exit 1; }; done
+
+# The system's name (docs/DEFAULTS.md, "Name and version"): Nyra OS, with the image version
+# NYRA_VERSION (year.month.run, the same as the manifest annotation org.opencontainers.image.version;
+# ci/build-image.sh passes it, dev for a build without one) in /usr/lib/os-release, and /etc/os-release
+# a link to it, as the os-release specification asks: a copy in /etc would keep an old version's
+# name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
+# PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
+# dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>").
+# agetty (util-linux 2.42) shows only the first of /etc/issue, /run/issue and /usr/lib/issue, so
+# /etc/issue must not exist: Debian's goes, and so does systemd's /usr/share/factory/etc/issue, which
+# its tmpfiles line "C! /etc/issue" (debian.conf) would copy to /etc/issue on every boot it is missing
+# (tmpfiles skips a copy whose source is missing). The drop-ins of /etc, /run and /usr/lib/issue.d
+# still show (the health notice in /run/issue.d). The logo is the os-release LOGO, an icon name
+# (branding/README.md: not under the GPL): the scalable icon, and the drawing made for small sizes in
+# the fixed-size directories (SVG is valid there too, so nothing is rendered).
+ARG NYRA_VERSION=dev
+COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/22x22/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/24x24/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/32x32/apps/nyra-logo.svg
+RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
+      { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
+    printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
+      "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \
+      'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
+    ln -sfn ../usr/lib/os-release /etc/os-release && \
+    rm /etc/issue /usr/share/factory/etc/issue && test -f /usr/lib/issue && \
+    . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
+    for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),
