@@ -110,7 +110,10 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
   compromised CI runner or developer machine cannot sign a boot image; CI and automated tooling
   never see it. Only its certificate is committed, as `files/usr/lib/nyra/secureboot/nyra.crt`: it
   goes into the image for the installer, and the release gate (docs/SIGNING.md) refuses to sign an
-  image whose UKI it did not sign. Until it is committed, no image gets a release signature.
+  image whose UKI it did not sign. It is committed (made from the KMS key with
+  `tools/signing/kms-uki-cert.sh` on 2026-10-18; fingerprint in docs/SIGNING.md, "Making the UKI
+  certificate"). Until the UKI is signed with that key and the PCR policy keys are committed, no
+  image gets a release signature.
 - **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one:
   either a signing service backed by the token or KMS (`sbsign` through PKCS#11, or
   `systemd-sbsign` with a provider), or bootc's external-signing flow (the UKI is signed offline and
