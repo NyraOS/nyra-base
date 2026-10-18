@@ -669,13 +669,13 @@ Each line is something that broke or surprised us once.
 - Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
-  needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
-  session as local only when it has a seat: a logind session without one (`systemd-run -p
-  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
-  `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
-  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. A user
-  with a login has two sessions: the login's and their manager's (class `manager`, no TTY). systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
-  a shell script passed to it needs `--expand-environment=no`.
+  needed and nobody can answer it), which tells a policy apart without an agent.
+- polkit counts a session as local only when it has a seat: a logind session without one
+  (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
+  `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual console
+  does (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session of
+  seat0, but may return before logind reports it: wait for `Active=yes`. A user with a login has
+  two sessions: the login's and their manager's (class `manager`, no TTY).
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
