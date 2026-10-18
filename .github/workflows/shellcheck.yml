@@ -39,6 +39,8 @@ jobs:
         run: python3 -I tools/vm/vm-boot.py --self-test
       - name: Offline test of the disk's TPM2 enrollment script (tools/vm/test-tpm-enroll.sh)
         run: tools/vm/test-tpm-enroll.sh
+      - name: Offline test of the released-image check (tools/signing/test-same-but-signature.sh)
+        run: tools/signing/test-same-but-signature.sh
       - name: Self-test of the Titanic results (tools/titanic/results.py)
         run: python3 -I tools/titanic/results.py --self-test
       - name: Self-test of the cached image check (ci/verify-oci.py)
