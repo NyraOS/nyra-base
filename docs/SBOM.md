@@ -17,6 +17,9 @@ artifact:
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 | `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
 
+The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib) are in
+`/usr/share/doc/<program>/third-party/`, next to its `Cargo.lock`; the build fails if one is missing.
+
 Once images are published, releases will attach the SBOM next to the image.
 
 ## The SBOM

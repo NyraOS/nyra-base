@@ -171,6 +171,11 @@ RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
     test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && \
     grep -qx 'minimum-agreeing-sources = 3' /usr/lib/nyra/ntpd-rs/ntp.toml && test -f /usr/lib/clock-epoch
 
+# A Rust program's Cargo.lock and licence notices must not drop out of the image silently.
+RUN for p in ntpd-rs nyra-updated nyra-zlib; do \
+      test -s /usr/share/doc/$p/Cargo.lock && test -n "$(ls -A /usr/share/doc/$p/third-party)" || exit 1; \
+    done
+
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
 RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
