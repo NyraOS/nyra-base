@@ -219,6 +219,7 @@ pub fn esp_sync_discard() -> Command {
 fn copy_etc(kind: &str) {
     let unit = format!("nyra-etc-copy@{kind}.service");
     if let Err(e) = run_ok(Command::new("systemctl").args(["start", &unit]), SHORT) {
+        let e = crate::one_line(&e.to_string());
         eprintln!("<4>nyra-updated: no copy of /etc before this {kind}: {e}");
     }
 }

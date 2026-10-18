@@ -14,6 +14,7 @@ artifact:
 | `nyra-base.vulnerabilities.md` | the scan report, also shown in the job summary |
 | `nyra-base.manifest.json` | the mkosi package list it is made from |
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
+| `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 
 Once images are published, releases will attach the SBOM next to the image.
 
@@ -29,7 +30,12 @@ Components:
 - one per Debian package: `pkg:deb/debian/<name>@<version>?arch=<arch>&distro=sid&upstream=<source>`
   (`upstream` carries `@<source version>` when it differs, as syft writes it);
 - bootc itself: `pkg:github/bootc-dev/bootc@<commit>`;
-- one per crate in bootc's `Cargo.lock`: `pkg:cargo/<name>@<version>` (git sources add `vcs_url`).
+- one per crate in bootc's `Cargo.lock` and in `zlib/Cargo.lock` (zlib-rs, which the image build
+  compiles): `pkg:cargo/<name>@<version>` (git sources add `vcs_url`); a crate in both counts once.
+
+Debian's `zlib1g` stays in the list: the package is installed, only its library file is replaced
+with zlib-rs (docs/DEFAULTS.md, "zlib"). A finding for Debian's zlib therefore blocks like any
+other; its mitigation entry can say that the image does not use that library.
 
 The timestamp is the snapshot date, so the same inputs give the same file.
 
@@ -38,7 +44,7 @@ The timestamp is the snapshot date, so the same inputs give the same file.
 | Question | Source |
 |---|---|
 | Is our version of a Debian source package affected? | [Debian Security Tracker](https://security-tracker.debian.org/tracker/data/json), release `sid`: open, undetermined, or fixed in a version newer than ours |
-| Is a bootc crate affected? | [OSV](https://osv.dev), ecosystem `crates.io` |
+| Is a crate of bootc or zlib-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
 A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
@@ -57,7 +63,9 @@ the point: the gate answers "is anything known now".
 
 1. **Fixed in Debian** (the report shows the version): the snapshot is older than the fix. Move
    `Snapshot=` in `mkosi/mkosi.conf` to a date that has it. This also rebuilds bootc (the snapshot is
-   part of its cache key).
+   part of its cache key). A crate of zlib-rs with a fixed version: update the version in
+   `zlib/Cargo.toml` and `zlib/Cargo.lock` (Dependabot opens that pull request for zlib-rs's own
+   crates).
 2. **No fix yet:** check whether the image is exposed. If it is not, or the damage is limited, add
    an entry to `tools/sbom/mitigations.toml`:
 
@@ -96,7 +104,8 @@ python3 -m venv /tmp/sbom-venv
 /tmp/sbom-venv/bin/pip install --no-deps --require-hashes -r tools/sbom/requirements.txt
 gh run download <run-id> -n nyra-base-sbom -D /tmp/sbom
 BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.py \
-  /tmp/sbom/nyra-base.manifest.json /tmp/sbom/bootc-*.Cargo.lock /tmp/sbom/nyra-base.cdx.json
+  /tmp/sbom/nyra-base.manifest.json /tmp/sbom/bootc-*.Cargo.lock /tmp/sbom/nyra-base.cdx.json \
+  /tmp/sbom/nyra-zlib.Cargo.lock
 ```
 
 The offline tests (canned tracker and OSV data) run first in CI:

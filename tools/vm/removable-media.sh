@@ -3,16 +3,18 @@
 # CI only: Titanic T14, removable media pulled out (docs/TITANIC.md, docs/DEFAULTS.md "Removable
 # media"). On a copy-on-write copy of the installed test disk, with USB sticks on a USB controller
 # that QEMU plugs in and pulls out (vm-boot.py --qemu, --qmp):
-#   1  two sticks with a FAT file system and one with squashfs; nothing mounts them by itself. The
-#      squashfs one is refused, and so is squashfs asked for by name on a FAT stick (its module is
-#      not even loaded). One FAT stick goes into the list of trusted media (a list others can write
-#      is ignored). udisksctl mounts both: nosuid and nodev, noexec on the other one only (exec,
-#      suid and dev refused); a program runs from the trusted one only; udisks2 runs with its
-#      hardening. The other one is pulled out while it is written without a pause: the writer
-#      stops, sync returns, the mount goes away, the system runs. Plugged in again, it is not
-#      mounted until asked, and mounts. A user in an active session may mount a stick, but not set
-#      up a file as a loop device (polkit asks for an administrator, nobody can answer). Clean
-#      shutdown with the trusted stick still mounted.
+#   1  two sticks with a FAT file system, one with an ext4 and an exFAT partition, and one with
+#      squashfs; nothing mounts them by itself. The squashfs one is refused, and so is squashfs asked
+#      for by name on a FAT stick (its module is not even loaded). One FAT stick goes into the list of
+#      trusted media (also as a last line without a newline; a list others can write is ignored).
+#      udisksctl mounts both: nosuid and nodev, noexec on the other one only (exec, suid and dev
+#      refused); the ext4 and the exFAT partitions mount like the untrusted one, and take a file; a
+#      program runs from the trusted one only; udisks2 runs with its hardening. The other FAT stick
+#      is pulled out while it is written without a pause: the writer stops, sync returns, the mount
+#      goes away, the system runs. Plugged in again, it is not mounted until asked, and mounts. A
+#      user in an active session may mount a stick, but not set up a file as a loop device (polkit
+#      asks for an administrator, nobody can answer). Clean shutdown with the trusted stick still
+#      mounted.
 #   2  a stick mounted and written while an update (plain `bootc switch` to a test version, as in
 #      tools/titanic/extreme-load.sh) runs, pulled out during it: the update is staged exactly; clean
 #      shutdown, which finalizes it.
@@ -65,6 +67,11 @@ part system.raw 65 160 mkfs.ext4 -q -F -L t14-root -d root
 part system.raw 225 64 mkswap -L t14-swap
 part system.raw 289 64 mkfs.ext4 -q -F -L t14-home
 rm -r root
+# ext4 here; the exFAT partition after it is made on the runner (the image has no mkfs.exfat).
+truncate -s 130M fs.raw
+printf 'label: gpt\nstart=2048, size=%s, type=%s\nstart=%s, size=%s, type=%s\n' \
+  $((64 * 2048)) "$data" $((65 * 2048)) $((64 * 2048)) "$data" | sfdisk -q fs.raw
+part fs.raw 1 64 mkfs.ext4 -q -F -L t14-ext4
 EOF
 sudo podman run --rm --network none -v "$media:/w" "$image" bash /w/sticks.sh
 sudo chown "$(id -u):$(id -g)" "$media"/*.raw
@@ -74,6 +81,11 @@ mkdir -p "$media/foreign"
 echo "a squashfs stick" > "$media/foreign/readme"
 mksquashfs "$media/foreign" "$media/foreign.raw" -quiet -noappend
 truncate -s 4M "$media/foreign.raw"
+command -v mkfs.exfat >/dev/null || sudo apt-get install -y -q --no-install-recommends exfatprogs >/dev/null
+truncate -s 64M "$media/exfat.img"
+mkfs.exfat -L T14EXFAT "$media/exfat.img" >/dev/null
+dd if="$media/exfat.img" of="$media/fs.raw" bs=1M seek=65 conv=notrunc status=none
+rm "$media/exfat.img"
 
 xhci=(--qemu=-device "--qemu=qemu-xhci,id=xhci")
 stick() { # stick NAME SERIAL: vm-boot.py options that plug in NAME.raw at QEMU's start
@@ -85,6 +97,7 @@ mapfile -t untrusted < <(stick untrusted T14UNTRUSTED)
 mapfile -t trusted < <(stick trusted T14TRUSTED)
 mapfile -t system < <(stick system T14SYSTEM)
 mapfile -t foreign < <(stick foreign T14FOREIGN)
+mapfile -t fs < <(stick fs T14FS)
 unplug() { echo "{\"execute\": \"device_del\", \"arguments\": {\"id\": \"$1\"}}"; }
 plug() { echo "{\"execute\": \"device_add\", \"arguments\": {\"driver\": \"usb-storage\", \"bus\": \"xhci.0\", \"drive\": \"$1\", \"id\": \"$1\", \"serial\": \"$2\", \"removable\": true}}"; }
 
@@ -133,11 +146,14 @@ sticks='lsblk -o NAME,TRAN,RM,SIZE,PARTTYPENAME,FSTYPE,LABEL,MOUNTPOINTS; m="$(f
 foreign_fs='d="$(ls /dev/disk/by-id/usb-*T14FOREIGN* | head -1)" && udevadm info -q property --property=ID_FS_TYPE --property=ID_FS_USAGE "$d" && test "$(udevadm info -q property --property=ID_FS_USAGE --value "$d")" = nyra-refused && { udisksctl mount -b "$d" 2>&1 || true; } && ! findmnt --source "$d" >/dev/null && { udisksctl mount -b '"$U"' -t squashfs 2>&1 || true; } && ! findmnt --source '"$U"' >/dev/null && ! grep -qw squashfs /proc/filesystems && echo "squashfs: not mounted, by its type or by name, and its module not loaded"'
 # The trusted stick into the list; udev applies the list (NYRA_MEDIA_TRUSTED), but only while
 # nobody else can write it.
-trust='u="$(lsblk -no UUID '"$T"')" && s="$(udevadm info -q property --property=ID_SERIAL --value '"$T"')" && echo "trusted: $u $s" && mkdir -p /etc/nyra && echo "$u $s" > /etc/nyra/trusted-media && t() { udevadm trigger --action=change --settle "$1" && udevadm info -q property --property=NYRA_MEDIA_TRUSTED --value "$1"; } && test "$(t '"$T"')" = 1 && test "$(t '"$U"')" = 0 && chmod 666 /etc/nyra/trusted-media && test "$(t '"$T"')" = 0 && echo "the list writable by others: ignored" && chmod 644 /etc/nyra/trusted-media && test "$(t '"$T"')" = 1 && echo "the list owned by root, 0644: the trusted stick is trusted, the other one not"'
+trust='u="$(lsblk -no UUID '"$T"')" && s="$(udevadm info -q property --property=ID_SERIAL --value '"$T"')" && echo "trusted: $u $s" && mkdir -p /etc/nyra && echo "$u $s" > /etc/nyra/trusted-media && t() { udevadm trigger --action=change --settle "$1" && udevadm info -q property --property=NYRA_MEDIA_TRUSTED --value "$1"; } && test "$(t '"$T"')" = 1 && test "$(t '"$U"')" = 0 && printf "# no newline at the end\n%s %s" "$u" "$s" > /etc/nyra/trusted-media && test "$(t '"$T"')" = 1 && echo "a last line without a newline: read" && chmod 666 /etc/nyra/trusted-media && test "$(t '"$T"')" = 0 && echo "the list writable by others: ignored" && chmod 644 /etc/nyra/trusted-media && test "$(t '"$T"')" = 1 && echo "the list owned by root, 0644: the trusted stick is trusted, the other one not"'
 # exec, suid and dev cannot be asked for; then both mounted, with their options.
 mount2='a=; for o in exec suid dev; do e="$(udisksctl mount -b '"$U"' -o "$o" 2>&1)"; echo "$e"; echo "$e" | grep -q "not allowed" || a=1; done; has() { echo "$1" | tr , "\n" | grep -qx "$2"; } && test -z "$a" && ! findmnt --source '"$U"' >/dev/null && udisksctl mount -b '"$U"' && udisksctl mount -b '"$T"' && mu="$(findmnt -rno TARGET --source '"$U"')" && mt="$(findmnt -rno TARGET --source '"$T"')" && ou="$(findmnt -rno OPTIONS --source '"$U"')" && ot="$(findmnt -rno OPTIONS --source '"$T"')" && echo "untrusted: $mu $ou" && echo "trusted: $mt $ot" && has "$ou" nosuid && has "$ou" nodev && has "$ou" noexec && has "$ot" nosuid && has "$ot" nodev && ! has "$ot" noexec'
 # udisks2 runs with Nyra's hardening (udisks2.service.d/10-nyra.conf).
 hardening='p="$(systemctl show -P RestrictAddressFamilies udisks2.service)"; n="$(systemctl show -P NoNewPrivileges udisks2.service)"; echo "udisks2: RestrictAddressFamilies=$p NoNewPrivileges=$n"; systemctl -q is-active udisks2.service && test "$p" = "AF_NETLINK AF_UNIX" && test "$n" = yes'
+# The other file systems the udev rule lets through: ext4 and exFAT mount like the untrusted FAT
+# stick (nosuid, nodev, noexec) and take a file.
+other_fs='f=; for d in /dev/disk/by-label/t14-ext4:ext4 /dev/disk/by-label/T14EXFAT:exfat; do udisksctl mount -b "${d%:*}" && o="$(findmnt -rno TARGET,FSTYPE,OPTIONS --source "${d%:*}")" && echo "$o" && set -- $o && test "$2" = "${d#*:}" && for x in nosuid nodev noexec; do echo "$3" | tr , "\n" | grep -qx "$x" || f=1; done && echo t14 > "$1/t14" && udisksctl unmount -b "${d%:*}" || f=1; done; test -z "$f" && echo "ext4 and exFAT: mounted nosuid,nodev,noexec, written, unmounted"'
 # A program on each (FAT shows .exe files as executable): it runs from the trusted stick only.
 run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/true.exe" && echo "from the trusted stick: runs" && e="$("$mu/true.exe" 2>&1)"; echo "from the other one: $e"; echo "$e" | grep -q "Permission denied"'
 # Written without a pause (32 MiB at a time, each flushed) until the stick is pulled out; 2 minutes
@@ -162,7 +178,7 @@ exec sleep 600'
 autologin='[Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin t14user --noclear - $TERM'
-loop='id t14user >/dev/null 2>&1 || useradd -m t14user; rm -f /var/tmp/t14-go /var/tmp/t14-session.out /var/tmp/t14-session.pid; truncate -s 16M /var/tmp/t14-loop.img && mkfs.vfat /var/tmp/t14-loop.img >/dev/null && chmod 644 /var/tmp/t14-loop.img && h="$(getent passwd t14user | cut -d: -f6)" && echo '"$(printf %q "$session_profile")"' > "$h/.profile" && mkdir -p /run/systemd/system/getty@tty5.service.d && echo '"$(printf %q "$autologin")"' > /run/systemd/system/getty@tty5.service.d/autologin.conf && systemctl daemon-reload && systemctl start getty@tty5.service && s=""; for i in $(seq 30); do for x in $(loginctl show-user t14user -p Sessions --value 2>/dev/null); do test "$(loginctl show-session "$x" -p TTY --value)" = tty5 && s="$s $x"; done; test -n "$s" && break; sleep 1; done; s="${s# }"; echo "sessions of t14user: $(loginctl show-user t14user -p Sessions --value); on tty5: ${s:-none}"; case "$s" in "" | *" "*) echo "expected exactly one session on tty5"; s=none ;; esac; loginctl activate "$s"; sleep 1; v="$(loginctl show-session "$s" -p Seat -p TTY -p Active -p Remote -p Leader)"; echo "$v"; for i in $(seq 30); do test -s /var/tmp/t14-session.pid && break; sleep 1; done; l="$(cat /var/tmp/t14-session.pid)"; u="$(ps -o user= -p "$l")"; echo "the session'"'"'s shell: $l, user $u"; r=""; for a in filesystem-mount loop-setup modify-device; do pkcheck --action-id "org.freedesktop.udisks2.$a" --process "$l"; r="$r $a=$?"; done; echo "polkit:$r"; touch /var/tmp/t14-go; for i in $(seq 30); do grep -q "^udisksctl:" /var/tmp/t14-session.out 2>/dev/null && break; sleep 1; done; cat /var/tmp/t14-session.out; journalctl -b -u polkit.service -o cat --no-pager | tail -5; systemctl stop getty@tty5.service; rm -r /run/systemd/system/getty@tty5.service.d; systemctl daemon-reload; test "$s" != none && test "$u" = t14user && echo "$v" | grep -qx "Seat=seat0" && echo "$v" | grep -qx "Active=yes" && echo "$v" | grep -qx "Remote=no" && test "$r" = " filesystem-mount=0 loop-setup=2 modify-device=2" && grep -qx "udisksctl: 1" /var/tmp/t14-session.out && grep -qi "not authorized" /var/tmp/t14-session.out && ! losetup -j /var/tmp/t14-loop.img | grep -q . && ! journalctl -b -u polkit.service -o cat --no-pager | grep -qiE "error (compiling|evaluating|loading)" && echo "a user on seat0: mounts allowed, loop-setup and modify-device need an administrator"'
+loop='id t14user >/dev/null 2>&1 || useradd -m t14user; rm -f /var/tmp/t14-go /var/tmp/t14-session.out /var/tmp/t14-session.pid; truncate -s 16M /var/tmp/t14-loop.img && mkfs.vfat /var/tmp/t14-loop.img >/dev/null && chmod 644 /var/tmp/t14-loop.img && h="$(getent passwd t14user | cut -d: -f6)" && echo '"$(printf %q "$session_profile")"' > "$h/.profile" && mkdir -p /run/systemd/system/getty@tty5.service.d && echo '"$(printf %q "$autologin")"' > /run/systemd/system/getty@tty5.service.d/autologin.conf && systemctl daemon-reload && systemctl start getty@tty5.service && s=""; for i in $(seq 30); do for x in $(loginctl show-user t14user -p Sessions --value 2>/dev/null); do test "$(loginctl show-session "$x" -p TTY --value)" = tty5 && s="$s $x"; done; test -n "$s" && break; sleep 1; done; s="${s# }"; echo "sessions of t14user: $(loginctl show-user t14user -p Sessions --value); on tty5: ${s:-none}"; case "$s" in "" | *" "*) echo "expected exactly one session on tty5"; s=none ;; esac; loginctl activate "$s"; for i in $(seq 10); do test "$(loginctl show-session "$s" -p Active --value)" = yes && break; sleep 1; done; v="$(loginctl show-session "$s" -p Seat -p TTY -p Active -p Remote -p Leader)"; echo "$v"; for i in $(seq 30); do test -s /var/tmp/t14-session.pid && break; sleep 1; done; l="$(cat /var/tmp/t14-session.pid)"; u="$(ps -o user= -p "$l")"; echo "the session'"'"'s shell: $l, user $u"; r=""; for a in filesystem-mount loop-setup modify-device; do pkcheck --action-id "org.freedesktop.udisks2.$a" --process "$l"; r="$r $a=$?"; done; echo "polkit:$r"; touch /var/tmp/t14-go; for i in $(seq 30); do grep -q "^udisksctl:" /var/tmp/t14-session.out 2>/dev/null && break; sleep 1; done; cat /var/tmp/t14-session.out; journalctl -b -u polkit.service -o cat --no-pager | tail -5; systemctl stop getty@tty5.service; rm -r /run/systemd/system/getty@tty5.service.d; systemctl daemon-reload; test "$s" != none && test "$u" = t14user && echo "$v" | grep -qx "Seat=seat0" && echo "$v" | grep -qx "Active=yes" && echo "$v" | grep -qx "Remote=no" && test "$r" = " filesystem-mount=0 loop-setup=2 modify-device=2" && grep -qx "udisksctl: 1" /var/tmp/t14-session.out && grep -qi "not authorized" /var/tmp/t14-session.out && ! losetup -j /var/tmp/t14-loop.img | grep -q . && ! journalctl -b -u polkit.service -o cat --no-pager | grep -qiE "error (compiling|evaluating|loading)" && echo "a user on seat0: mounts allowed, loop-setup and modify-device need an administrator"'
 # The update while the stick is written, pulled out half a second after the switch starts.
 reg='mkdir -p /etc/containers/registries.conf.d && printf "[[registry]]\nlocation = \"10.0.2.2\"\ninsecure = true\n" > /etc/containers/registries.conf.d/99-ci-test.conf && sync'
 digest() { # digest booted|staged: sets d to that deployment's image digest, or "none" (as in tools/vm/updates-guest.sh)
@@ -184,11 +200,11 @@ vm() { # vm N TITLE [vm-boot.py options and --command ...]
 }
 
 vm 1 "trusted, untrusted and refused sticks, one pulled out during a write, plugged in again" \
-  "${xhci[@]}" "${untrusted[@]}" "${trusted[@]}" "${foreign[@]}" \
+  "${xhci[@]}" "${untrusted[@]}" "${trusted[@]}" "${foreign[@]}" "${fs[@]}" \
   --qmp "@@UNPLUG-WRITE@@=>$(unplug untrusted)" --qmp "@@REPLUG-1@@=>$(plug untrusted T14UNTRUSTED)" \
   --command "$running" --command "$sticks" --command "$foreign_fs" --command "$trust" --command "$mount2" \
-  --command "$hardening" --command "$run" --command "$write_unplug" --command "$gone" --command "$replug" \
-  --command "$loop"
+  --command "$other_fs" --command "$hardening" --command "$run" --command "$write_unplug" --command "$gone" \
+  --command "$replug" --command "$loop"
 
 vm 2 "pulled out during an update" "${xhci[@]}" "${untrusted[@]}" \
   --qmp "@@UNPLUG-UPDATE@@=>$(unplug untrusted)" \

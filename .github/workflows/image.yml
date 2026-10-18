@@ -4,9 +4,9 @@
 #   snapshot -> bootc layer (Containerfile) -> sealed UKI, signed with a key made for the run
 #   (ci/build-image.sh, docs/BOOT.md) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
-# bootc's Cargo.lock) with its vulnerability report; known critical or high vulnerabilities without a
-# documented mitigation fail the build (docs/SBOM.md). Nothing is pushed to a public registry;
-# publishing to the update server comes later.
+# the Cargo.lock of bootc and zlib-rs) with its vulnerability report; known critical or high
+# vulnerabilities without a documented mitigation fail the build (docs/SBOM.md). Nothing is pushed
+# to a public registry; publishing to the update server comes later.
 # Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
 # save one when it is missing; ci/check-release-cache.py checks that), and the sign job signs
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
@@ -130,6 +130,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       uki_cert: ${{ steps.image.outputs.uki_cert }}
+      version: ${{ steps.image.outputs.version }}
       # Every job that uses an artifact of this job checks it against these (ci/check-artifact.sh).
       image_sha256: ${{ steps.export.outputs.image_sha256 }}
       sbom_sha256: ${{ steps.sbom.outputs.sbom_sha256 }}
@@ -155,6 +156,9 @@ jobs:
           [[ "$snapshot" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]
           m=("${BASH_REMATCH[@]}")
           echo "SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
+          # The release version (year.month.build, docs/UPDATES.md): the snapshot's year and month, and
+          # this workflow's run number, which only grows.
+          echo "VERSION=${m[1]}.$((10#${m[2]})).$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(date -u -d "${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z" +%s)" >> "$GITHUB_ENV"
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
           df -h / /mnt
@@ -237,7 +241,8 @@ jobs:
           key: ${{ steps.mkosi-cache.outputs.cache-primary-key }}
 
       # The UKI is signed with a key made for this run only (ci/build-image.sh, docs/BOOT.md); its
-      # certificate goes to install-boot as a job output, for the Secure Boot test.
+      # certificate goes to install-boot as a job output, for the Secure Boot test. bootc reads the
+      # version from the manifest annotation (docs/LESSONS.md); the label says the same.
       - name: Add the bootc layer, the sealed UKI, and lint
         id: image
         run: |
@@ -245,10 +250,12 @@ jobs:
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
           ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
-            --label org.opencontainers.image.version="$SNAPSHOT" \
+            --annotation org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.version="$VERSION" \
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
           echo "uki_cert=$(base64 -w0 "$WORK/uki/uki.crt")" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
@@ -344,6 +351,7 @@ jobs:
           echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           cp "$WORK/out/nyra-base-rootfs.manifest" dist/nyra-base.manifest.json
           cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
+          cp zlib/Cargo.lock dist/nyra-zlib.Cargo.lock
           sudo chown -R "$(id -u):$(id -g)" dist
           m=dist/nyra-base.manifest.json
           {
@@ -354,7 +362,7 @@ jobs:
             echo "| Debian snapshot | \`$SNAPSHOT\` (unstable) |"
             echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`) |"
             echo "| Kernel | linux-image-amd64 $(jq -r '.packages[] | select(.name == "linux-image-amd64") | .version' "$m") |"
-            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc |"
+            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs |"
             echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), $(du -h dist/nyra-base.oci.tar | cut -f1) oci-archive |"
             echo
             echo "\`bootc container lint --fatal-warnings\`"
@@ -381,7 +389,7 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json \
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
           echo "sbom_sha256=$(sha256sum < dist/nyra-base.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -397,6 +405,7 @@ jobs:
             dist/nyra-base.vulnerabilities.md
             dist/nyra-base.manifest.json
             dist/bootc-*.Cargo.lock
+            dist/nyra-zlib.Cargo.lock
           retention-days: 90
 
   # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
@@ -435,8 +444,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
+          # zlib/Cargo.lock from this checkout: a change to it is an image change, which builds instead.
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
-            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json >> "$GITHUB_STEP_SUMMARY"
+            "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot, then esp-sync install for the boot
@@ -534,6 +544,8 @@ jobs:
           rm "$WORK/disk.raw"
 
       - name: Boot the installed disk with KVM
+        env:
+          IMAGE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           {
             echo "## nyra-base: install and boot"
@@ -551,6 +563,7 @@ jobs:
             --command 'test "$(systemd-detect-virt)" = kvm && echo "virtualization: kvm"' \
             --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; systemd-analyze; test "$s" = running' \
             --command 'bootc status && d="$(bootc status --booted --format json | grep -o "\"imageDigest\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted imageDigest: $d" && test "$d" = '"$IMAGE_DIGEST" \
+            --command 'v="$(bootc status --booted --format json | grep -o "\"version\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted version: $v" && test "$v" = '"$IMAGE_VERSION" \
             --command 'findmnt -T /usr; findmnt -T /usr -no OPTIONS | tr , "\n" | grep -qx ro && touch /usr/.nyra-rw-test 2>&1 | grep "Read-only file system"' \
             --command 'cat /proc/cmdline' \
             --log "$RUNNER_TEMP/serial.log" \
