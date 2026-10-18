@@ -12,9 +12,10 @@
 #      them. Only one file is signed, and only if it is the sealed UKI (tools/signing/uki-check.py,
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check);
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux.
-# Before step 1, the crates of nyra-updated and zlib-rs are fetched into UKI_DIR/crates (cargo fetch
-# --locked: the checksums in updated/Cargo.lock and zlib/Cargo.lock), the only download of the build;
-# the Containerfile checks each one against its Cargo.lock again and compiles them without network.
+# Before step 1, the next PCR policy key's public half is put in place for the image (below), and
+# the crates of nyra-updated and zlib-rs are fetched into UKI_DIR/crates (cargo fetch --locked: the
+# checksums in updated/Cargo.lock and zlib/Cargo.lock), the only download of the build; the
+# Containerfile checks each one against its Cargo.lock again and compiles them without network.
 # With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
 #   ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
@@ -24,8 +25,22 @@ rootfs="$1" tag="$2" uki="$3"
 shift 3
 build() {
   sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-context crates="$uki/crates" \
-    "$@" -f Containerfile .
+    --build-context pcrnext="$uki/pcr-next" "$@" -f Containerfile .
 }
+
+# The next PCR policy key's public half goes into the image (/usr/lib/nyra/secureboot), so that disks
+# are enrolled for it before a release signs with it (docs/SIGNING.md, "The PCR policy key"): the
+# committed one, or else one made for this run, whose private half is deleted at once (it signs
+# nothing in CI). Made once per UKI_DIR, so a second build of the same inputs uses the same one.
+if [ ! -f "$uki/pcr-next/tpm2-pcr-public-key-next.pem" ]; then
+  mkdir -p "$uki/pcr-next"
+  if [ -f files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem ]; then
+    cp files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$uki/pcr-next/"
+  else
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null |
+      openssl pkey -pubout -out "$uki/pcr-next/tpm2-pcr-public-key-next.pem"
+  fi
+fi
 
 # 10 retries instead of cargo's 3: these span over a minute for each request, cargo's about 10 s.
 if [ ! -d "$uki/crates" ]; then

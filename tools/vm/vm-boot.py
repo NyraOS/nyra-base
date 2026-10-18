@@ -427,6 +427,7 @@ def blind(con, monitor, chat, timeout):
         if not m:
             raise RuntimeError(f"no {expect!r} on the console within {timeout} s")
         start += raw_offset(con.buf[start:], m.end())
+        time.sleep(1)  # as in login(): input that arrives with the prompt could be echoed
         con.type(send + "\r")
         answered = f"{len(chat)} prompt(s) answered, "
     while con.proc.poll() is None and time.monotonic() - con.t0 < timeout:
