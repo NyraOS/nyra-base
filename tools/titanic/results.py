@@ -21,11 +21,13 @@ TAMPERED = ("install-boot", "Tampered composefs object (Titanic T1)")
 POLICY = ("build", "Test the signature policy (docs/SIGNING.md)")
 DEFAULTS = ("install-boot", "Secure defaults (docs/DEFAULTS.md)")
 TPM_UNLOCK = ("install-boot", "TPM2 disk-unlock policy (docs/BOOT.md)")
-ENCRYPTION = ("install-boot", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
-ENCRYPTION_TPM = ("install-boot", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
-ROTATION = ("install-boot", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)")
-ENCRYPTION_PIN = ("install-boot", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)")
-ROTATION_PIN = ("install-boot", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION = ("encryption", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_TPM = ("encryption", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
+ROTATION = ("encryption", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_PIN = ("encryption", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)")
+ROTATION_PIN = ("encryption", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_UPDATES = ("encryption", "Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)")
+FIRST_BOOT = ("encryption", "First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)")
 SECURE_BOOT = ("install-boot", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
@@ -88,7 +90,8 @@ TESTS = {
            "Hardware clock in 2099, 1970 and 2035: chronyd corrects it through NTS by itself and the "
            "update works. With the NTS servers spoofed: the clock stays wrong, no unauthenticated NTP "
            "request is sent, the update server's certificate and unsigned images are refused."),
-    "T10": ("Disk encryption", "partial", [ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN],
+    "T10": ("Disk encryption", "full", [ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN,
+                                        ENCRYPTION_UPDATES, FIRST_BOOT],
             "Without a TPM: the password and the recovery key unlock the disk in the initrd (found by its "
             "partition type), a wrong password is asked again, the recovery key typed 120 s later and "
             "the password after three wrong ones (asked again) still unlock it. With a TPM and Secure "
@@ -107,8 +110,13 @@ TESTS = {
             "removed once the rotated release is confirmed good (a fallback before that unlocks by "
             "itself, after it asks for the recovery key), a machine that missed a rotation asks once and "
             "is enrolled again (with a new PIN). No root partition: emergency mode after 90 s. No secret "
-            "in the logs, the ESP, the LUKS2 header or the root file system. Not yet: updates through "
-            "nyra-updated; the first boot without a TPM or with Secure Boot off is checked by hand only."),
+            "in the logs, the ESP, the LUKS2 header or the root file system. Updates through nyra-updated "
+            "with a TPM: N to N+1 through a signed sheet, back to N by hand, and a version whose health "
+            "check fails falls back to N, every boot unlocked by the TPM without the recovery key. A disk "
+            "installed for a TPM whose first boot finds no TPM, or Secure Boot off: the recovery key "
+            "unlocks it (with Secure Boot off, from the second boot), nothing is enrolled and the "
+            "temporary enrollment removed; with the TPM and Secure Boot back, the recovery key once, then "
+            "it is enrolled and unlocks by itself."),
     "T11": ("Version jumps and channels", "full", [CHANNELS],
             "A jump over several versions goes straight to the newest, the retracted one between never "
             "boots; a sheet with an untrusted key, an older sequence or a retracted version refused, "
@@ -169,12 +177,21 @@ def self_test():
     every = [{"name": f"image / {j}" if j not in ("power-cuts", "stress") else j, "steps": [{"name": s, "conclusion": "success"}]}
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
-                          ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN, CHANNELS, REMOVABLE}]
+                          ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN, ENCRYPTION_UPDATES,
+                          FIRST_BOOT, CHANNELS, REMOVABLE}]
     r = evaluate(every, "u")
-    assert [r[t]["result"] for t in ("T1", "T2", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15")] == \
-        ["pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "partial", "pass", "pass", "pass", "pass", "pass"], r
-    assert r["T3"]["result"] == "pass", r
+    assert all(r[t]["result"] == "pass" for t in r), r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
+    # T10 passes only with every one of its steps, in the encryption job; the same step names in
+    # install-boot do not count.
+    for job, name in TESTS["T10"][2]:
+        this = lambda j: (j["name"], j["steps"][0]["name"]) == (f"image / {job}", name)
+        r = evaluate([dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if this(j) else j for j in every], "u")
+        assert r["T10"]["result"] == "fail" and name in r["T10"]["note"] and r["T15"]["result"] == "pass", (name, r)
+        r = evaluate([j for j in every if not this(j)], "u")
+        assert r["T10"]["result"] == "fail" and "(not found)" in r["T10"]["note"], (name, r)
+    moved = [dict(j, name="image / install-boot") if j["name"] == "image / encryption" else j for j in every]
+    assert evaluate(moved, "u")["T10"]["result"] == "fail"
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
     r = evaluate(failed, "u")

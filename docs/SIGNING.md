@@ -16,7 +16,7 @@ from our registry that do not carry that signature.
    release's bootc is compared with the build cached on `main` by a separate job, `bootc-reproducible`,
    with no permissions and no checkout; a difference stops the `sign` job. The jobs of a run can
    replace each other's artifacts, so every job that uses the image artifact (`install-boot`,
-   `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
+   `encryption`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
    a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
@@ -86,7 +86,7 @@ apply to every Nyra UKI) or a UKI with another command line. A change to the sea
 (`kargs.d`, the profiles in `ci/ukify.sh`) therefore needs a matching change to `ci/uki-cmdline.txt`
 in the same review. The composefs digest is not compared with the image here: bootc refuses a UKI whose
 digest does not match at install time, and `sign` runs only after `install-boot` installed and booted
-this image.
+this image (and after the `encryption` job's tests passed on it).
 
 ### Reading the UKI as systemd-stub does
 
