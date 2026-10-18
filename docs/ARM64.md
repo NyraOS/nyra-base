@@ -82,37 +82,53 @@ need their own firmware, device trees and drivers, and are a separate piece of w
 
 The VM disk image is the `nyra-base-arm64-vm` artifact of a run of the `arm64` workflow:
 `nyra-base-arm64.qcow2` (compressed; its virtual size is 12 GiB, it grows as it is used) and its
-`.sha256`. Take it **only from a run on `main`** (a push, after review): the workflow also runs on
-pull requests, forks included, and their artifacts can be downloaded the same way, so a disk from a
-pull request is built from code nobody has reviewed yet:
-`gh run list -R NyraOS/nyra-base -w arm64 -b main -e push`.
+`.sha256`. Take it **only from a successful run on `main`** (a push, after review): the workflow
+also runs on pull requests, forks included, and their artifacts can be downloaded the same way, so
+a disk from a pull request is built from code nobody has reviewed yet; and the disk is uploaded
+before the boot tests, so a failed run has one too:
+`gh run list -R NyraOS/nyra-base -w arm64 -b main -e push -s success`.
 
 It is a **test disk**, not a system to keep data on:
 
 - like the CI disks, it carries an add-on that lets the VM's settings pass systemd credentials:
   whoever can change the VM's settings sets root's password;
-- its UKI is signed with that run's throwaway key;
-- its root is not encrypted, and it has no TPM (see "What remains");
+- its UKI is signed with that run's throwaway key, so it boots only with Secure Boot off;
+- its root is not encrypted;
 - it gets no updates: a newer image means a new disk.
 
-1. Download the artifact straight to the external SSD (the run's page, "Artifacts", or
-   `gh run download <run> -n nyra-base-arm64-vm -D /Volumes/<SSD>/nyra`, with `<run>` from the
-   command above), unzip it there, and check it: `shasum -a 256 -c nyra-base-arm64.qcow2.sha256`.
-2. In UTM: create a new virtual machine, "Virtualize", "Linux". Do not use Apple's Virtualization
-   backend (it has neither a TPM nor Secure Boot); skip the boot ISO; 4 GiB of memory and 4 CPU
-   cores are enough. Save it, then edit it:
+1. Download and check the disk on the external drive (`gh` needs `gh auth login` once):
+   `gh run download <run> -R NyraOS/nyra-base -n nyra-base-arm64-vm -D /Volumes/<drive>/nyra`
+   (`<run>` from the command above; `gh` unzips it), then
+   `cd /Volumes/<drive>/nyra && shasum -a 256 -c nyra-base-arm64.qcow2.sha256`, which must print
+   `nyra-base-arm64.qcow2: OK`.
+2. Keep the VM on the external drive too: UTM copies an imported disk into the VM's `.utm`
+   package, and the package goes to the Mac's internal disk by default. In UTM's settings, or by
+   saving the new VM with File, Save to `/Volumes/<drive>/nyra`, put the package there before
+   importing the disk.
+3. In UTM: create a new virtual machine, "Virtualize", "Linux". Do not use Apple's Virtualization
+   backend; skip the boot ISO; 4 GiB of memory and 4 CPU cores are enough. Save it, then edit it:
    - Drives: remove the empty drive UTM created and import `nyra-base-arm64.qcow2` (VirtIO);
-   - QEMU: UEFI boot on; a TPM 2.0 device on; Secure Boot off (do not load the default keys; see
-     below);
+   - QEMU: UEFI boot on; **"TPM 2.0 Device" off** (switching it on also loads the Secure Boot keys,
+     see below);
    - QEMU arguments: add
      `-smbios type=11,value=io.systemd.credential:passwd.plaintext-password.root=<a password>` and
      `-smbios type=11,value=io.systemd.credential:firstboot.timezone=Europe/Bucharest` (or any
-     time zone). The first boot sets the root password from it.
-3. Start it and log in as root.
+     time zone). UTM splits the arguments at spaces: use a password without spaces. The first boot
+     sets the root password from it.
+4. Start it. The console shows the boot messages, then a `login:` prompt (the first boot takes
+   longer). Log in as root with that password. `systemctl is-system-running` should print
+   `running`.
 
-UTM keeps each VM as one `.utm` package, with the imported disk inside it. To keep it on the SSD,
-create or move that package there (or move it in Finder and open it in UTM with File, Open); then
-delete the downloaded `.qcow2` and the zip, which are copies.
+Afterwards, delete the downloaded `.qcow2`: UTM keeps its own copy in the package.
+
+**A TPM in UTM (optional, to check):** with the "TPM 2.0 Device" switch on, UTM gives the VM a CRB
+TPM (`tpm-crb-device`), which Debian's arm64 kernel has a driver for, unlike QEMU's plain `virt`
+machine in CI. The same switch also ticks "Reset UEFI Variables" and "Preload Secure Boot Keys"
+(under "Maintenance") and uses the Secure Boot firmware, and with Microsoft's keys loaded shim
+refuses this disk's UKI. To try it: switch the TPM on, untick "Preload Secure Boot Keys" before the
+first boot (if the VM already booted with the keys, tick "Reset UEFI Variables" once with the
+preload unticked), then after login check `systemd-analyze has-tpm2` and `mokutil --sb-state`
+(Secure Boot must say disabled).
 
 **Secure Boot in UTM:** possible (UTM's QEMU backend can load the Microsoft keys, which trust
 Debian's shim), but the UKI is signed with the CI run's throwaway key: it boots only after that
@@ -136,6 +152,6 @@ Secure Boot chain on aarch64 is proven in CI.
 - Updates on aarch64 from the update server: images signed and published per architecture (one
   image index with both), and `nyra-updated` following it.
 - The Nyra Secure Boot key for aarch64 images, so that Secure Boot can stay on in UTM.
-- A TPM on aarch64: Debian's arm64 kernel has no driver for QEMU's TIS TPMs (`CONFIG_TCG_TIS` and
-  `CONFIG_TCG_TIS_I2C` are off), so neither CI nor a plain QEMU VM has one; whether UTM's TPM 2.0
-  device works with it is to be checked in UTM.
+- A TPM on aarch64 in CI: Debian's arm64 kernel has no driver for QEMU's TIS TPMs (`CONFIG_TCG_TIS`
+  and `CONFIG_TCG_TIS_I2C` are off), so the CI VM has none. UTM gives a CRB TPM, which the kernel
+  does support: to be checked in UTM (see "A TPM in UTM" above).
