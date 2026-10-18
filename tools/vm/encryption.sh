@@ -77,7 +77,7 @@ echo "encryption: $header"
 printf '| Check | Result |\n|---|---|\n| Partitions | ESP, root (Discoverable Partitions root type, LUKS2) |\n| Header | %s |\n\n' "$header" >> "$summary"
 
 tools/vm/test-console.sh "$image" "$work/disk.raw" "$work"
-ask="Please enter passphrase or recovery key for disk [^\r\n]*:"
+ask="Please enter passphrase or recovery key for disk [^\r\n:]*:"
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
 boot() { # boot NAME TITLE ARGS...: vm-boot.py on the encrypted disk
   local name="$1" title="$2"

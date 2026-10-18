@@ -6,10 +6,11 @@
 #
 # The list, /etc/nyra/trusted-media: one file system per line, its UUID (ID_FS_UUID, as lsblk -o UUID
 # shows it), then optionally the drive's serial (ID_SERIAL, as udevadm info shows it); when a line
-# names a serial, both must match. Empty lines and lines starting with # are skipped. The list
-# counts only when root owns it and its directory, and nobody else can write either; otherwise
-# nothing is trusted. A UUID and a serial can be copied onto another stick: trust saves a question,
-# it does not prove which stick this is.
+# names a serial, both must match. Empty lines and lines starting with # are skipped; a last line
+# without a newline counts like the others. The list counts only when root owns it and its
+# directory, and nobody else can write either; otherwise (or when it cannot be read) nothing is
+# trusted. A UUID and a serial can be copied onto another stick: trust saves a question, it does
+# not prove which stick this is.
 list=/etc/nyra/trusted-media
 trusted=0
 ok() { # ok PATH: owned by root, not a link, not writable by group or others
@@ -17,7 +18,7 @@ ok() { # ok PATH: owned by root, not a link, not writable by group or others
     [ $((0${1#* } & 022)) = 0 ]
 }
 if [ -n "${ID_FS_UUID:-}" ] && [ -f "$list" ] && ok /etc/nyra && ok "$list"; then
-  while read -r uuid serial _; do
+  while read -r uuid serial _ || [ -n "$uuid" ]; do
     case "$uuid" in '' | '#'*) continue ;; esac
     if [ "$uuid" = "$ID_FS_UUID" ] && { [ -z "$serial" ] || [ "$serial" = "${ID_SERIAL:-}" ]; }; then
       trusted=1

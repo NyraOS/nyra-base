@@ -698,13 +698,13 @@ Each line is something that broke or surprised us once.
 - Debian's kernel 7.2 has the new `ntfs` driver and no ntfs3. udisks2 tries ntfs3 first for an NTFS
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
-  needed and nobody can answer it), which tells a policy apart without an agent. polkit counts a
-  session as local only when it has a seat: a logind session without one (`systemd-run -p
-  PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's `allow_any` answer.
-  `-p TTYPath=` does not give it a seat either. A login on a virtual console does (an autologin
-  getty drop-in on a free VT), and `loginctl activate` makes it the active session of seat0. A user
-  with a login has two sessions: the login's and their manager's (class `manager`, no TTY). systemd-run expands `$` in the command like `ExecStart=` (`$$` becomes `$`):
-  a shell script passed to it needs `--expand-environment=no`.
+  needed and nobody can answer it), which tells a policy apart without an agent.
+- polkit counts a session as local only when it has a seat: a logind session without one
+  (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
+  `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual console
+  does (an autologin getty drop-in on a free VT); `loginctl activate` makes it the active session of
+  seat0, but may return before logind reports it: wait for `Active=yes`. A user with a login has
+  two sessions: the login's and their manager's (class `manager`, no TTY).
 
 ## Testing in CI
 - In bash, `printf … | check …` runs `check` in a subshell: a `fail=1` it sets is lost and the test
@@ -723,6 +723,16 @@ Each line is something that broke or surprised us once.
   (`systemd-analyze`: 9–11 s).
 - With root autologin the shell prompt can appear in the same instant as the login prompt: wait for it
   from the end of the login prompt, not from whatever the console buffer holds when you look.
+- A kernel message can land in the middle of any prompt on the serial console ("Type RESET" then
+  "[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then " to reset: "), and a
+  pattern matched on the raw console then waits until its timeout. `vm-boot.py` matches every prompt
+  (`--chat`, `--refused`, login, password, shell) without kernel messages (`clean()`) and maps the
+  end of the match back to the raw console (`raw_offset()`), so the next wait starts right after the
+  prompt and kernel starts are still counted up to it. Console triggers (`--power-cut-at`,
+  `--tpm-fail-at`, `--qmp`, `--marker`) and command results are mostly printed by units or commands,
+  so they split the same way; they match on the raw console or without kernel messages, since a
+  trigger can also be a kernel message itself (`Linux version`). A prompt pattern ending in
+  `[^\r\n:]*:` stops at the prompt's colon instead of running into a kernel message after it.
 - On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
   pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists
@@ -853,7 +863,6 @@ Each line is something that broke or surprised us once.
   rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out" then "overy key for disk
   root:"), when the runner is busy. A pattern that must match the whole prompt is matched in the
   console without kernel messages (`clean()` in `vm-boot.py`), as the status lines already were.
-  `--chat` still matches the raw console: such a split there makes the chat wait until its timeout.
 - The job log shows only the last 40 lines of a failed boot's console; `vm-boot.py` names the
   serial log file in the job's serial log artifact that has all of it.
 - QEMU pulls out a USB stick with the QMP command `device_del` at once, without the guest's

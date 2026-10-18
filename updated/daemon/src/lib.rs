@@ -17,7 +17,10 @@
 //! 1. One update at a time ([`Lock`]); every bootc, systemctl and curl call has a time limit and
 //!    is killed with its children when it hangs (`system::run`). A download that fails while the
 //!    machine has no network is reported as that ([`Error::Offline`]), a warning: nothing is
-//!    marked failed, and the next check tries again.
+//!    marked failed, and the next check tries again. A refusal (a signature, a digest, a
+//!    certificate) stays what it is, even when the link went down at the same moment. Checks that
+//!    have not succeeded for [`STALE_AFTER_DAYS`], whatever the cause, are reported as errors
+//!    ([`Report`]).
 //! 2. The sheet's sequence and retracted digests are written atomically to the state directory
 //!    **before** anything acts on the sheet; a lower sequence is refused, an equal one only for
 //!    the identical payload.
@@ -60,8 +63,9 @@
 //!     Once it boots healthy it is no longer forgiven.
 //! 13. A version the machine went back from on purpose (`bootc rollback`, run by the user or by
 //!     root; the only way a version that is neither failed, retracted nor forgiven becomes the
-//!     rollback deployment) is not staged again ([`Outcome::HeldBack`]): the machine stays where the
-//!     user put it until the sheet offers another version, or the running version is retracted.
+//!     rollback deployment) is not staged again ([`Outcome::HeldBack`], a warning: the machine runs
+//!     a version without the latest fixes): the machine stays where the user put it until the sheet
+//!     offers another version, or the running version is retracted.
 //! 14. The channel is the one root chose ([`set_channel`]), or else the image's. After a change of
 //!     channel (a choice, or a new image default on a machine without one), the new channel's
 //!     version may be older than the running one: the machine goes to it anyway, once, but only
@@ -120,8 +124,8 @@ pub enum Error {
     NoBootedImage,
     /// A new version booted without boot counting (rule 9).
     NotBootCounted(String),
-    /// The running version was retracted, and the version the sheet sends it to is refused (rules
-    /// 3-5): the machine stays on the retracted version until a sheet offers another one.
+    /// The running version was retracted, and the machine could not leave it: the version the
+    /// sheet sends it to is refused (rules 3-5), or its download failed.
     RetractedRunning {
         running: String,
         reason: Box<Error>,
@@ -132,6 +136,9 @@ pub enum Error {
     /// The download of the sheet or of the version failed while the machine had no network
     /// ([`System::offline`]): a warning, not a failure (`docs/UPDATES.md`).
     Offline(Box<Error>),
+    /// No check has succeeded for [`STALE_AFTER_DAYS`] or more: the report of this one, which says
+    /// for how long ([`Report`]).
+    NoSuccessfulCheck(String),
     Command(String),
     Io(String),
     Config(String),
@@ -161,8 +168,8 @@ impl fmt::Display for Error {
             ),
             Error::RetractedRunning { running, reason } => write!(
                 f,
-                "the running version {running} was retracted and there is no version to go to \
-                 ({reason}): it stays until the channel offers another one"
+                "the running version {running} was retracted and this check could not move the \
+                 machine off it: {reason}"
             ),
             Error::Busy => write!(f, "another nyra-updated is running"),
             Error::Timeout(what) => write!(f, "{what} timed out and was stopped"),
@@ -170,7 +177,9 @@ impl fmt::Display for Error {
                 f,
                 "no network connection ({e}): the running version stays, the next check tries again"
             ),
-            Error::Command(e) | Error::Io(e) | Error::Config(e) => write!(f, "{e}"),
+            Error::NoSuccessfulCheck(e) | Error::Command(e) | Error::Io(e) | Error::Config(e) => {
+                write!(f, "{e}")
+            }
             Error::TestKey => write!(f, "the channel sheet key file holds a test key"),
         }
     }
@@ -189,6 +198,11 @@ fn io(what: &Path, e: std::io::Error) -> Error {
 }
 
 // --- configuration (from the image) -----------------------------------------------------------
+
+/// The report of a check on an image without a channel sheet key (`docs/UPDATES.md`): a warning at
+/// every check, never an error, as there is nothing to update from.
+pub const NOT_CONFIGURED: &str =
+    "updates are not configured: no channel sheet key in /usr/lib/nyra/updates/channel-sheet.pem";
 
 /// The update server. Fixed in code, never configured: the image's signature policy requires our
 /// signature only for exactly this registry scope (`docs/SIGNING.md`), so any other spelling (a port, a
@@ -421,12 +435,41 @@ impl Store {
             .map_err(|e| io(&self.dir, e))
     }
 
-    /// The outcome of the last check, `last-check.json` (`time`: Unix seconds, `ok`, `message`):
-    /// a broken state or an image without updates must not stay silent. The journal has the same
-    /// line; Settings will read this file through the daemon.
-    pub fn save_report(&self, time: u64, ok: bool, message: &str) -> Result<(), Error> {
-        let report = serde_json::json!({"time": time, "ok": ok, "message": message});
-        self.write_atomic("last-check.json", report.to_string().as_bytes())
+    /// Writes the outcome of this check (`time`: Unix seconds) to `last-check.json` and returns
+    /// it, keeping the time of the last successful check from the previous report. A failed check
+    /// [`STALE_AFTER_DAYS`] or more after it says so first: "no successful check for N days: …".
+    /// [`NOT_CONFIGURED`] is no failed check (no update is held up): the count starts again. The
+    /// message is stored as [`one_line`]. Callers hold the [`Lock`]: the file has one writer.
+    pub fn save_report(&self, time: u64, ok: bool, message: &str) -> Result<Report, Error> {
+        let path = self.dir.join("last-check.json");
+        let message = one_line(message);
+        // A report without `last_success` (written by an older nyra-updated, after a rollback) or
+        // none at all: the count starts now.
+        let previous = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok())
+            .map(|r| r.last_success);
+        // A failed check keeps the last success as it is, even one later than now: the clock may
+        // be behind at this check (a dead RTC, offline), and a time from it would count days that
+        // never passed once the clock is right. A success that reads the sheet needs one that has
+        // not expired (at most 31 days of validity), so a clock that was ahead then delays the
+        // count by at most that.
+        let last_success = match (ok || message == NOT_CONFIGURED, previous) {
+            (false, Some(t)) => t,
+            _ => time,
+        };
+        let mut report = Report {
+            time,
+            ok,
+            message: message.clone(),
+            last_success,
+        };
+        if let Some(days) = report.days_without_success() {
+            report.message = one_line(&format!("no successful check for {days} days: {message}"));
+        }
+        let bytes = serde_json::to_vec(&report).expect("the report serializes");
+        self.write_atomic("last-check.json", &bytes)?;
+        Ok(report)
     }
 
     /// The install code: 32 random bytes made on first use, kept in `install-code` (0600). It
@@ -445,6 +488,56 @@ impl Store {
             }
             Err(e) => Err(io(&path, e)),
         }
+    }
+}
+
+/// The longest message written to the journal or to `last-check.json`, in characters.
+pub const MAX_MESSAGE: usize = 2000;
+
+/// `text` as one line that is safe to log and store: what bootc and curl print can come from the
+/// registry or the server, and a control character (a newline followed by `<0>`, an escape
+/// sequence) would forge journal lines or garble a terminal. Control characters become spaces, and
+/// the text is cut at [`MAX_MESSAGE`] characters.
+pub fn one_line(text: &str) -> String {
+    let mut line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_MESSAGE)
+        .collect();
+    if text.chars().nth(MAX_MESSAGE).is_some() {
+        line.push('…');
+    }
+    line
+}
+
+/// After this many days without a successful check, every check that fails is an error, whatever
+/// the cause, a lost network included: someone who controls the machine's link could otherwise
+/// keep it on an old version with only warnings to show. Two weeks: a laptop offline for a holiday
+/// is not flagged, and a server signs the sheet at least daily.
+pub const STALE_AFTER_DAYS: u64 = 14;
+
+const DAY_SECONDS: u64 = 24 * 60 * 60;
+
+/// The outcome of the last check, `last-check.json`: a broken state or an image without updates
+/// must not stay silent. The journal has the same line; Settings will read this file through the
+/// daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    /// Unix seconds.
+    pub time: u64,
+    pub ok: bool,
+    pub message: String,
+    /// The last check that was ok or found updates not configured (Unix seconds); until one is, the
+    /// first check reported.
+    pub last_success: u64,
+}
+
+impl Report {
+    /// Whole days since the last successful check, when this check failed too and they are
+    /// [`STALE_AFTER_DAYS`] or more.
+    pub fn days_without_success(&self) -> Option<u64> {
+        let days = self.time.saturating_sub(self.last_success) / DAY_SECONDS;
+        (!self.ok && days >= STALE_AFTER_DAYS).then_some(days)
     }
 }
 
@@ -567,6 +660,26 @@ pub enum Outcome {
     WaitingForSheet(Image),
 }
 
+impl Outcome {
+    /// The journal priority (sd-daemon: 4 warning, 6 info) and the line. A machine that gets no
+    /// updates says so as a warning at every check: an owner's own image (rule 10), or a version the
+    /// user went back from (rule 13), which leaves the machine without the latest fixes.
+    pub fn report(&self) -> (u8, String) {
+        match self {
+            Outcome::ForeignImage(_) => (4, format!("{self:?}")),
+            Outcome::HeldBack(target) => (
+                4,
+                format!(
+                    "this machine went back from {} ({}) to an older version, without the latest \
+                     fixes: {} is not installed again, the next version the channel offers will be",
+                    target.version, target.digest, target.version
+                ),
+            ),
+            _ => (6, format!("{self:?}")),
+        }
+    }
+}
+
 /// Rule 14: from now on this machine follows `channel` (one of [`CHANNELS`]), whatever the image
 /// says. Root only: the state is root's.
 pub fn set_channel(store: &Store, channel: &str) -> Result<(), Error> {
@@ -642,10 +755,11 @@ pub fn check_target(target: &Image, state: &State, floor: &str) -> Result<(), Er
 
 /// Rules 3-5 on a local deployment: retracted, failed, or below the version floor.
 fn unacceptable(d: &Deployment, state: &State, floor: &str) -> bool {
-    let below_floor = d
-        .version
-        .as_deref()
-        .is_some_and(|v| compare_versions(v, floor).is_ok_and(|o| o == Ordering::Less));
+    let below_floor = match d.version.as_deref().map(|v| compare_versions(v, floor)) {
+        Some(Ok(order)) => order == Ordering::Less,
+        // No version, or one that does not parse: refused, as in `check_target`.
+        _ => true,
+    };
     state.retracted.contains(&d.digest) || state.failed.contains(&d.digest) || below_floor
 }
 
@@ -668,14 +782,29 @@ pub fn offered_rollback<'a>(
 /// A download that failed while the machine has no network (a laptop offline, the link lost in
 /// the middle of a pull) is [`Error::Offline`]: nothing is wrong with the server or the version.
 /// Only the machine's own link state counts: a server or a network that stops answering while the
-/// link is up stays an error.
+/// link is up stays an error. So does a refusal ([`REFUSALS`]), even if the link went down at the
+/// same moment.
 fn when_offline(sys: &mut impl System, e: Error) -> Error {
-    if sys.offline() {
-        Error::Offline(Box::new(e))
-    } else {
-        e
+    let message = e.to_string().to_lowercase();
+    if REFUSALS.iter().any(|r| message.contains(r)) || !sys.offline() {
+        return e;
     }
+    Error::Offline(Box::new(e))
 }
+
+/// What bootc (with the image proxy under it) and curl say when they refuse what they were sent: a
+/// signature ("A signature was required, but no signature exists", "Source image rejected"), a
+/// digest ("corrupted blob, expecting …", "does not match"), a certificate. Lowercase. Not "digest"
+/// alone: bootc names the image config's digest in the context of any failed pull.
+const REFUSALS: [&str; 7] = [
+    "signature",
+    "rejected",
+    "corrupted",
+    "mismatch",
+    "does not match",
+    "did not match",
+    "certificate",
+];
 
 /// One update check (see the crate documentation). `now`: Unix seconds.
 pub fn check(
@@ -829,15 +958,19 @@ pub fn check(
         Decision::Retract(t) => (t, true),
     };
     let running_retracted = state.retracted.contains(&booted.digest);
-    if let Err(e) = check_target(&target, &state, floor) {
+    // Whatever keeps the machine on a retracted version (a refused target, a failed download), the
+    // report says that it still runs one.
+    let still_retracted = |e: Error| {
         if running_retracted {
-            return Err(Error::RetractedRunning {
-                running: booted.digest,
+            Error::RetractedRunning {
+                running: booted.digest.clone(),
                 reason: Box::new(e),
-            });
+            }
+        } else {
+            e
         }
-        return Err(e);
-    }
+    };
+    check_target(&target, &state, floor).map_err(still_retracted)?;
 
     if Status::digest(&status.staged) == Some(&target.digest) {
         return Ok(Outcome::WaitingForReboot(target));
@@ -851,7 +984,7 @@ pub fn check(
             }
             // Rule 6.
             if retraction {
-                sys.rollback()?;
+                sys.rollback().map_err(still_retracted)?;
                 return Ok(Outcome::RolledBack(target));
             }
             // Rule 13: the machine went back from it on purpose.
@@ -864,9 +997,10 @@ pub fn check(
         // and has no tries left (bootc still reports it as the next boot: `rollbackQueued` does
         // not see boot counting): it goes, and the version is staged like any update. The same
         // when the running version is retracted and the target is one the user went back from.
-        sys.delete_rollback(&target.digest)?;
+        sys.delete_rollback(&target.digest)
+            .map_err(still_retracted)?;
     }
-    stage_target(sys, store, cfg, &mut state, target)
+    stage_target(sys, store, cfg, &mut state, target).map_err(still_retracted)
 }
 
 /// Stages `target`, pinned by digest, as the pending version (rule 7).

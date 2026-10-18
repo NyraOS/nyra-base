@@ -108,11 +108,13 @@ scratch="$state/etc.nyra-scratch"
 mount -o remount,rw /sysroot
 # Every /etc a reset builds carries the marker .nyra-reset-new until it is in place; it is made in
 # etc.nyra-tmp and only renamed to etc.nyra-new with the marker inside, so an etc.nyra-new a reset
-# built always has it. A leftover etc.nyra-tmp is an unfinished start: it goes. A leftover
-# etc.nyra-new with the marker was built by a reset cut short before the switch: it goes. Without
-# it, it is the previous /etc itself, from a reset cut short right after the switch: it is kept.
+# built always has it. A leftover etc.nyra-tmp is an unfinished start: it goes, and so does a
+# leftover etc.nyra-scratch (it may hold lines of the account files). A leftover etc.nyra-new with
+# the marker was built by a reset cut short before the switch: it goes. Without it, it is the
+# previous /etc itself, from a reset cut short right after the switch: it is kept.
 rm -f "$old/.nyra-reset-new"
 rm -rf "$tmp"
+rm -f "$scratch"
 if [ -d "$new" ]; then
 	if [ -e "$new/.nyra-reset-new" ]; then
 		rm -rf "$new"
