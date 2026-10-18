@@ -96,18 +96,25 @@ It is a **test disk**, not a system to keep data on:
 - its root is not encrypted;
 - it gets no updates: a newer image means a new disk.
 
-1. Download and check the disk on the external drive (`gh` needs `gh auth login` once):
+1. Download and check the disk on the external drive. With the GitHub CLI (`brew install gh`, then
+   `gh auth login` once):
    `gh run download <run> -R NyraOS/nyra-base -n nyra-base-arm64-vm -D /Volumes/<drive>/nyra`
-   (`<run>` from the command above; `gh` unzips it), then
+   (`<run>` from the command above; `gh` unzips it). Or in a browser, logged in to GitHub: the
+   run's page, "Artifacts", `nyra-base-arm64-vm`, then unzip it into `/Volumes/<drive>/nyra`. Then
    `cd /Volumes/<drive>/nyra && shasum -a 256 -c nyra-base-arm64.qcow2.sha256`, which must print
    `nyra-base-arm64.qcow2: OK`.
-2. Keep the VM on the external drive too: UTM copies an imported disk into the VM's `.utm`
-   package, and the package goes to the Mac's internal disk by default. In UTM's settings, or by
-   saving the new VM with File, Save to `/Volumes/<drive>/nyra`, put the package there before
-   importing the disk.
-3. In UTM: create a new virtual machine, "Virtualize", "Linux". Do not use Apple's Virtualization
-   backend; skip the boot ISO; 4 GiB of memory and 4 CPU cores are enough. Save it, then edit it:
-   - Drives: remove the empty drive UTM created and import `nyra-base-arm64.qcow2` (VirtIO);
+2. In UTM: create a new virtual machine, "Virtualize", "Linux". Leave "Use Apple Virtualization"
+   off and "Boot ISO Image (optional)" empty; 4 GiB of memory and 4 CPU cores are enough; keep the
+   proposed drive size (that empty drive is deleted below). On "Summary", untick "Open VM Settings"
+   and click "Save".
+3. Put the VM on the external drive before importing the disk: UTM always creates a new VM in its
+   own folder on the Mac's internal disk, and copies an imported disk into the VM. Right-click the
+   VM in UTM's list, "Move…", "Confirm", choose `/Volumes/<drive>/nyra`, "Save": UTM copies the VM
+   there, deletes it from the internal disk and keeps a shortcut to it in the list.
+4. Right-click the VM, "Edit":
+   - Drives: right-click the empty drive UTM created, "Delete" (confirm with "Delete"); then
+     "New…" under the drives, interface VirtIO, "Import…", `nyra-base-arm64.qcow2` (UTM copies it
+     into the VM, on the external drive);
    - QEMU: UEFI boot on; **"TPM 2.0 Device" off** (switching it on also loads the Secure Boot keys,
      see below);
    - QEMU arguments: add
@@ -115,7 +122,9 @@ It is a **test disk**, not a system to keep data on:
      `-smbios type=11,value=io.systemd.credential:firstboot.timezone=Europe/Bucharest` (or any
      time zone). UTM splits the arguments at spaces: use a password without spaces. The first boot
      sets the root password from it.
-4. Start it. The console shows the boot messages, then a `login:` prompt (the first boot takes
+
+   Then "Save".
+5. Start it. The console shows the boot messages, then a `login:` prompt (the first boot takes
    longer). Log in as root with that password. `systemctl is-system-running` should print
    `running`.
 
