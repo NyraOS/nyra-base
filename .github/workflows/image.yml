@@ -660,7 +660,8 @@ jobs:
 
       - name: Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        timeout-minutes: 40
+        # Measured 27-39 min on the hosted runners; a 40-minute limit stopped a healthy run.
+        timeout-minutes: 60
         run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Version jumps and channels, Titanic T11 (docs/UPDATES.md)
