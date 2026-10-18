@@ -397,9 +397,13 @@ certificate for it, made once: in Cloud Shell, as the account that may use the k
 The script downloads Google's PKCS#11 library for Cloud KMS (a pinned release, checked against its
 SHA-256), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
 15 years, `CA:FALSE`, digital signature, code signing), checks that its public key is the KMS key's
-and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Commit
-that PEM as `files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request; without it no image
-gets a release signature (docs/BOOT.md, "What remains for the real Nyra key").
+and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Run it
+from a fresh clone of `main`, not from a branch. Commit that PEM as
+`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request; without it no image gets a
+release signature (docs/BOOT.md, "What remains for the real Nyra key"). That pull request states the
+SHA-256 fingerprint the script printed on stderr. Its reviewer checks the certificate's public key
+independently against `gcloud kms keys versions get-public-key 1 --key=uki ...`, not against the PEM
+alone.
 
 ## Not covered here
 

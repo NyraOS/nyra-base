@@ -51,8 +51,9 @@ gcloud kms keys versions get-public-key "$version" --key="$key" --keyring="${key
   --output-file="$tmp/kms-public.pem" >&2
 
 # CA:FALSE because the key signs only boot binaries (shim takes the certificate as a MOK entry, or
-# from db, and needs no CA bit). codeSigning is the EKU shim checks on a MOK certificate and
-# sbsign/sbverify need nothing more; digitalSignature is the one key usage Authenticode needs.
+# from db, and needs no CA bit). shim does not require codeSigning, but it refuses a MOK certificate
+# whose only EKU is module signing, so codeSigning is set; sbsign/sbverify need nothing more.
+# digitalSignature is the one key usage Authenticode needs.
 cat >"$tmp/openssl.cnf" <<EOF
 [req]
 distinguished_name = dn
@@ -64,7 +65,6 @@ basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
 extendedKeyUsage = codeSigning
 subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid
 EOF
 
 # The key is picked by its label (the CryptoKey name): the library's id is the whole version name,
@@ -78,7 +78,7 @@ openssl req -new -x509 -config "$tmp/openssl.cnf" -extensions ext -subj "$subjec
 openssl x509 -in "$tmp/nyra.crt" -pubkey -noout | openssl pkey -pubin -outform DER >"$tmp/a.der"
 openssl pkey -pubin -in "$tmp/kms-public.pem" -outform DER >"$tmp/b.der"
 cmp -s "$tmp/a.der" "$tmp/b.der" || die "the certificate's public key is not the KMS key's"
-openssl verify -CAfile "$tmp/nyra.crt" -purpose any "$tmp/nyra.crt" >&2 ||
+openssl verify -check_ss_sig -CAfile "$tmp/nyra.crt" -purpose any "$tmp/nyra.crt" >&2 ||
   die "the certificate does not verify against itself"
 
 openssl x509 -in "$tmp/nyra.crt" -noout -subject -issuer -dates -fingerprint -sha256 >&2
