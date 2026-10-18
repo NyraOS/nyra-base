@@ -69,10 +69,14 @@ mount /dev/mapper/nyra-install-root /target
 bootc install to-filesystem --composefs-backend --bootloader systemd --root-mount-spec "" /target
 if [ -n "$tpm" ]; then
   # The shared /var that bootc made (state/os/default/var), mounted at /var in the running system.
+  # bootc's finalization (fstrim, then read-only, which flushes the journal) leaves /target read-only:
+  # writable for this one file, then read-only again, as bootc left it.
   var=/target/state/os/default/var
   [ -d "$var" ] && [ ! -L "$var" ] || { echo "install-encrypted: no $var after bootc install" >&2; exit 1; }
+  mount -o remount,rw /target
   install -d -m 0755 "$var/lib/nyra"
   install -m 0644 /dev/null "$var/lib/nyra/tpm2-slots"
+  mount -o remount,ro /target
 fi
 EOF
 sudo chown "$(id -u):$(id -g)" "$secrets/recovery-key" && chmod 0600 "$secrets/recovery-key"
