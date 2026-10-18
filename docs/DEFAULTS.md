@@ -17,6 +17,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick (FAT, ext4 and exFAT), `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, also from a last line without a newline, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | `chrony` with NTS only (Cloudflare and Netnod), run by Debian's `chronyd-restricted.service` (never root, only `CAP_SYS_TIME`); configuration in `/usr/lib/nyra/chrony/chrony.conf`; no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd`; the service active, chronyd as `_chrony` with `CAP_SYS_TIME` as its only effective capability, its seccomp filter on and its AppArmor profile in enforce mode, exactly the two NTS sources; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs and `chrony.service` stays disabled. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| Kernel messages on the console: errors only | `/usr/lib/sysctl.d/90-nyra-console.conf` (`kernel.printk = 4 4 1 7`, the threshold of the `quiet` kernel argument, without changing the sealed command line; see "Kernel messages on the console") | the threshold is 4; after a restart of `systemd-timedated` (a unit start and BPF program loads, each an audit record) the serial console shows no kernel audit line, while `journalctl _TRANSPORT=audit` and `journalctl -k` have them; with the threshold raised, the same restart prints them (the control) |
 | `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 
 Covered elsewhere: the Secure Boot chain (shim, systemd-boot, the sealed UKI; unsigned and wrongly
@@ -24,6 +25,25 @@ signed refused) and boot counting are proven in the same job (docs/BOOT.md); sig
 Nyra key comes later (docs/BOOT.md, "What remains for the real Nyra key"). That the defaults survive
 updates is checked by the update tests, which run this script again on the updated disk
 (docs/UPDATES.md, T15).
+
+## Kernel messages on the console
+
+Without an audit daemon the kernel prints every audit record through its log: systemd-journald
+turns auditing on and collects the records itself (`systemd-journald-audit.socket`), but it does
+not register as the audit daemon, so the kernel also prints each record at the "notice" level, and
+the summary of its rate limit (`kauditd_printk_skb: N callbacks suppressed`) at "warning". At the
+kernel's default threshold they all reach the console: tty1 showed `audit: type=1334 ...
+prog-id=81 op=LOAD` and `type=1130 ... unit=systemd-timedated` over the login prompt and over the
+user's commands. The sealed command line has no `quiet`, so `90-nyra-console.conf` sets the same
+threshold through sysctl: only errors and worse (levels 0 to 3) reach the console, from the initrd's
+`systemd-sysctl` on (dracut copies `/usr/lib/sysctl.d` into the initramfs), which also keeps them off
+the disk's passphrase prompt. Nothing is lost: the journal keeps every kernel message
+(`journalctl -k`) and every audit record (`journalctl _TRANSPORT=audit`). A kernel oops or panic
+raises the threshold by itself, and a boot starts again at the kernel's default, so the kernel's
+first lines (`Linux version ...`) still show; `reboot: Restarting system` and `reboot: Power down`
+are emergency messages and show at any threshold. The threshold applies to every console at once
+(the kernel has a single threshold): a serial console shows the same as tty1. An administrator changes it in
+`/etc/sysctl.d/`.
 
 ## Units
 

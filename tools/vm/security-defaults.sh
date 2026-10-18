@@ -6,7 +6,8 @@
 # (default deny, proven with a connection from a network namespace), only declared listening
 # sockets, only declared running services, timers and sockets (the units blocked in the
 # Containerfile stay inactive), the signature policy in place and owned by root, unused
-# filesystems not autoloaded, the ESP read-only at /boot.
+# filesystems not autoloaded, the ESP read-only at /boot, no kernel audit lines on the console
+# (with a control) while the journal keeps them.
 # Each guest command must end with the status of its whole check: vm-boot.py reads only the last
 # status and the guest shell has no set -e or pipefail, so checks are joined with && and loops set
 # a flag. --self-test runs the parsing-heavy commands against stubs, without a VM (shellcheck job).
@@ -44,6 +45,17 @@ units='s="$(systemctl list-units --type=service,timer,socket --state=running,wai
 # (an error from systemctl, "active" or "failed" all count against it).
 blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 33 && test -z "$a"'
 
+# Kernel messages on the console (docs/DEFAULTS.md): the guest prints @@CONSOLE-QUIET@@, restarts
+# systemd-timedated (a unit start and BPF program loads, each an audit record), prints
+# @@CONSOLE-LOUD@@, raises the console threshold for the control, restarts it again and prints
+# @@CONSOLE-END@@. The quotes keep the typed command line from matching the markers.
+# console_noise LOG FROM TO prints how many kernel audit lines (and summaries of their rate limit)
+# the console shows from one marker to the next.
+console_noise() {
+  sed -n "/@@CONSOLE-$2@@/,/@@CONSOLE-$3@@/p" "$1" | grep -a -c -E '\] (audit: type=|kauditd_printk_skb)' || true
+}
+console='echo @@CONSOLE'"''"'-QUIET@@ && cat /proc/consoles && cat /proc/sys/kernel/printk && test "$(awk "{print \$1}" /proc/sys/kernel/printk)" = 4 && sleep 6 && t="$(date +%s)" && systemctl restart systemd-timedated.service && sleep 5 && a="$(journalctl -b --no-pager --since "@$t" _TRANSPORT=audit)" && echo "$a" | grep -m1 "unit=systemd-timedated" && echo "$a" | grep -m1 "op=LOAD" && journalctl -k -b --no-pager --since "@$t" | grep -m1 "audit: type=" && echo "the audit records are in the journal" && echo @@CONSOLE'"''"'-LOUD@@ && echo 7 > /proc/sys/kernel/printk && sleep 6 && systemctl restart systemd-timedated.service && sleep 5 && echo 4 > /proc/sys/kernel/printk && echo @@CONSOLE'"''"'-END@@'
+
 if [ "${1:-}" = --self-test ]; then
   t="$(mktemp -d)"
   trap 'rm -rf "$t"' EXIT
@@ -79,6 +91,22 @@ if [ "${1:-}" = --self-test ]; then
   check 1 "blocked: systemctl fails" "$blocked" FAIL=1
   rm -r "$t/u33.service.d"
   check 1 "blocked: only 32 units blocked" "$blocked"
+  # The console of a run: the typed command line and the journal lines the guest prints are not
+  # kernel lines on the console.
+  typed='root@localhost:~# echo @@CONSOLE'"''"'-QUIET@@ && ... grep -m1 "audit: type=" && echo @@CONSOLE'"''"'-LOUD@@'
+  noise=$'[   18.595741] audit: type=1334 audit(1792301761.207:222): prog-id=78 op=LOAD\r'
+  printf '%s\n' "$typed" '@@CONSOLE-QUIET@@' \
+    'Oct 18 09:56:01 localhost kernel: audit: type=1334 audit(1792301761.207:222): prog-id=78 op=LOAD' '@@CONSOLE-LOUD@@' "$noise" \
+    '[   24.1] kauditd_printk_skb: 3 callbacks suppressed' '@@CONSOLE-END@@' "$noise" > "$t/quiet.log"
+  printf '%s\n' '@@CONSOLE-QUIET@@' '[   19.0] kauditd_printk_skb: 391 callbacks suppressed' '@@CONSOLE-LOUD@@' \
+    '@@CONSOLE-END@@' > "$t/suppressed.log"
+  printf '%s\n' '@@CONSOLE-QUIET@@' "$noise" '@@CONSOLE-LOUD@@' '@@CONSOLE-END@@' > "$t/audit.log"
+  for c in "quiet.log QUIET LOUD 0" "quiet.log LOUD END 2" "suppressed.log QUIET LOUD 1" "audit.log QUIET LOUD 1" \
+    "audit.log LOUD END 0"; do
+    set -- $c
+    got="$(console_noise "$t/$1" "$2" "$3")"
+    if [ "$got" = "$4" ]; then echo "ok: console: $c"; else echo "FAILED: console: $c (got $got)"; fail=1; fi
+  done
   exit "$fail"
 fi
 disk="$1" logs="$2" summary="$3"
@@ -107,6 +135,7 @@ esp='m="$(findmnt -rn -t vfat -o TARGET,OPTIONS)"; echo "$m"; e="$(touch /boot/n
 # that programs load is zlib-rs; the core utilities are uutils'.
 rust='su --version 2>&1 | grep "^su-rs " && test "$(stat -c "%a %U" /usr/bin/su)" = "4755 root" && ! command -v sudo && echo "su: sudo-rs, setuid root; no sudo" && grep -aq zlib-rs "$(readlink -f /usr/lib/x86_64-linux-gnu/libz.so.1)" && echo "libz.so.1: zlib-rs" && ls --version | head -1 && ls --version | grep -q "(uutils coreutils)"'
 
+fail=0
 python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --log "$logs/serial-security-defaults.log" --summary "$summary" --title "Secure defaults" \
   --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running' \
@@ -122,4 +151,17 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$time_client" \
   --command "$time_switch" \
   --command "$esp" \
-  --command "$rust"
+  --command "$rust" \
+  --command "$console" || fail=1
+
+# The console threshold (docs/DEFAULTS.md): no kernel audit line on the console while it holds, and
+# some once it is raised (the control: the same restart does print them, so their absence counts).
+# Without the end marker the guest command failed, and vm-boot.py has reported it.
+log="$logs/serial-security-defaults.log"
+quiet="$(console_noise "$log" QUIET LOUD)" loud="$(console_noise "$log" LOUD END)"
+echo "kernel audit lines on the console: $quiet with the image's threshold, $loud with it raised"
+if grep -aq '@@CONSOLE-END@@' "$log" && { [ "$quiet" != 0 ] || [ "$loud" = 0 ]; }; then
+  echo "::error::kernel audit lines on the console: $quiet with the image's threshold (want 0), $loud with it raised (want some)"
+  fail=1
+fi
+exit "$fail"

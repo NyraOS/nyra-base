@@ -118,10 +118,11 @@ It is a **test disk**, not a system to keep data on:
    - QEMU: UEFI boot on; **"TPM 2.0 Device" off** (switching it on also loads the Secure Boot keys,
      see below);
    - QEMU arguments: add
-     `-smbios type=11,value=io.systemd.credential:passwd.plaintext-password.root=<a password>` and
-     `-smbios type=11,value=io.systemd.credential:firstboot.timezone=Europe/Bucharest` (or any
-     time zone). UTM splits the arguments at spaces: use a password without spaces. The first boot
-     sets the root password from it.
+     `-smbios type=11,value=io.systemd.credential:passwd.plaintext-password.root=<a password>`.
+     UTM splits the arguments at spaces: use a password without spaces. The first boot sets the
+     root password from it. A `firstboot.timezone` credential has no effect: the image already has
+     a time zone (UTC), so systemd-firstboot leaves it; set yours after login with
+     `timedatectl set-timezone Europe/Bucharest` (or any time zone).
 
    Then "Save".
 5. Start it. The console shows the boot messages, then a `login:` prompt (the first boot takes
