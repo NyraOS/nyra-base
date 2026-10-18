@@ -163,6 +163,15 @@ class Gate(unittest.TestCase):
         self.assertEqual(purls.count("pkg:cargo/baz@0.1.0"), 1)
         self.assertIn("pkg:cargo/qux@1.0.0", purls)
 
+    def test_no_debian_packages_refused(self):
+        with open(self.path("manifest.json")) as f:
+            manifest = json.load(f)
+        manifest["packages"] = []
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        code, _ = self.run_gate()
+        self.assertIn("lists no Debian packages", str(code))
+
     def test_invalid_file_still_writes_the_sbom(self):
         code, _ = self.run_gate(("CVE-2026-0001", "foo", 91))
         self.assertIn("expires more than 90 days ahead", str(code))

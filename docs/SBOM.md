@@ -43,6 +43,10 @@ other; its mitigation entry can say that the image does not use that library.
 
 The timestamp is the snapshot date, so the same inputs give the same file.
 
+The image's `/etc/os-release` names Nyra OS (`ID=nyra`, `ID_LIKE=debian`; docs/DEFAULTS.md, "Name
+and version"). The scan never reads it: the Debian packages come from the package list, and the
+script refuses a list without any.
+
 ## The scan
 
 | Question | Source |

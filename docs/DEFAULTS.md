@@ -527,3 +527,84 @@ that is far off; see "Time".
 | GNU findutils, not uutils findutils (0.10.0) | `find -newermt` accepts no date at all ("I cannot figure out how to interpret ..."), and dracut clamps the initramfs file times with `find -newermt @SECONDS` for a reproducible build; `-printf %m` drops the setuid, setgid and sticky bits, which Titanic's check of `/usr` (T12) records |
 | GNU diffutils, not uutils diffutils (0.5.0) | no recursive `diff -r`, which the image build uses to compare the copy of the AppArmor profiles with `/etc/apparmor.d` |
 
+
+## Name and version
+
+The system names itself Nyra OS, with the image version: `/usr/lib/os-release`, written by the
+Containerfile in place of Debian's (base-files), with `/etc/os-release` a link to it.
+
+```
+NAME="Nyra OS"
+PRETTY_NAME="Nyra OS 2026.10.401"
+ID=nyra
+ID_LIKE=debian
+IMAGE_VERSION=2026.10.401
+HOME_URL="https://nyraos.com"
+BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"
+LOGO=nyra-logo
+```
+
+- **The version** is the release version (year.month.run, docs/UPDATES.md), the same value as the
+  manifest annotation `org.opencontainers.image.version` that bootc reports. `image.yml` computes it
+  once per run; `ci/build-image.sh` passes it to every build of the run (`NYRA_VERSION`), so the
+  reproducibility check builds the same file. A build without it (a local one) says `dev`. Anything
+  else fails the build.
+- **arm64** (`arm64.yml`) computes it the same way, with its own run number: year.month of the
+  snapshot and the arm64 workflow's run number. Each workflow's run number only grows, so versions
+  compare correctly among the images of one architecture, which is all an update ever compares
+  (a machine only gets images of its own architecture). The same number on x86_64 and arm64 does
+  not mean the same commit: the image's `org.opencontainers.image.revision` label says which commit
+  it is. A shared counter would need one workflow to wait for the other, or a lookup in the GitHub
+  API, for nothing an update needs today; when arm64 images are published, the release that builds
+  both architectures under one version will give them one number.
+- **`/etc/os-release` is a link**, as the os-release specification asks: a file there would keep
+  the name and version of the image an installation started from. Programs read `/etc/os-release`
+  first.
+- **`ID_LIKE=debian`** for programs that look for Debian. Nothing else of Debian's file stays:
+  `VERSION_CODENAME` (`sid` in the image built from the pinned snapshot), `SUPPORT_URL` and
+  Debian's URLs have no reader in the image.
+- **No `VERSION_ID`; the version is in `IMAGE_VERSION`** (and in `PRETTY_NAME`). The reason is the
+  boot menu: bootc titles its boot entry with `PRETTY_NAME` followed by `VERSION_ID`, so the title
+  would repeat the version ("Nyra OS 2026.10.401 2026.10.401"). Without it the title is
+  `PRETTY_NAME`, and bootc's entry version stays the composefs digest, as before.
+- **The login prompt** is `/usr/lib/issue` (`\S \n \l`: `PRETTY_NAME`, the host name, the
+  terminal), so the console says "Nyra OS 2026.10.401 localhost tty1". agetty (util-linux 2.42,
+  the image's) shows only the first of `/etc/issue`, `/run/issue` and `/usr/lib/issue`, so there
+  must be no `/etc/issue`. Debian's is removed from the image, and so is systemd's
+  `/usr/share/factory/etc/issue` ("\S", then "Kernel \r on an \m (\l)"): Debian's systemd has the
+  tmpfiles line `C! /etc/issue` (`/usr/lib/tmpfiles.d/debian.conf`), which copies that file to
+  `/etc/issue` on every boot that finds none, and skips the line when the source is missing. A
+  user's own `/etc/issue` still shows. After the main file agetty shows the drop-ins (`*.issue`) of
+  `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d`, so the health notice (`/run/issue.d`,
+  docs/UPDATES.md) is still at the prompt. Both consoles (`getty@tty1`, `serial-getty@ttyS0`) run
+  agetty without `--issue-file`, so both show this. `/etc/issue.net`
+  stays Debian's: only a telnet or SSH server would show it, and the base has neither.
+- **The message after a login** is `/usr/lib/motd`: "Welcome to Nyra OS." and "Help and news:
+  https://nyraos.com". `pam_motd` (login's PAM stack) shows the first found of `/etc/motd`,
+  `/run/motd` and `/usr/lib/motd`, so Debian's `/etc/motd` is removed from the image (one the
+  administrator writes still wins), and so is `/etc/update-motd.d/10-uname`, the only script of the
+  dynamic part (`motd=/run/motd.dynamic`) that printed the `uname` line; the `motd.d` directories
+  (the health notice in `/run/motd.d`) still show.
+- **The logo** is the icon `nyra-logo` (`LOGO=`, an icon name):
+  `/usr/share/icons/hicolor/scalable/apps/nyra-logo.svg` from `branding/logo/nyra-icon.svg`, and
+  the same name in `16x16`, `22x22`, `24x24` and `32x32` from `branding/logo/nyra-icon-small.svg`,
+  the drawing for small sizes. All are SVG (valid in the fixed-size directories too), none under the
+  GPL (`branding/README.md`).
+
+Who reads it:
+
+| Reader | What it takes |
+|---|---|
+| `bootc container ukify` (ci/ukify.sh) | the whole file into the UKI's `.osrel` section, which is measured into PCR 11: the signed PCR policy is computed from the UKI as built (tools/signing/pcr-policy.py), so it follows the new contents |
+| bootc (install, updates) | the boot entry's title (`PRETTY_NAME`) and sort key (`bootc-nyra-0`/`-1`, from `ID`) from the UKI's `.osrel`; Nyra's own entries (`nyra-1-recovery` and after) still sort after them (docs/BOOT.md, "Recovery") |
+| systemd-boot | nothing for bootc's entry (its `title` line); the fallback UKI, which it finds by itself, shows its profiles' own titles (`Nyra OS`, `Nyra OS Recovery`, ...) |
+| dracut | the initramfs's `initrd-release`: "Booting initrd of Nyra OS 2026.10.401 dracut-… (Initramfs)" |
+| systemd | "Welcome to Nyra OS 2026.10.401!", `hostnamectl` |
+| agetty | the login prompt, above |
+| the SBOM and vulnerability scan | nothing: it matches Debian packages from mkosi's package list, not from the image (docs/SBOM.md) |
+
+AppArmor's profiles name no os-release file, and nothing in `nyra-updated`, `files/` or the
+tests checks for `ID=debian`. CI checks it in the `install-boot` job: `ID`, `ID_LIKE`,
+`PRETTY_NAME` and `IMAGE_VERSION` against the run's version, the link, the logo named by `LOGO`
+(scalable and 16x16), no `/etc/issue` after the boot, `agetty --show-issue` starting with "Nyra OS
+<version>", and a drop-in written to `/run/issue.d` shown after it.

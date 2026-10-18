@@ -136,6 +136,20 @@ Each line is something that broke or surprised us once.
   drop-ins from `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d` (`*.issue`), and `agetty
   --reload` makes the ones already at the login prompt show it again; Debian's `pam_motd` reads
   `/run/motd.d` after a login.
+- **agetty always shows `/etc/issue` when there is one.** util-linux 2.42 (the image's) takes the
+  first of `/etc/issue`, `/run/issue`, `/usr/lib/issue` as the main file, so `/usr/lib/issue` never
+  shows next to an `/etc/issue`; the drop-ins of all three `issue.d` directories show after it.
+- **Removing a file from the image's `/etc` is not enough when tmpfiles makes it again.** With
+  Debian's `/etc/issue` gone, the first boot had one anyway: systemd's `C! /etc/issue`
+  (`/usr/lib/tmpfiles.d/debian.conf`) copies `/usr/share/factory/etc/issue` there whenever it is
+  missing. A `C` line whose source is missing is skipped, so the image removes the factory file
+  too. Check `systemd-tmpfiles --cat-config` for the path before relying on its absence.
+- **bootc's title for a UKI's boot entry is `PRETTY_NAME` and then `VERSION_ID`** (composefs-boot,
+  from the UKI's `.osrel`; `VERSION` when there is no `VERSION_ID`), and the entry's version and file
+  name come from the same field (the composefs digest without either). A `PRETTY_NAME` that carries
+  the version needs neither: no `VERSION_ID`, and no `VERSION=` either.
+- **The image had `/etc/os-release` as a copy of `/usr/lib/os-release`** (a file, not Debian's link):
+  replacing only `/usr/lib/os-release` would leave the old name in the file programs read first.
 - **A disk in `/etc/fstab` without `nofail`** that is not connected cost 90 s and then emergency mode,
   with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
   since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from
@@ -1010,6 +1024,16 @@ Each line is something that broke or surprised us once.
 - With an NTS client in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
   2035) were corrected within seconds of reaching the network, so a check that needs the clock
   wrong must keep it from its servers (the T9 hostile boot points their names at the runner).
+- A disk filled to the last block does not stay full across a reboot. ext4 keeps 4096 clusters that
+  even root cannot take, and the fill ends with the free ones only a few below that (11 in CI). At
+  every boot `systemd-tmpfiles-setup.service` removes the previous boot's PrivateTmp directories in
+  `/var/tmp` (`R! /var/tmp/systemd-private-*`), 9 blocks in CI, next to `apparmor.service`: root can
+  then write a few blocks. The parser then sets up its cache directory and fails on the cache files
+  (`Unable to replace "…".  Unknown error (28): No space left on device`: the profile reached the
+  kernel, the cache write failed), and the fallback loads the profiles without the cache.
+- `df` and `stat -f -c %a` show 0 available long before root is out of space: they also leave out
+  the 5% kept for root (mkfs.ext4's default, as bootc runs it). What root can still write is
+  `stat -f -c %f` minus the 4096 clusters ext4 keeps back.
 - Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
   answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
   replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)

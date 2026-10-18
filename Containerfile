@@ -14,14 +14,17 @@ ARG TOOLS=localhost/nyra-tools
 # bootc: docs/LESSONS.md). Only the stripped binary and its Cargo.lock (for the SBOM) reach the image.
 # Its crates come from the build context "crates" (ci/build-image.sh fetches them once, before the
 # first build), mounted read-only, each checked against Cargo.lock (ci/vendor-crates.sh); the build
-# has no network.
+# has no network. The licence notices of every crate in the program go to target/doc/third-party
+# (ci/crate-licenses.sh).
 FROM ${TOOLS} AS updated
 COPY updated/ /src/
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
     --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
     sh /vendor-crates.sh /src/Cargo.lock && \
     cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked -p nyra-updated && \
-    strip target/release/nyra-updated
+    strip target/release/nyra-updated && \
+    CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/serde-*/ && [ $# = 1 ]
 
 # zlib-rs as the system's libz.so.1 (zlib/, docs/DEFAULTS.md "zlib"), from its crates like
 # nyra-updated: libz-rs-sys as a static library, linked into a shared library with zlib's soname and
@@ -130,7 +133,7 @@ RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
     grep -Fqx 'ExecStart=systemd-firstboot --prompt-locale --prompt-keymap-auto --prompt-timezone --prompt-root-password --mute-console=yes' \
       /usr/lib/systemd/system/systemd-firstboot.service
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
-COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
+COPY --from=updated /src/Cargo.lock /src/target/doc/ /usr/share/doc/nyra-updated/
 # The next PCR policy key's public half (ci/build-image.sh; docs/SIGNING.md, "The PCR policy key"):
 # disks are enrolled for it in the initrd (nyra-tpm-enroll) before a release signs with it.
 COPY --from=pcrnext tpm2-pcr-public-key-next.pem /usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem
@@ -276,6 +279,44 @@ RUN test -x /usr/bin/keyctl && \
     for f in /usr/sbin/request-key /usr/sbin/key.dns_resolver /etc/request-key.conf /etc/request-key.d \
       /usr/share/keyutils /sbin/request-key; do \
       ! test -e "$f" || { echo "keyutils left $f in the image"; exit 1; }; done
+
+# The system's name (docs/DEFAULTS.md, "Name and version"): Nyra OS, with the image version
+# NYRA_VERSION (year.month.run, the same as the manifest annotation org.opencontainers.image.version;
+# ci/build-image.sh passes it, dev for a build without one) in /usr/lib/os-release, and /etc/os-release
+# a link to it, as the os-release specification asks: a copy in /etc would keep an old version's
+# name. ID_LIKE=debian for programs that look for Debian. No VERSION_ID: bootc's boot menu title is
+# PRETTY_NAME followed by VERSION_ID, which would show the version twice. Written before
+# dracut, which copies it into the initramfs (initrd-release); bootc container ukify puts it in the
+# UKI (.osrel, measured into PCR 11). The login prompt is /usr/lib/issue ("Nyra OS <version>").
+# agetty (util-linux 2.42) shows only the first of /etc/issue, /run/issue and /usr/lib/issue, so
+# /etc/issue must not exist: Debian's goes, and so does systemd's /usr/share/factory/etc/issue, which
+# its tmpfiles line "C! /etc/issue" (debian.conf) would copy to /etc/issue on every boot it is missing
+# (tmpfiles skips a copy whose source is missing). The drop-ins of /etc, /run and /usr/lib/issue.d
+# still show (the health notice in /run/issue.d). The logo is the os-release LOGO, an icon name
+# (branding/README.md: not under the GPL): the scalable icon, and the drawing made for small sizes in
+# the fixed-size directories (SVG is valid there too, so nothing is rendered). The message after a
+# login is /usr/lib/motd: pam_motd (in login's PAM stack) reads the first found of /etc/motd,
+# /run/motd and /usr/lib/motd, so Debian's /etc/motd goes and one the administrator writes still
+# wins. The other source, "pam_motd.so motd=/run/motd.dynamic", builds a text from /etc/update-motd.d,
+# where Debian has one script (10-uname, base-files) that prints the uname line: it goes too.
+# pam_motd and the motd.d directories stay (the health notice in /run/motd.d).
+ARG NYRA_VERSION=dev
+COPY branding/logo/nyra-icon.svg /usr/share/icons/hicolor/scalable/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/16x16/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/22x22/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/24x24/apps/nyra-logo.svg
+COPY branding/logo/nyra-icon-small.svg /usr/share/icons/hicolor/32x32/apps/nyra-logo.svg
+RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev' || \
+      { echo "NYRA_VERSION '$NYRA_VERSION' is not year.month.run or dev" >&2; exit 1; }; } && \
+    printf '%s\n' 'NAME="Nyra OS"' "PRETTY_NAME=\"Nyra OS $NYRA_VERSION\"" ID=nyra ID_LIKE=debian \
+      "IMAGE_VERSION=$NYRA_VERSION" 'HOME_URL="https://nyraos.com"' \
+      'BUG_REPORT_URL="https://github.com/NyraOS/nyra-base/issues"' LOGO=nyra-logo > /usr/lib/os-release && \
+    ln -sfn ../usr/lib/os-release /etc/os-release && \
+    rm /etc/issue /usr/share/factory/etc/issue && test -f /usr/lib/issue && \
+    rm /etc/motd /etc/update-motd.d/10-uname && test -f /usr/lib/motd && \
+    test -z "$(ls -A /etc/update-motd.d)" && \
+    . /etc/os-release && test "$ID $IMAGE_VERSION" = "nyra $NYRA_VERSION" && \
+    for s in scalable 16x16 22x22 24x24 32x32; do test -f "/usr/share/icons/hicolor/$s/apps/$LOGO.svg" || exit 1; done
 
 # Generic initramfs (not host-only) with the bootc module, LUKS and TPM2 unlock, the measurement of
 # the boot phases into PCR 11 (systemd-pcrextend: the signed PCR policy expects them, docs/BOOT.md),

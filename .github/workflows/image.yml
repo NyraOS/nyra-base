@@ -552,6 +552,7 @@ jobs:
           rm "$WORK/disk.raw"
 
       - name: Boot the installed disk with KVM
+        id: boot
         env:
           IMAGE_VERSION: ${{ needs.build.outputs.version }}
         run: |
@@ -572,11 +573,19 @@ jobs:
             --command 's="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; systemd-analyze; test "$s" = running' \
             --command 'bootc status && d="$(bootc status --booted --format json | grep -o "\"imageDigest\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted imageDigest: $d" && test "$d" = '"$IMAGE_DIGEST" \
             --command 'v="$(bootc status --booted --format json | grep -o "\"version\":\"[^\"]*\"" | cut -d\" -f4)" && echo "booted version: $v" && test "$v" = '"$IMAGE_VERSION" \
+            --command 'cat /etc/os-release && . /etc/os-release && [ "$ID" = nyra ] && [ "$ID_LIKE" = debian ] && [ "$PRETTY_NAME" = "Nyra OS '"$IMAGE_VERSION"'" ] && [ "$IMAGE_VERSION" = '"$IMAGE_VERSION"' ] && test "$(readlink /etc/os-release)" = ../usr/lib/os-release && [ "$LOGO" = nyra-logo ] && test -s "/usr/share/icons/hicolor/scalable/apps/$LOGO.svg" && test -s "/usr/share/icons/hicolor/16x16/apps/$LOGO.svg" && echo "os-release: Nyra OS, like Debian, with its logo"' \
+            --command 'i="$(agetty --show-issue)"; echo "$i"; test ! -e /etc/issue && case "$i" in "Nyra OS '"$IMAGE_VERSION"' "*) echo "the login prompt names Nyra OS" ;; *) false ;; esac && mkdir -p /run/issue.d && echo "a drop-in" > /run/issue.d/99-nyra-test.issue && agetty --show-issue | tail -n 1 | grep -qx "a drop-in" && rm /run/issue.d/99-nyra-test.issue && echo "the drop-ins of /run/issue.d after it"' \
             --command 'findmnt -T /usr; findmnt -T /usr -no OPTIONS | tr , "\n" | grep -qx ro && touch /usr/.nyra-rw-test 2>&1 | grep "Read-only file system"' \
             --command 'cat /proc/cmdline' \
             --log "$RUNNER_TEMP/serial.log" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --title "Installed nyra-base boot with KVM"
+
+      - name: The login shows the Nyra OS message of the day only
+        if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
+        run: |
+          tools/vm/check-motd.sh --self-test
+          tools/vm/check-motd.sh "$RUNNER_TEMP/serial.log"
 
       - name: Root partition found when the first probe fails (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -658,7 +667,8 @@ jobs:
 
       - name: Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        timeout-minutes: 40
+        # Measured 27-39 min on the hosted runners; a 40-minute limit stopped a healthy run.
+        timeout-minutes: 60
         run: tools/vm/updates.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Version jumps and channels, Titanic T11 (docs/UPDATES.md)

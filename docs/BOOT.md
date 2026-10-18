@@ -43,7 +43,8 @@ line in one PE file), built in the image build with bootc's sealed-image flow:
 
 `bootc install` sees the UKI and installs only it: `EFI/Linux/bootc/bootc_composefs-<digest>.efi` on
 the ESP and a boot entry of type `uki` (`loader/entries/*.conf` with a single `uki` line, no `linux`,
-`initrd` or `options`). Updates do the same. External kernel arguments are refused
+`initrd` or `options`), titled with the UKI's `PRETTY_NAME`, "Nyra OS <version>" (its `.osrel`
+section, docs/DEFAULTS.md "Name and version"). Updates do the same. External kernel arguments are refused
 (`bootc install --karg` fails with a UKI), so the test console is set up differently, below.
 
 Test versions built on top of the image (boot counting) need their own UKI, because any change
@@ -946,7 +947,7 @@ console add-on on that disk is replaced by one signed with a key enrolled as a M
 | 12 | `loader/entries` deleted (what a power cut during the swap can leave) | boots through the fallback UKI; the entry is put back |
 | 13 | `loader/entries` emptied | the same |
 | 14 | | boots through bootc's entry again; one fallback UKI, still `+0` |
-| 15 | a drop-in in `/etc` that makes the ESP's file system check fail | `boot.mount` fails; `esp-writable` refuses with an error in the journal and the random seed on the ESP is unchanged; no FAT file system mounted; `nyra-updated` does not run; the health checks pass and the system starts, with only the check and the random seed failed |
+| 15 | a drop-in in `/etc` that makes the ESP's file system check fail | `boot.mount` fails; `esp-writable` refuses with an error in the journal and the random seed on the ESP is unchanged; no FAT file system mounted; `nyra-updated` does not run; the health checks pass (`nyra-health-bootc` skipped) and the system starts, with only the check and the random seed failed |
 | 16 | that drop-in removed | the ESP checked and mounted read-only again, the repair runs, `esp-writable` writes (a new random seed) |
 
 "Newer" and "older" are made by changing the first digit of the Debian version in that file's SBAT
@@ -1346,7 +1347,9 @@ the units that write to the ESP are ordered after `boot.mount` itself:
   `esp-writable` mounting the ESP read-write while it was checked, and `boot.mount` then fail;
 - `nyra-boot-repair` has `RequiresMountsFor=/boot`; `systemd-bless-boot` and `nyra-updated` come after
   `boot-complete.target`, whose health checks come after `nyra-boot-repair`; bootc writes when
-  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`.
+  `nyra-updated` stages an update and at shutdown, as does `nyra-boot-counter`;
+- `nyra-health-bootc` (`bootc status` touches the ESP) is ordered after `boot.mount` and has
+  `ExecCondition=findmnt -n -t vfat /boot`: without the ESP mounted it is skipped, not failed.
 
 `/tmp` (a tmpfs, `tmp.mount`) is the other local mount. The boot's tmpfiles
 (`systemd-tmpfiles-setup`, which makes `/tmp/.X11-unix` and the like) are ordered after `tmp.mount`
@@ -1357,7 +1360,9 @@ If the ESP itself cannot be mounted (a damaged partition), the boot goes on as b
 the kernel refuses to mount the ESP, a health check may fail as well: a version on trial then falls
 back after its three tries, and a version that is not on trial stays up with that check failed. There
 is no reboot loop either way. When only the file system check failed (the partition itself can be
-mounted), the health checks pass (CI, below). Nyra's own writes to the ESP need it checked and
+mounted), the health checks pass, `nyra-health-bootc` skipped because `/boot` is not mounted (CI,
+below). `nyra-updated` wants `nyra-boot-repair`, which stays active once run: if the ESP is mounted
+only when `nyra-updated` starts, a stale `entries.staged` is still removed before bootc stages. Nyra's own writes to the ESP need it checked and
 mounted: `esp-writable` refuses (an error in the journal, pointing to
 `journalctl -u boot.mount`), so the boot loader random seed fails visibly and a counted boot is not
 blessed; `nyra-updated` does not run (`RequiresMountsFor=/boot`; each start tries the check and the
