@@ -29,7 +29,8 @@
 //! 4. No downgrade ([`nyra_channel_sheet::Sheet::decide`]), and no target below the image's
 //!    version floor, including signed retractions (a leaked old key cannot send machines back to
 //!    any image ever signed).
-//! 5. A version the machine fell back from is marked failed and never prepared or offered again.
+//! 5. A version the machine fell back from is marked failed and never prepared or offered again
+//!    (one exception: rule 15).
 //! 6. A retraction to the version that is already the local rollback deployment uses
 //!    `bootc rollback` (bootc would answer "No changes" to a switch), once: when bootc already
 //!    reports that deployment as the next boot (`rollbackQueued`), a check before the reboot runs
@@ -74,6 +75,15 @@
 //!     ([`Outcome::WaitingForSheet`]). The version is staged afresh, never reached by
 //!     `bootc rollback`: a rollback deployment kept the `/etc` of its time. Within a channel, an
 //!     older version stays refused (rule 4).
+//! 15. A version marked failed only by the network health check (its last try had carrier but no
+//!     address, and the version fallen back to does not fail that check: `network-fallback` in the
+//!     state directory, written by it) is tried once more ([`NetworkRetry`]): from a day later, or
+//!     as soon as the machine is on another network (another list of links with an address,
+//!     `network-links`). The version fallen back to passes when it gets an address, and also when
+//!     it judges nothing (no carrier, no such link, `networkctl` lists no links): the cost is at
+//!     most one more try, cheaper than telling those apart.
+//!     It is staged afresh, like a forgiven version (rule 12). A second fallback from it is final.
+//!     Any other failure is final at once, as before.
 //!
 //! Boot counting itself (`+3` on the new entry, `systemd-bless-boot` after `boot-complete.target`)
 //! belongs to nyra-base (`docs/BOOT.md`); this crate only reads its state and never blesses a boot.
@@ -380,6 +390,30 @@ pub struct State {
     /// has acted on the new one: going to an older version is allowed only with a sheet issued
     /// from then on, and only once (rule 14).
     pub channel_changed: Option<u64>,
+    /// The version marked failed only by the network health check, which is tried once more
+    /// (rule 15). One version, like `forgiven`; an older daemon drops it and keeps it failed.
+    pub network_retry: Option<NetworkRetry>,
+}
+
+/// A version marked failed only by the network health check (rule 15).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkRetry {
+    pub digest: String,
+    /// When it was marked failed (Unix seconds).
+    pub failed_at: u64,
+    /// The links with a routable address then (`network-links`).
+    pub links: String,
+    /// Taken off the failed list and staged again: a second fallback from it is final.
+    pub retried: bool,
+}
+
+impl NetworkRetry {
+    /// Its second try is due: not taken yet, and a day has passed or the network is another.
+    fn due(&self, digest: &str, now: u64, links: &str) -> bool {
+        self.digest == digest
+            && !self.retried
+            && (now >= self.failed_at.saturating_add(DAY_SECONDS) || self.links != links)
+    }
 }
 
 /// The state directory (`/var/lib/nyra-updated`, 0700, files 0600).
@@ -470,6 +504,24 @@ impl Store {
         let bytes = serde_json::to_vec(&report).expect("the report serializes");
         self.write_atomic("last-check.json", &bytes)?;
         Ok(report)
+    }
+
+    /// The links with a routable address at this check (`network-links`, written by
+    /// `/usr/lib/nyra/health/network record` just before it); empty when there is none.
+    pub fn network_links(&self) -> String {
+        fs::read_to_string(self.dir.join("network-links")).unwrap_or_default()
+    }
+
+    /// Whether the network health check says that the version just fallen back from failed only
+    /// that check (`network-fallback`, written on the boot after the fallback). Taken by every
+    /// check: it is about the fallback the next check settles, never a later one.
+    pub fn take_network_fallback(&self) -> Result<bool, Error> {
+        let path = self.dir.join("network-fallback");
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io(&path, e)),
+        }
     }
 
     /// The install code: 32 random bytes made on first use, kept in `install-code` (0600). It
@@ -715,8 +767,15 @@ fn fell_back_from(status: &Status, digest: &str) -> bool {
         && Status::digest(&status.booted) != Some(digest)
 }
 
-/// Learns what became of the version prepared last time (rule 5).
-fn settle_pending(state: &mut State, status: &Status) {
+/// Learns what became of the version prepared last time (rule 5). `network_fallback`, `links` and
+/// `now`: for a fallback caused only by the network health check (rule 15).
+fn settle_pending(
+    state: &mut State,
+    status: &Status,
+    network_fallback: bool,
+    links: &str,
+    now: u64,
+) {
     let Some(pending) = state.pending.clone() else {
         return;
     };
@@ -725,12 +784,31 @@ fn settle_pending(state: &mut State, status: &Status) {
     }
     if fell_back_from(status, &pending) {
         // It booted and the machine came back: systemd-boot's fallback after three tries.
-        state.failed.insert(pending);
-    } else if Status::digest(&status.booted) == Some(&pending)
-        && state.forgiven.as_ref() == Some(&pending)
-    {
-        // Forgiven under rule 12 and now booted healthy: its fallback is behind it.
-        state.forgiven = None;
+        state.failed.insert(pending.clone());
+        let second_try = state
+            .network_retry
+            .as_ref()
+            .is_some_and(|r| r.digest == pending && r.retried);
+        if network_fallback && !second_try {
+            state.network_retry = Some(NetworkRetry {
+                digest: pending,
+                failed_at: now,
+                links: links.into(),
+                retried: false,
+            });
+        }
+    } else if Status::digest(&status.booted) == Some(&pending) {
+        // Booted healthy: a fallback (rule 12) or a failed network check (rule 15) is behind it.
+        if state.forgiven.as_ref() == Some(&pending) {
+            state.forgiven = None;
+        }
+        if state
+            .network_retry
+            .as_ref()
+            .is_some_and(|r| r.digest == pending)
+        {
+            state.network_retry = None;
+        }
     }
     // Booted and healthy, failed, or staging never finished (retried below): settled.
     state.pending = None;
@@ -825,7 +903,9 @@ pub fn check(
 
     let first_boot_of_pending = state.pending.as_deref() == Some(booted.digest.as_str());
     let before = state.clone();
-    settle_pending(&mut state, &status);
+    let network_fallback = store.take_network_fallback()?;
+    let links = store.network_links();
+    settle_pending(&mut state, &status, network_fallback, &links, now);
     if state != before {
         store.save(&state)?;
     }
@@ -958,6 +1038,17 @@ pub fn check(
         Decision::Retract(t) => (t, true),
     };
     let running_retracted = state.retracted.contains(&booted.digest);
+    // Rule 15: the second try of a version failed only by the network health check.
+    if let Some(retry) = state.network_retry.as_mut() {
+        if retry.due(&target.digest, now, &links) && state.failed.remove(&target.digest) {
+            retry.retried = true;
+            store.save(&state)?;
+        }
+    }
+    let network_retry = state
+        .network_retry
+        .as_ref()
+        .is_some_and(|r| r.digest == target.digest && r.retried);
     // Whatever keeps the machine on a retracted version (a refused target, a failed download), the
     // report says that it still runs one.
     let still_retracted = |e: Error| {
@@ -976,7 +1067,7 @@ pub fn check(
         return Ok(Outcome::WaitingForReboot(target));
     }
     if Status::digest(&status.rollback) == Some(&target.digest) {
-        if state.forgiven.as_ref() != Some(&target.digest) {
+        if state.forgiven.as_ref() != Some(&target.digest) && !network_retry {
             // Already the next boot (rule 6 ran, or the user queued it): another `bootc rollback`
             // would swap the order back.
             if status.rollback_queued {
@@ -993,10 +1084,11 @@ pub fn check(
             }
         }
         // Rule 12: a version offered again after it was forgiven (a newer one, or the target of a
-        // retraction). Its deployment would boot with the settings it was tried with, not today's,
-        // and has no tries left (bootc still reports it as the next boot: `rollbackQueued` does
-        // not see boot counting): it goes, and the version is staged like any update. The same
-        // when the running version is retracted and the target is one the user went back from.
+        // retraction), and rule 15: its second try after a failed network check. Its deployment
+        // would boot with the settings it was tried with, not today's, and has no tries left
+        // (bootc still reports it as the next boot: `rollbackQueued` does not see boot
+        // counting): it goes, and the version is staged like any update. The same when the
+        // running version is retracted and the target is one the user went back from.
         sys.delete_rollback(&target.digest)
             .map_err(still_retracted)?;
     }

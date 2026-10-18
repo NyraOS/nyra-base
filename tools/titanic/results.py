@@ -34,6 +34,7 @@ COUNTING = ("install-boot", "Boot counting across updates (docs/BOOT.md)")
 UPDATES = ("install-boot", "Updates across real versions, Titanic T2-T5, T9 (docs/UPDATES.md)")
 SOFT_REBOOT_NETWORK = ("install-boot", "Network across soft reboots (docs/UPDATES.md)")
 CHANNELS = ("install-boot", "Version jumps and channels, Titanic T11 (docs/UPDATES.md)")
+NETWORK_HEALTH = ("install-boot", "A version that breaks the network, Titanic T3 (docs/UPDATES.md)")
 POWER_CUTS = ("power-cuts", "Power cuts at random moments (Titanic T2)")
 FULL_DISK = ("stress", "Full disk and the space across updates (Titanic T6)")
 EXTREME_LOAD = ("stress", "An update under extreme load (Titanic T13)")
@@ -50,7 +51,7 @@ TESTS = {
            "Power cuts at random moments (seed in this file) during the download, staging, "
            "finalization and first boot; nyra-updated stages the update again after cuts at fixed and "
            "at random moments."),
-    "T3": ("Broken version", "full", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK],
+    "T3": ("Broken version", "full", [COUNTING, UPDATES, SOFT_REBOOT_NETWORK, NETWORK_HEALTH],
            "A version whose health check fails falls back within 3 boots and is not offered again; "
            "a good version whose health check fails because of settings broken after it was staged "
            "falls back too, but is not marked failed (the older version fails as well) and boots "
@@ -58,7 +59,9 @@ TESTS = {
            "the network comes up after every soft reboot and full boot of an update (20 rounds); a version "
            "whose kernel panics (no usable initramfs) reboots by itself and falls back the same way; "
            "a dead network, before a check and in the middle of a download: the running version stays, "
-           "reported, the unit not failed, nothing staged or marked failed, staged once the link is back. "
+           "reported, the unit not failed, nothing staged or marked failed, staged once the link is back; "
+           "a version whose link gets no address, where the version before had one, falls back within 3 "
+           "boots and is not offered again, while without a cable the same kind of version is not judged. "
            "The graphical session is a criterion of the desktop's gate (docs/TITANIC.md)."),
     "T4": ("Signatures and versions", "full", [POLICY, SECURE_BOOT, UPDATES],
            "Unsigned and wrongly signed images and channel sheets, downgrades and replays refused; "
@@ -179,7 +182,7 @@ def self_test():
              for j, s in {BOOT, TAMPERED, POLICY, DEFAULTS, SECURE_BOOT, PROTECTION, COUNTING, UPDATES,
                           SOFT_REBOOT_NETWORK, POWER_CUTS, FULL_DISK, EXTREME_LOAD, HOSTILE_ROOT, BROKEN_CONFIG, TPM_UNLOCK,
                           ENCRYPTION, ENCRYPTION_TPM, ENCRYPTION_PIN, ROTATION, ROTATION_PIN, ENCRYPTION_UPDATES,
-                          FIRST_BOOT, CHANNELS, REMOVABLE}]
+                          FIRST_BOOT, CHANNELS, NETWORK_HEALTH, REMOVABLE}]
     r = evaluate(every, "u")
     assert all(r[t]["result"] == "pass" for t in r), r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
@@ -210,6 +213,8 @@ def self_test():
               else j for j in every]
     r = evaluate(failed, "u")
     assert r["T8"]["result"] == "fail" and "(failure)" in r["T8"]["note"] and r["T12"]["result"] == "pass", r
+    r = evaluate([j for j in every if j["steps"][0]["name"] != NETWORK_HEALTH[1]], "u")
+    assert r["T3"]["result"] == "fail" and "(not found)" in r["T3"]["note"], r
     r = evaluate([j for j in every if j["name"] != "image / build"], "u")
     assert r["T1"]["result"] == r["T4"]["result"] == "fail" and "(not found)" in r["T4"]["note"], r
     r = evaluate([dict(j, steps=[dict(j["steps"][0], conclusion="skipped")]) for j in every], "u")
