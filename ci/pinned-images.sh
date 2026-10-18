@@ -13,7 +13,8 @@
 # same for both and for the cache.
 # A copy from DIR is not trusted either: podman reads it (the oci: transport, one image), and what
 # podman then stores is checked. The image must have the image ID below (the digest of its config,
-# which the pinned index names through its linux/amd64 manifest), and a fresh `podman save` of it must
+# which the pinned index names through its manifest for the runner's architecture: linux/amd64, or
+# linux/arm64/v8 on an aarch64 runner, docs/ARM64.md), and a fresh `podman save` of it must
 # pass ci/verify-oci.py: every layer, as stored, is the config's DiffID at its position (podman 4.9
 # does not check that when it reads an image). Only then is it tagged; otherwise it is removed and the
 # job fails, with no other source to fall back to.
@@ -25,12 +26,17 @@ sources="public.ecr.aws/docker/library docker.io/library"
 store=()
 
 # The pinned image ID and index digest of NAME. The names are fixed here; for debian only the
-# digest is read from ci/tools.Containerfile (its FROM), never the name or the source.
+# digest is read from ci/tools.Containerfile (its FROM), never the name or the source. The same
+# index gives another image ID on each architecture.
 pinned() {
-  case "$1" in
-    debian) echo "a23b5ee2cd75d1c22cb4ded04e78e8a0d930d57f77bd2695038367e0d5c09940 $(sed -n 's/^FROM .*@sha256://p' ci/tools.Containerfile)" ;;
-    registry) echo "99b916d8206bcbfc54c95fb06076751932c902254277f149b082dd5d4d67fccb 6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e" ;;
-    *) echo "::error::No pinned image $1" >&2; return 1 ;;
+  local arch
+  arch="$(uname -m)"
+  case "$1 $arch" in
+    "debian x86_64") echo "a23b5ee2cd75d1c22cb4ded04e78e8a0d930d57f77bd2695038367e0d5c09940 $(sed -n 's/^FROM .*@sha256://p' ci/tools.Containerfile)" ;;
+    "debian aarch64") echo "52407102f56a8bd2f26e2141b46b15f471b174358cc8d7b16aa304cd9a94adcb $(sed -n 's/^FROM .*@sha256://p' ci/tools.Containerfile)" ;;
+    "registry x86_64") echo "99b916d8206bcbfc54c95fb06076751932c902254277f149b082dd5d4d67fccb 6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e" ;;
+    "registry aarch64") echo "2f5ec5015badd603680de78accbba6eb3e9146f4d642a7ccef64205e55ac518f 6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e" ;;
+    *) echo "::error::No pinned image $1 for $arch" >&2; return 1 ;;
   esac
 }
 

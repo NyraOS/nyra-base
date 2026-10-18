@@ -75,12 +75,16 @@ first (a drop-in passed as a credential), the size of LoaderDevicePartUUID and w
 probe of each disk finds now, and the script fails there without waiting for the timeout.
 A failed boot names its serial log in the output, so the job log leads to the whole console.
 
-KVM is mandatory: accel=kvm, no fallback to emulation.
+KVM is mandatory: accel=kvm, no fallback to emulation. On an aarch64 host the guest is aarch64
+(docs/ARM64.md): QEMU's virt machine with edk2 (AAVMF), the serial console on ttyAMA0, no TPM
+(--tpm is refused), and KVM when the host has it, otherwise emulation (TCG), where the devices the
+boot waits for get systemd's 90 s instead of the image's 10 s (see TCG_DEVICES).
 """
 import argparse
 import base64
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -94,6 +98,20 @@ import time
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 OVMF_CODE_SECBOOT = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
+SERIAL = "ttyS0"
+# aarch64: Ubuntu's AAVMF_CODE.fd is the build without Secure Boot; no SMM on ARM.
+ARM64 = platform.machine() == "aarch64"
+if ARM64:
+    OVMF_CODE = "/usr/share/AAVMF/AAVMF_CODE.fd"
+    OVMF_CODE_SECBOOT = "/usr/share/AAVMF/AAVMF_CODE.secboot.fd"
+    OVMF_VARS = "/usr/share/AAVMF/AAVMF_VARS.fd"
+    SERIAL = "ttyAMA0"
+# Emulated (TCG), the running system's 10 s wait for a device (the image's dev-.device.d/10-nyra.conf)
+# is over before udev has even started, so the serial console and the ESP time out, and with them the
+# getty and the ESP mount. These get systemd's 90 s back, in a drop-in that sorts after the image's.
+# Not every dev-*.device: in the initrd that drop-in would also replace the root's own wait (no limit).
+TCG_DEVICES = ("dev-disk-.device", f"dev-{SERIAL}.device")
+TCG_DEVICE_TIMEOUT = "[Unit]\nJobRunningTimeoutSec=90s\n"
 AUTOLOGIN = ("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noreset --noclear "
              "--keep-baud 115200,57600,38400,9600 - ${TERM}\n")
 # A boot that ends in emergency mode prints what the disk looks like to udev first: the root account
@@ -113,7 +131,7 @@ EMERGENCY = ("[Service]\nEnvironment=SYSTEMD_PAGER=cat SYSTEMD_LOG_LEVEL=info\nE
 # not the serial port: the sealed command line has no console=ttyS0. The agent answers on ttyS0 instead,
 # in the initrd too (it imports the credentials), so a test can type the passphrase there.
 ASK_PASSWORD = ("[Service]\nExecStart=\n"
-                "ExecStart=systemd-tty-ask-password-agent --watch --console=/dev/ttyS0\n")
+                f"ExecStart=systemd-tty-ask-password-agent --watch --console=/dev/{SERIAL}\n")
 # Kernel messages can land in the middle of another line on the console, colour codes included:
 # "Reached target \x1b[0;1;39mmulti-user.target\x1b[0[    9.85] clocksource: ...\r\nm - Multi-User System."
 KERNEL_LINE = re.compile(rb"\[ *\d+\.\d+\] [^\r\n]*[\r\n]+")
@@ -409,6 +427,7 @@ def blind(con, monitor, chat, timeout):
         if not m:
             raise RuntimeError(f"no {expect!r} on the console within {timeout} s")
         start += raw_offset(con.buf[start:], m.end())
+        time.sleep(1)  # as in login(): input that arrives with the prompt could be echoed
         con.type(send + "\r")
         answered = f"{len(chat)} prompt(s) answered, "
     while con.proc.poll() is None and time.monotonic() - con.t0 < timeout:
@@ -722,6 +741,10 @@ def main():
         p.error("--keep-vars needs --secure-boot")
     if a.tpm_fail_at and not a.tpm:
         p.error("--tpm-fail-at needs --tpm")
+    # QEMU's virt machine has only TIS TPMs (tpm-tis-device, tpm-tis-i2c); Debian's arm64 kernel has
+    # neither driver (only CRB, built in), so the guest would see no TPM and wait for it.
+    if ARM64 and a.tpm:
+        p.error("--tpm: no TPM on aarch64 (Debian's arm64 kernel has no driver for QEMU virt's TPMs)")
 
     password = secrets.token_urlsafe(12)
     tmp = tempfile.mkdtemp()
@@ -731,8 +754,13 @@ def main():
     # The Secure Boot firmware keeps its variables in SMM, out of reach of the guest OS.
     machine = ["q35,smm=on,accel=kvm", "-global", "driver=cfi.pflash01,property=secure,value=on"] \
         if a.secure_boot else ["q35,accel=kvm"]
+    qemu, cpu = "qemu-system-x86_64", "host"
+    if ARM64:
+        accel = "kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg"
+        qemu, machine = "qemu-system-aarch64", [f"virt,gic-version=max,accel={accel}"]
+        cpu = "host" if accel == "kvm" else "max,pauth-impdef=on"  # the fast pointer authentication
     disk = f"file={a.disk},format={'raw' if a.disk.endswith('.raw') else 'qcow2'},if=virtio"
-    cmd = ["qemu-system-x86_64", "-machine", *machine, "-cpu", "host", "-smp", "2", "-m", "2048",
+    cmd = [qemu, "-machine", *machine, "-cpu", cpu, "-smp", "2", "-m", "2048",
            "-nodefaults", "-display", "none", "-serial", "stdio",
            "-monitor", f"unix:{tmp}/monitor,server,nowait" if a.blind else "none",
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE_SECBOOT if a.secure_boot else OVMF_CODE}",
@@ -741,11 +769,15 @@ def main():
            "-nic", "user,id=net0,model=virtio-net-pci", "-device", "virtio-rng-pci",
            "-smbios", "type=11,value=io.systemd.credential:firstboot.timezone=UTC",
            # A getty on the serial console without console=ttyS0, which a sealed UKI cannot get.
-           "-smbios", "type=11,value=io.systemd.credential:getty.ttys.serial=ttyS0"]
+           "-smbios", f"type=11,value=io.systemd.credential:getty.ttys.serial={SERIAL}"]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.emergency.service="
             + base64.b64encode(EMERGENCY.encode()).decode()]
     cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.systemd-ask-password-console.service="
             + base64.b64encode(ASK_PASSWORD.encode()).decode()]
+    if ARM64 and accel == "tcg":
+        for unit in TCG_DEVICES:
+            cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:systemd.unit-dropin.{unit}~20-emulated="
+                    + base64.b64encode(TCG_DEVICE_TIMEOUT.encode()).decode()]
     if a.rtc:
         cmd += ["-rtc", f"base={a.rtc}"]
     if a.no_carrier:
@@ -768,7 +800,7 @@ def main():
         cmd += ["-qmp", f"unix:{tmp}/qmp.sock,server=on,wait=off"]
     cmd += a.qemu
     if a.autologin:
-        cmd += ["-smbios", "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@ttyS0.service="
+        cmd += ["-smbios", f"type=11,value=io.systemd.credential.binary:systemd.unit-dropin.serial-getty@{SERIAL}.service="
                 + base64.b64encode(AUTOLOGIN.encode()).decode()]
     for c in a.credential:
         name, _, text = c.partition("=")

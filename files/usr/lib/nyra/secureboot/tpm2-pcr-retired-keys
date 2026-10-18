@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TPM2 PCR policy keys that Nyra has retired (docs/SIGNING.md, "The PCR policy key"): one per line, the
+# SHA-256 of the key's public PEM file (as nyra-tpm-enroll computes it), lowercase hex. A disk is never
+# enrolled for these keys again, and nyra-tpm-retire removes their enrollments and marks them retired
+# in the disk's record once a version is confirmed good. A key goes here in the release after a
+# rotation is confirmed, or at once when it is no longer trusted. The release gate checks that the
+# image carries exactly this file and that it lists neither the current nor the next key.

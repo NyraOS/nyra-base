@@ -131,13 +131,18 @@ RUN dpkg --print-architecture && dpkg -i /dev/null 2>&1 | grep -q Distrobox && \
       /usr/lib/systemd/system/systemd-firstboot.service
 COPY --from=updated /src/target/release/nyra-updated /usr/libexec/nyra-updated
 COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
+# The next PCR policy key's public half (ci/build-image.sh; docs/SIGNING.md, "The PCR policy key"):
+# disks are enrolled for it in the initrd (nyra-tpm-enroll) before a release signs with it.
+COPY --from=pcrnext tpm2-pcr-public-key-next.pem /usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem
 
 # zlib-rs (docs/DEFAULTS.md, "zlib"): our libz.so.1 in place of the file Debian's libz.so.1 link points
 # to, so every program and library that uses zlib loads it. A program that uses gzprintf or gzvprintf
-# would not load: none in the image does, and the build fails if one appears.
-COPY --from=zlib /src/target/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1.nyra
+# would not load: none in the image does, and the build fails if one appears. The library directory
+# is the architecture's (x86_64-linux-gnu, aarch64-linux-gnu): exactly one must have libz.so.1.
+COPY --from=zlib /src/target/libz.so.1 /usr/lib/libz.so.1.nyra
 COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
-RUN cd /usr/lib/x86_64-linux-gnu && f="$(readlink libz.so.1)" && test -f "$f" && mv libz.so.1.nyra "$f" && \
+RUN set -- /usr/lib/*-linux-gnu/libz.so.1 && test "$#" = 1 && cd "${1%/*}" && \
+    f="$(readlink libz.so.1)" && test -f "$f" && mv /usr/lib/libz.so.1.nyra "$f" && \
     grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
 
 # Authenticated time (docs/DEFAULTS.md, "Time"): ntpd-rs with our configuration and unit from /usr,
@@ -249,11 +254,15 @@ RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
 # The image's default channel must be stable: every machine without a channel of its own follows
 # it, and the same image is promoted from one channel to the next (docs/UPDATES.md, "Channels").
 # (systemd-analyze writes to /run, which must stay empty in the image.)
-RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && mkdir -p timers.target.wants boot-complete.target.requires && \
+# Once a version is confirmed good, the disk's TPM2 enrollments for retired policy keys go
+# (nyra-tpm-retire.service, docs/BOOT.md "Disk encryption").
+RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
+    mkdir -p timers.target.wants boot-complete.target.requires boot-complete.target.wants && \
     ln -s ../nyra-updated.timer ../nyra-etc-copy.timer timers.target.wants/ && \
     ln -s ../boot-complete.target multi-user.target.wants/ && \
     ln -s ../nyra-health-system.service ../nyra-health-bootc.service boot-complete.target.requires/ && \
-    systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer \
+    ln -s ../nyra-tpm-retire.service boot-complete.target.wants/ && \
+    systemd-analyze verify --man=no --recursive-errors=no nyra-updated.service nyra-updated.timer nyra-tpm-retire.service \
       nyra-etc-copy@daily.service nyra-etc-copy.timer \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service ntpd-rs.service \
@@ -285,7 +294,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       /usr/lib/systemd/system/initrd.target.wants/ && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
-    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl "' \
+    printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl /usr/bin/sha256sum /usr/bin/systemd-ask-password "' \
       >> /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     kver="$(ls /usr/lib/modules)" && dracut --force "/usr/lib/modules/$kver/initramfs.img" "$kver" && \
     lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initrd.txt && \
@@ -297,7 +306,8 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/lib/systemd/system/nyra-luks-root.service 'usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service -> ' \
       usr/lib/nyra/boot/tpm-enroll usr/lib/systemd/system/nyra-tpm-enroll.service \
       'usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service -> ' \
-      usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl; do \
+      usr/bin/systemd-cryptenroll usr/sbin/cryptsetup usr/bin/od usr/bin/keyctl usr/bin/sha256sum \
+      usr/bin/systemd-ask-password; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt
 

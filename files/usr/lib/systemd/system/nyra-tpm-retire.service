@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Once this version is confirmed good (boot-complete.target, the same confirmation as boot counting):
+# remove the disk's TPM2 enrollments for retired policy keys (/usr/lib/nyra/boot/tpm-retire). A version
+# whose health checks fail never gets here, so a fallback to the previous version still unlocks.
+[Unit]
+Description=Nyra: remove the disk's enrollments of retired TPM policy keys
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+ConditionPathExists=/run/nyra-tpm2-keep
+Requires=boot-complete.target
+After=boot-complete.target systemd-bless-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/boot/tpm-retire
+
+[Install]
+WantedBy=boot-complete.target
