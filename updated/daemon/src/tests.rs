@@ -504,6 +504,23 @@ fn a_timed_out_stage_is_retried_at_the_next_check() {
 // --- no network (rule 1) ---------------------------------------------------------------------
 
 #[test]
+fn only_a_failed_command_or_its_timeout_is_offline() {
+    let dir = TempDir::new();
+    let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+    fake.offline = true;
+    let refused = Error::DigestMismatch {
+        expected: A.into(),
+        found: B.into(),
+    };
+    assert_eq!(when_offline(&mut fake, refused.clone()), refused);
+    let command = Error::Command("curl failed".into());
+    assert_eq!(
+        when_offline(&mut fake, command.clone()),
+        Error::Offline(Box::new(command))
+    );
+}
+
+#[test]
 fn a_check_without_a_network_says_so_and_stages_once_the_network_is_back() {
     let dir = TempDir::new();
     let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
