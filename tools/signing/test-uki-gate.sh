@@ -30,7 +30,8 @@
 #     empty in memory, a command line that is not readable, discardable or uninitialized data (shim
 #     does not copy it), a base relocation that changes a command line, a second Authenticode
 #     signature, a nested one, also with its tag in the high tag number form, and bytes after the
-#     signature in its certificate entry;
+#     signature in its certificate entry; uki-check.py's SIGNATURES count (0 for the unsigned UKI, 1 for
+#     the signed one, a wrong count and two signatures refused);
 #   - refused, signed with the trusted key and then changed (so its signature no longer holds; it is
 #     refused before that check): section data in the certificate table.
 # The "gate" and "other" keys are made here, live only in WORKDIR on the ephemeral runner and are
@@ -441,5 +442,19 @@ open(path, "wb").write(p)
 PY
 refused "data of section .* is not in the file before the certificate table" "$t/certdata" "$t/gate.crt"
 rm -rf "${t:?}/certdata"
+
+# uki-check.py's optional SIGNATURES count (sign-uki.sh asks for 0 before signing and 1 after).
+count_refused() {
+  if python3 -I tools/signing/uki-check.py "$1" ci/uki-cmdline.txt "$2"; then
+    echo "::error::uki-check.py accepted $1 with $2 signatures expected"; exit 1
+  fi
+}
+python3 -I tools/signing/uki-check.py "$t/unsigned.efi" ci/uki-cmdline.txt 0
+python3 -I tools/signing/uki-check.py "$t/resigned/$uki" ci/uki-cmdline.txt 1
+count_refused "$t/unsigned.efi" 1
+count_refused "$t/resigned/$uki" 0
+sbsign --key "$t/other.key" --cert "$t/other.crt" --output "$t/twosigs.efi" "$t/unsigned.efi"
+sign "$t/twosigs.efi" "$t/twosigs2.efi"
+count_refused "$t/twosigs2.efi" 1
 
 echo "The UKI release gate passed all checks."
