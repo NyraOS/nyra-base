@@ -73,9 +73,10 @@ aa_fallback() { echo "{ n=\"\$(wc -l < /sys/kernel/security/apparmor/profiles)\"
 # The disk still full at the next boot. ext4 keeps 4096 clusters that even root cannot take, and the
 # fill leaves the free ones only a few below that. Every boot, systemd removes the previous boot's
 # PrivateTmp directories in /var/tmp (tmpfiles.d, R!), a few blocks, which can give root a few blocks
-# back. still_full: root has at most 64 blocks after the boot (AppArmor's cache needs more: at least a
-# block for each of its profiles), then the disk is filled to the last block again.
-still_full='{ a="$(stat -f -c %a /var)"; echo "blocks free after the boot: $a"; [ "$a" -le 64 ] && { full /var || { dd if=/dev/zero of=/var/nyra-fill-boot bs=4k status=none 2>/dev/null; sync; full /var; }; }; }'
+# back. still_full: root can write at most 64 blocks after the boot, the free ones (%f) above those
+# 4096 (AppArmor's cache needs more: at least a block for each of its profiles), then the disk is
+# filled to the last block again. Not %a: it also leaves out the 5% kept for root.
+still_full='{ f="$(stat -f -c %f /var)"; echo "blocks free after the boot: $f (root can write all but 4096)"; [ "$f" -le $((4096 + 64)) ] && { full /var || { dd if=/dev/zero of=/var/nyra-fill-boot bs=4k status=none 2>/dev/null; sync; full /var; }; }; }'
 # The space the system takes, in KiB: the composefs store and the deployments' state, and the ESP.
 space='echo "nyra""-space: $(du -sk /sysroot/composefs /sysroot/state/deploy | awk "{s += \$1} END {print s}") $(du -sk /boot/ | cut -f1)"'
 
