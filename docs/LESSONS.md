@@ -743,6 +743,10 @@ Each line is something that broke or surprised us once.
   so they split the same way; they match on the raw console or without kernel messages, since a
   trigger can also be a kernel message itself (`Linux version`). A prompt pattern ending in
   `[^\r\n:]*:` stops at the prompt's colon instead of running into a kernel message after it.
+- A test's own check of a saved serial log afterwards (the boot did not ask for the recovery key, a
+  unit's message showed up) splits the same way, and `grep` on the raw log then passes a check that a
+  prompt did not show up although it did. Such checks use `vm-boot.py --on-console PATTERN LOG`, the
+  same match as during the run (a Python regular expression), not `grep`.
 - On x86 the kernel's serial console needs `console=ttyS0`. With the sealed UKI the tests no longer
   pass it (see "Sealed UKI" above); the getty on ttyS0 comes from a credential.
 - The image sets no root password, and systemd-firstboot ignores `passwd.*` credentials once root exists

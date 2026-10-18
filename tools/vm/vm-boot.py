@@ -26,6 +26,9 @@ kernel messages and colour codes: a kernel message can land in the middle of a p
 console triggers (--power-cut-at, --tpm-fail-at, --qmp, --marker), mostly lines from a unit or a
 command but sometimes a kernel message itself ("Linux version"), match on the console as it is or
 without kernel messages, and so do the command results.
+--on-console PATTERN LOG, alone, checks a serial log saved by an earlier run the same way, for a
+test's own checks afterwards: exit 0 when the regular expression PATTERN is on that console as it is
+or without kernel messages, 1 when it is not.
 --credential NAME=TEXT passes one more systemd credential over SMBIOS. The
 sealed command line does not import them (docs/BOOT.md); the test disks carry an
 add-on that does (tools/vm/test-addon.sh).
@@ -497,6 +500,19 @@ def self_test():
     prompt = (b"Please enter rec[    4.007221] clocksource: Watchdog remote CPU 1 read timed out\r\n"
               b"overy key for disk root: ")
     assert re.search(rb"Please enter (passphrase or )?recovery key for disk [^\r\n]*:", clean(prompt))
+    # --on-console on a saved log: that prompt is found, a console without it is not, and a line that is
+    # a kernel message itself is still found (systemd's own, in the initrd).
+    def on_log(pattern, text):
+        with tempfile.NamedTemporaryFile() as log:
+            log.write(text)
+            log.flush()
+            return subprocess.run([sys.executable, "-I", "-B", __file__, "--on-console", pattern, log.name]).returncode
+
+    disk = "Please enter (passphrase or )?recovery key for disk"
+    assert on_log(disk, prompt) == 0
+    assert on_log(disk, b"[  OK  ] Finished systemd-cryptsetup@root.service.\r\nlocalhost login: ") == 1
+    assert on_log("Forcibly rebooting: unit systemd-pc(rphase-initrd|.{1,3}d)\\.service failed",
+                  "[    5.104112] systemd[1]: Forcibly rebooting: unit systemd-pc\u2026d.service failed.\r\n".encode()) == 0
 
     def run(*console, alive=True, **opts):
         """login_and_run on a console that a process prints in place of QEMU: the first part at once,
@@ -703,6 +719,9 @@ def self_test():
 def main():
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
+    if sys.argv[1:2] == ["--on-console"] and len(sys.argv) == 4:
+        with open(sys.argv[3], "rb") as log:
+            return 0 if on_console(sys.argv[2].encode(), log.read()) else 1
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--disk", required=True, help="qcow2 (or .raw) image; not written unless --persist")
     p.add_argument("--persist", action="store_true", help="write to the disk instead of a snapshot")

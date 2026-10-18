@@ -54,7 +54,7 @@ boot() {
 boot --log "$logs/serial-boot-repeat-diagnostics.log" --refused '@@ end of diagnostics' \
   --credential $'systemd.unit-dropin.sysroot.mount=[Mount]\nOptions=nyra-test-bad-option\n' \
   --title "Repeated boots: a boot made to fail in the initrd prints the diagnostics"
-grep -q 'ID_PART_GPT_AUTO_ROOT=1' "$logs/serial-boot-repeat-diagnostics.log"
+python3 -B tools/vm/vm-boot.py --on-console 'ID_PART_GPT_AUTO_ROOT=1' "$logs/serial-boot-repeat-diagnostics.log"
 
 # The failed read of LoaderDevicePartUUID: a drop-in for systemd-udevd (initrd only; no system call
 # filter, so that its rules may mount) writes two rules around the probe in 60-persistent-storage.rules,
@@ -73,8 +73,8 @@ EOF
 masked="${fail_once%\"}; : >/run/udev/rules.d/61-nyra-gpt-auto-root.rules\""
 boot --log "$logs/serial-boot-repeat-efivar-unread.log" --refused '@@ end of diagnostics' --credential "$masked" \
   --title "Repeated boots: the first probe of the boot disk cannot read LoaderDevicePartUUID, no second probe"
-grep -q 'ls: cannot access .*/dev/gpt-auto-root' "$logs/serial-boot-repeat-efivar-unread.log"
-if grep -q 'ID_PART_GPT_AUTO_ROOT=1' "$logs/serial-boot-repeat-efivar-unread.log"; then
+python3 -B tools/vm/vm-boot.py --on-console 'ls: cannot access .*/dev/gpt-auto-root' "$logs/serial-boot-repeat-efivar-unread.log"
+if python3 -B tools/vm/vm-boot.py --on-console 'ID_PART_GPT_AUTO_ROOT=1' "$logs/serial-boot-repeat-efivar-unread.log"; then
   echo "the root partition was marked although LoaderDevicePartUUID could not be read"
   exit 1
 fi
