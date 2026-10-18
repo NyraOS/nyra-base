@@ -1008,6 +1008,16 @@ Each line is something that broke or surprised us once.
 - With an NTS client in the base, the update tests' boots with a wrong hardware clock (2099, 1970,
   2035) were corrected within seconds of reaching the network, so a check that needs the clock
   wrong must keep it from its servers (the T9 hostile boot points their names at the runner).
+- A disk filled to the last block does not stay full across a reboot. ext4 keeps 4096 clusters that
+  even root cannot take, and the fill ends with the free ones only a few below that (11 in CI). At
+  every boot `systemd-tmpfiles-setup.service` removes the previous boot's PrivateTmp directories in
+  `/var/tmp` (`R! /var/tmp/systemd-private-*`), 9 blocks in CI, next to `apparmor.service`: root can
+  then write a few blocks. The parser then sets up its cache directory and fails on the cache files
+  (`Unable to replace "…".  Unknown error (28): No space left on device`: the profile reached the
+  kernel, the cache write failed), and the fallback loads the profiles without the cache.
+- `df` and `stat -f -c %a` show 0 available long before root is out of space: they also leave out
+  the 5% kept for root (mkfs.ext4's default, as bootc runs it). What root can still write is
+  `stat -f -c %f` minus the 4096 clusters ext4 keeps back.
 - Right after `/etc/hosts` was edited, a restarted chronyd still got the old address (systemd-resolved
   answered from its copy of the file); wait until `getent ahosts` shows the change. chronyd then
   replaced that address with an IPv6 one the VM cannot reach (QEMU user networking, no IPv6 route out)
