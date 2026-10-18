@@ -861,8 +861,12 @@ pub fn offered_rollback<'a>(
 /// the middle of a pull) is [`Error::Offline`]: nothing is wrong with the server or the version.
 /// Only the machine's own link state counts: a server or a network that stops answering while the
 /// link is up stays an error. So does a refusal ([`REFUSALS`]), even if the link went down at the
-/// same moment.
+/// same moment. Only what comes from running a command or from its timeout can be a lost link: any
+/// other error (a bad sheet, a failed verification) is not about the network, whatever its text.
 fn when_offline(sys: &mut impl System, e: Error) -> Error {
+    if !matches!(e, Error::Command(_) | Error::Timeout(_)) {
+        return e;
+    }
     let message = e.to_string().to_lowercase();
     if REFUSALS.iter().any(|r| message.contains(r)) || !sys.offline() {
         return e;
