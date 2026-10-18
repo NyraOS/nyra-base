@@ -36,14 +36,14 @@ kernel's default threshold they all reach the console: tty1 showed `audit: type=
 prog-id=81 op=LOAD` and `type=1130 ... unit=systemd-timedated` over the login prompt and over the
 user's commands. The sealed command line has no `quiet`, so `90-nyra-console.conf` sets the same
 threshold through sysctl: only errors and worse (levels 0 to 3) reach the console, from the initrd's
-`systemd-sysctl` on (dracut copies `/usr/lib/sysctl.d` into the initramfs), which also keeps them off
-the disk's passphrase prompt. Nothing is lost: the journal keeps every kernel message
+`systemd-sysctl` on (dracut copies `/usr/lib/sysctl.d` into the initramfs), which also keeps them
+off the disk's passphrase prompt. Nothing is lost: the journal keeps every kernel message
 (`journalctl -k`) and every audit record (`journalctl _TRANSPORT=audit`). A kernel oops or panic
 raises the threshold by itself, and a boot starts again at the kernel's default, so the kernel's
 first lines (`Linux version ...`) still show; `reboot: Restarting system` and `reboot: Power down`
 are emergency messages and show at any threshold. The threshold applies to every console at once
-(the kernel has a single threshold): a serial console shows the same as tty1. An administrator changes it in
-`/etc/sysctl.d/`.
+(the kernel has a single threshold): a serial console shows the same as tty1. An administrator
+changes it in `/etc/sysctl.d/`.
 
 ## Units
 

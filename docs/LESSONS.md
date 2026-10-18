@@ -419,9 +419,9 @@ Each line is something that broke or surprised us once.
   keep everything.
 - Since that threshold, the serial logs of the VM tests show the kernel's own lines only up to the
   initrd's `systemd-sysctl` (about a second into the initrd), then errors only; the rest is in the
-  journal (`journalctl -k`). Each boot starts at the kernel's default again, so `Linux version` still
-  marks every kernel start, and `reboot: Restarting system` is an emergency message. For a run that
-  needs all kernel lines on the serial log (timestamps of a flaky boot), pass
+  journal (`journalctl -k`). Each boot starts at the kernel's default again, so `Linux version`
+  still marks every kernel start, and `reboot: Restarting system` is an emergency message. For a
+  run that needs all kernel lines on the serial log (timestamps of a flaky boot), pass
   `--credential 'sysctl.extra=kernel.printk = 7 4 1 7'` to `vm-boot.py`: the test console imports
   credentials, the image does not.
 
