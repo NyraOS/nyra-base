@@ -131,8 +131,13 @@ else
   exit 0
 fi
 
-var() { # the value byte of an EFI global variable, or nothing
-  [ -r "$efi/$1-$global" ] && od -An -tu1 -j4 -N1 "$efi/$1-$global" | tr -d ' '
+var() { # the value byte of an EFI global variable (after its 4 attribute bytes), or nothing
+  [ -r "$efi/$1-$global" ] || return 0
+  # The first 5 bytes, not od -j4: uutils' od skips by the size the file system reports, which
+  # efivarfs does not always give (it then fails with "cannot skip past end of combined input").
+  # shellcheck disable=SC2046 # the 5 numbers od prints become the arguments
+  set -- $(od -An -tu1 -N5 "$efi/$1-$global")
+  echo "${5-}"
 }
 slots() { # the disk's key slot numbers, one per line
   systemd-cryptenroll "$dev" | sed -n '2,$ s/^ *\([0-9][0-9]*\) .*/\1/p'
