@@ -386,6 +386,25 @@ Every signature is public in Rekor under the signer's address, so an unexpected 
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
 they trust the service account's address, not the repository.
 
+## Making the UKI certificate
+
+The Secure Boot key lives in Cloud KMS (HSM, not exportable). Shim and the installer need a
+certificate for it, made once: in Cloud Shell, as the account that may use the key, run
+
+    sudo apt-get install -y libengine-pkcs11-openssl
+    tools/signing/kms-uki-cert.sh > nyra.crt
+
+The script downloads Google's PKCS#11 library for Cloud KMS (a pinned release, checked against its
+SHA-256), has KMS sign a self-signed certificate (`CN=Nyra OS Secure Boot 2026, O=Wagg Software`,
+15 years, `CA:FALSE`, digital signature, code signing), checks that its public key is the KMS key's
+and that it verifies against itself, and prints only the PEM. No secret is written anywhere. Run it
+from a fresh clone of `main`, not from a branch. Commit that PEM as
+`files/usr/lib/nyra/secureboot/nyra.crt` in a separate pull request; without it no image gets a
+release signature (docs/BOOT.md, "What remains for the real Nyra key"). That pull request states the
+SHA-256 fingerprint the script printed on stderr. Its reviewer checks the certificate's public key
+independently against `gcloud kms keys versions get-public-key 1 --key=uki ...`, not against the PEM
+alone.
+
 ## Not covered here
 
 - The signed channel sheet (channel, version order, freshness): docs/UPDATES.md.
