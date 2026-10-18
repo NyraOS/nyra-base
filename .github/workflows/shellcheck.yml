@@ -49,10 +49,11 @@ jobs:
         run: ci/check-artifact.sh --self-test
       - name: Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)
         run: tools/signing/test-sign-uki.sh
-      - name: Only sign-uki.sh signs with a pkcs11 key
+      - name: Only sign-uki.sh signs with an engine or a pkcs11 key
         run: |
-          if git grep -n 'sbsign.*pkcs1[1]:' -- . ':!tools/signing/sign-uki.sh'; then
-            echo "only tools/signing/sign-uki.sh may sign with a pkcs11 key" >&2
+          # The brackets keep this line from matching itself.
+          if git grep -nE 'sbsign.*(--engin[e]| -[e]( |=|$)|pkcs1[1])' -- . ':!tools/signing/sign-uki.sh'; then
+            echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
             exit 1
           fi
       - name: actionlint

@@ -105,7 +105,8 @@ if [ ! -d "$uki/signed" ]; then
     -keyout "$key/uki.key" -out "$uki/uki.crt" 2>/dev/null
   # The one script every UKI signature goes through: it repeats the checks above on the joined file,
   # signs, and verifies with the certificate (tools/signing/sign-uki.sh).
-  PCR_PUBKEY="$uki/pcr/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$uki/policy" "$uki/signed.tmp" -- \
+  rm -rf "$uki/signed.tmp" # sign-uki.sh refuses an output directory that exists
+  PCR_PUBKEY="$uki/pcr/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$uki/policy" "$uki/signed.tmp" \
     --key "$key/uki.key" --cert "$uki/uki.crt"
   rm -rf "$key"
   mv "$uki/signed.tmp" "$uki/signed"
