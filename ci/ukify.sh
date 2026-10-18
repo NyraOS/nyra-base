@@ -21,6 +21,9 @@
 # SBAT (docs/BOOT.md, "SBAT"): the stub's and kernel's components, ukify's "uki" line, and the Nyra
 # component, whose generation is raised to revoke every older Nyra UKI. --sbat replaces ukify's own
 # text, so it repeats the "sbat" and "uki" lines.
+# No .hwids section (--hwids ''): ukify builds one by itself where systemd ships hardware IDs (arm64),
+# for picking a devicetree from .dtbauto sections, which this UKI has none of; pcr-policy.py and
+# tpm-replay.py model only the sections the UKI has (docs/ARM64.md).
 #   sh ci/ukify.sh   (with the root filesystem at /target, the kernel at /kernel/<kver>, the policy's
 #                     public key at /pcr/tpm2-pcr-public-key.pem, output in /out)
 set -eu
@@ -28,7 +31,7 @@ k="$(ls /kernel)"
 sbat='sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md
 uki,1,UKI,uki,1,https://uapi-group.org/specifications/specs/unified_kernel_image/
 nyra,1,Nyra OS,nyra-base,1,https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md'
-uki() { bootc container ukify --rootfs /target --kernel-dir "/kernel/$k" -- "$@"; }
+uki() { bootc container ukify --rootfs /target --kernel-dir "/kernel/$k" -- --hwids '' "$@"; }
 uki --output /tmp/plain.efi
 cmdline="$(python3 - /tmp/plain.efi <<'PY'
 import sys, pefile
@@ -37,9 +40,9 @@ print(next(s.get_data().rstrip(b"\0").decode().strip() for s in pe.sections if s
 PY
 )"
 case "$cmdline" in *composefs=*) ;; *) echo "ukify.sh: no composefs digest in the UKI's command line: $cmdline" >&2; exit 1 ;; esac
-ukify build --profile "$(printf 'ID=recovery\nTITLE=Nyra OS Recovery')" \
+ukify build --hwids '' --profile "$(printf 'ID=recovery\nTITLE=Nyra OS Recovery')" \
   --cmdline "$cmdline systemd.unit=rescue.target" --output /tmp/recovery.profile.efi
-ukify build --profile "$(printf 'ID=reset\nTITLE=Nyra OS Reset settings')" \
+ukify build --hwids '' --profile "$(printf 'ID=reset\nTITLE=Nyra OS Reset settings')" \
   --cmdline "$cmdline systemd.unit=nyra-reset-settings.target fstab=no" --output /tmp/reset.profile.efi
 uki --profile "$(printf 'ID=main\nTITLE=Nyra OS')" --join-profile /tmp/recovery.profile.efi \
   --join-profile /tmp/reset.profile.efi --sbat "$sbat" \

@@ -21,7 +21,8 @@
 #   EFI/nyra/shimx64.efi   started by the "Nyra OS" firmware entry
 #   EFI/BOOT/BOOTX64.EFI   the fallback path, started by any firmware that has no boot entries
 # each shim with systemd-boot as grubx64.efi (the name shim starts) and MokManager (mmx64.efi)
-# next to it.
+# next to it. These are the x86_64 names; on aarch64 "x64" is "aa64" in each of them
+# (shimaa64.efi, BOOTAA64.EFI, grubaa64.efi, mmaa64.efi; docs/ARM64.md).
 # The fallback is a last way to boot that does not depend on loader/entries, which
 # bootc-finalize-staged replaces at shutdown with one rename of two directories, not atomic on FAT
 # (a power cut there can leave no entry at all):
@@ -35,9 +36,16 @@
 # esp-writable's mount namespace, where /boot is writable (docs/BOOT.md).
 set -eu
 
-SHIM=/usr/lib/shim/shimx64.efi.signed
-MOKMANAGER=/usr/lib/shim/mmx64.efi.signed
-SDBOOT=/usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed
+# The EFI architecture in the names of the boot files, as Debian's packages and the UEFI fallback
+# path spell it (FALLBACK: EFI/BOOT/BOOTX64.EFI or BOOTAA64.EFI).
+case "$(uname -m)" in
+x86_64) ARCH=x64 FALLBACK=BOOTX64.EFI ;;
+aarch64) ARCH=aa64 FALLBACK=BOOTAA64.EFI ;;
+*) echo "esp-sync: no boot files for $(uname -m)" >&2; exit 1 ;;
+esac
+SHIM=/usr/lib/shim/shim$ARCH.efi.signed
+MOKMANAGER=/usr/lib/shim/mm$ARCH.efi.signed
+SDBOOT=/usr/lib/systemd/boot/efi/systemd-boot$ARCH.efi.signed
 LOADER_CONF=/usr/lib/nyra/boot/loader.conf
 LABEL="Nyra OS"
 # The entries of the recovery and reset profiles (profile_entry) end in ".CONF": systemd-boot and
@@ -110,12 +118,12 @@ boot_file() {
 # copy in EFI/BOOT is still complete.
 files() {
 	esp="$1" rc=0
-	boot_file "$SHIM" "$esp/EFI/nyra/shimx64.efi" || rc=1
-	boot_file "$SDBOOT" "$esp/EFI/nyra/grubx64.efi" || rc=1
-	boot_file "$MOKMANAGER" "$esp/EFI/nyra/mmx64.efi" || rc=1
-	boot_file "$SHIM" "$esp/EFI/BOOT/BOOTX64.EFI" || rc=1
-	boot_file "$SDBOOT" "$esp/EFI/BOOT/grubx64.efi" || rc=1
-	boot_file "$MOKMANAGER" "$esp/EFI/BOOT/mmx64.efi" || rc=1
+	boot_file "$SHIM" "$esp/EFI/nyra/shim$ARCH.efi" || rc=1
+	boot_file "$SDBOOT" "$esp/EFI/nyra/grub$ARCH.efi" || rc=1
+	boot_file "$MOKMANAGER" "$esp/EFI/nyra/mm$ARCH.efi" || rc=1
+	boot_file "$SHIM" "$esp/EFI/BOOT/$FALLBACK" || rc=1
+	boot_file "$SDBOOT" "$esp/EFI/BOOT/grub$ARCH.efi" || rc=1
+	boot_file "$MOKMANAGER" "$esp/EFI/BOOT/mm$ARCH.efi" || rc=1
 	put "$LOADER_CONF" "$esp/loader/loader.conf" || rc=1
 	return "$rc"
 }
@@ -157,17 +165,17 @@ profile_entry() {
 # Firmware boot entries labelled "Nyra OS" (efibootmgr -v lines).
 labelled() { efibootmgr -v | grep "^Boot[0-9A-F]\{4\}\*\{0,1\} $LABEL$TAB" || true; }
 
-# The "Nyra OS" firmware entry for EFI/nyra/shimx64.efi on the ESP at /boot, first in BootOrder.
+# The "Nyra OS" firmware entry for EFI/nyra/shimx64.efi (shimaa64.efi) on the ESP at /boot, first in BootOrder.
 # Only entries for this ESP are touched: one with that label and another file is replaced; entries
 # of another Nyra installation (another disk, a USB stick) and BootNext are left alone.
 firmware_entry() {
 	dev="$(findmnt -no SOURCE -t vfat /boot)" && [ -b "$dev" ] || { echo "esp-sync: no ESP at /boot" >&2; return 1; }
 	part="$(cat "/sys/class/block/${dev##*/}/partition")" || return 1
 	disk="/dev/$(lsblk -no PKNAME "$dev")" && partuuid="$(lsblk -no PARTUUID "$dev")" || return 1
-	num="$(labelled | grep -iF "$partuuid" | grep -iF 'nyra\shimx64.efi' | head -n 1 | cut -c 5-8)"
+	num="$(labelled | grep -iF "$partuuid" | grep -iF "nyra\\shim$ARCH.efi" | head -n 1 | cut -c 5-8)"
 	if [ -z "$num" ]; then
 		for n in $(labelled | grep -iF "$partuuid" | cut -c 5-8); do efibootmgr -q -b "$n" -B || return 1; done
-		efibootmgr -q -c -d "$disk" -p "$part" -L "$LABEL" -l '\EFI\nyra\shimx64.efi' || return 1
+		efibootmgr -q -c -d "$disk" -p "$part" -L "$LABEL" -l "\\EFI\\nyra\\shim$ARCH.efi" || return 1
 		num="$(labelled | grep -iF "$partuuid" | head -n 1 | cut -c 5-8)"
 		[ -n "$num" ] || { echo "esp-sync: could not create the \"$LABEL\" firmware entry" >&2; return 1; }
 		echo "esp-sync: firmware entry Boot$num \"$LABEL\" created"

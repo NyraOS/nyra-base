@@ -117,10 +117,12 @@ COPY --from=updated /src/Cargo.lock /usr/share/doc/nyra-updated/Cargo.lock
 
 # zlib-rs (docs/DEFAULTS.md, "zlib"): our libz.so.1 in place of the file Debian's libz.so.1 link points
 # to, so every program and library that uses zlib loads it. A program that uses gzprintf or gzvprintf
-# would not load: none in the image does, and the build fails if one appears.
-COPY --from=zlib /src/target/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1.nyra
+# would not load: none in the image does, and the build fails if one appears. The library directory
+# is the architecture's (x86_64-linux-gnu, aarch64-linux-gnu): exactly one must have libz.so.1.
+COPY --from=zlib /src/target/libz.so.1 /usr/lib/libz.so.1.nyra
 COPY --from=zlib /src/Cargo.lock /usr/share/doc/nyra-zlib/Cargo.lock
-RUN cd /usr/lib/x86_64-linux-gnu && f="$(readlink libz.so.1)" && test -f "$f" && mv libz.so.1.nyra "$f" && \
+RUN set -- /usr/lib/*-linux-gnu/libz.so.1 && test "$#" = 1 && cd "${1%/*}" && \
+    f="$(readlink libz.so.1)" && test -f "$f" && mv /usr/lib/libz.so.1.nyra "$f" && \
     grep -aq zlib-rs libz.so.1 && ! grep -rlaw -e gzprintf -e gzvprintf /usr/bin /usr/sbin /usr/lib /usr/libexec
 
 # Authenticated time (docs/DEFAULTS.md, "Time"): chronyd as Debian's restricted NTS client, with our

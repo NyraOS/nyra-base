@@ -70,12 +70,13 @@ if [ ! -d "$uki/signed" ]; then
   python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
   # The PCR 11 policy: pcr-policy.py computes the main profile's enter-initrd policy from the UKI and
   # signs only that, after checking that step 2 asked for exactly it; the signature is joined into the
-  # UKI with the image's own ukify (no key in that container), then checked.
+  # UKI with the image's own ukify (no key in that container), then checked. --hwids '': nothing else
+  # added (ukify builds a .hwids section by itself on arm64, see ci/ukify.sh).
   python3 -I tools/signing/pcr-policy.py sign "$f" "$key/pcr.key" > "$uki/pcr/pcrsig.json"
   mkdir -p "$uki/policy"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$uki/unsigned:/in:ro" \
     -v "$uki/pcr:/pcr:ro" -v "$uki/policy:/out" "$tag-sealed" \
-    ukify build --join-pcrsig "/in/${f##*/}" --pcrsig @/pcr/pcrsig.json --output "/out/${f##*/}"
+    ukify build --hwids '' --join-pcrsig "/in/${f##*/}" --pcrsig @/pcr/pcrsig.json --output "/out/${f##*/}"
   sudo chown -R "$(id -u):$(id -g)" "$uki/policy"
   f="$uki/policy/${f##*/}"
   python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
