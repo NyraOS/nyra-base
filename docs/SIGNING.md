@@ -336,6 +336,14 @@ only when one of these holds:
 - or the maintainers accept, in writing and recorded in this document, that any account with write
   access can sign.
 
+**Acceptance, 2026-10-18.** The owner (the repository's maintainer, Wagg Software) accepted that any
+account with write access to `main` can obtain signatures. Today that is the owner's account, which
+the project's automated contributors (AI agents and GitHub Copilot) also use. The reason: automatic,
+signed updates, without a manual step per release. The mitigations: the Google identity accepts only
+this repository's image workflow on `main` from GitHub-hosted runners; the keys are not exportable
+(Cloud KMS, HSM); the release gate's checks, staged rollouts and signed retractions; and the Cloud
+KMS audit logs of every signature, once enabled (see "Who can sign").
+
 The Google Cloud setup below can be prepared at any time. If the condition stops holding, remove the
 variables first.
 
@@ -416,7 +424,14 @@ The job is temporary: it is removed, or folded into the real signing job, once t
   `Workload Identity User`, or a custom role with that permission. Keep the Google Cloud project's
   members to one maintainer account, with no other grants on the service account.
 
-Every signature is public in Rekor under the signer's address, so an unexpected one is visible.
+The same goes for the Cloud KMS keys (`uki`: the UKI's Secure Boot signature; `pcr-policy-1`: the
+TPM2 policy): whoever can get a change onto `main`, or has the service account's token, can obtain
+those signatures.
+
+Every keyless image signature is public in Rekor under the signer's address, so an unexpected one is
+visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
+logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). An `AsymmetricSign`
+that matches no release run is an incident.
 
 **If the repository moves** (another organisation, or a re-created repository), update the
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
