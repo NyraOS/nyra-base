@@ -17,12 +17,12 @@ from our registry that do not carry that signature.
    with no permissions and no checkout; a difference stops the `sign` job. The jobs of a run can
    replace each other's artifacts, so every job that uses the image artifact (`install-boot-system`,
    `install-boot-updates`, `install-boot-updates-more`, `encryption`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
-   a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
-   A release build also uploads, with their sha256 as job outputs, the unsigned UKI (as `sign-uki.sh`
-   receives it) and the sealed image it was made from (`nyra-base-unsigned-uki`,
-   `nyra-base-sealed-oci-archive`); nothing consumes them yet.
+   a job output (on a release, the one `release-image` reported: `ci/check-artifact.sh`); `build` also
+   reports the SBOM's.
+   With the repository variable `KMS_RELEASE` set to `true` (the "release mode", below), the release
+   build leaves its UKI unsigned and the next two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
-   GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
+   GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`:
    - GitHub issues an OIDC token for the workflow run;
    - Google Workload Identity Federation accepts it only for this repository, `refs/heads/main`,
      the `image.yml` workflow, a `push` or `workflow_dispatch` event and a GitHub-hosted runner,
@@ -400,20 +400,6 @@ Then, in this order:
 3. Run the workflow on `main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`):
    it builds, signs and verifies. The job summary shows the signed digest.
 
-**KMS dry run (optional, before any real signature).** The `release-image` job proves that CI on
-`main` can reach the Cloud KMS keys `uki` and `pcr-policy-1` without signing anything bootable: it
-authenticates through Workload Identity Federation, signs a fixed text through the PKCS#11 path and
-verifies the signature with the committed public key. That verification is what proves the right
-key version signed: a signature from any other key or version fails. The service account needs only
-signing rights, not permission to list key versions. It runs only when all three **repository variables** are set, and it does not
-make `sign` run (that one has its own `GCP_*` variables):
-```sh
-gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
-gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
-gh variable set KMS_DRY_RUN      -R NyraOS/nyra-base --body true
-```
-The job is temporary: it is removed, or folded into the real signing job, once that exists.
-
 **Who can sign:**
 - **anyone who can get a change onto `main` or start the workflow manually on `main`**: the workflow
   runs whatever is on `main`, and the attribute condition cannot tell a reviewed merge from an
@@ -432,11 +418,65 @@ those signatures.
 Every keyless image signature is public in Rekor under the signer's address, so an unexpected one is
 visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
 logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). An `AsymmetricSign`
-that matches no release run is an incident.
+that matches no `release-sign` job is an incident.
 
 **If the repository moves** (another organisation, or a re-created repository), update the
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
 they trust the service account's address, not the repository.
+
+## Release mode: the Nyra keys sign the UKI before the tests
+
+Three **repository variables** switch it on; with `KMS_RELEASE` unset a run behaves as before (the
+UKI is signed with keys made for the run, and `sign` refuses the image):
+```sh
+gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
+gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
+gh variable set KMS_RELEASE      -R NyraOS/nyra-base --body true
+```
+A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
+of it) on `main` by push or manual run and `KMS_RELEASE` is `true`. Then, in one run:
+
+- `build` makes the UKI with the committed PCR policy key and stops there: unjoined, unsigned
+  (`NYRA_RELEASE=1`, `ci/build-image.sh`). It uploads that UKI and the sealed image it was made from
+  (`nyra-base-unsigned-uki`, `nyra-base-sealed-oci-archive`), not the image archive, and takes the
+  committed `nyra.crt` as the certificate the tests enrol.
+- `release-sign` (the only job with `id-token: write` besides `sign`) checks both artifacts against
+  `build`'s hashes, authenticates through Workload Identity Federation, has the key `pcr-policy-1`
+  sign the main profile's PCR policy (`pcr-policy.py sign-kms` first checks the UKI as the sealed UKI,
+  then verifies the signature with the committed public key), joins it into the UKI with the sealed
+  image's own `ukify`, and has the key `uki` sign the result for Secure Boot (`sign-uki.sh`, with the
+  committed certificate). If `KMS_WIF_PROVIDER` or `KMS_SIGNER_SA` is unset the job fails (red, not
+  skipped), so a release can never go on with an unsigned image.
+- `release-image` has no token: it checks the signed UKI and the sealed image against the hashes
+  their jobs reported, builds the final image (`ci/final-image.sh`, as `build-image.sh` does), requires
+  that its layers are those of the image `build` checked (setuid files, lint, SBOM) except the one
+  that holds the UKI, runs the UKI release gate, and uploads `nyra-base-release-oci-archive`.
+- The tests boot that image, so what is tested, signed with `nyra.crt` and the real policy, is what
+  `sign` signs. They are skipped, and the run fails, if `release-image` did not succeed.
+
+**Why two jobs.** Building an image runs code from it (the last stage's `RUN`) and reads the workspace,
+where the authentication step writes the credentials file; with it, anything in the job signs until the
+job ends. So `release-sign` runs no image build. The one piece of image code near the credentials is
+the join: a container of the sealed image with no network and no environment, and only three fresh
+directories mounted, never the workspace. A container escape would reach the credentials; that risk is
+accepted. `.containerignore` still keeps the credentials file out of any build context.
+
+**Every KMS signature counts as a release.** A run that signs gives a UKI that boots and unlocks
+enrolled disks, also when a test then fails. The signed UKI and the release image are kept one day
+(`retention-days: 1`), but a copy taken in that time stays valid: treat every `release-sign` run as a
+release when revoking (raise the Nyra generation in SBAT, "SBAT" in docs/BOOT.md), and match the audit log's
+`AsymmetricSign` entries against `release-sign` runs, not against published releases.
+
+arm64 images are not released: `arm64.yml` builds without `NYRA_RELEASE`, the Workload Identity
+Federation refuses its workflow, and the signing path for arm64 is not designed.
+
+A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
+for the `.pcrsig` signature and the Secure Boot signature.
+
+The service account needs only signing rights, not permission to list key versions: the verification
+against the committed public keys proves the right key version signed. The release mode cannot run
+before it is on `main` (the federation accepts nothing else); `KMS_RELEASE` is the switch, and unsetting
+it is the rollback. It is removed once a release run has passed.
 
 ## Making the UKI certificate
 

@@ -114,11 +114,11 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
   `tools/signing/kms-uki-cert.sh` on 2026-10-18; fingerprint in docs/SIGNING.md, "Making the UKI
   certificate"). Until the UKI is signed with that key and the PCR policy keys are committed, no
   image gets a release signature.
-- **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one:
-  either a signing service backed by the token or KMS (`sbsign` through PKCS#11, or
-  `systemd-sbsign` with a provider), or bootc's external-signing flow (the UKI is signed offline and
-  injected, bootc#1498). Still to decide with a security review; until then it stays off, like
-  image signing (`docs/SIGNING.md`).
+- **Signing:** CI builds the unsigned UKI (step 2) and the final image waits for the signed one. On a
+  release (`KMS_RELEASE`, docs/SIGNING.md, "Release mode") the `release-sign` job has the KMS sign the
+  PCR policy and the file (`sbsign` through PKCS#11, in `tools/signing/sign-uki.sh`), and
+  `release-image` builds the image the tests boot from it. It is written, and cannot run before it is on
+  `main`; until `KMS_RELEASE` is set, like image signing, it stays off.
 - **Enrollment:** the installer runs `mokutil --import` with that certificate; on the next boot the
   user confirms it once in MokManager (a one-time password shown by the installer). A machine whose
   owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.

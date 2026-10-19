@@ -40,8 +40,8 @@ jobs:
     with:
       soft-reboot-rounds: "20"
     # What image.yml's jobs declare (GitHub checks them all). id-token is only for its sign and
-    # release-image jobs (the KMS dry run), which never run when this workflow calls image.yml
-    # (docs/SIGNING.md).
+    # release-sign jobs (the KMS signing of a release), which never run when this workflow calls
+    # image.yml (docs/SIGNING.md).
     permissions:
       contents: read
       actions: read
