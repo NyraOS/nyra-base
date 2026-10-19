@@ -17,6 +17,17 @@ Secure Boot. The sections are read as systemd-stub reads and measures them (pe_s
                                          .pcrsig asks for exactly that policy (no other with a
                                          reference). Prints the signature as .pcrsig JSON, for
                                          ukify build --join-pcrsig --pcrsig.
+    pcr-policy.py sign-kms UKI PUBLIC_KEY PKCS11_URI
+                                         the same as sign, with the committed PUBLIC_KEY, and the key in
+                                         the KMS signs (openssl dgst -engine pkcs11, see
+                                         .github/workflows/image.yml). Before anything else, and before
+                                         openssl runs, UKI (one regular file, no symlink) is copied into a
+                                         private directory and the copy must pass uki-check.py with the
+                                         sealed command line ci/uki-cmdline.txt and no signature: the
+                                         artifact is not trusted, and the signature is for that copy's
+                                         policy. Both verbs verify the signature
+                                         with the public key before printing it, and print nothing if it
+                                         does not verify (the signer is not the key of .pcrpkey).
     pcr-policy.py check UKI PUBLIC_KEY   refuses the UKI unless:
       - .pcrpkey is PUBLIC_KEY;
       - exactly one .pcrsig, in the profile with ID=main (profile 0), none in another profile;
@@ -32,6 +43,8 @@ import base64
 import hashlib
 import json
 import os
+import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -171,11 +184,17 @@ def verified(uki, public_key, key_name=None):
     return pcrsig, fp, main
 
 
-def sign(uki, private_key):
-    with tempfile.NamedTemporaryFile() as public_key:
-        if openssl("pkey", "-in", private_key, "-pubout", "-out", public_key.name).returncode != 0:
-            raise Refused(f"cannot read the private key {private_key}")
-        pcrsig, fp, main = verified(uki, public_key.name, f"the public half of {private_key}")
+def signature_verifies(public_key, signature, data):
+    with tempfile.NamedTemporaryFile() as f:
+        f.write(signature)
+        f.flush()
+        return openssl("dgst", "-sha256", "-verify", public_key, "-signature", f.name, data=data).returncode == 0
+
+
+def sign_with(uki, public_key, key_name, command):
+    """The checks and the signature of both signing verbs; they differ only in the command that
+    signs standard input (a list) and in where the public key comes from."""
+    pcrsig, fp, main = verified(uki, public_key, key_name)
     if any("sig" in policy for policy in pcrsig["sha256"]):
         raise Refused("the UKI already carries PCR policy signatures")
     want = {"pcrs": [11], "pkfp": fp, "pol": main, "ref": REF, "tbs": to_sign(main, REF)}
@@ -184,10 +203,57 @@ def sign(uki, private_key):
         raise Refused(f"the UKI does not ask for exactly the main profile's {PHASE} policy computed here; "
                       f"nothing signed:\n  asked:    {asked}\n  computed: {want}")
     # The data computed here is signed, never the file's.
-    r = openssl("dgst", "-sha256", "-sign", private_key, data=bytes.fromhex(to_sign(main, REF)))
+    data = bytes.fromhex(to_sign(main, REF))
+    r = subprocess.run(command, input=data, capture_output=True, check=False)
     if r.returncode != 0:
-        raise Refused(f"openssl could not sign: {r.stderr.decode(errors='replace')}")
+        raise Refused(f"could not sign: {r.stderr.decode(errors='replace')}")
+    # A signer that is not the key of .pcrpkey (a wrong key version in the KMS) must not get as far as
+    # the UKI: the TPM would refuse the policy at every boot.
+    if not signature_verifies(public_key, r.stdout, data):
+        raise Refused(f"the signature does not verify with {key_name or public_key}; nothing signed")
     print(json.dumps({"sha256": [dict(want, sig=base64.b64encode(r.stdout).decode())]}))
+
+
+def sign(uki, private_key):
+    with tempfile.NamedTemporaryFile() as public_key:
+        if openssl("pkey", "-in", private_key, "-pubout", "-out", public_key.name).returncode != 0:
+            raise Refused(f"cannot read the private key {private_key}")
+        sign_with(uki, public_key.name, f"the public half of {private_key}",
+                  ["openssl", "dgst", "-sha256", "-sign", private_key])
+
+
+def sealed_copy(uki, directory):
+    """Copies the one regular file UKI (no symlink, no directory, read once) into DIRECTORY and
+    refuses it unless it is the sealed UKI with no signature yet (uki-check.py, called as
+    sign-uki.sh calls it). The KMS signs for that copy only: the artifact comes from a job that runs
+    network and image code, so nothing in it is trusted before this."""
+    try:
+        fd = os.open(uki, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        raise Refused(f"cannot open {uki} (a symlink is refused): {e}") from e
+    # On the descriptor: os.fdopen itself raises "Is a directory" for a directory.
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise Refused(f"{uki} is not a regular file")
+    with os.fdopen(fd, "rb") as src:
+        copy = os.path.join(directory, "uki.efi")
+        with open(copy, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    tools = os.path.dirname(os.path.abspath(__file__))
+    r = subprocess.run([sys.executable, "-I", os.path.join(tools, "uki-check.py"), copy,
+                        os.path.join(tools, "..", "..", "ci", "uki-cmdline.txt"), "0"],
+                       capture_output=True, check=False)
+    if r.returncode != 0:
+        raise Refused(f"not the sealed UKI without a signature:\n{r.stderr.decode(errors='replace')}")
+    return copy
+
+
+def sign_kms(uki, public_key, pkcs11_uri):
+    with tempfile.TemporaryDirectory() as directory:  # private (0700), removed at exit
+        copy = sealed_copy(uki, directory)
+        # The flags of the KMS dry run in .github/workflows/image.yml.
+        sign_with(copy, public_key, None, ["openssl", "dgst", "-sha256", "-engine", "pkcs11",
+                                           "-keyform", "engine", "-sign", pkcs11_uri])
 
 
 def check(uki, public_key):
@@ -197,21 +263,23 @@ def check(uki, public_key):
         raise Refused(f"the signed policies are not exactly the main profile's {PHASE} policy with the "
                       f"reference {REF!r}:\n  signed:   {[(p['pol'], p.get('ref')) for p in signed]}\n"
                       f"  computed: {[(main, REF)]}")
-    with tempfile.TemporaryDirectory() as tmp:
-        with open(f"{tmp}/sig", "wb") as f:
-            f.write(base64.b64decode(signed[0]["sig"], validate=True))
-        r = openssl("dgst", "-sha256", "-verify", public_key, "-signature", f"{tmp}/sig",
-                    data=bytes.fromhex(to_sign(main, REF)))
-    if r.returncode != 0:
+    if not signature_verifies(public_key, base64.b64decode(signed[0]["sig"], validate=True),
+                              bytes.fromhex(to_sign(main, REF))):
         raise Refused(f"the signature of policy {main} does not verify with {public_key}")
     print(f"pcr-policy: {uki}: PCR 11 policy signed for the main profile's {PHASE} phase only "
           f"(reference {REF!r}); key {fp[:16]}")
 
 
+# verb: (function, number of arguments after the UKI)
+VERBS = {"sign": (sign, 1), "sign-kms": (sign_kms, 2), "check": (check, 1)}
+
+
 def main():
-    verb, uki, key = sys.argv[1:]
+    if len(sys.argv) < 2 or sys.argv[1] not in VERBS or len(sys.argv) != 3 + VERBS[sys.argv[1]][1]:
+        sys.exit(__doc__)
+    verb, uki, *args = sys.argv[1:]
     try:
-        {"sign": sign, "check": check}[verb](uki, key)
+        VERBS[verb][0](uki, *args)
     except (Refused, OSError, ValueError, KeyError, TypeError, pefile.PEFormatError) as e:
         print(f"pcr-policy: refused {uki}: {e}", file=sys.stderr)
         sys.exit(1)
