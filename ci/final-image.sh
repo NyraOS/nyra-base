@@ -13,5 +13,6 @@ set -euo pipefail
 
 sealed="$1" signed="$2" tag="$3"
 shift 3
-sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg NYRA_VERSION="${VERSION:-dev}" "$@" \
+# --pull=never: only the local sealed image is used, nothing is fetched by this build.
+sudo podman build --pull=never --timestamp "$SOURCE_DATE_EPOCH" --build-arg NYRA_VERSION="${VERSION:-dev}" "$@" \
   --build-arg SEALED="$sealed" --build-context uki="$signed" -t "$tag" -f Containerfile .

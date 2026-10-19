@@ -267,6 +267,35 @@ jobs:
           e="$(sudo podman run --rm localhost/nyra-base:ci stat -c %Y /usr/lib/clock-epoch)"
           [ "$e" = "$SOURCE_DATE_EPOCH" ] || { echo "::error::/usr/lib/clock-epoch is dated $e, not $SOURCE_DATE_EPOCH"; exit 1; }
 
+      # What a release builds before its UKI is signed outside the job (ci/build-image.sh, NYRA_RELEASE=1):
+      # the image with the unsigned UKI must pass the Containerfile's `bootc container lint`, and the UKI
+      # must carry the committed policy key and no signature at all. Only on pull requests: a release
+      # run does this for real. The crates and the next key of the first build are reused (no download).
+      - name: Release mode build smoke test (ci/build-image.sh, NYRA_RELEASE=1)
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir "$WORK/uki-release"
+          sudo cp -a "$WORK/uki/crates" "$WORK/uki/pcr-next" "$WORK/uki-release/"
+          NYRA_RELEASE=1 ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:release-smoke "$WORK/uki-release" \
+            --annotation org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.version="$VERSION" >/dev/null
+          files=("$WORK"/uki-release/unsigned/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki-release/unsigned must hold exactly the unsigned UKI"; exit 1; }
+          python3 -I tools/signing/uki-check.py "${files[0]}" ci/uki-cmdline.txt 0
+          python3 -I - "${files[0]}" files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem <<'PY'
+          import json, sys
+          import pefile
+          sections = [(s.Name.rstrip(b"\0"), s.get_data().rstrip(b"\0")) for s in pefile.PE(sys.argv[1]).sections]
+          committed = open(sys.argv[2], "rb").read().strip()
+          keys = [data.strip() for name, data in sections if name == b".pcrpkey"]
+          assert keys and all(key == committed for key in keys), "the UKI's .pcrpkey is not the committed key"
+          for name, data in sections:
+              if name == b".pcrsig":
+                  assert not any("sig" in policy for bank in json.loads(data).values() for policy in bank), \
+                      "the unsigned UKI carries a PCR policy signature"
+          print("release mode: the UKI has the committed policy key and no signature")
+          PY
+
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
       # Containerfile, run `gh workflow run image.yml --ref <branch>`.
