@@ -127,7 +127,8 @@ def section(name):
     return next(s for s in pe.sections if s.Name.split(b"\0")[0] == name)
 
 addon = bytearray(data)
-addon[section(b".linux").get_file_offset():][:6] = b".linuy"
+off = section(b".linux").get_file_offset()
+addon[off:off + 6] = b".linuy"
 open(f"{out}/addon.efi", "wb").write(addon)
 cmdline = section(b".cmdline")
 other = bytearray(data)
