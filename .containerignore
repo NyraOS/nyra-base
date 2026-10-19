@@ -3,3 +3,5 @@
 updated/target/
 zlib/target/
 ntpd-rs/target/
+# The build context is the workspace, which holds the Google credentials file in release jobs.
+gha-creds-*.json

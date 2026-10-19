@@ -17,7 +17,8 @@
 # the enter-initrd phase with the policy reference "initrd" (--sign-initrd-pcrs), the only one that
 # step 3 of ci/build-image.sh signs, so the disk unlocks in the initrd only. ukify adds the four boot
 # phases without a reference as well (it cannot leave them out without a key); they stay unsigned.
-# No key is here.
+# No key is here. With NYRA_RELEASE=1 (ci/build-image.sh) the .pcrsig has no signature and step 3
+# is done outside the build; this script is the same.
 # SBAT (docs/BOOT.md, "SBAT"): the stub's and kernel's components, ukify's "uki" line, and the Nyra
 # component, whose generation is raised to revoke every older Nyra UKI. --sbat replaces ukify's own
 # text, so it repeats the "sbat" and "uki" lines.

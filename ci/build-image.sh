@@ -13,6 +13,12 @@
 #      ci/uki-cmdline.txt) and carries exactly the main profile's policy (pcr-policy.py check): both
 #      checks, the signature and its verification are tools/signing/sign-uki.sh, the only script
 #      that signs a UKI, here with the run's key and later with the real one;
+#      With NYRA_RELEASE=1 (a release, docs/SIGNING.md) step 3 happens outside this script: step 2
+#      puts the committed policy key (files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem) in the
+#      UKI instead of a new one, the single-file check and uki-check.py run on the result, and the
+#      script goes on to step 4 with the unsigned UKI (UKI_DIR/unsigned): no policy signature, no
+#      join, no certificate, no key. Unset (the default, and arm64.yml, ci/check-reproducible.sh
+#      and local builds) it is as described above.
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux
 #      (ci/final-image.sh, the only script that builds it).
 # Before step 1, the next PCR policy key's public half is put in place for the image (below), and
@@ -20,16 +26,18 @@
 # --locked: the checksums in the Cargo.lock of updated/, zlib/ and ntpd-rs/), the only download of
 # the build; the Containerfile checks each one against its Cargo.lock again and compiles them
 # without network.
-# With UKI_DIR/signed already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
+# With UKI_DIR/final already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
 # The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
 # a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
 # without it (a local build).
-#   VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
+#   [NYRA_RELEASE=1 or unset] VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
 set -euo pipefail
 
 rootfs="$1" tag="$2" uki="$3"
 shift 3
+case "${NYRA_RELEASE:-}" in ""|1) ;; *) echo "build-image.sh: NYRA_RELEASE must be unset or 1, not '$NYRA_RELEASE'" >&2; exit 1 ;; esac
+
 build() {
   sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-arg NYRA_VERSION="${VERSION:-dev}" \
     --build-context crates="$uki/crates" \
@@ -65,13 +73,20 @@ fi
 # tries to resolve it as an image name.
 mkdir -p "$uki/none"
 build "$@" --build-context uki="$uki/none" --target sealed -t "$tag-sealed"
-if [ ! -d "$uki/signed" ]; then
-  key="$(mktemp -d)"
-  trap 'rm -rf "$key"' EXIT
-  # The PCR policy key of this run: its public half goes into the UKI (.pcrpkey) in step 2.
+# The directory the final image takes its UKI from.
+if [ "${NYRA_RELEASE:-}" = 1 ]; then final="$uki/unsigned"; else final="$uki/signed"; fi
+if [ ! -e "$uki/final" ]; then
   mkdir -p "$uki/pcr"
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$key/pcr.key" 2>/dev/null
-  openssl pkey -in "$key/pcr.key" -pubout -out "$uki/pcr/tpm2-pcr-public-key.pem"
+  if [ "${NYRA_RELEASE:-}" = 1 ]; then
+    # The committed policy key: its private half signs outside this script (docs/SIGNING.md).
+    cp files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem "$uki/pcr/"
+  else
+    key="$(mktemp -d)"
+    trap 'rm -rf "$key"' EXIT
+    # The PCR policy key of this run: its public half goes into the UKI (.pcrpkey) in step 2.
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$key/pcr.key" 2>/dev/null
+    openssl pkey -in "$key/pcr.key" -pubout -out "$uki/pcr/tpm2-pcr-public-key.pem"
+  fi
   build "$@" --build-context uki="$uki/none" --target kernel -t "$tag-kernel"
   mkdir -p "$uki/unsigned"
   cid="$(sudo podman create -q "$tag-kernel")"
@@ -91,25 +106,28 @@ if [ ! -d "$uki/signed" ]; then
   fi
   f="${files[0]}"
   python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
-  # The PCR 11 policy: pcr-policy.py computes the main profile's enter-initrd policy from the UKI and
-  # signs only that, after checking that step 2 asked for exactly it; the signature is joined into the
-  # UKI with the image's own ukify (no key in that container), then checked. --hwids '': nothing else
-  # added (ukify builds a .hwids section by itself on arm64, see ci/ukify.sh).
-  python3 -I tools/signing/pcr-policy.py sign "$f" "$key/pcr.key" > "$uki/pcr/pcrsig.json"
-  mkdir -p "$uki/policy"
-  sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$uki/unsigned:/in:ro" \
-    -v "$uki/pcr:/pcr:ro" -v "$uki/policy:/out" "$tag-sealed" \
-    ukify build --hwids '' --join-pcrsig "/in/${f##*/}" --pcrsig @/pcr/pcrsig.json --output "/out/${f##*/}"
-  sudo chown -R "$(id -u):$(id -g)" "$uki/policy"
-  f="$uki/policy/${f##*/}"
-  openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI per-run UKI key" \
-    -keyout "$key/uki.key" -out "$uki/uki.crt" 2>/dev/null
-  # The one script every UKI signature goes through: it repeats the checks above on the joined file,
-  # signs, and verifies with the certificate (tools/signing/sign-uki.sh).
-  rm -rf "$uki/signed.tmp" # sign-uki.sh refuses an output directory that exists
-  PCR_PUBKEY="$uki/pcr/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$uki/policy" "$uki/signed.tmp" \
-    --key "$key/uki.key" --cert "$uki/uki.crt"
-  rm -rf "$key"
-  mv "$uki/signed.tmp" "$uki/signed"
+  if [ "${NYRA_RELEASE:-}" != 1 ]; then
+    # The PCR 11 policy: pcr-policy.py computes the main profile's enter-initrd policy from the UKI and
+    # signs only that, after checking that step 2 asked for exactly it; the signature is joined into the
+    # UKI with the image's own ukify (no key in that container), then checked. --hwids '': nothing else
+    # added (ukify builds a .hwids section by itself on arm64, see ci/ukify.sh).
+    python3 -I tools/signing/pcr-policy.py sign "$f" "$key/pcr.key" > "$uki/pcr/pcrsig.json"
+    mkdir -p "$uki/policy"
+    sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$uki/unsigned:/in:ro" \
+      -v "$uki/pcr:/pcr:ro" -v "$uki/policy:/out" "$tag-sealed" \
+      ukify build --hwids '' --join-pcrsig "/in/${f##*/}" --pcrsig @/pcr/pcrsig.json --output "/out/${f##*/}"
+    sudo chown -R "$(id -u):$(id -g)" "$uki/policy"
+    f="$uki/policy/${f##*/}"
+    openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nyra CI per-run UKI key" \
+      -keyout "$key/uki.key" -out "$uki/uki.crt" 2>/dev/null
+    # The one script every UKI signature goes through: it repeats the checks above on the joined file,
+    # signs, and verifies with the certificate (tools/signing/sign-uki.sh).
+    rm -rf "$uki/signed.tmp" # sign-uki.sh refuses an output directory that exists
+    PCR_PUBKEY="$uki/pcr/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$uki/policy" "$uki/signed.tmp" \
+      --key "$key/uki.key" --cert "$uki/uki.crt"
+    rm -rf "$key"
+    mv "$uki/signed.tmp" "$uki/signed"
+  fi
+  touch "$uki/final"
 fi
-ci/final-image.sh "$tag-sealed" "$uki/signed" "$tag" "$@"
+ci/final-image.sh "$tag-sealed" "$final" "$tag" "$@"
