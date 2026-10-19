@@ -1304,6 +1304,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # Runs as root, so it comes before the auth step: no credential is present yet.
+      - name: Install the PKCS#11 engine for openssl
+        run: |
+          sudo apt-get update -q >/dev/null
+          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+
       # libkmsp11 reads application default credentials.
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -1325,8 +1331,6 @@ jobs:
 
       - name: Sign with each key through PKCS#11 and verify with the committed public key
         run: |
-          sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q --no-install-recommends sbsigntool libengine-pkcs11-openssl >/dev/null
           tmp="$(mktemp -d)"
           . tools/signing/kms-pkcs11.sh "$tmp" "$KMS_KEY_RING"
           secureboot=files/usr/lib/nyra/secureboot

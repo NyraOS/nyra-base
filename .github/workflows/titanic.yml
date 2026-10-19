@@ -39,8 +39,9 @@ jobs:
     # The network across soft reboots, repeated (tools/vm/soft-reboot-network.sh, ~35 s a round).
     with:
       soft-reboot-rounds: "20"
-    # What image.yml's jobs declare (GitHub checks them all). id-token is only for its sign job, which
-    # never runs when this workflow calls image.yml (docs/SIGNING.md).
+    # What image.yml's jobs declare (GitHub checks them all). id-token is only for its sign and
+    # release-image jobs (the KMS dry run), which never run when this workflow calls image.yml
+    # (docs/SIGNING.md).
     permissions:
       contents: read
       actions: read
