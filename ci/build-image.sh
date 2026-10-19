@@ -21,13 +21,15 @@
 #      and local builds) it is as described above.
 #   4. the final image: the committed root filesystem plus the signed UKI in /boot/EFI/Linux
 #      (ci/final-image.sh, the only script that builds it).
-# Before step 1, the next PCR policy key's public half is put in place for the image (below), and
+# Before step 1, the next PCR policy key's public half is put in place for the image (below; a release
+# takes the committed one or fails, never generates one), and
 # the crates of nyra-updated, zlib-rs and ntpd-rs are fetched into UKI_DIR/crates (cargo fetch
 # --locked: the checksums in the Cargo.lock of updated/, zlib/ and ntpd-rs/), the only download of
 # the build; the Containerfile checks each one against its Cargo.lock again and compiles them
 # without network.
 # With UKI_DIR/final already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
-# UKI is used again; with UKI_DIR/crates there, those crates are, and nothing is downloaded.
+# UKI is used again, if it was made in the same mode (its content: release or test; otherwise refused);
+# with UKI_DIR/crates there, those crates are, and nothing is downloaded.
 # The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
 # a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
 # without it (a local build).
@@ -37,6 +39,12 @@ set -euo pipefail
 rootfs="$1" tag="$2" uki="$3"
 shift 3
 case "${NYRA_RELEASE:-}" in ""|1) ;; *) echo "build-image.sh: NYRA_RELEASE must be unset or 1, not '$NYRA_RELEASE'" >&2; exit 1 ;; esac
+if [ "${NYRA_RELEASE:-}" = 1 ]; then mode="release"; else mode="test"; fi
+# UKI_DIR/final holds the mode its UKI was made in: a directory of the other mode is refused before any build.
+if [ -e "$uki/final" ] && [ "$(cat "$uki/final")" != "$mode" ]; then
+  echo "build-image.sh: $uki was made in the $(cat "$uki/final") mode, not $mode" >&2
+  exit 1
+fi
 
 build() {
   sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-arg NYRA_VERSION="${VERSION:-dev}" \
@@ -48,10 +56,14 @@ build() {
 # are enrolled for it before a release signs with it (docs/SIGNING.md, "The PCR policy key"): the
 # committed one, or else one made for this run, whose private half is deleted at once (it signs
 # nothing in CI). Made once per UKI_DIR, so a second build of the same inputs uses the same one.
-if [ ! -f "$uki/pcr-next/tpm2-pcr-public-key-next.pem" ]; then
+# A release (NYRA_RELEASE=1) always takes the committed one, never a key left in UKI_DIR, and needs it.
+if [ "${NYRA_RELEASE:-}" = 1 ] || [ ! -f "$uki/pcr-next/tpm2-pcr-public-key-next.pem" ]; then
   mkdir -p "$uki/pcr-next"
   if [ -f files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem ]; then
     cp files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$uki/pcr-next/"
+  elif [ "${NYRA_RELEASE:-}" = 1 ]; then
+    echo "build-image.sh: release mode needs files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" >&2
+    exit 1
   else
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null |
       openssl pkey -pubout -out "$uki/pcr-next/tpm2-pcr-public-key-next.pem"
@@ -128,6 +140,6 @@ if [ ! -e "$uki/final" ]; then
     rm -rf "$key"
     mv "$uki/signed.tmp" "$uki/signed"
   fi
-  touch "$uki/final"
+  echo "$mode" > "$uki/final"
 fi
 ci/final-image.sh "$tag-sealed" "$final" "$tag" "$@"
