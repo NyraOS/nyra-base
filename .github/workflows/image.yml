@@ -12,6 +12,8 @@
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
 # and the release's bootc is identical to the build cached on main (bootc-reproducible). Every job
 # that uses the image artifact checks it against the sha256 build reported (ci/check-artifact.sh).
+# With the repository variable KMS_RELEASE a release is signed with the Nyra keys before the tests
+# (release-sign and release-image jobs, docs/SIGNING.md, "Release mode"): the tests boot that image.
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md). In parallel, the encryption-tpm and
@@ -133,15 +135,21 @@ jobs:
     if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-24.04
     outputs:
+      # Release mode (the mode step): the release-sign and release-image jobs and the tests choose by it.
+      release: ${{ steps.mode.outputs.release }}
       uki_cert: ${{ steps.image.outputs.uki_cert }}
       version: ${{ steps.image.outputs.version }}
+      # What release-image builds the release image with, and the layers of this job's image, which
+      # it compares its own with.
+      source_date_epoch: ${{ steps.image.outputs.source_date_epoch }}
+      image_layers: ${{ steps.image.outputs.image_layers }}
       # Every job that uses an artifact of this job checks it against these (ci/check-artifact.sh).
       image_sha256: ${{ steps.export.outputs.image_sha256 }}
       sbom_sha256: ${{ steps.sbom.outputs.sbom_sha256 }}
       bootc_key: ${{ steps.bootc-cache.outputs.cache-primary-key }}
       bootc_cached: ${{ steps.bootc-cache.outputs.cache-hit }}
       bootc_sha256: ${{ steps.bootc.outputs.sha256 }}
-      # Release builds only (the sign job's condition); nothing uses these two yet.
+      # Release mode only: the inputs of release-sign and release-image.
       unsigned_uki_sha256: ${{ steps.release-export.outputs.unsigned_uki_sha256 }}
       sealed_image_sha256: ${{ steps.release-export.outputs.sealed_image_sha256 }}
     timeout-minutes: 120
@@ -149,6 +157,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Release mode (docs/SIGNING.md): the UKI of this run is signed by the release-sign job with the
+      # Nyra keys, and the tests boot the image that results. Only this workflow on main (never
+      # titanic.yml's call of it: github.workflow is then the caller's name) and only once the
+      # repository variable KMS_RELEASE is true; the build below is then made with NYRA_RELEASE=1
+      # (ci/build-image.sh), also for ci/check-reproducible.sh. Without the variable, nothing changes.
+      - name: Release mode
+        id: mode
+        env:
+          RELEASE_MODE: ${{ github.workflow == 'image' && env.RELEASE == 'true' && vars.KMS_RELEASE == 'true' }}
+        run: |
+          echo "release=$RELEASE_MODE" >> "$GITHUB_OUTPUT"
+          if [ "$RELEASE_MODE" = true ]; then echo "NYRA_RELEASE=1" >> "$GITHUB_ENV"; fi
+          echo "Release mode: $RELEASE_MODE"
 
       # The runner image enables podman-auto-update.timer, which runs `podman image prune -f` once within
       # 15 min of boot: it deletes untagged images, including one a step has just pulled (`podman pull
@@ -248,7 +270,8 @@ jobs:
           key: ${{ steps.mkosi-cache.outputs.cache-primary-key }}
 
       # The UKI is signed with a key made for this run only (ci/build-image.sh, docs/BOOT.md); its
-      # certificate goes to install-boot as a job output, for the Secure Boot test. bootc reads the
+      # certificate goes to install-boot as a job output, for the Secure Boot test. In release mode the
+      # UKI is not signed here and the certificate is the committed Nyra one. bootc reads the
       # version from the manifest annotation (docs/LESSONS.md); the label says the same.
       - name: Add the bootc layer, the sealed UKI, and lint
         id: image
@@ -261,8 +284,11 @@ jobs:
             --label org.opencontainers.image.version="$VERSION" \
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
-          echo "uki_cert=$(base64 -w0 "$WORK/uki/uki.crt")" >> "$GITHUB_OUTPUT"
+          if [ "${NYRA_RELEASE:-}" = 1 ]; then cert=files/usr/lib/nyra/secureboot/nyra.crt; else cert="$WORK/uki/uki.crt"; fi
+          echo "uki_cert=$(base64 -w0 "$cert")" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
+          echo "image_layers=$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci)" >> "$GITHUB_OUTPUT"
           # The floor of the clock (docs/DEFAULTS.md, "Time"): /usr/lib/clock-epoch dated SOURCE_DATE_EPOCH.
           e="$(sudo podman run --rm localhost/nyra-base:ci stat -c %Y /usr/lib/clock-epoch)"
           [ "$e" = "$SOURCE_DATE_EPOCH" ] || { echo "::error::/usr/lib/clock-epoch is dated $e, not $SOURCE_DATE_EPOCH"; exit 1; }
@@ -351,7 +377,8 @@ jobs:
           tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK"
           sudo rm -rf "$WORK/policy-test"
 
-      # The sign job's UKI release gate, on this image (its UKI signed with this run's key): accepted
+      # The sign job's UKI release gate, on this image (its UKI signed with this run's key; not run in
+      # release mode, where release-image runs the gate on the signed image): accepted
       # with this run's certificate and policy key, refused as the sign job runs it (the committed Nyra
       # certificate and policy key), and refused for an add-on, another command line, a second UKI, an
       # add-on next to it, no Nyra SBAT component, a PCR policy missing, not verifying or outside the
@@ -359,6 +386,7 @@ jobs:
       # loaded it (tools/signing/pe_sections.py) or are not exactly the sealed UKI's, and a nested
       # signature (made with osslsigncode).
       - name: Test the UKI release gate (docs/SIGNING.md)
+        if: steps.mode.outputs.release != 'true'
         run: |
           sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
@@ -411,27 +439,30 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Not in release mode: that image has an unsigned UKI, and only the release-image job's is tested.
       - name: Upload the image
+        if: steps.mode.outputs.release != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nyra-base-oci-archive
           path: dist/nyra-base.oci.tar
           retention-days: 14
 
-      # The inputs of the signing step, kept for the release: the UKI as ci/build-image.sh hands it to
-      # tools/signing/sign-uki.sh (joined with its PCR policy, not yet signed), and the sealed image
-      # it was made from. Same condition as the sign job; never on pull requests or Titanic runs.
+      # The inputs of the release-sign job: the UKI as ukify made it (unjoined: its PCR policy has no
+      # signature yet), and the sealed image it was made from. One day of retention: a signature of the
+      # release keys is made for them (docs/SIGNING.md).
       - name: Export the unsigned UKI and the sealed image
         id: release-export
-        if: github.workflow == 'image' && env.RELEASE == 'true'
+        if: steps.mode.outputs.release == 'true'
         run: |
-          mkdir -p release
-          files=("$WORK"/uki/policy/*)
-          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki/policy must hold exactly the unsigned UKI"; exit 1; }
-          cp "${files[0]}" release/nyra-base-unsigned.efi
+          mkdir -p release/unsigned
+          files=("$WORK"/uki/unsigned/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki/unsigned must hold exactly the unsigned UKI"; exit 1; }
+          # The file keeps its name (the kernel version): it is the UKI's name in /boot/EFI/Linux.
+          cp "${files[0]}" release/unsigned/
           sudo podman save --format oci-archive -o release/nyra-base-sealed.oci.tar localhost/nyra-base:ci-sealed
           sudo chown -R "$(id -u):$(id -g)" release
-          echo "unsigned_uki_sha256=$(sha256sum < release/nyra-base-unsigned.efi | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "unsigned_uki_sha256=$(sha256sum < "release/unsigned/${files[0]##*/}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "sealed_image_sha256=$(sha256sum < release/nyra-base-sealed.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload the unsigned UKI
@@ -439,8 +470,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nyra-base-unsigned-uki
-          path: release/nyra-base-unsigned.efi
-          retention-days: 14
+          path: release/unsigned/
+          retention-days: 1
 
       - name: Upload the sealed image
         if: steps.release-export.outcome == 'success'
@@ -448,7 +479,7 @@ jobs:
         with:
           name: nyra-base-sealed-oci-archive
           path: release/nyra-base-sealed.oci.tar
-          retention-days: 14
+          retention-days: 1
 
       # Last step, after the image is uploaded: the scan fetches data from the network (Debian
       # snapshot index, Debian Security Tracker, OSV) and runs one pinned PyPI package, and none of
@@ -559,7 +590,8 @@ jobs:
   # (install-boot-system here: everything but the update tests, which the two jobs after it run), and
   # a last job, install-boot, that needs them (the required check).
   install-boot-system:
-    needs: build
+    needs: [build, release-image]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -594,14 +626,18 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image
         id: load
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -747,7 +783,8 @@ jobs:
   # tests. Split by measured time so that the three jobs end at about the same time.
   # Measured 27-39 min for this step on the hosted runners; a 40-minute limit stopped a healthy run.
   install-boot-updates:
-    needs: build
+    needs: [build, release-image]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -782,14 +819,18 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image
         id: load
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -820,7 +861,8 @@ jobs:
           retention-days: 14
 
   install-boot-updates-more:
-    needs: build
+    needs: [build, release-image]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -855,14 +897,18 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image
         id: load
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -928,7 +974,8 @@ jobs:
   # that run in parallel with install-boot from the same image artifact, and a last job, encryption,
   # that needs them (the required check). Same security notes as install-boot: GitHub-hosted runners only.
   encryption-other:
-    needs: build
+    needs: [build, release-image]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -964,14 +1011,18 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image
         id: load
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -1031,7 +1082,8 @@ jobs:
   # The same setup as encryption-other, then the TPM steps: about 20 min of tests, against about 22
   # in encryption-other, so the two jobs end at about the same time.
   encryption-tpm:
-    needs: build
+    needs: [build, release-image]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -1067,14 +1119,18 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image
         id: load
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -1149,8 +1205,8 @@ jobs:
   # runners, to find boots that fail only now and then (tools/vm/boot-repeat.sh). Same security
   # notes as install-boot: GitHub-hosted runners only.
   boot-repeat:
-    needs: build
-    if: inputs.boot-rounds != '' && inputs.boot-rounds != '0'
+    needs: [build, release-image]
+    if: ${{ inputs.boot-rounds != '' && inputs.boot-rounds != '0' && !cancelled() && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -1184,13 +1240,17 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image and install it to a disk image
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -i "$WORK/nyra-base.oci.tar"
           rm "$WORK/nyra-base.oci.tar"
@@ -1261,9 +1321,15 @@ jobs:
           echo "Reproducible: the release's bootc build is identical to the cached one ($cached)."
 
   sign:
-    needs: [build, install-boot, encryption, bootc-reproducible]
+    needs: [build, release-image, install-boot, encryption, bootc-reproducible]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
-    if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
+    # release-image is skipped unless this is a release (KMS_RELEASE), so the explicit status checks.
+    if: >-
+      ${{ !cancelled() && github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
+      && needs.build.result == 'success' && needs.install-boot.result == 'success' && needs.encryption.result == 'success'
+      && needs.bootc-reproducible.result == 'success'
+      && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -1301,13 +1367,17 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-base-oci-archive
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}
 
       - name: Load the image and push it to the local registry (as updates.nyraos.com)
         env:
+          RELEASE: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
+          # The artifact and its hash come from the same job: release-image's on a release, else build's.
+          [ "$RELEASE" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
           tools/signing/local-registry.sh "$WORK"
           sudo podman load -q -i "$WORK/nyra-base.oci.tar"
@@ -1398,51 +1468,219 @@ jobs:
           path: dist
           retention-days: 14
 
-  # Dry run of the KMS release signing (docs/SIGNING.md, "Setting up the signer"): proves that CI on
-  # main reaches the Cloud KMS keys through Workload Identity Federation and the PKCS#11 library.
-  # It signs a fixed text, never an image. Gated on its own variables so that `sign` stays off.
-  release-image:
+  # Release mode only (build's `release` output, docs/SIGNING.md): the two jobs that make the image
+  # the tests boot and the sign job signs. The credentials of the KMS are in release-sign alone, which
+  # runs the one piece of image code there is near them (the join, below) with no network, no
+  # environment and three fresh directories; everything that builds or tests an image is in jobs
+  # without id-token. They hand files to each other, each checked against the hash its job reported
+  # (ci/check-artifact.sh). A KMS_* variable that is not set fails the release (red, not skipped), so
+  # the tests never boot an unsigned image.
+  release-sign:
     needs: build
-    if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.KMS_DRY_RUN == 'true' && vars.KMS_WIF_PROVIDER != '' && vars.KMS_SIGNER_SA != ''
+    if: needs.build.outputs.release == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
+    outputs:
+      uki_sha256: ${{ steps.sign.outputs.uki_sha256 }}
     env:
       KMS_KEY_RING: projects/nyra-signing-3076/locations/europe-west3/keyRings/nyra
     steps:
+      - name: The KMS variables are set
+        env:
+          KMS_WIF_PROVIDER: ${{ vars.KMS_WIF_PROVIDER }}
+          KMS_SIGNER_SA: ${{ vars.KMS_SIGNER_SA }}
+        run: |
+          if [ -z "$KMS_WIF_PROVIDER" ] || [ -z "$KMS_SIGNER_SA" ]; then
+            echo "::error::KMS_RELEASE is true, but KMS_WIF_PROVIDER or KMS_SIGNER_SA is not set: this release cannot be signed (docs/SIGNING.md)."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
       # Runs as root, so it comes before the auth step: no credential is present yet.
-      - name: Install the PKCS#11 engine for openssl
+      - name: Install sbsign, pefile and the PKCS#11 engine for openssl
         run: |
           sudo apt-get update -q >/dev/null
           sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
 
-      # libkmsp11 reads application default credentials.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-unsigned-uki
+          path: ${{ runner.temp }}/unsigned
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-sealed-oci-archive
+          path: ${{ runner.temp }}/sealed
+
+      - name: Check both artifacts and load the sealed image
+        env:
+          UNSIGNED_UKI_SHA256: ${{ needs.build.outputs.unsigned_uki_sha256 }}
+          SEALED_IMAGE_SHA256: ${{ needs.build.outputs.sealed_image_sha256 }}
+        run: |
+          files=("$RUNNER_TEMP"/unsigned/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::the unsigned UKI artifact must hold exactly one file"; exit 1; }
+          ci/check-artifact.sh "${files[0]}" "$UNSIGNED_UKI_SHA256"
+          ci/check-artifact.sh "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar" "$SEALED_IMAGE_SHA256"
+          sudo podman load -q -i "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          rm "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          sudo podman image exists localhost/nyra-base:ci-sealed
+
+      # libkmsp11 reads application default credentials. From here on the job can sign until it ends.
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.KMS_WIF_PROVIDER }}
           service_account: ${{ vars.KMS_SIGNER_SA }}
           create_credentials_file: true
 
-      # The service account may sign but not list key versions (least privilege). The verification
-      # against the committed public key is what proves the right key version signed: a signature
-      # from any other key or version fails here.
-      - name: Sign with each key through PKCS#11 and verify with the committed public key
+      # 1. The PCR 11 policy of the UKI's main profile, signed by pcr-policy-1 (pcr-policy.py sign-kms
+      #    checks the UKI first and verifies the signature with the committed public key).
+      # 2. The signature joined into the UKI with the sealed image's own ukify: image code, so with no
+      #    network, no environment, and only fresh directories mounted (never the workspace, which holds the
+      #    credentials file): the only image code near the credentials.
+      # 3. The whole file signed for Secure Boot by the key `uki` (tools/signing/sign-uki.sh repeats the checks
+      #    on the joined file and verifies the result with the committed certificate).
+      - name: Sign the PCR policy and the UKI in the KMS
+        id: sign
         run: |
+          secureboot=files/usr/lib/nyra/secureboot
+          files=("$RUNNER_TEMP"/unsigned/*)
+          name="${files[0]##*/}"
           tmp="$(mktemp -d)"
           . tools/signing/kms-pkcs11.sh "$tmp" "$KMS_KEY_RING"
-          secureboot=files/usr/lib/nyra/secureboot
-          openssl x509 -in "$secureboot/nyra.crt" -noout -pubkey > "$tmp/uki.pub"
-          cp "$secureboot/tpm2-pcr-public-key.pem" "$tmp/pcr-policy-1.pub"
-          for key in uki pcr-policy-1; do
-            echo "nyra kms dry run $key $GITHUB_SHA" > "$tmp/$key.txt"
-            openssl dgst -sha256 -engine pkcs11 -keyform engine \
-              -sign "pkcs11:object=$key;type=private" -out "$tmp/$key.sig" "$tmp/$key.txt"
-            openssl dgst -sha256 -verify "$tmp/$key.pub" -signature "$tmp/$key.sig" "$tmp/$key.txt"
-            echo "ok: $key signed in KMS and verified with the committed public key"
-          done
+          join="$RUNNER_TEMP/join"
+          mkdir -p "$join/in" "$join/pcr" "$join/out"
+          python3 -I tools/signing/pcr-policy.py sign-kms "${files[0]}" "$secureboot/tpm2-pcr-public-key.pem" \
+            'pkcs11:object=pcr-policy-1;type=private' > "$join/pcr/pcrsig.json"
+          cp "${files[0]}" "$join/in/$name"
+          sudo podman run --rm --pull=never --network none --tmpfs /tmp --tmpfs /var/tmp \
+            -v "$join/in:/in:ro" -v "$join/pcr:/pcr:ro" -v "$join/out:/out" localhost/nyra-base:ci-sealed \
+            ukify build --hwids '' --join-pcrsig "/in/$name" --pcrsig @/pcr/pcrsig.json --output "/out/$name"
+          sudo chown -R "$(id -u):$(id -g)" "$join/out"
+          PCR_PUBKEY="$secureboot/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$join/out" "$join/signed" \
+            --engine pkcs11 --key 'pkcs11:object=uki;type=private' --cert "$secureboot/nyra.crt"
+          echo "uki_sha256=$(sha256sum < "$join/signed/$name" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # One day of retention: this UKI is signed with the release keys whether or not the tests pass.
+      - name: Upload the signed UKI
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-release-uki
+          path: ${{ runner.temp }}/join/signed/
+          retention-days: 1
+
+  # The image the tests boot and sign signs: the sealed image from build plus the UKI release-sign
+  # signed (ci/final-image.sh, as ci/build-image.sh makes it), with no id-token. Its layers must be
+  # those of the image build checked (setuid files, lint, SBOM), except the one that holds the UKI.
+  release-image:
+    needs: [build, release-sign]
+    if: needs.build.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      image_sha256: ${{ steps.export.outputs.image_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-release-uki
+          path: ${{ runner.temp }}/signed
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-sealed-oci-archive
+          path: ${{ runner.temp }}/sealed
+
+      - name: Check both artifacts and load the sealed image
+        env:
+          SIGNED_UKI_SHA256: ${{ needs.release-sign.outputs.uki_sha256 }}
+          SEALED_IMAGE_SHA256: ${{ needs.build.outputs.sealed_image_sha256 }}
+        run: |
+          files=("$RUNNER_TEMP"/signed/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::the signed UKI artifact must hold exactly one file"; exit 1; }
+          ci/check-artifact.sh "${files[0]}" "$SIGNED_UKI_SHA256"
+          ci/check-artifact.sh "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar" "$SEALED_IMAGE_SHA256"
+          sudo podman load -q -i "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          rm "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          sudo podman image exists localhost/nyra-base:ci-sealed
+
+      # The same version and options as the build job's image step (annotations and labels only change
+      # the image's metadata; the layers are compared below).
+      - name: Build the release image
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_date_epoch }}
+        run: |
+          ci/final-image.sh localhost/nyra-base:ci-sealed "$RUNNER_TEMP/signed" localhost/nyra-base:ci \
+            --annotation org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA"
+
+      # What build checked (setuid and capabilities, lint, the SBOM) is this image, but for the UKI: the
+      # layers of the sealed image, then the one that holds the UKI, which differs by its signature.
+      - name: Same layers as the image build checked
+        env:
+          BUILT_LAYERS: ${{ needs.build.outputs.image_layers }}
+        run: |
+          sealed="$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci-sealed)"
+          final="$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci)"
+          jq -n -e --argjson built "$BUILT_LAYERS" --argjson sealed "$sealed" --argjson final "$final" '
+            ($sealed | length) as $n
+            | ($final | length) == ($built | length) and ($final | length) > $n
+              and $final[:$n] == $sealed
+              and ($final | del(.[$n])) == ($built | del(.[$n]))' >/dev/null || {
+            echo "::error::The release image's layers are not build's, except for the UKI's: build $BUILT_LAYERS, release $final, sealed image $sealed."
+            exit 1
+          }
+
+      # The sign job's gate (the same commands), on this image before any test boots it.
+      - name: UKI release gate (signed with the committed Nyra certificate)
+        run: |
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          cid="$(sudo podman create -q localhost/nyra-base:ci)"
+          sudo podman cp "$cid:/boot" "$WORK/boot"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$WORK/image-retired"
+          sudo podman rm -f "$cid" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem" "$WORK/image-retired"
+          tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem" \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys "$WORK/image-retired"
+
+      - name: Export the release image
+        id: export
+        run: |
+          mkdir -p dist
+          sudo podman save --format oci-archive -o dist/nyra-base.oci.tar localhost/nyra-base:ci
+          sudo chown -R "$(id -u):$(id -g)" dist
+          echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # One day of retention, like the signed UKI: it boots and unlocks disks whether or not the tests pass.
+      - name: Upload the release image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-release-oci-archive
+          path: dist/nyra-base.oci.tar
+          retention-days: 1
