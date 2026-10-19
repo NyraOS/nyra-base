@@ -22,7 +22,7 @@ from our registry that do not carry that signature.
    With the repository variable `KMS_RELEASE` set to `true` (the "release mode", below), the release
    build leaves its UKI unsigned and the next two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
-   GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
+   GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`:
    - GitHub issues an OIDC token for the workflow run;
    - Google Workload Identity Federation accepts it only for this repository, `refs/heads/main`,
      the `image.yml` workflow, a `push` or `workflow_dispatch` event and a GitHub-hosted runner,
@@ -418,7 +418,7 @@ those signatures.
 Every keyless image signature is public in Rekor under the signer's address, so an unexpected one is
 visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
 logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). An `AsymmetricSign`
-that matches no release run is an incident.
+that matches no `release-sign` job is an incident.
 
 **If the repository moves** (another organisation, or a re-created repository), update the
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
