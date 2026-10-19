@@ -382,7 +382,7 @@ points at `/dev/gpt-auto-root`: for an encrypted root, the opened volume, whose 
 look for. `nyra-luks-root.service` (initrd only) points it at the LUKS2 partition first, as systemd
 itself finds the disk of an encrypted root file system; bootc keeps a link that is already there.
 
-**What CI proves** (the `encryption` job, Titanic T10, each script below on a disk of its own).
+**What CI proves** (the `encryption-tpm` and `encryption-other` jobs, Titanic T10, each script below on a disk of its own).
 `tools/vm/encryption.sh`: the image installed as above, booted without a TPM, the passphrase prompt
 answered on the serial console:
 

@@ -21,13 +21,13 @@ TAMPERED = ("install-boot-system", "Tampered composefs object (Titanic T1)")
 POLICY = ("build", "Test the signature policy (docs/SIGNING.md)")
 DEFAULTS = ("install-boot-system", "Secure defaults (docs/DEFAULTS.md)")
 TPM_UNLOCK = ("install-boot-system", "TPM2 disk-unlock policy (docs/BOOT.md)")
-ENCRYPTION = ("encryption", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
-ENCRYPTION_TPM = ("encryption", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
-ROTATION = ("encryption", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)")
-ENCRYPTION_PIN = ("encryption", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)")
-ROTATION_PIN = ("encryption", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)")
-ENCRYPTION_UPDATES = ("encryption", "Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)")
-FIRST_BOOT = ("encryption", "First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION = ("encryption-other", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_TPM = ("encryption-tpm", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)")
+ROTATION = ("encryption-tpm", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_PIN = ("encryption-tpm", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)")
+ROTATION_PIN = ("encryption-other", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)")
+ENCRYPTION_UPDATES = ("encryption-other", "Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)")
+FIRST_BOOT = ("encryption-other", "First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)")
 SECURE_BOOT = ("install-boot-system", "Secure Boot chain (docs/BOOT.md)")
 PROTECTION = ("install-boot-system", "Boot protection (docs/BOOT.md)")
 COUNTING = ("install-boot-system", "Boot counting across updates (docs/BOOT.md)")
@@ -186,24 +186,25 @@ def self_test():
     r = evaluate(every, "u")
     assert all(r[t]["result"] == "pass" for t in r), r
     assert len(r) == 15 and all(v["run_url"] == "u" for v in r.values())
-    # T10 passes only with every one of its steps, in the encryption job; the same step names in
-    # install-boot do not count.
-    t10 = ["Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)",
-           "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)",
-           "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)",
-           "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)",
-           "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)",
-           "Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)",
-           "First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)"]
-    assert sorted(TESTS["T10"][2]) == sorted(("encryption", name) for name in t10), TESTS["T10"][2]
-    for name in t10:
-        this = lambda j: (j["name"], j["steps"][0]["name"]) == ("image / encryption", name)
+    # T10 passes only with every one of its steps, in the encryption-tpm and encryption-other jobs;
+    # the same step names in another job, or the final encryption job, do not count.
+    t10 = [("encryption-other", "Disk encryption without a TPM, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-tpm", "Disk encryption with a TPM, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-tpm", "Disk encryption with a TPM PIN, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-tpm", "Rotation of the TPM policy key, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-other", "Rotation of the TPM policy key with a PIN, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-other", "Updates through nyra-updated on an encrypted disk, Titanic T10 (docs/BOOT.md)"),
+           ("encryption-other", "First boot without a TPM or with Secure Boot off, Titanic T10 (docs/BOOT.md)")]
+    assert sorted(TESTS["T10"][2]) == sorted(t10), TESTS["T10"][2]
+    for job, name in t10:
+        this = lambda j: (j["name"], j["steps"][0]["name"]) == (f"image / {job}", name)
         r = evaluate([dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if this(j) else j for j in every], "u")
         assert r["T10"]["result"] == "fail" and name in r["T10"]["note"] and r["T15"]["result"] == "pass", (name, r)
         r = evaluate([j for j in every if not this(j)], "u")
         assert r["T10"]["result"] == "fail" and "(not found)" in r["T10"]["note"], (name, r)
-    moved = [dict(j, name="image / install-boot") if j["name"] == "image / encryption" else j for j in every]
-    assert evaluate(moved, "u")["T10"]["result"] == "fail"
+        other = "encryption-tpm" if job == "encryption-other" else "encryption-other"
+        moved = [dict(j, name=f"image / {other}") if this(j) else j for j in every]
+        assert evaluate(moved, "u")["T10"]["result"] == "fail", (job, name)
     failed = [dict(j, steps=[dict(j["steps"][0], conclusion="failure")]) if j["name"] == "power-cuts" else j
               for j in every]
     r = evaluate(failed, "u")

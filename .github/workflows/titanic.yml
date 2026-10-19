@@ -2,7 +2,7 @@
 # The Titanic battery, every night and by hand (docs/TITANIC.md): not on pull requests.
 #   image       image.yml: the image built once, then every boot, update and security test of its
 #               install-boot-* jobs, on that image, with 20 rounds of the soft reboot network test, and
-#               in parallel the disk encryption tests of its encryption job (Titanic T10)
+#               in parallel the disk encryption tests of its encryption-tpm and encryption-other jobs (Titanic T10)
 #   power-cuts  power cuts at random moments of an update, on the same image (tools/titanic/power-cuts.sh);
 #               the seed is printed and kept in the results
 #   stress      on the same image: a full disk during an update and at boot, and the space the system
@@ -14,7 +14,7 @@
 #   results     titanic-results.json: one result per test T1-T15 (tools/titanic/results.py), read
 #               from this run's steps through the API with the run's own read-only token
 # Artifacts: titanic-results, the serial logs (install-boot-system-serial-log, install-boot-updates-serial-log,
-# install-boot-updates-more-serial-log, encryption-serial-log,
+# install-boot-updates-more-serial-log, encryption-tpm-serial-log, encryption-other-serial-log,
 # titanic-power-cuts-serial-log, titanic-stress-serial-log) and those of image.yml.
 name: titanic
 on:
