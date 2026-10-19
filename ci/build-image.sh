@@ -31,11 +31,13 @@
 # The image version (year.month.run) comes from the environment, VERSION (image.yml, arm64.yml): every build of
 # a run writes the same one into os-release (Containerfile, NYRA_VERSION), and with it the UKI; dev
 # without it (a local build).
-#   [NYRA_RELEASE=1] VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
+#   [NYRA_RELEASE=1 or unset] VERSION=... ci/build-image.sh ROOTFS_IMAGE TAG UKI_DIR [podman build options...]
 set -euo pipefail
 
 rootfs="$1" tag="$2" uki="$3"
 shift 3
+case "${NYRA_RELEASE:-}" in ""|1) ;; *) echo "build-image.sh: NYRA_RELEASE must be unset or 1, not '$NYRA_RELEASE'" >&2; exit 1 ;; esac
+
 build() {
   sudo podman build --timestamp "$SOURCE_DATE_EPOCH" --build-arg ROOTFS="$rootfs" --build-arg NYRA_VERSION="${VERSION:-dev}" \
     --build-context crates="$uki/crates" \
@@ -72,10 +74,10 @@ fi
 mkdir -p "$uki/none"
 build "$@" --build-context uki="$uki/none" --target sealed -t "$tag-sealed"
 # The directory the final image takes its UKI from.
-if [ -n "${NYRA_RELEASE:-}" ]; then final="$uki/unsigned"; else final="$uki/signed"; fi
+if [ "${NYRA_RELEASE:-}" = 1 ]; then final="$uki/unsigned"; else final="$uki/signed"; fi
 if [ ! -e "$uki/final" ]; then
   mkdir -p "$uki/pcr"
-  if [ -n "${NYRA_RELEASE:-}" ]; then
+  if [ "${NYRA_RELEASE:-}" = 1 ]; then
     # The committed policy key: its private half signs outside this script (docs/SIGNING.md).
     cp files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem "$uki/pcr/"
   else
@@ -104,7 +106,7 @@ if [ ! -e "$uki/final" ]; then
   fi
   f="${files[0]}"
   python3 -I tools/signing/uki-check.py "$f" ci/uki-cmdline.txt
-  if [ -z "${NYRA_RELEASE:-}" ]; then
+  if [ "${NYRA_RELEASE:-}" != 1 ]; then
     # The PCR 11 policy: pcr-policy.py computes the main profile's enter-initrd policy from the UKI and
     # signs only that, after checking that step 2 asked for exactly it; the signature is joined into the
     # UKI with the image's own ukify (no key in that container), then checked. --hwids '': nothing else
