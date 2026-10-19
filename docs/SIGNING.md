@@ -392,6 +392,19 @@ Then, in this order:
 3. Run the workflow on `main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`):
    it builds, signs and verifies. The job summary shows the signed digest.
 
+**KMS dry run (optional, before any real signature).** The `release-image` job proves that CI on
+`main` can reach the Cloud KMS keys `uki` and `pcr-policy-1` without signing anything bootable: it
+authenticates through Workload Identity Federation, checks that each key has exactly one enabled
+version (version 1), signs a fixed text through the PKCS#11 path and verifies the signature with the
+committed public key. It runs only when all three **repository variables** are set, and it does not
+make `sign` run (that one has its own `GCP_*` variables):
+```sh
+gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
+gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
+gh variable set KMS_DRY_RUN      -R NyraOS/nyra-base --body true
+```
+The job is temporary: it is removed, or folded into the real signing job, once that exists.
+
 **Who can sign:**
 - **anyone who can get a change onto `main` or start the workflow manually on `main`**: the workflow
   runs whatever is on `main`, and the attribute condition cannot tell a reviewed merge from an

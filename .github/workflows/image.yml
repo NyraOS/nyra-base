@@ -1285,3 +1285,61 @@ jobs:
           name: nyra-base-signature
           path: dist
           retention-days: 14
+
+  # Dry run of the KMS release signing (docs/SIGNING.md, "Setting up the signer"): proves that CI on
+  # main reaches the Cloud KMS keys through Workload Identity Federation and the PKCS#11 library.
+  # It signs a fixed text, never an image. Gated on its own variables so that `sign` stays off.
+  release-image:
+    needs: build
+    if: github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.KMS_DRY_RUN == 'true' && vars.KMS_WIF_PROVIDER != '' && vars.KMS_SIGNER_SA != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      KMS_KEY_RING: projects/nyra-signing-3076/locations/europe-west3/keyRings/nyra
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Runs as root, so it comes before the auth step: no credential is present yet.
+      - name: Install the PKCS#11 engine for openssl
+        run: |
+          sudo apt-get update -q >/dev/null
+          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+
+      # libkmsp11 reads application default credentials.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.KMS_WIF_PROVIDER }}
+          service_account: ${{ vars.KMS_SIGNER_SA }}
+          create_credentials_file: true
+
+      - name: Each key has exactly one enabled version, version 1
+        run: |
+          for key in uki pcr-policy-1; do
+            versions="$(gcloud kms keys versions list --key="$key" --keyring="$KMS_KEY_RING" \
+              --filter='state=ENABLED' --format='value(name.basename())')"
+            if [ "$versions" != 1 ]; then
+              echo "::error::$key must have exactly one enabled version, version 1; found: ${versions//$'\n'/ }"
+              exit 1
+            fi
+            echo "ok: $key has one enabled version, version 1"
+          done
+
+      - name: Sign with each key through PKCS#11 and verify with the committed public key
+        run: |
+          tmp="$(mktemp -d)"
+          . tools/signing/kms-pkcs11.sh "$tmp" "$KMS_KEY_RING"
+          secureboot=files/usr/lib/nyra/secureboot
+          openssl x509 -in "$secureboot/nyra.crt" -noout -pubkey > "$tmp/uki.pub"
+          cp "$secureboot/tpm2-pcr-public-key.pem" "$tmp/pcr-policy-1.pub"
+          for key in uki pcr-policy-1; do
+            echo "nyra kms dry run $key $GITHUB_SHA" > "$tmp/$key.txt"
+            openssl dgst -sha256 -engine pkcs11 -keyform engine \
+              -sign "pkcs11:object=$key;type=private" -out "$tmp/$key.sig" "$tmp/$key.txt"
+            openssl dgst -sha256 -verify "$tmp/$key.pub" -signature "$tmp/$key.sig" "$tmp/$key.txt"
+            echo "ok: $key signed in KMS (version 1) and verified with the committed public key"
+          done
