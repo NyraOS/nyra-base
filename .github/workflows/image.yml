@@ -1317,19 +1317,9 @@ jobs:
           service_account: ${{ vars.KMS_SIGNER_SA }}
           create_credentials_file: true
 
-      - name: Each key has exactly one enabled version, version 1
-        run: |
-          for key in uki pcr-policy-1; do
-            versions="$(gcloud kms keys versions list --key="$key" --keyring=nyra \
-              --location=europe-west3 --project=nyra-signing-3076 \
-              --filter='state=ENABLED' --format='value(name.basename())')"
-            if [ "$versions" != 1 ]; then
-              echo "::error::$key must have exactly one enabled version, version 1; found: ${versions//$'\n'/ }"
-              exit 1
-            fi
-            echo "ok: $key has one enabled version, version 1"
-          done
-
+      # The service account may sign but not list key versions (least privilege). The verification
+      # against the committed public key is what proves the right key version signed: a signature
+      # from any other key or version fails here.
       - name: Sign with each key through PKCS#11 and verify with the committed public key
         run: |
           tmp="$(mktemp -d)"
@@ -1342,5 +1332,5 @@ jobs:
             openssl dgst -sha256 -engine pkcs11 -keyform engine \
               -sign "pkcs11:object=$key;type=private" -out "$tmp/$key.sig" "$tmp/$key.txt"
             openssl dgst -sha256 -verify "$tmp/$key.pub" -signature "$tmp/$key.sig" "$tmp/$key.txt"
-            echo "ok: $key signed in KMS (version 1) and verified with the committed public key"
+            echo "ok: $key signed in KMS and verified with the committed public key"
           done
