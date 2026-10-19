@@ -321,6 +321,12 @@ jobs:
                       "the unsigned UKI carries a PCR policy signature"
           print("release mode: the UKI has the committed policy key and no signature")
           PY
+          # Nothing a release signs or certifies is made here: no signing directories, no certificate, no key.
+          for path in signed policy uki.crt; do
+            [ ! -e "$WORK/uki-release/$path" ] || { echo "::error::$WORK/uki-release/$path must not exist in release mode"; exit 1; }
+          done
+          keys="$(find "$WORK/uki-release" -type f \( -name '*.key' -o -name '*.pem' \) -exec grep -l 'PRIVATE KEY' {} + || true)"
+          [ -z "$keys" ] || { echo "::error::private key in release mode output: $keys"; exit 1; }
 
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
