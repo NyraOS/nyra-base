@@ -18,6 +18,9 @@ from our registry that do not carry that signature.
    replace each other's artifacts, so every job that uses the image artifact (`install-boot-system`,
    `install-boot-updates`, `install-boot-updates-more`, `encryption`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
    a job output (`ci/check-artifact.sh`); `build` also reports the SBOM's.
+   A release build also uploads, with their sha256 as job outputs, the unsigned UKI (as `sign-uki.sh`
+   receives it) and the sealed image it was made from (`nyra-base-unsigned-uki`,
+   `nyra-base-sealed-oci-archive`); nothing consumes them yet.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners, and is the only job allowed to request an OIDC token (`id-token: write`):
    - GitHub issues an OIDC token for the workflow run;

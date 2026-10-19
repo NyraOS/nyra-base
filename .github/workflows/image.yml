@@ -140,6 +140,9 @@ jobs:
       bootc_key: ${{ steps.bootc-cache.outputs.cache-primary-key }}
       bootc_cached: ${{ steps.bootc-cache.outputs.cache-hit }}
       bootc_sha256: ${{ steps.bootc.outputs.sha256 }}
+      # Release builds only (the sign job's condition); nothing uses these two yet.
+      unsigned_uki_sha256: ${{ steps.release-export.outputs.unsigned_uki_sha256 }}
+      sealed_image_sha256: ${{ steps.release-export.outputs.sealed_image_sha256 }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -383,6 +386,38 @@ jobs:
         with:
           name: nyra-base-oci-archive
           path: dist/nyra-base.oci.tar
+          retention-days: 14
+
+      # The inputs of the signing step, kept for the release: the UKI as ci/build-image.sh hands it to
+      # tools/signing/sign-uki.sh (joined with its PCR policy, not yet signed), and the sealed image
+      # it was made from. Same condition as the sign job; never on pull requests or Titanic runs.
+      - name: Export the unsigned UKI and the sealed image
+        id: release-export
+        if: github.workflow == 'image' && env.RELEASE == 'true'
+        run: |
+          mkdir -p release
+          files=("$WORK"/uki/policy/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki/policy must hold exactly the unsigned UKI"; exit 1; }
+          cp "${files[0]}" release/nyra-base-unsigned.efi
+          sudo podman save --format oci-archive -o release/nyra-base-sealed.oci.tar localhost/nyra-base:ci-sealed
+          sudo chown -R "$(id -u):$(id -g)" release
+          echo "unsigned_uki_sha256=$(sha256sum < release/nyra-base-unsigned.efi | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sealed_image_sha256=$(sha256sum < release/nyra-base-sealed.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the unsigned UKI
+        if: steps.release-export.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-unsigned-uki
+          path: release/nyra-base-unsigned.efi
+          retention-days: 14
+
+      - name: Upload the sealed image
+        if: steps.release-export.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-sealed-oci-archive
+          path: release/nyra-base-sealed.oci.tar
           retention-days: 14
 
       # Last step, after the image is uploaded: the scan fetches data from the network (Debian
