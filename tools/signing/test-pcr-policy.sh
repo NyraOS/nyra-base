@@ -12,7 +12,9 @@
 #   - sign-kms, through a stub `openssl` that ignores -engine and -keyform and signs with a local key
 #     (no KMS here): the same signature as sign for the right key; refused, with no output, for every
 #     refusal of sign above, for a signature by another key (the wrong key version in the KMS), and
-#     for a signer that fails;
+#     for a signer that fails; and, with no -sign call at all (the stub records them), for what the KMS
+#     must never sign: an add-on, a UKI with another command line, a signed UKI, a symlink, a directory,
+#     two inputs (the artifact is checked as the sealed UKI before the KMS is asked);
 #   - check refuses, each .pcrsig signed with the key made here: a later phase signed as well as
 #     enter-initrd, a later phase only, enter-initrd without the reference, the policy twice, PCRs 7 and
 #     11, a SHA-1 bank, another reference, data to sign that is not the policy and its reference,
@@ -45,11 +47,13 @@ refused() {
 # A stand-in for the KMS: openssl dgst with the pkcs11 engine and the URI, signing with STUB_KEY. It
 # fails on any other flags, so the test proves the real command line.
 mkdir "$t/stub"
+: > "$t/sign-calls"
 real_openssl="$(command -v openssl)"
 cat > "$t/stub/openssl" <<STUB
 #!/bin/bash
 # Everything but the signing (the key checks, the verification) is the real openssl.
 [[ " \$* " == *" -sign "* ]] || exec "$real_openssl" "\$@"
+echo "\$*" >> "$t/sign-calls"
 [ "\$*" = "dgst -sha256 -engine pkcs11 -keyform engine -sign $kms_uri" ] || { echo "stub: unexpected: \$*" >&2; exit 2; }
 exec "$real_openssl" dgst -sha256 -sign "\$STUB_KEY"
 STUB
@@ -108,6 +112,43 @@ for field in ("pcrs", "pkfp", "pol", "ref", "sig"):
     assert measure[0][field] == ours[0][field], (field, measure[0], ours[0])
 print(f"systemd-measure signs the same policy, with the same signature: {ours[0]['pol']}")
 PY
+
+# For sign-kms, files the KMS must never sign: the UKI as an add-on (no .linux), with another command
+# line, and with a (fake, never verified) Authenticode signature.
+python3 -I - "$t/unsigned.efi" "$t" <<'PY'
+import struct
+import sys
+import pefile
+unsigned, out = sys.argv[1:]
+data = open(unsigned, "rb").read()
+pe = pefile.PE(data=data, fast_load=True)
+
+def section(name):
+    return next(s for s in pe.sections if s.Name.split(b"\0")[0] == name)
+
+addon = bytearray(data)
+addon[section(b".linux").get_file_offset():][:6] = b".linuy"
+open(f"{out}/addon.efi", "wb").write(addon)
+cmdline = section(b".cmdline")
+other = bytearray(data)
+other[cmdline.PointerToRawData] ^= 0x01
+open(f"{out}/othercmdline.efi", "wb").write(other)
+# SEQUENCE { OID, [0] { SEQUENCE { SET { SEQUENCE {} } } } }: one signer, as the parser wants.
+signer = bytes([0x31, 2, 0x30, 0])
+signed_data = bytes([0x30, len(signer)]) + signer
+explicit = bytes([0xA0, len(signed_data)]) + signed_data
+pkcs7 = bytes([0x30, 3 + len(explicit), 0x06, 1, 0]) + explicit
+entry = struct.pack("<IHH", 8 + len(pkcs7), 0x0200, 0x0002) + pkcs7
+body = bytearray(data) + bytes(-len(data) % 8)
+at = len(body)
+body += entry + bytes(-len(entry) % 8)
+pe2 = pefile.PE(data=bytes(body), fast_load=True)
+table = pe2.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]]
+struct.pack_into("<II", body, table.get_file_offset(), at, len(body) - at)
+open(f"{out}/authenticode.efi", "wb").write(body)
+PY
+ln -s unsigned.efi "$t/link.efi"
+mkdir "$t/dir"
 
 # Variants: the UKI's .pcrsig replaced (it is not measured, and ukify left room in it), the other
 # sections unchanged; policies signed with the key made here (or the other one).
@@ -194,6 +235,17 @@ stub_key="$t/other.key"
 kms "signature does not verify" sign-kms "$t/unsigned.efi" "$pub" "$kms_uri"
 stub_key="$t/no-such.key"
 kms "could not sign" sign-kms "$t/unsigned.efi" "$pub" "$kms_uri"
+
+# Refused before the KMS: not one -sign call (the stub openssl recorded them).
+stub_key="$t/pcr.key"
+before="$(wc -l < "$t/sign-calls")"
+for case in "addon.efi:\\.linux sections, not 1" "othercmdline.efi:command line not as committed" \
+            "authenticode.efi:1 Authenticode signatures, not 0" "link.efi:cannot open" "dir:not a regular file"; do
+  kms "${case#*:}" sign-kms "$t/${case%%:*}" "$pub" "$kms_uri"
+done
+kms "pcr-policy.py sign-kms UKI" sign-kms "$t/unsigned.efi" "$t/unsigned.efi" "$pub" "$kms_uri"
+[ "$(wc -l < "$t/sign-calls")" = "$before" ] || { echo "::error::sign-kms called the KMS for a file it must refuse"; exit 1; }
+echo "sign-kms made no signature call for those"
 
 refused "signed policies are not exactly" check "$t/later-too.efi" "$pub"
 refused "signed policies are not exactly" check "$t/later-only.efi" "$pub"
