@@ -402,9 +402,10 @@ Then, in this order:
 
 **KMS dry run (optional, before any real signature).** The `release-image` job proves that CI on
 `main` can reach the Cloud KMS keys `uki` and `pcr-policy-1` without signing anything bootable: it
-authenticates through Workload Identity Federation, checks that each key has exactly one enabled
-version (version 1), signs a fixed text through the PKCS#11 path and verifies the signature with the
-committed public key. It runs only when all three **repository variables** are set, and it does not
+authenticates through Workload Identity Federation, signs a fixed text through the PKCS#11 path and
+verifies the signature with the committed public key. That verification is what proves the right
+key version signed: a signature from any other key or version fails. The service account needs only
+signing rights, not permission to list key versions. It runs only when all three **repository variables** are set, and it does not
 make `sign` run (that one has its own `GCP_*` variables):
 ```sh
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
