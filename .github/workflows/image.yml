@@ -1320,7 +1320,8 @@ jobs:
       - name: Each key has exactly one enabled version, version 1
         run: |
           for key in uki pcr-policy-1; do
-            versions="$(gcloud kms keys versions list --key="$key" --keyring="$KMS_KEY_RING" \
+            versions="$(gcloud kms keys versions list --key="$key" --keyring=nyra \
+              --location=europe-west3 --project=nyra-signing-3076 \
               --filter='state=ENABLED' --format='value(name.basename())')"
             if [ "$versions" != 1 ]; then
               echo "::error::$key must have exactly one enabled version, version 1; found: ${versions//$'\n'/ }"
