@@ -14,7 +14,7 @@
 #     refusal of sign above, for a signature by another key (the wrong key version in the KMS), and
 #     for a signer that fails; and, with no -sign call at all (the stub records them), for what the KMS
 #     must never sign: an add-on, a UKI with another command line, a signed UKI, a symlink, a directory,
-#     two inputs (the artifact is checked as the sealed UKI before the KMS is asked);
+#     two inputs, too few arguments (the artifact is checked as the sealed UKI before the KMS is asked);
 #   - check refuses, each .pcrsig signed with the key made here: a later phase signed as well as
 #     enter-initrd, a later phase only, enter-initrd without the reference, the policy twice, PCRs 7 and
 #     11, a SHA-1 bank, another reference, data to sign that is not the policy and its reference,
@@ -220,31 +220,41 @@ write("pkfp", s, plain + [dict(good, pkfp="00" * 32)])
 write("othersig", s, plain + [sign(good, "other")])
 PY
 
+kms() { STUB_KEY="$stub_key" PATH="$t/stub:$PATH" refused "$@"; }
+# A refusal that must not reach the KMS: the stub openssl records every -sign call, so the count
+# must not change across it.
+kms_unsigned() {
+  local before after
+  before="$(wc -l < "$t/sign-calls")"
+  kms "$@"
+  after="$(wc -l < "$t/sign-calls")"
+  [ "$before" = "$after" ] || { echo "::error::sign-kms called the KMS for a file it must refuse: $*"; exit 1; }
+}
+
 refused "\\.pcrpkey is not" sign "$t/unsigned.efi" "$t/other.key"
 refused "does not ask for exactly the main profile's enter-initrd policy" sign "$t/sign-later.efi" "$t/pcr.key"
 refused "does not ask for exactly the main profile's enter-initrd policy" sign "$t/sign-osrel.efi" "$t/pcr.key"
 refused "already carries PCR policy signatures" sign "$t/signed.efi" "$t/pcr.key"
 
-kms() { STUB_KEY="$stub_key" PATH="$t/stub:$PATH" refused "$@"; }
 stub_key="$t/pcr.key"
-kms "\\.pcrpkey is not" sign-kms "$t/unsigned.efi" "$t/other.pub" "$kms_uri"
-kms "does not ask for exactly the main profile's enter-initrd policy" sign-kms "$t/sign-later.efi" "$pub" "$kms_uri"
-kms "does not ask for exactly the main profile's enter-initrd policy" sign-kms "$t/sign-osrel.efi" "$pub" "$kms_uri"
-kms "already carries PCR policy signatures" sign-kms "$t/signed.efi" "$pub" "$kms_uri"
+kms_unsigned "\\.pcrpkey is not" sign-kms "$t/unsigned.efi" "$t/other.pub" "$kms_uri"
+kms_unsigned "does not ask for exactly the main profile's enter-initrd policy" sign-kms "$t/sign-later.efi" "$pub" "$kms_uri"
+kms_unsigned "does not ask for exactly the main profile's enter-initrd policy" sign-kms "$t/sign-osrel.efi" "$pub" "$kms_uri"
+kms_unsigned "already carries PCR policy signatures" sign-kms "$t/signed.efi" "$pub" "$kms_uri"
+# The signer is asked here, and only here: a signature by another key, and a signer that fails.
 stub_key="$t/other.key"
 kms "signature does not verify" sign-kms "$t/unsigned.efi" "$pub" "$kms_uri"
 stub_key="$t/no-such.key"
 kms "could not sign" sign-kms "$t/unsigned.efi" "$pub" "$kms_uri"
 
-# Refused before the KMS: not one -sign call (the stub openssl recorded them).
+# Refused before the KMS: not one -sign call.
 stub_key="$t/pcr.key"
-before="$(wc -l < "$t/sign-calls")"
 for case in "addon.efi:\\.linux sections, not 1" "othercmdline.efi:command line not as committed" \
             "authenticode.efi:1 Authenticode signatures, not 0" "link.efi:cannot open" "dir:not a regular file"; do
-  kms "${case#*:}" sign-kms "$t/${case%%:*}" "$pub" "$kms_uri"
+  kms_unsigned "${case#*:}" sign-kms "$t/${case%%:*}" "$pub" "$kms_uri"
 done
-kms "pcr-policy.py sign-kms UKI" sign-kms "$t/unsigned.efi" "$t/unsigned.efi" "$pub" "$kms_uri"
-[ "$(wc -l < "$t/sign-calls")" = "$before" ] || { echo "::error::sign-kms called the KMS for a file it must refuse"; exit 1; }
+kms_unsigned "pcr-policy.py sign-kms UKI" sign-kms "$t/unsigned.efi" "$t/unsigned.efi" "$pub" "$kms_uri"
+kms_unsigned "PKCS11_URI" sign-kms "$t/unsigned.efi" "$pub"
 echo "sign-kms made no signature call for those"
 
 refused "signed policies are not exactly" check "$t/later-too.efi" "$pub"

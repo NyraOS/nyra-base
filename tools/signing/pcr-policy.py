@@ -231,9 +231,11 @@ def sealed_copy(uki, directory):
         fd = os.open(uki, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
         raise Refused(f"cannot open {uki} (a symlink is refused): {e}") from e
+    # On the descriptor: os.fdopen itself raises "Is a directory" for a directory.
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise Refused(f"{uki} is not a regular file")
     with os.fdopen(fd, "rb") as src:
-        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
-            raise Refused(f"{uki} is not a regular file")
         copy = os.path.join(directory, "uki.efi")
         with open(copy, "wb") as dst:
             shutil.copyfileobj(src, dst)
