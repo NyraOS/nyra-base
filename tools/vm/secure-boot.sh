@@ -3,7 +3,8 @@
 # CI only: the Secure Boot chain on a copy of the installed test disk (docs/BOOT.md).
 #   firmware (OVMF, Secure Boot on, Microsoft keys) -> shim (Debian, signed by Microsoft)
 #   -> systemd-boot (signed by Debian, trusted by shim) -> the image's sealed UKI, as bootc installed
-#   it, signed in the build job with that run's key (UKI_CERT), enrolled here as a MOK.
+#   it, signed in the build job with the run's UKI certificate (UKI_CERT, enrolled here as a MOK:
+#   per-run on pull requests, the committed Nyra one on releases).
 # Checks: bootc installed only the UKI (a "uki" entry, no kernel or initramfs of its own); the
 # signed UKI boots; the same UKI with a changed initramfs (signature kept), without a signature,
 # or signed with a key that is not enrolled is refused; unsigned add-ons are refused (a signed add-on
@@ -115,13 +116,20 @@ efivar() { # guest command that prints a systemd-boot EFI variable (UTF-16 text 
   echo "tail -c +5 /sys/firmware/efi/efivars/$1-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tr -d '\\000'"
 }
 name="${entry##*/}"
+# The guest looks for the enrolled certificate by its subject CN (per-run or committed, see above).
+# The CN goes into single-quoted guest commands, so a quote or a newline in it is refused.
+uki_cn="$(openssl x509 -noout -subject -nameopt multiline -in "$uki_cert" | sed -n 's/^ *commonName *= //p')"
+case "$uki_cn" in
+  ''|*\'*|*$'\n'*) echo "no usable subject CN in $uki_cert"; exit 1 ;;
+esac
+enrolled="CN=$uki_cn"
 
 # The boots are independent: run them all, fail at the end.
 fail=0
 vm --autologin --log "$logs/serial-secure-boot.log" --credential "$dropin" \
-  --title "Secure Boot: shim -> systemd-boot -> the image's UKI, signed with this run's key (MOK)" \
+  --title "Secure Boot: shim -> systemd-boot -> the image's UKI, signed with the run's UKI certificate (MOK)" \
   --command 'mokutil --sb-state; mokutil --sb-state | grep -qx "SecureBoot enabled"' \
-  --command 'mokutil --list-enrolled | grep "CN=Nyra CI"; mokutil --list-enrolled | grep -q "CN=Nyra CI per-run UKI key"' \
+  --command "mokutil --list-enrolled | grep -F '$enrolled'; mokutil --list-enrolled | grep -Fq '$enrolled'" \
   --command "echo \"boot loader: \$($(efivar LoaderImageIdentifier))\"" \
   --command "e=\"\$($(efivar LoaderEntrySelected))\"; s=\"\$($(efivar StubInfo))\"; echo \"entry: \$e, stub: \$s\"; test \"\$e\" = $name && echo \"\$s\" | grep -q systemd-stub" \
   --command 'cat /sys/kernel/security/lockdown; grep -q "\[integrity\]" /sys/kernel/security/lockdown' \
