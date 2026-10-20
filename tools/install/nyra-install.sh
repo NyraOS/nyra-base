@@ -106,8 +106,8 @@ key=/secrets/install-key
 # --- the image ---------------------------------------------------------------------------------------
 # The live root is an overlayfs, which cannot be the upperdir of the overlay driver that the pull
 # uses: the storage goes in memory then.
+mkdir -p /var/lib/containers
 if [ "$(findmnt -no FSTYPE -T /var/lib/containers)" = overlay ]; then
-  mkdir -p /var/lib/containers
   mount -t tmpfs tmpfs /var/lib/containers || die "cannot mount a tmpfs on /var/lib/containers"
 fi
 image="$("$checkout/tools/install/verified-pull.sh" "$version" "$digest" "$storage")"
