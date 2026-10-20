@@ -19,8 +19,8 @@ from our registry that do not carry that signature.
    `install-boot-updates`, `install-boot-updates-more`, `encryption`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
    a job output (on a release, the one `release-image` reported: `ci/check-artifact.sh`); `build` also
    reports the SBOM's.
-   With the repository variable `KMS_RELEASE` set to `true` (the "release mode", below), the release
-   build leaves its UKI unsigned and the next two jobs sign it before any test runs.
+   On a release (the "release mode", below), the release build leaves its UKI unsigned and the next
+   two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`:
    - GitHub issues an OIDC token for the workflow run;
@@ -75,8 +75,9 @@ unless:
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
 
-The certificate and both PCR policy keys are committed (see "The PCR policy key"), but no release UKI
-is signed with the Nyra key yet, so the gate refuses every image until one is.
+The certificate and both PCR policy keys are committed (see "The PCR policy key"). The
+`release-sign` job signs every release UKI with the Nyra keys, and the gate refuses every other
+image (pull requests, Titanic).
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
@@ -388,10 +389,8 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
-0. The Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI certificate"
-   and "The PCR policy key"). Until a release UKI is signed with the Nyra key (docs/BOOT.md, "What
-   remains for the real Nyra key") and its PCR policy with pcr-policy-1, the `sign` job refuses every
-   image (the UKI release gate above).
+0. Done: the Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI
+   certificate" and "The PCR policy key"), and releases are signed with them.
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
@@ -429,15 +428,13 @@ they trust the service account's address, not the repository.
 
 ## Release mode: the Nyra keys sign the UKI before the tests
 
-Three **repository variables** switch it on; with `KMS_RELEASE` unset a run behaves as before (the
-UKI is signed with keys made for the run, and `sign` refuses the image):
+Two **repository variables** are needed:
 ```sh
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
 gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
-gh variable set KMS_RELEASE      -R NyraOS/nyra-base --body true
 ```
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
-of it) on `main` by push or manual run and `KMS_RELEASE` is `true`. Then, in one run:
+of it) on `main` by push or manual run. Then, in one run:
 
 - `build` makes the UKI with the committed PCR policy key and stops there: unjoined, unsigned
   (`NYRA_RELEASE=1`, `ci/build-image.sh`). It uploads that UKI and the sealed image it was made from
@@ -476,10 +473,14 @@ Federation refuses its workflow, and the signing path for arm64 is not designed.
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
 
-The service account needs only signing rights, not permission to list key versions: the verification
-against the committed public keys proves the right key version signed. The release mode cannot run
-before it is on `main` (the federation accepts nothing else); `KMS_RELEASE` is the switch, and unsetting
-it is the rollback. It is removed once a release run has passed.
+The service account needs `roles/cloudkms.signerVerifier` on the keys `uki` and `pcr-policy-1` only,
+plus `roles/cloudkms.viewer` and `roles/cloudkms.publicKeyViewer` on the key ring (libkmsp11 lists
+the ring and reads every key's public half at start; public halves are public anyway). The ring
+also holds `channel-sheet` (signed by its own service account): the release service account may
+view it through those ring-level roles, but has no signing role on it, nor on `pcr-policy-2`. The
+verification against the committed public keys proves the right key version signed. The release
+mode cannot run before it is on `main` (the federation accepts nothing else). There is no switch:
+the rollback for a broken release path is reverting the change on `main`.
 
 ## Making the UKI certificate
 
