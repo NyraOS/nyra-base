@@ -40,9 +40,9 @@ version="$1" digest="$2" storage="$3"
 repo=updates.nyraos.com/nyra-base
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # --git-dir: git refuses to read a checkout owned by another user (sudo), unless told which one.
-revision="$(git --git-dir="$root/.git" rev-parse HEAD)"
+revision="$(git --git-dir="$root/.git" rev-parse HEAD)" || die "cannot read the checkout's commit"
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d)" || die "cannot create a temporary directory"
 cleanup() {
   local rc=$?
   # No --force: a container that uses the image keeps it.
@@ -59,7 +59,7 @@ trap cleanup EXIT
 policy="$tmp/policy.json"
 jq --arg root "$root/files" '
   (.. | strings | select(startswith("/usr/lib/nyra/"))) |= $root + .' \
-  "$root/files/usr/lib/nyra/containers/policy.json" > "$policy"
+  "$root/files/usr/lib/nyra/containers/policy.json" > "$policy" || die "cannot read the policy"
 jq -e --arg root "$root/files/" \
   '[.. | strings | select(startswith("/"))] | length > 0 and all(startswith($root))' \
   "$policy" > /dev/null || die "the policy points outside $root/files"
@@ -67,10 +67,12 @@ jq -e --arg root "$root/files/" \
 # overlay is the driver bootc reads the image from.
 skopeo --policy "$policy" --registries.d "$root/files/usr/lib/nyra/containers/registries.d" \
   copy --preserve-digests --digestfile "$tmp/digest" \
-  "docker://$repo:$version" "containers-storage:[overlay@$storage]$repo:$version" >&2
-id="$(podman --root "$storage" image inspect --format '{{.Id}}' "$repo:$version")"
+  "docker://$repo:$version" "containers-storage:[overlay@$storage]$repo:$version" >&2 \
+  || die "cannot pull $repo:$version"
+id="$(podman --root "$storage" image inspect --format '{{.Id}}' "$repo:$version")" \
+  || die "cannot find the pulled image $repo:$version"
 
-got="$(cat "$tmp/digest")"
+got="$(cat "$tmp/digest")" || die "cannot read the digest of $repo:$version"
 [ "$got" = "$digest" ] || refuse "$repo:$version is $got, not $digest"
 [ "$(podman --root "$storage" image inspect --format '{{.Digest}}' "$id")" = "$digest" ] \
   || refuse "the stored image does not have the digest $digest"
@@ -83,7 +85,8 @@ label() {
 # The reference machines switch to, accepted by the same policy; refused means the script fails.
 skopeo --policy "$policy" --registries.d "$root/files/usr/lib/nyra/containers/registries.d" \
   copy --preserve-digests --digestfile "$tmp/digest-ref" \
-  "docker://$repo@$digest" "containers-storage:[overlay@$storage]$repo@$digest" >&2
+  "docker://$repo@$digest" "containers-storage:[overlay@$storage]$repo@$digest" >&2 \
+  || die "cannot pull $repo@$digest"
 [ "$(cat "$tmp/digest-ref")" = "$digest" ] || refuse "$repo@$digest was stored as another digest"
 
 echo "verified-pull: $repo:$version and $repo@$digest are accepted by the policy; digest $digest" >&2
