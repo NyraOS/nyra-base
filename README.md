@@ -32,6 +32,8 @@ Release builds (`main`) use no cached content and are signed keylessly in CI (Si
 
 The whole battery runs every night (`.github/workflows/titanic.yml`): the image workflow, power cuts at random moments of an update, and one result per test T1-T15 in `titanic-results.json`. What each test covers and what is still missing: [`docs/TITANIC.md`](docs/TITANIC.md).
 
+A release is installed in a VM with `tools/install/nyra-install.sh` from a Debian live session, after a verified pull of the image: [`docs/INSTALL.md`](docs/INSTALL.md).
+
 System updates go through `nyra-updated` ([`updated/`](updated)): the signed channel sheet, rollouts, no downgrades, and the reactions bootc does not have by itself (a failed health check on a new version, a version the machine fell back from). Details: [`docs/UPDATES.md`](docs/UPDATES.md).
 
 ## Contributing

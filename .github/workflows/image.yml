@@ -1042,6 +1042,14 @@ jobs:
         timeout-minutes: 30
         run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      # The installer's recovery key (tools/install/test-recovery-key.sh, docs/INSTALL.md): shown once
+      # on a terminal by the image's container with no log, typed back and checked against its key
+      # slot, and in no log afterwards (the journal, the containers' logs).
+      - name: Recovery key shown once and in no log (docs/INSTALL.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 10
+        run: tools/install/test-recovery-key.sh localhost/nyra-base:ci "$WORK"
+
       # Titanic T10, the rotation of the TPM policy key with a PIN (docs/BOOT.md, "Rotating the policy
       # key"; the same script as the rotation in encryption-tpm): test versions signed with policy keys
       # made in this step (deleted once they are built), installed on their own disk for a TPM and
