@@ -56,6 +56,45 @@ jobs:
             echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
             exit 1
           fi
+      - name: Only the sign job is in the environment sign and only sign and release-sign have id-token
+        run: |
+          python3 -I - <<'EOF'
+          import sys, yaml
+          workflow = yaml.safe_load(open(".github/workflows/image.yml"))
+          jobs = workflow["jobs"]
+          errors = []
+          def err(msg):
+              print(f"::error::image.yml: {msg}")
+              errors.append(msg)
+          def env_name(job):
+              env = job.get("environment")
+              return env.get("name") if isinstance(env, dict) else env
+          def may_get_token(perms):
+              # write-all, read-all and the like are not mappings: counted as granting it.
+              return not isinstance(perms, dict) or perms.get("id-token") == "write"
+          if not isinstance(workflow.get("permissions"), dict) or "id-token" in workflow["permissions"]:
+              err("the workflow-level permissions must be a mapping without id-token")
+          for name, job in jobs.items():
+              if "uses" in job:
+                  err(f"{name} must not call a reusable workflow")
+              env = env_name(job)
+              if env is not None and "$" + "{{" in str(env):
+                  err(f"{name}: the environment name must not be an expression")
+              if name == "sign":
+                  if env != "sign":
+                      err("the sign job must have exactly environment: sign")
+              elif str(env).strip().lower() == "sign":
+                  err(f"only the sign job may have environment: sign, not {name}")
+              if name == "release-sign" and "environment" in job:
+                  err("release-sign must have no environment")
+              perms = job.get("permissions")
+              if name in ("sign", "release-sign"):
+                  if not isinstance(perms, dict) or perms.get("id-token") != "write":
+                      err(f"{name} must have id-token: write")
+              elif perms is not None and may_get_token(perms):
+                  err(f"{name}: permissions must be a mapping without id-token: write")
+          sys.exit(1 if errors else 0)
+          EOF
       - name: The publish job holds the secrets and cannot sign (ci/check-publish-job.py)
         run: python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py
       - name: actionlint
