@@ -76,7 +76,10 @@ env:
 jobs:
   # Which jobs a change needs. Files that cannot change the image or its tests (the list below, kept
   # short on purpose) skip build and install-boot; anything else, including a new directory, runs
-  # them. Manual runs always build.
+  # them. Manual runs always build. On a pull request, image.yml alone builds unless only the jobs that
+  # never run there differ (ci/image-yml-change.py). On pull_request the workflow, this job and the script
+  # come from the PR itself, so PR results only catch honest mistakes; the controls are review of .github/
+  # and ci/, and the push run on main, which always builds and tests before anything is signed or published.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -87,11 +90,16 @@ jobs:
       image: ${{ steps.files.outputs.image }}
       sbom: ${{ steps.files.outputs.sbom }}
     steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci/image-yml-change.py
+          persist-credentials: false
       - id: files
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD: ${{ github.sha }}
         run: |
           image=false sbom=false count=0 files=""
           # On main, compare with the last commit that passed this workflow, not with the previous
@@ -112,9 +120,22 @@ jobs:
             # Both names of a renamed file: moving a file out of the image changes the image.
             files="$(jq -r '.files[] | .filename, .previous_filename // empty' "$RUNNER_TEMP/compare.json")"
           fi
+          # True when image.yml differs between base and head only in jobs that never run on pull requests.
+          # Any error (a fetch, the script) returns false, so the file counts as an image change.
+          only_main_jobs_changed() {
+            [ "$GITHUB_EVENT_NAME" = pull_request ] || return 1
+            for side in base head; do
+              ref="$BASE"; [ "$side" = head ] && ref="$HEAD"
+              gh api -H "Accept: application/vnd.github.raw" \
+                "repos/$GITHUB_REPOSITORY/contents/.github/workflows/image.yml?ref=$ref" \
+                > "$RUNNER_TEMP/image-$side.yml" || return 1
+            done
+            python3 -I ci/image-yml-change.py "$RUNNER_TEMP/image-base.yml" "$RUNNER_TEMP/image-head.yml"
+          }
           while read -r f; do
             [ -n "$f" ] || continue
             case "$f" in
+              .github/workflows/image.yml) only_main_jobs_changed || image=true ;;
               docs/* | LICENSE | .github/CODEOWNERS | .github/dependabot.yml | tools/hooks/*) ;;
               .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
               .github/workflows/ntpd-rs.yml) ;;
