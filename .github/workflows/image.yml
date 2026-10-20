@@ -1763,10 +1763,25 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
           VERSION: ${{ needs.build.outputs.version }}
+          # The runner's Ubuntu skopeo is built without Fulcio support and cannot check keyless
+          # signatures; Debian 13's can, like the sign job's test-policy.sh and the installer.
+          # --privileged: podman inside needs mount and user namespaces, which the default
+          # container profile blocks (overlay on the /storage volume).
+          DEBIAN_IMAGE: mirror.gcr.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
         run: |
+          mkdir -p "$RUNNER_TEMP/storage"
           for attempt in $(seq 1 12); do
             rc=0
-            sudo tools/install/verified-pull.sh "$VERSION" "$IMAGE_DIGEST" "$RUNNER_TEMP/storage" || rc=$?
+            sudo podman run --rm --privileged \
+              -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
+              "$DEBIAN_IMAGE" bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  skopeo podman jq git ca-certificates >/dev/null
+                skopeo --version
+                /src/tools/install/verified-pull.sh "$@"
+              ' verify "$VERSION" "$IMAGE_DIGEST" /storage || rc=$?
             [ "$rc" != 0 ] || exit 0
             # 2: pulled, but the digest or a label is wrong; retrying cannot fix that.
             if [ "$rc" = 2 ]; then
