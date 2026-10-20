@@ -130,3 +130,12 @@ id = "CVE-2013-7445"
 package = "linux"
 reason = "DRM GEM objects can be used to consume memory (local denial of service, no score). Known upstream since 2015 without a fix; the impact is limited to memory exhaustion by a local user."
 expires = 2027-01-07
+
+# ntpd 1.9.0 (pinned) needs rustls-platform-verifier 0.5, which needs webpki-root-certs 0.26. That
+# release has no roots of its own: it only re-exports webpki-root-certs 1.0.x, which ntpd-rs/Cargo.lock
+# has at the fixed 1.0.10 (no 0.26 release is fixed, so the scanner still lists it).
+[[mitigation]]
+id = "RUSTSEC-2026-0383"
+package = "webpki-root-certs"
+reason = "Version 0.26.11 holds no certificates, it re-exports the roots of webpki-root-certs 1.0.10, where the distrusted emSign root is removed. End: ntpd with rustls-platform-verifier 0.6 (webpki-root-certs 1)."
+expires = 2027-01-07
