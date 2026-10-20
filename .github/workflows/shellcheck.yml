@@ -99,6 +99,8 @@ jobs:
           EOF
       - name: The publish job holds the secrets and cannot sign (ci/check-publish-job.py)
         run: python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py
+      - name: Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)
+        run: python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12
