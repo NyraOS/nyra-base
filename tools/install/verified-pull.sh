@@ -74,7 +74,10 @@ id="$(podman --root "$storage" image inspect --format '{{.Id}}' "$repo:$version"
 
 got="$(cat "$tmp/digest")" || die "cannot read the digest of $repo:$version"
 [ "$got" = "$digest" ] || refuse "$repo:$version is $got, not $digest"
-[ "$(podman --root "$storage" image inspect --format '{{.Digest}}' "$id")" = "$digest" ] \
+# .Digest can name another stored manifest; RepoDigests lists what the pull by digest recorded.
+repo_digests="$(podman --root "$storage" image inspect --format '{{json .RepoDigests}}' "$id")" \
+  || die "cannot read the digests of the pulled image"
+jq -e --arg ref "$repo@$digest" 'index($ref) != null' <<< "$repo_digests" > /dev/null \
   || refuse "the stored image does not have the digest $digest"
 label() {
   podman --root "$storage" image inspect --format "{{index .Labels \"org.opencontainers.image.$1\"}}" "$id"

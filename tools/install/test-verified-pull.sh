@@ -139,7 +139,8 @@ push one "$v1" signed
 storage=/var/lib/containers/storage
 id="$(sudo "$pull" "$v1" "$(digest one)" "$storage")"
 [[ "$id" =~ ^[0-9a-f]{64}$ ]]
-sudo podman --root "$storage" image inspect --format '{{.Id}} {{.Digest}}' "$id" | grep -x "$id $(digest one)"
+sudo podman --root "$storage" image inspect --format '{{json .RepoDigests}}' "$id" \
+  | jq -e --arg ref "$repo@$(digest one)" 'index($ref) != null' > /dev/null
 echo "pulled: $id"
 
 tools/vm/install-disk.sh "$id" "$t" "$repo:$v1"
