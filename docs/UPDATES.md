@@ -436,7 +436,8 @@ before importing; do not compare a shortened form:
 
 ```sh
 openssl x509 -noout -fingerprint -sha256 -in /usr/lib/nyra/secureboot/nyra.crt
-sudo mokutil --import /usr/lib/nyra/secureboot/nyra.crt
+openssl x509 -in /usr/lib/nyra/secureboot/nyra.crt -outform DER -out /tmp/nyra.der
+sudo mokutil --import /tmp/nyra.der
 ```
 
 Reboot, enroll the key in MokManager with the one-time password, then check
