@@ -197,6 +197,15 @@ as `updates.nyraos.com`:
 - an image signed with someone else's key, attached the way we attach ours, is refused;
 - another registry and a local `oci-archive` are accepted.
 
+The `verified-pull` job (`tools/install/test-verified-pull.sh`, no secrets) runs the verified-pull
+script itself against the same kind of registry, with test images signed by a key made for the run and
+a copy of the checkout whose policy trusts that key: a signed image is accepted; a tag re-pointed to an
+older, validly signed image, an image with another revision label and an unsigned image are refused
+and leave nothing in the storage; a name that was never pulled does not run
+(`podman run --pull=never`). Then `bootc install to-disk --target-imgref` from the image ID, and
+`bootc status` in the booted system shows that reference and digest; `bootc switch` to a second signed
+version works.
+
 In the `sign` job, the same script also checks that:
 
 - the freshly signed image is accepted;
@@ -538,12 +547,14 @@ It runs for a release (`build`'s `release` output) after `sign` succeeded, one a
 5. Writes the line `"<version>": "sha256:..."` into the step summary: a pull request to
    `channels/nyra-base/releases.json` in `nyra-updates` adds it by hand.
 
-`verify-published` (no secrets, no environment, `contents: read`) pulls
-`docker://updates.nyraos.com/nyra-base:<version>` and `@<image_digest>` with `skopeo`, the committed
-`policy.json` (its trust-root paths pointed at the checkout) and the committed `registries.d`, never
-`--insecure-policy`, and requires acceptance and the digest of `sign`. It retries for about 2
-minutes, as the tag takes a moment to show. **A red `verify-published` is an incident to look into,
-not a reason to publish again.**
+`verify-published` (no secrets, no environment, `contents: read`) runs
+`tools/install/verified-pull.sh <version> <image_digest>`, the pull the installer makes too: `skopeo`
+with the committed `policy.json` (its trust-root paths pointed at the checkout) and the committed
+`registries.d`, never `--insecure-policy`, from `docker://updates.nyraos.com/nyra-base:<version>`
+into a container storage. It requires acceptance, the digest of `sign`, and the signed labels
+`org.opencontainers.image.version` (the version) and `org.opencontainers.image.revision` (the commit
+of the checkout). It retries for about 2 minutes, as the tag takes a moment to show. **A red
+`verify-published` is an incident to look into, not a reason to publish again.**
 
 ### Settings (owner)
 
