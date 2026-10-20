@@ -1535,8 +1535,10 @@ jobs:
         run: |
           sig="${IMAGE_DIGEST/:/-}.sig"
           mkdir -p dist
+          # updates.nyraos.com is the job's local plain-HTTP registry (as in the push above).
           sudo podman run --rm --network host --tmpfs /var/tmp -v "$PWD/dist:/w" localhost/nyra-base:ci \
-            skopeo copy --insecure-policy --preserve-digests "docker://$REPO:$sig" "oci:/w/signature:$sig"
+            skopeo copy --insecure-policy --src-tls-verify=false --preserve-digests \
+              "docker://$REPO:$sig" "oci:/w/signature:$sig"
           sudo chown -R "$(id -u):$(id -g)" dist
           # The layout holds exactly one manifest: this signature, with its digest and tag name.
           signature_digest="$(jq -er --arg ref "$sig" '
