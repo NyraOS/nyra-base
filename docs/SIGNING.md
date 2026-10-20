@@ -621,7 +621,10 @@ may pass (exit code 1): a pulled image with the wrong digest or labels (exit cod
   the environment `publish`, not at repository level. `publish` fails, not skips, when one is
   missing (the script's `:?` checks).
 - The environment `publish`: deployment branches = the selected branch `main` only (no tag rule),
-  required reviewer = the owner, administrators may not bypass.
+  no required reviewer, administrators may not bypass. No reviewer is needed because a published
+  version reaches no machine by itself: machines update only through signed channel sheets, or by
+  hand to a version tag after checking the digest. A reviewer would also not stop an automated
+  contributor using the owner's account.
 - `ci/check-publish-job.py` (the `shellcheck` workflow) keeps the invariants: `publish` has
   `permissions: {contents: read}` and nothing else, no job with `id-token: write` (`sign`,
   `release-sign`) uses the environment `publish`, no other job names `R2_*` or `CLOUDFLARE_*`
@@ -631,11 +634,6 @@ may pass (exit code 1): a pulled image with the wrong digest or labels (exit cod
 
 - A pending `publish` can be cancelled by the `publish` of a newer release (one group, not
   cancelled while running). Recovery: "Re-run failed jobs" within 1 day, otherwise a new release.
-- A `publish` waiting for the environment approval keeps the run in progress, and the workflow's
-  concurrency group on `main` makes the next release wait behind it (up to 30 days): approve or
-  reject promptly.
-- An approval given more than 1 day after the build finds the image artifact (kept 1 day) expired:
-  a new release.
 - A full re-run can rebuild the identical image digest. Its new signature has another `.sig` digest
   and is refused. That is expected: the published signature stays valid.
 - The immutability of a version tag is a rule of the publishing script, **not of the storage**. Every
