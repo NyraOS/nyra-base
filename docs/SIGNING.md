@@ -75,8 +75,9 @@ unless:
   Authenticode signature. `sbverify --cert` passes when any one of a file's signatures verifies, so a
   second one would make the UKI acceptable to whoever trusts that other key.
 
-The certificate and both PCR policy keys are committed (see "The PCR policy key"), but no release UKI
-is signed with the Nyra key yet, so the gate refuses every image until one is.
+The certificate and both PCR policy keys are committed (see "The PCR policy key"). The
+`release-sign` job signs every release UKI with the Nyra keys, and the gate refuses every other
+image (pull requests, Titanic).
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
@@ -388,10 +389,8 @@ echo "GCP_SIGNER_SA=$SIGNER"
 
 Then, in this order:
 
-0. The Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI certificate"
-   and "The PCR policy key"). Until a release UKI is signed with the Nyra key (docs/BOOT.md, "What
-   remains for the real Nyra key") and its PCR policy with pcr-policy-1, the `sign` job refuses every
-   image (the UKI release gate above).
+0. Done: the Nyra UKI certificate and the PCR policy keys are committed (see "Making the UKI
+   certificate" and "The PCR policy key"), and releases are signed with them.
 1. Commit the address as `subjectEmail` in `files/usr/lib/nyra/containers/policy.json` (pull
    request, normal review). The `sign` job stays skipped: the variables are not set yet.
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
@@ -474,9 +473,11 @@ Federation refuses its workflow, and the signing path for arm64 is not designed.
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
 
-The service account needs signing rights on `uki` and `pcr-policy-1`, plus
-`roles/cloudkms.viewer` and `roles/cloudkms.publicKeyViewer` on the key ring (libkmsp11 lists
-the ring and reads every key's public half at start; public halves are public anyway). The
+The service account needs `roles/cloudkms.signerVerifier` on the keys `uki` and `pcr-policy-1` only,
+plus `roles/cloudkms.viewer` and `roles/cloudkms.publicKeyViewer` on the key ring (libkmsp11 lists
+the ring and reads every key's public half at start; public halves are public anyway). The ring
+also holds `channel-sheet` (signed by its own service account): the release service account may
+view it through those ring-level roles, but has no signing role on it, nor on `pcr-policy-2`. The
 verification against the committed public keys proves the right key version signed. The release
 mode cannot run before it is on `main` (the federation accepts nothing else). There is no switch:
 the rollback for a broken release path is reverting the change on `main`.
