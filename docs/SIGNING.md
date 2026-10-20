@@ -471,10 +471,12 @@ Federation refuses its workflow, and the signing path for arm64 is not designed.
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
 
-The service account needs only signing rights, not permission to list key versions: the verification
-against the committed public keys proves the right key version signed. The release mode cannot run
-before it is on `main` (the federation accepts nothing else). There is no switch: the rollback for a
-broken release path is reverting the change on `main`.
+The service account needs signing rights on `uki` and `pcr-policy-1`, plus
+`roles/cloudkms.viewer` and `roles/cloudkms.publicKeyViewer` on the key ring (libkmsp11 lists
+the ring and reads every key's public half at start; public halves are public anyway). The
+verification against the committed public keys proves the right key version signed. The release
+mode cannot run before it is on `main` (the federation accepts nothing else). There is no switch:
+the rollback for a broken release path is reverting the change on `main`.
 
 ## Making the UKI certificate
 
