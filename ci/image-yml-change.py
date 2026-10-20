@@ -3,8 +3,9 @@
 """Does a change to .github/workflows/image.yml affect a pull request's build and tests?
 
 The jobs release-sign, release-image, sign, publish and verify-published never run on pull
-requests. If two versions of the file differ only inside those jobs (compared as parsed YAML),
-the pull request needs no image build for it. Anything else counts as an image change: the other
+requests. If two versions of the file differ only in the other keys of those jobs (compared as
+parsed YAML), the pull request needs no image build for it. Their `if` and `needs` decide whether
+a job runs on a pull request, so a change to either counts as an image change. Anything else counts as an image change: the other
 jobs, the top-level keys (on, env, permissions, concurrency...), a job added, removed or renamed,
 and any error reading either file.
 
@@ -18,14 +19,21 @@ import yaml
 MAIN_ONLY_JOBS = {"release-sign", "release-image", "sign", "publish", "verify-published"}
 
 
+def without_ignored_keys(name, job):
+    if name not in MAIN_ONLY_JOBS:
+        return job
+    return {key: job[key] for key in ("if", "needs") if key in job}
+
+
 def affects_image(base_text, head_text):
     try:
         base, head = yaml.safe_load(base_text), yaml.safe_load(head_text)
         base_jobs, head_jobs = base.pop("jobs"), head.pop("jobs")
         if base != head or base_jobs.keys() != head_jobs.keys():
             return True
-        return any(base_jobs[name] != head_jobs[name]
-                   for name in base_jobs if name not in MAIN_ONLY_JOBS)
+        return any(without_ignored_keys(name, base_jobs[name])
+                   != without_ignored_keys(name, head_jobs[name])
+                   for name in base_jobs)
     except Exception:
         return True
 
@@ -42,13 +50,15 @@ jobs:
     steps: [{{run: {signing}}}]
 """
 
-    def make(env="1", build="make", sign="sign", signing="old"):
-        return template.format(env=env, build=build, sign=sign, signing=signing)
+    def make(env="1", build="make", sign="sign", signing="old", extra=""):
+        return template.format(env=env, build=build, sign=sign, signing=signing) + extra
 
     base = make()
     cases = [
         ("identical", base, False),
         ("only sign changed", make(signing="new"), False),
+        ("sign if changed", make(extra="    if: github.event_name == 'pull_request'\n"), True),
+        ("sign needs changed", make(extra="    needs: build\n"), True),
         ("build changed", make(build="other"), True),
         ("top-level env changed", make(env="2"), True),
         ("main-only job renamed", make(sign="publish"), True),

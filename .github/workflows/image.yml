@@ -77,7 +77,9 @@ jobs:
   # Which jobs a change needs. Files that cannot change the image or its tests (the list below, kept
   # short on purpose) skip build and install-boot; anything else, including a new directory, runs
   # them. Manual runs always build. On a pull request, image.yml alone builds unless only the jobs that
-  # never run there differ (ci/image-yml-change.py).
+  # never run there differ (ci/image-yml-change.py). On pull_request the workflow, this job and the script
+  # come from the PR itself, so PR results only catch honest mistakes; the controls are review of .github/
+  # and ci/, and the push run on main, which always builds and tests before anything is signed or published.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -97,7 +99,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD: ${{ github.sha }}
         run: |
           image=false sbom=false count=0 files=""
           # On main, compare with the last commit that passed this workflow, not with the previous
