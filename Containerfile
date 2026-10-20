@@ -56,13 +56,14 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
 # crate in the programs go to target/doc/third-party (ci/crate-licenses.sh).
 FROM ${TOOLS} AS ntpd
 COPY ntpd-rs/ /src/
+# AWS_LC_SYS_USE_SYSTEM=0: aws-lc-sys always builds the bundled, pinned AWS-LC, never a system one.
 RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
     --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
     --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
     --mount=type=bind,source=patches/upstream/ntpd-rs-wrong-clock.patch,target=/ntpd-rs.patch \
     sh /vendor-crates.sh /src/Cargo.lock && \
     cd /root/vendor && set -- ntp-proto-*/ && [ $# = 1 ] && git apply -p2 --directory="$1" /ntpd-rs.patch && \
-    cd /src && NTPD_RS_GIT_REV=nyra NTPD_RS_GIT_DATE=- CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    cd /src && NTPD_RS_GIT_REV=nyra NTPD_RS_GIT_DATE=- AWS_LC_SYS_USE_SYSTEM=0 CARGO_NET_OFFLINE=true cargo build --release --locked && \
     strip target/release/ntp-daemon target/release/ntp-ctl && \
     CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/ntpd-*/ && [ $# = 1 ]
 
