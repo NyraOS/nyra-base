@@ -76,8 +76,7 @@ unless:
   second one would make the UKI acceptable to whoever trusts that other key.
 
 The certificate and both PCR policy keys are committed (see "The PCR policy key"), but no release UKI
-is signed with the Nyra key yet, so the gate refuses every image until one is: fail closed, like the
-placeholder signer address in the policy.
+is signed with the Nyra key yet, so the gate refuses every image until one is.
 
 "Exactly one UKI": the image ships one UKI file. Its three profiles (main, recovery, reset settings,
 docs/BOOT.md) are sections of that one signed file, not separate UKIs. The fallback UKI
@@ -154,9 +153,13 @@ reused for another.
 
 **The signer address is committed in `policy.json`, not taken from a CI variable.** It is the trust
 anchor of every Nyra machine, so it changes only through a reviewed commit, and anyone can rebuild
-the image with the same policy. The address is now committed as `nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com`.
-The `sign` job stays skipped until the `GCP_*` repository variables are set, and it refuses to sign
-if the committed address differs from `GCP_SIGNER_SA`.
+the image with the same policy. The address is now committed as
+`nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com`. From this commit on, Nyra machines
+accept images from `updates.nyraos.com` signed by this identity. The `sign` job stays skipped until
+`GCP_WIF_PROVIDER` and `GCP_SIGNER_SA` are set, and refuses to sign if the committed address differs
+from `GCP_SIGNER_SA`. The variables only switch the job on: the same service account is already used
+by `release-sign`, so who can obtain a signature for this identity is decided by "Who can sign"
+below, not by the variables.
 
 ### Other registries and local images
 
