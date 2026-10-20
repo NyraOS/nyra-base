@@ -56,6 +56,36 @@ jobs:
             echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
             exit 1
           fi
+      - name: Only the sign job is in the environment sign and only sign and release-sign have id-token
+        run: |
+          python3 -I - <<'EOF'
+          import sys, yaml
+          jobs = yaml.safe_load(open(".github/workflows/image.yml"))["jobs"]
+          def err(msg):
+              print(f"::error::image.yml: {msg}")
+              errors.append(msg)
+          def env_name(job):
+              env = job.get("environment")
+              return env.get("name") if isinstance(env, dict) else env
+          errors = []
+          for name, job in jobs.items():
+              if name == "sign":
+                  if env_name(job) != "sign":
+                      err("the sign job must have environment: sign")
+              elif env_name(job) == "sign":
+                  err(f"only the sign job may have environment: sign, not {name}")
+              if name == "release-sign" and "environment" in job:
+                  err("release-sign must have no environment")
+              perms = job.get("permissions")
+              token = perms.get("id-token") if isinstance(perms, dict) else None
+              if token == "write" and name not in ("sign", "release-sign"):
+                  err(f"only sign and release-sign may have id-token: write, not {name}")
+          for name in ("sign", "release-sign"):
+              perms = jobs[name].get("permissions")
+              if not isinstance(perms, dict) or perms.get("id-token") != "write":
+                  err(f"{name} must have id-token: write")
+          sys.exit(1 if errors else 0)
+          EOF
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12

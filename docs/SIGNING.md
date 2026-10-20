@@ -22,11 +22,12 @@ from our registry that do not carry that signature.
    On a release (the "release mode", below), the release build leaves its UKI unsigned and the next
    two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
-   GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`:
+   GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`, and
+   `sign` is the only job in the GitHub environment `sign`:
    - GitHub issues an OIDC token for the workflow run;
-   - Google Workload Identity Federation accepts it only for this repository, `refs/heads/main`,
-     the `image.yml` workflow, a `push` or `workflow_dispatch` event and a GitHub-hosted runner,
-     and returns an ID token for the
+   - Google Workload Identity Federation (the pool `github-sign`) accepts it only for this
+     repository, `refs/heads/main`, the `image.yml` workflow, a `push` or `workflow_dispatch` event,
+     a GitHub-hosted runner and the environment `sign`, and returns an ID token for the
      service account `GCP_SIGNER_SA`;
    - Fulcio (the public Sigstore CA) issues a 10-minute certificate for the service account's
      e-mail address; cosign signs the image manifest digest and records the signature in Rekor
@@ -158,9 +159,8 @@ the image with the same policy. The address is now committed as
 `nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com`. From this commit on, Nyra machines
 accept images from `updates.nyraos.com` signed by this identity. The `sign` job stays skipped until
 `GCP_WIF_PROVIDER` and `GCP_SIGNER_SA` are set, and refuses to sign if the committed address differs
-from `GCP_SIGNER_SA`. The variables only switch the job on: the same service account is already used
-by `release-sign`, so who can obtain a signature for this identity is decided by "Who can sign"
-below, not by the variables.
+from `GCP_SIGNER_SA`. The variables only switch the job on: who can obtain a signature for this
+identity is decided by "Who can sign" below, not by the variables.
 
 ### Other registries and local images
 
@@ -354,6 +354,13 @@ variables first.
 Google Cloud, with a maintainer's account (2-step verification on). Everything below is free: IAM,
 Workload Identity Federation and the token service need no paid product.
 
+Two identities, two service accounts, two pools: `nyra-image-signer` signs images keylessly and holds
+no Cloud KMS role; `nyra-release-signer` (below, "Release mode") holds the KMS roles and signs
+nothing keyless. The image signer is reachable only from the pool `github-sign`, whose provider also
+requires the GitHub environment `sign`, which only the `sign` job declares (`shellcheck.yml` checks
+it). Create the environment `sign` first (Settings › Environments): deployment branches `main`
+only, no secrets, no required reviewers. Signing stays automatic, as accepted below.
+
 ```sh
 PROJECT_ID=nyra-signing          # pick a globally unique project ID
 gcloud projects create "$PROJECT_ID" --name="Nyra signing"
@@ -361,29 +368,32 @@ gcloud config set project "$PROJECT_ID"
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com
 
-# The signer: a service account with no keys, ever.
+# The image signer: a service account with no keys, ever. The release signer is the same, with the
+# KMS roles of "Release mode" and a binding from the pool `github` (provider `nyra-base`, the
+# condition below without the environment).
 gcloud iam service-accounts create nyra-image-signer --display-name="Nyra image signer (keyless)"
 SIGNER="nyra-image-signer@$PROJECT_ID.iam.gserviceaccount.com"
 
 # GitHub OIDC, accepted only for: this repository (by ID, so a renamed or re-created repository does
-# not match), main, the image workflow, a push or manual run, a GitHub-hosted runner.
-gcloud iam workload-identity-pools create github --location=global --display-name="GitHub Actions"
-gcloud iam workload-identity-pools providers create-oidc nyra-base \
-  --location=global --workload-identity-pool=github --display-name="nyra-base image workflow" \
+# not match), main, the image workflow, a push or manual run, a GitHub-hosted runner, and the job's
+# environment `sign`. The pool is separate from `github`, which has no environment condition.
+gcloud iam workload-identity-pools create github-sign --location=global --display-name="GitHub Actions (image signature)"
+gcloud iam workload-identity-pools providers create-oidc nyra-base-sign \
+  --location=global --workload-identity-pool=github-sign --display-name="nyra-base image signature" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id" \
-  --attribute-condition="assertion.repository_id == '1412332787' && assertion.repository_owner_id == '339787017' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'NyraOS/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.signer=assertion.environment" \
+  --attribute-condition="assertion.repository_id == '1412332787' && assertion.repository_owner_id == '339787017' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'NyraOS/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted' && assertion.environment == 'sign'"
 
-# Only identities from that provider may act as the signer.
+# Only identities from that provider, in the environment `sign`, may act as the image signer.
 gcloud iam service-accounts add-iam-policy-binding "$SIGNER" --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository_id/1412332787"
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-sign/attribute.signer/sign"
 
 # Check: no user-managed keys.
 gcloud iam service-accounts keys list --iam-account="$SIGNER" --managed-by=user
 # If the project belongs to a Google Cloud organisation, also forbid keys outright:
 #   gcloud resource-manager org-policies enable-enforce iam.disableServiceAccountKeyCreation --project="$PROJECT_ID"
 
-echo "GCP_WIF_PROVIDER=projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/nyra-base"
+echo "GCP_WIF_PROVIDER=projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-sign/providers/nyra-base-sign"
 echo "GCP_SIGNER_SA=$SIGNER"
 ```
 
@@ -396,26 +406,29 @@ Then, in this order:
 2. Only once the rule above holds, set the two **repository variables** (Settings › Secrets and
    variables › Actions › Variables; they are not secrets):
    ```sh
-   gh variable set GCP_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
+   gh variable set GCP_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github-sign/providers/nyra-base-sign"
    gh variable set GCP_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
    ```
 3. Run the workflow on `main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`):
    it builds, signs and verifies. The job summary shows the signed digest.
 
 **Who can sign:**
+- **image signatures: only a job in the environment `sign` of `image.yml` on `main`**, that is, the
+  `sign` job. The KMS keys: **any job of `image.yml` on `main`**, the `sign` job included, until the
+  `nyra-base` provider also refuses tokens that carry an environment;
 - **anyone who can get a change onto `main` or start the workflow manually on `main`**: the workflow
   runs whatever is on `main`, and the attribute condition cannot tell a reviewed merge from an
   unreviewed one. The branch protection only stops direct pushes. Without a required approval from
   another account, anyone with write access, automated contributors too, can merge their own pull
   request, a change to the workflow itself included, and get a signature (rule above);
-- any Google principal with `iam.serviceAccounts.getOpenIdToken` on the service account: `Owner`,
+- any Google principal with `iam.serviceAccounts.getOpenIdToken` on either service account: `Owner`,
   `Service Account Token Creator`, `Service Account OpenID Connect Identity Token Creator`,
   `Workload Identity User`, or a custom role with that permission. Keep the Google Cloud project's
-  members to one maintainer account, with no other grants on the service account.
+  members to one maintainer account, with no other grants on either service account.
 
 The same goes for the Cloud KMS keys (`uki`: the UKI's Secure Boot signature; `pcr-policy-1`: the
-TPM2 policy): whoever can get a change onto `main`, or has the service account's token, can obtain
-those signatures.
+TPM2 policy): whoever can get a change onto `main`, or can act as the release signer, can obtain those
+signatures.
 
 Every keyless image signature is public in Rekor under the signer's address, so an unexpected one is
 visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
@@ -431,7 +444,7 @@ they trust the service account's address, not the repository.
 Two **repository variables** are needed:
 ```sh
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
-gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
+gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-release-signer@<project>.iam.gserviceaccount.com"
 ```
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
 of it) on `main` by push or manual run. Then, in one run:
@@ -473,10 +486,11 @@ Federation refuses its workflow, and the signing path for arm64 is not designed.
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
 
-The service account needs `roles/cloudkms.signerVerifier` on the keys `uki` and `pcr-policy-1` only,
+The KMS roles are on the release signer (`KMS_SIGNER_SA`); the image signer has none. The release
+signer needs `roles/cloudkms.signerVerifier` on the keys `uki` and `pcr-policy-1` only,
 plus `roles/cloudkms.viewer` and `roles/cloudkms.publicKeyViewer` on the key ring (libkmsp11 lists
 the ring and reads every key's public half at start; public halves are public anyway). The ring
-also holds `channel-sheet` (signed by its own service account): the release service account may
+also holds `channel-sheet` (signed by its own service account): the release signer may
 view it through those ring-level roles, but has no signing role on it, nor on `pcr-policy-2`. The
 verification against the committed public keys proves the right key version signed. The release
 mode cannot run before it is on `main` (the federation accepts nothing else). There is no switch:
