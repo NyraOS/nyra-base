@@ -78,7 +78,7 @@ jobs:
               if "uses" in job:
                   err(f"{name} must not call a reusable workflow")
               env = env_name(job)
-              if env is not None and "${{" in str(env):
+              if env is not None and "$" + "{{" in str(env):
                   err(f"{name}: the environment name must not be an expression")
               if name == "sign":
                   if env != "sign":
