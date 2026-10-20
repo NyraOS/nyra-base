@@ -154,9 +154,9 @@ reused for another.
 
 **The signer address is committed in `policy.json`, not taken from a CI variable.** It is the trust
 anchor of every Nyra machine, so it changes only through a reviewed commit, and anyone can rebuild
-the image with the same policy. Until it is set, the placeholder `signer-not-configured@nyra.invalid`
-refuses every image from our registry (fail closed). The `sign` job refuses to sign if the
-committed address differs from `GCP_SIGNER_SA`.
+the image with the same policy. The address is now committed as `nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com`.
+The `sign` job stays skipped until the `GCP_*` repository variables are set, and it refuses to sign
+if the committed address differs from `GCP_SIGNER_SA`.
 
 ### Other registries and local images
 

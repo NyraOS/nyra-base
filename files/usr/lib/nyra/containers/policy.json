@@ -8,7 +8,7 @@
           "fulcio": {
             "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
             "oidcIssuer": "https://accounts.google.com",
-            "subjectEmail": "signer-not-configured@nyra.invalid"
+            "subjectEmail": "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
           },
           "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
           "signedIdentity": { "type": "matchRepository" }
