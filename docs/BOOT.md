@@ -98,9 +98,10 @@ when the firmware's only console is a serial port). Apart from what the firmware
 (see "The kernel command line is fixed"), that is the one thing the stub adds to the sealed command
 line; on a machine with a screen it adds nothing.
 
-Not covered yet: the real installer, MokManager enrollment on a real machine, a kernel built and
-signed by Nyra (today it is Debian's), and revocation: what happens when SBAT or `dbx` updates
-revoke an old shim or systemd-boot.
+Not covered yet: MokManager enrollment on a real machine (the installer, docs/INSTALL.md, runs its
+steps in CI but not with a machine's TPM or MokManager), a kernel built and signed by Nyra (today it
+is Debian's), and revocation: what happens when SBAT or `dbx` updates revoke an old shim or
+systemd-boot.
 
 ## What remains for the real Nyra key
 
@@ -118,8 +119,9 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
   release (docs/SIGNING.md, "Release mode") the `release-sign` job has the KMS sign the
   PCR policy and the file (`sbsign` through PKCS#11, in `tools/signing/sign-uki.sh`), and
   `release-image` builds the image the tests boot from it.
-- **Enrollment:** the installer runs `mokutil --import` with that certificate; on the next boot the
-  user confirms it once in MokManager (a one-time password shown by the installer). A machine whose
+- **Enrollment:** the installer runs `mokutil --import` with that certificate, taken from the
+  verified image and checked against docs/SIGNING.md (docs/INSTALL.md); on the next boot the user
+  confirms it once in MokManager (with the one-time password typed at mokutil's prompt). A machine whose
   owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.
 - **Add-ons:** the Nyra key never signs a generic command-line add-on. A signed add-on applies to
   any Nyra UKI (the control add-on in the test proves that), so one such file would undo the fixed
@@ -159,7 +161,8 @@ LUKS on it and sets up `systemd-cryptsetup@root.service` for `/dev/gpt-auto-root
 volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, and works the same after
 "Reset settings".
 
-**The disk** (what the installer creates; `tools/vm/install-encrypted.sh` does the same in CI):
+**The disk** (what the installer creates, `tools/install/nyra-install.sh`, docs/INSTALL.md;
+`tools/vm/install-encrypted.sh` does the same in CI, with the same steps, `tools/install/in-image.sh`):
 - GPT with the ESP (1 GiB, FAT) and the root partition, with the Discoverable Partitions root type
   of the architecture (x86-64: `4f68bce3-e8cd-4db1-96e7-fbcaf984b709`), on the disk of the ESP, so that
   `LoaderDevicePartUUID` leads to it;
@@ -182,7 +185,8 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   tries at the prompt (unlimited, below), so the installer must also require a minimum argon2id memory
   and a minimum password strength. The initrd reads the keyboard as US, since it has no user settings,
   so the installer accepts only password characters that sit in the same place on the user's layout;
-- **with a TPM** (and Secure Boot on; otherwise the installer uses a password, as without a TPM): no
+- **with a TPM** (and Secure Boot on; `nyra-install.sh` refuses a machine without them: its
+  password path is not designed yet): no
   password, the TPM2 enrollment of "TPM2 unlock" below. It is made by the installed system in its
   initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's, after
   the separator. The installer leaves a temporary TPM2 enrollment without any policy, so that the first
@@ -992,11 +996,12 @@ So the ESP must stay intact:
 - Root can still remount `/boot` read-write on purpose, or write the disk directly: this stops a
   delete that walks the file system, not an administrator who means it.
 
-What the installer must still do (not part of this repository's tests): put the ESP on its own
-partition for Nyra (not shared with Windows), with the GPT attributes that hide it from Windows, and
-call `esp-sync install` after `bootc install`. Not covered yet: letting the user choose which system
-comes first ("Nyra OS" is put first again by design; "Restart in Windows" will use `BootNext`), a
-real shim update forced by an SBAT or `dbx` revocation. The recovery entry is described next.
+The installer (`tools/install/nyra-install.sh`, docs/INSTALL.md) puts the ESP on its own partition
+of a whole disk and calls `esp-sync install` after `bootc install`. What it must still do: the GPT
+attributes that hide the ESP from Windows (it is not meant for a disk shared with Windows yet). Not
+covered yet: letting the user choose which system comes first ("Nyra OS" is put first again by
+design; "Restart in Windows" will use `BootNext`), a real shim update forced by an SBAT or `dbx`
+revocation. The recovery entry is described next.
 
 ## Recovery (`tools/vm/recovery.sh`)
 

@@ -183,9 +183,22 @@ on the network or on our servers would target. It holds as long as the system im
 referenced exactly as `updates.nyraos.com/...`: lowercase, no port, no other host name. The policy
 scope is compared as written, so `UPDATES.NYRAOS.COM/...` or `updates.nyraos.com:443/...` reach the
 same server but fall under the default and are accepted unsigned. `nyra-updated` and the
-installer (`bootc install --target-imgref updates.nyraos.com/... --enforce-container-sigpolicy`)
-must use exactly that name. An image referenced any other way is not checked. Changing the reference of
-the system image needs root, and root can also edit the policy.
+installer must use exactly that name. An image referenced any other way is not checked. Changing the
+reference of the system image needs root, and root can also edit the policy.
+
+**What the installer guarantees** (`tools/install/nyra-install.sh`, docs/INSTALL.md). Not
+`--enforce-container-sigpolicy`: that flag has no effect with the composefs backend, and a live
+system's own policy accepts anything. The guarantee is made by the installer itself:
+- the image is pulled by `tools/install/verified-pull.sh` under the policy and trust roots of the
+  checkout, never `--insecure-policy`, from `updates.nyraos.com/nyra-base:<version>`;
+- the digest the owner took from the release is mandatory and must be the pulled one, and the signed
+  labels `org.opencontainers.image.version` and `org.opencontainers.image.revision` must be the
+  version and the commit of the checkout (the policy's `matchRepository` binds a signature to the
+  repository, not to the tag: a validly signed older image under the tag would pass it alone);
+- everything that touches the disk runs from that image by its ID, with `--pull=never` and
+  `--network none`, so nothing can be pulled again under another policy; `bootc install` is given
+  `--target-imgref updates.nyraos.com/nyra-base:<version>`, and the reference and manifest digest it
+  recorded are read back from the disk before the installer says it is done.
 
 ## Testing
 

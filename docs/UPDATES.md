@@ -396,8 +396,9 @@ names the signature, which counts as a refusal (the prudent side as well).
 
 ## Moving a machine to updates.nyraos.com
 
-For an owner who moves an existing Nyra VM to the published releases. Until the channel sheet key
-is in the image, a machine does not update by itself: each new release is a manual `bootc switch`
+A new VM is installed from a release with the installer (docs/INSTALL.md), which does the pull,
+the digest check (step 2) and the MOK import (step 3) itself. This section is for an owner who moves
+an existing Nyra VM to the published releases. Until the channel sheet key is in the image, a machine does not update by itself: each new release is a manual `bootc switch`
 to its version tag, with the same digest check as below. A machine installed from an image built
 before the signer address was committed (its policy names `signer-not-configured@nyra.invalid`)
 cannot switch: reinstall it from a release.

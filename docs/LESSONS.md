@@ -1089,3 +1089,4 @@ Each line is something that broke or surprised us once.
   "no result from" and no state. T14's writer during the update had `timeout 300`, started after the
   command, so its exit never came.
 - Code that runs in a job holding signing credentials must be as little as possible: building an image runs its `RUN` steps and reads the workspace where the credentials file is, so a release signs in one job that runs only a network-less container of the sealed image, and builds the final image in a job with no `id-token`.
+- `podman run NAME` pulls the name when it is not in the local storage, under the system's own signature policy (a live system's accepts anything): an installer runs everything by image ID with `--pull=never --network none`, and gets the disk tools from the image it verified, not from the live system.
