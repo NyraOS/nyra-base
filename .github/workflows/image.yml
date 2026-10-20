@@ -6,7 +6,8 @@
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
 # the Cargo.lock of bootc, zlib-rs and ntpd-rs) with its vulnerability report; known critical or high
 # vulnerabilities without a documented mitigation fail the build (docs/SBOM.md). Nothing is pushed
-# to a public registry; publishing to the update server comes later.
+# to a public registry; the `publish` job (off unless enabled, docs/SIGNING.md) publishes to the
+# update server.
 # Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
 # save one when it is missing; ci/check-release-cache.py checks that), and the sign job signs
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
@@ -1449,7 +1450,7 @@ jobs:
       - name: Verify with the shipped policy
         run: tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "$IMAGE_DIGEST"
 
-      # For publishing (the publish job, docs/UPDATES.md): the signature as an OCI layout, tagged as on
+      # For publishing (the publish job, docs/SIGNING.md): the signature as an OCI layout, tagged as on
       # the registry. The image itself is the nyra-base-oci-archive artifact (same manifest digest); on
       # a release it is nyra-base-release-oci-archive, kept for 1 day only.
       - name: Export the signature
@@ -1488,7 +1489,7 @@ jobs:
           path: dist
           retention-days: 14
 
-  # Publishing to updates.nyraos.com (docs/UPDATES.md, "Publishing"), off unless the repository
+  # Publishing to updates.nyraos.com (docs/SIGNING.md, "Publishing"), off unless the repository
   # variable PUBLISH_ENABLED is `on`. The only job with the R2 and Cloudflare secrets, which live in the
   # environment `publish` (main only, reviewed by the owner) and nowhere else; it has no id-token, runs
   # no image code (no podman, nothing from the image) and reads every value it publishes from a job
@@ -1552,7 +1553,7 @@ jobs:
           SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          die() { echo "::error::$*"; exit 1; }
+          die() { echo "::error::$*" >&2; exit 1; }
           digest_re='^sha256:[0-9a-f]{64}$'
           version_re='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
           [[ "$IMAGE_DIGEST" =~ $digest_re ]] || die "sign: no image digest ('$IMAGE_DIGEST')"

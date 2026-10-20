@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The publish job's invariants (docs/UPDATES.md, "Publishing"), checked on every workflow in
+"""The publish job's invariants (docs/SIGNING.md, "Publishing"), checked on every workflow in
 .github/workflows. The R2 and Cloudflare secrets live only in the environment `publish`, and the
 only job that uses that environment must not be able to sign:
 - the job `publish` of image.yml exists, with `environment: publish` and exactly
   `permissions: {contents: read}` (so never `id-token`, never `actions: write`);
 - `verify-published` has no environment and exactly `permissions: {contents: read}`;
 - no job with `id-token: write` (its own or the workflow's) declares `environment: publish`;
-- no job other than `publish` names a secret `R2_*` or `CLOUDFLARE_*`, reads the whole `secrets`
-  context (`toJSON(secrets)`) or inherits the caller's secrets (`secrets: inherit`).
+- no environment named `publish` (any case, spaces around it ignored) anywhere else, and no
+  environment name with an expression in it;
+- nothing in a workflow, other than the job `publish` of image.yml, names a secret `R2_*` or
+  `CLOUDFLARE_*`, reads the whole `secrets` context (`toJSON(secrets)`) or inherits the caller's
+  secrets (`secrets: inherit`): the workflow's own `env`, `on.workflow_call.secrets` and every job.
 This guards against mistakes, not against whoever can change the workflows.
 
   check-publish-job.py [REPO]   (the current directory by default)
@@ -32,7 +35,7 @@ READ_ONLY = {"contents": "read"}
 def environment_name(job):
     env = job.get("environment")
     name = env.get("name") if isinstance(env, dict) else env
-    return str(name).lower() if name is not None else None
+    return str(name).strip().lower() if name is not None else None
 
 
 def strings(node):
@@ -58,15 +61,25 @@ def check_workflow(name, workflow):
     for job_name, job in jobs.items():
         where = f"{name} job {job_name}"
         permissions = job.get("permissions", workflow.get("permissions"))
-        if environment_name(job) == "publish" and can_sign(permissions):
+        exempt = (name, job_name) == ("image.yml", "publish")
+        environment = environment_name(job)
+        if environment == "publish" and can_sign(permissions):
             found.append(f"{where}: `environment: publish` with `id-token: write`")
-        if job_name == "publish":
-            continue
-        text = " ".join(EXPRESSION.findall("\n".join(strings(job))))
-        if NAMED_SECRET.search(text):
-            found.append(f"{where}: uses a secret named R2_* or CLOUDFLARE_*: only `publish` may")
-        if WHOLE_SECRETS.search(text) or str(job.get("secrets", "")).lower() == "inherit":
-            found.append(f"{where}: reads or inherits all secrets: only `publish` may use these")
+        if environment == "publish" and not exempt:
+            found.append(f"{where}: only image.yml's `publish` may use the environment `publish`")
+        if environment is not None and "${{" in environment:
+            found.append(f"{where}: the environment name has an expression in it")
+        if not exempt and str(job.get("secrets", "")).lower() == "inherit":
+            found.append(f"{where}: inherits all secrets: only image.yml's `publish` may use these")
+    # Everything but the exempt job: workflow-level env, on.workflow_call.secrets, every job.
+    rest = {key: value for key, value in workflow.items() if key != "jobs"}
+    rest["jobs"] = {job_name: job for job_name, job in jobs.items()
+                    if (name, job_name) != ("image.yml", "publish")}
+    text = " ".join(EXPRESSION.findall("\n".join(strings(rest))))
+    if NAMED_SECRET.search(text):
+        found.append(f"{name}: uses a secret named R2_* or CLOUDFLARE_*: only image.yml's `publish` may")
+    if WHOLE_SECRETS.search(text):
+        found.append(f"{name}: reads all secrets: only image.yml's `publish` may use these")
     if name == "image.yml":
         publish = jobs.get("publish")
         if publish is None:
@@ -128,6 +141,20 @@ def self_test():
     }
     for what, change in cases.items():
         assert broken(change), f"accepted: {what}"
+    # The exemption is image.yml's `publish` only, and the secret checks cover the whole document.
+    assert check_workflow("other.yml", good), "accepted: a job `publish` in another workflow"
+    for what, change in {
+        "R2 secret in workflow env": lambda w: w.__setitem__("env", {"K": "${{ secrets.R2_ACCESS_KEY_ID }}"}),
+        "all secrets in workflow env": lambda w: w.__setitem__("env", {"K": "${{ toJSON(secrets) }}"}),
+        "R2 secret in workflow_call": lambda w: w.setdefault(True, {}).__setitem__(
+            "workflow_call", {"secrets": {"x": {"default": "${{ secrets.R2_SECRET_ACCESS_KEY }}"}}}),
+        "environment Publish in build": lambda w: w["jobs"]["build"].__setitem__("environment", " Publish "),
+        "environment with an expression": lambda w: w["jobs"]["build"].__setitem__(
+            "environment", {"name": "${{ vars.ENV }}"}),
+    }.items():
+        workflow = copy.deepcopy(good)
+        change(workflow)
+        assert check_workflow("image.yml", workflow), f"accepted: {what}"
     workflow = copy.deepcopy(good)
     workflow["permissions"] = {"id-token": "write"}
     del workflow["jobs"]["publish"]["permissions"]

@@ -561,6 +561,9 @@ not a reason to publish again.**
 
 - A pending `publish` can be cancelled by the `publish` of a newer release (one group, not
   cancelled while running). Recovery: "Re-run failed jobs" within 1 day, otherwise a new release.
+- A `publish` waiting for the environment approval keeps the run in progress, and the workflow's
+  concurrency group on `main` makes the next release wait behind it (up to 30 days): approve or
+  reject promptly.
 - An approval given more than 1 day after the build finds the image artifact (kept 1 day) expired:
   a new release.
 - A full re-run can rebuild the identical image digest. Its new signature has another `.sig` digest
@@ -573,7 +576,8 @@ not a reason to publish again.**
 
 ### The tokens
 
-`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` write the `nyra-images` bucket only.
+Set up `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` to write the `nyra-images` bucket only (the
+job does not check it).
 `CLOUDFLARE_KV_TOKEN` writes Workers KV, and that permission is **account-wide** unless the dashboard
 shows a namespace selector for it. A holder of a KV token can re-point tags to signed manifests, and
 overwrite or replay channel sheets (refused by their signature and sequence number; a sheet is fresh
