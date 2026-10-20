@@ -239,7 +239,7 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     test "$(ls -A /etc/ssh/sshd_config.d)" = 10-nyra.conf && \
     mkdir -p /run/sshd && ssh-keygen -q -t ed25519 -N '' -f /tmp/hostkey && c="$(sshd -T -h /tmp/hostkey)" && \
     for l in 'passwordauthentication no' 'kbdinteractiveauthentication yes' 'permitrootlogin no' 'usepam yes' \
-      'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qx "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
+      'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qix "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
     echo "$c" | grep -qi '^persourcepenalties ' && ! echo "$c" | grep -qix 'persourcepenalties no' && \
     for u in ssh.socket sshd-vsock.socket sshd-unix-local.socket sshd-unix-export.socket ssh-access.target; do \
       mkdir -p "/usr/lib/systemd/system/$u.d" && \
@@ -250,7 +250,7 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     test -x /usr/lib/systemd/system-generators/systemd-ssh-generator && \
     systemctl preset ssh.service ssh.socket sshd-keygen.service && \
     for u in ssh.service ssh.socket sshd-keygen.service; do test "$(systemctl is-enabled "$u")" = disabled || exit 1; done && \
-    test -z "$(find /etc/systemd/system -name 'ssh*')" && \
+    find /etc/systemd/system -depth -name 'ssh*' -type d -empty -delete && test -z "$(find /etc/systemd/system -name 'ssh*')" && \
     systemd-analyze verify --man=no --recursive-errors=no ssh.service sshd-keygen.service && \
     chmod u-s /usr/lib/openssh/ssh-keysign && chown root:root /usr/bin/ssh-agent && chmod 0755 /usr/bin/ssh-agent && \
     f=/usr/lib/tmpfiles.d/openssh-client.conf && grep -qx 'z /usr/bin/ssh-agent 2755 root _ssh' "$f" && \

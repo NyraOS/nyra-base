@@ -265,7 +265,8 @@ firewall has no opening for it either (see "Firewall").
   `2fa recovery`. `2fa` is a link to `/usr/libexec/nyra-2fa`. Each user's state is
   `/var/lib/nyra/2fa/<uid>`; the directory belongs to root, mode `0700` (`tmpfiles.d/nyra-2fa.conf`),
   so a user cannot read or remove it, even after logging in.
-- **Changed from Debian's openssh-client:** `ssh-keysign` (host-based authentication, off) is not
+- **The client** (`openssh-client`: `ssh`, `scp`, `sftp`, `ssh-agent`) is in the image too; the
+  server does not pull it in. Changed from Debian's: `ssh-keysign` (host-based authentication, off) is not
   setuid root, and `ssh-agent` is not setgid `_ssh`; Debian's tmpfiles line that sets the latter
   again at every boot is removed (it would fail on the read-only `/usr`).
 
