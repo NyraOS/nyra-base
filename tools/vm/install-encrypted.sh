@@ -19,7 +19,9 @@
 #   tools/vm/install-encrypted.sh IMAGE WORKDIR SECRETS_DIR [TPM_DIR]
 set -euo pipefail
 
+# shellcheck disable=SC2034 # used by in_image (lib.sh)
 image="$1" work="$2" secrets="$3" tpm="${4:-}"
+# shellcheck disable=SC2034 # used by in_image (lib.sh)
 as_root=sudo
 . tools/install/lib.sh
 loop="" swpid=""

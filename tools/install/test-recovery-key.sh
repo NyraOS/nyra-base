@@ -60,6 +60,10 @@ marker="nyra-log-control-$(head -c 16 /dev/urandom | base64 | tr -dc a-z0-9)"
 sudo podman run --name nyra-log-control --pull=never --log-driver=k8s-file "$image" echo "$marker" > /dev/null
 leaked "$marker" || fail "the search for a leaked key does not find a logged string"
 sudo podman rm nyra-log-control > /dev/null
+# And one that went to the journal, the other place a key could leak to.
+journal_marker="nyra-journal-control-$(head -c 16 /dev/urandom | base64 | tr -dc a-z0-9)"
+sudo podman run --rm --pull=never --log-driver=journald "$image" echo "$journal_marker" > /dev/null
+leaked "$journal_marker" || fail "the search for a leaked key does not find a string in the journal"
 
 shown key
 ANSWER="$key" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" || fail "the recovery key was refused"

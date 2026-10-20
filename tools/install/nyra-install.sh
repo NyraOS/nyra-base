@@ -44,6 +44,11 @@ secrets=/run/nyra-install
 # shellcheck disable=SC2034 # used by in_image (lib.sh): empty, as this runs as root
 as_root=""
 image=""
+# Assigned, not taken from the environment: the installer's containers have no network and no time limit.
+# shellcheck disable=SC2034 # used by in_image (lib.sh)
+in_image_network=none
+# shellcheck disable=SC2034 # used by in_image (lib.sh)
+in_image_timeout=0
 . "$checkout/tools/install/lib.sh"
 
 # --- the checkout ----------------------------------------------------------------------------------
@@ -62,6 +67,8 @@ tpms=(/dev/tpmrm*)
 sb_state="$(mokutil --sb-state 2>&1)" || die "cannot read the Secure Boot state: not booted in UEFI mode?"
 grep -qx 'SecureBoot enabled' <<< "$sb_state" && ! grep -qi 'setup mode' <<< "$sb_state" \
   || die "Secure Boot must be on and not in setup mode: $sb_state"
+# MokSBState: with it set, shim loads anything, signed or not.
+! grep -qi 'validation is disabled' <<< "$sb_state" || die "shim validation is off (MokSBState): $sb_state"
 
 # --- the target ------------------------------------------------------------------------------------
 [ -b "$device" ] || die "$device is not a block device"
@@ -97,6 +104,12 @@ trap 'exit 130' INT TERM
 key=/secrets/install-key
 
 # --- the image ---------------------------------------------------------------------------------------
+# The live root is an overlayfs, which cannot be the upperdir of the overlay driver that the pull
+# uses: the storage goes in memory then.
+if [ "$(findmnt -no FSTYPE -T /var/lib/containers)" = overlay ]; then
+  mkdir -p /var/lib/containers
+  mount -t tmpfs tmpfs /var/lib/containers || die "cannot mount a tmpfs on /var/lib/containers"
+fi
 image="$("$checkout/tools/install/verified-pull.sh" "$version" "$digest" "$storage")"
 [[ "$image" =~ ^[0-9a-f]{64}$ ]] || die "verified-pull.sh did not print an image ID"
 echo "nyra-install: installing the image $image ($imgref, $digest)"
@@ -167,12 +180,18 @@ echo "  $fingerprint"
 echo "It is the one of docs/SIGNING.md. Compare it with your own notes (docs/INSTALL.md) before going on."
 read -r -p "Press Enter to import it as a Machine Owner Key (Ctrl-C to stop): " _
 openssl x509 -in "$cert" -outform DER -out "$der"
-if mokutil --test-key "$der"; then
-  echo "The key is already enrolled."
-else
-  # mokutil asks for the one-time password itself: never as an argument.
-  mokutil --import "$der" || die "mokutil --import failed. The disk is installed: run it again (docs/INSTALL.md)"
-fi
+# mokutil --test-key: 0 = not enrolled, 1 = already enrolled or already requested. CI cannot reach
+# this line (no live session with Secure Boot and a MOK database).
+rc=0
+mokutil --test-key "$der" > /dev/null || rc=$?
+case "$rc" in
+  0)
+    # mokutil asks for the one-time password itself: never as an argument.
+    mokutil --import "$der" || die "mokutil --import failed. The disk is installed: run it again (docs/INSTALL.md)"
+    ;;
+  1) echo "The key is already enrolled or its enrollment is already requested." ;;
+  *) die "mokutil --test-key failed (exit $rc). The disk is installed: run it again (docs/INSTALL.md)" ;;
+esac
 
 echo
 echo "nyra-install: done. $imgref ($digest) is installed and was read back from the disk."

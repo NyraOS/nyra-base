@@ -2,7 +2,7 @@
 
 `tools/install/nyra-install.sh` installs a published release (`updates.nyraos.com/nyra-base`) on the
 whole disk of the machine it runs on, from a Debian live session. It is made for a VM with a vTPM
-and Secure Boot on; it refuses a machine without them (a password-only install is not designed yet).
+and Secure Boot on (shim validation included); it refuses a machine without them (a password-only install is not designed yet).
 It does what `tools/vm/install-encrypted.sh` does in CI, with the same steps
 (`tools/install/in-image.sh`): GPT, LUKS2 with a recovery key, ext4 with fs-verity, `bootc install`,
 `esp-sync install`, and the temporary TPM2 enrollment that the first boot replaces
@@ -40,7 +40,8 @@ sha512sum -c --ignore-missing SHA512SUMS
 The VM: UEFI with **Secure Boot on** (Microsoft keys; the Debian ISO boots with it), a vTPM 2.0, a
 network, and memory for the image (the live session keeps it in RAM: about twice the size of the
 image, see the Image row of the release run). A pull that fails for lack of space is not a signature
-problem. Attach the ISO and boot it. **Do not start an SSH server or any remote login in the live
+problem. The live root is an overlayfs, which the pull's storage cannot sit on: the installer
+mounts a tmpfs on `/var/lib/containers`, so the image is held in RAM while it is pulled. Attach the ISO and boot it. **Do not start an SSH server or any remote login in the live
 session.** The installer's recovery key is shown on its console.
 
 **2. The release values, in your own browser.** On github.com, in the run of the `image` workflow
