@@ -39,9 +39,12 @@ from our registry that do not carry that signature.
    `updates.nyraos.com/nyra-base`, the name clients use. Signing happens against a throwaway
    registry on the runner (`127.0.0.1`, reached as `updates.nyraos.com` through `/etc/hosts`);
    nothing is published.
-4. **Output** (artifact `nyra-base-signature`, for publishing later): an OCI layout with
-   the signature tagged `sha256-<digest>.sig`, exactly as it must appear on the registry, plus
-   `image-digest`. The image itself is the `nyra-base-oci-archive` artifact (same digest).
+4. **Output** (artifact `nyra-base-signature`, for publishing, see "Publishing" below): an OCI
+   layout with the signature tagged `sha256-<digest>.sig`, exactly as it must appear on the
+   registry, plus `image-digest`. The image itself is the `nyra-base-oci-archive` artifact (same
+   digest; `nyra-base-release-oci-archive` on a release). `sign` checks that the layout holds
+   exactly one manifest, tagged so, and reports `image_digest` and `signature_digest` as job
+   outputs: the publish job takes every digest from those, never from the artifacts.
 
 The signature uses cosign's older format: a `sha256-<digest>.sig` tag whose layer carries the
 certificate and the Rekor v1 signed entry timestamp (SET). It is the only format that
@@ -505,10 +508,85 @@ The committed certificate was made this way on 2026-10-18; its SHA-256 fingerpri
 `6F:3E:51:F4:0B:61:A4:71:CE:49:C0:95:E1:57:27:BA:F1:75:10:80:4B:31:C3:50:16:56:97:97:68:75:44:F9`
 (`openssl x509 -noout -fingerprint -sha256 -in files/usr/lib/nyra/secureboot/nyra.crt`).
 
+## Publishing
+
+Each signed release can be published to `updates.nyraos.com` (repository `nyra-base`) by the job
+`publish` of `image.yml`. It is **off** unless the repository variable `PUBLISH_ENABLED` is `on`.
+It runs for a release (`build`'s `release` output) after `sign` succeeded, one at a time
+(`concurrency: publish-nyra-base`), and then `verify-published` reads the result back.
+
+### What `publish` does
+
+1. Fetches `NyraOS/nyra-updates` at the commit pinned in the job (`UPDATES_PIN`) into the runner's
+   temp directory, not the workspace, and refuses it unless it is an ancestor of that repository's
+   `main` (GitHub serves a commit by SHA from every fork of a repository network, so the SHA alone
+   proves nothing). The pin moves only by a reviewed pull request here, whose reviewer reads the
+   `nyra-updates` diff from the old pin to the new one; Dependabot does not move it.
+2. Downloads the image and the signature artifacts, each into its own empty directory, and checks
+   the image archive with `ci/check-artifact.sh` against `release-image`'s hash. The archive is
+   unpacked with `tar` (podman's `oci-archive` is an OCI layout), as no one, never through the
+   image or podman: **no image code runs in `publish`**.
+3. Checks, with every value from a job output matched by a strict regex first: the image layout's
+   one manifest is `sign`'s `image_digest`; the signature layout's one manifest is `sign`'s
+   `signature_digest`, tagged `sha256-<hex>.sig` of that image digest; the image config's
+   `org.opencontainers.image.version` is `build`'s version and `org.opencontainers.image.revision`
+   is the commit. The labels tie the version tag to signed content, so a re-pointed tag shows (bootc
+   reports the label). The `image-digest` file in the artifact is never a source of a tag or digest.
+4. Runs `registry/scripts/publish-image.sh --remote` of `nyra-updates` twice, in one step that is the
+   only one with the secrets: the signature (tag `sha256-<hex>.sig`) first, then the image (tag = the
+   version). The script refuses a version whose signature is not published.
+5. Writes the line `"<version>": "sha256:..."` into the step summary: a pull request to
+   `channels/nyra-base/releases.json` in `nyra-updates` adds it by hand.
+
+`verify-published` (no secrets, no environment, `contents: read`) pulls
+`docker://updates.nyraos.com/nyra-base:<version>` and `@<image_digest>` with `skopeo`, the committed
+`policy.json` (its trust-root paths pointed at the checkout) and the committed `registries.d`, never
+`--insecure-policy`, and requires acceptance and the digest of `sign`. It retries for about 2
+minutes, as the tag takes a moment to show. **A red `verify-published` is an incident to look into,
+not a reason to publish again.**
+
+### Settings (owner)
+
+- The secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `CLOUDFLARE_KV_TOKEN` exist **only** in
+  the environment `publish`, not at repository level. `publish` fails, not skips, when one is
+  missing (the script's `:?` checks).
+- The environment `publish`: deployment branches = the selected branch `main` only (no tag rule),
+  required reviewer = the owner, administrators may not bypass.
+- `ci/check-publish-job.py` (the `shellcheck` workflow) keeps the invariants: `publish` has
+  `permissions: {contents: read}` and nothing else, no job with `id-token: write` (`sign`,
+  `release-sign`) uses the environment `publish`, no other job names `R2_*` or `CLOUDFLARE_*`
+  secrets, and `verify-published` has no environment.
+
+### Re-runs, concurrency and what is not immutable
+
+- A pending `publish` can be cancelled by the `publish` of a newer release (one group, not
+  cancelled while running). Recovery: "Re-run failed jobs" within 1 day, otherwise a new release.
+- A `publish` waiting for the environment approval keeps the run in progress, and the workflow's
+  concurrency group on `main` makes the next release wait behind it (up to 30 days): approve or
+  reject promptly.
+- An approval given more than 1 day after the build finds the image artifact (kept 1 day) expired:
+  a new release.
+- A full re-run can rebuild the identical image digest. Its new signature has another `.sig` digest
+  and is refused. That is expected: the published signature stays valid.
+- The immutability of a version tag is a rule of the publishing script, **not of the storage**. Every
+  holder of a KV-write token can re-point any tag to any manifest in R2: this repository's `publish`,
+  `nyra-updates`' `channel-publish` (and its deploy token, if that has KV), and the Cloudflare
+  dashboard. Effect: a machine that follows a tag by hand can be moved to another *signed* image (a
+  downgrade). `nyra-updated` is not affected: it pins digests from the signed channel sheet.
+
+### The tokens
+
+Set up `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` to write the `nyra-images` bucket only (the
+job does not check it).
+`CLOUDFLARE_KV_TOKEN` writes Workers KV, and that permission is **account-wide** unless the dashboard
+shows a namespace selector for it. A holder of a KV token can re-point tags to signed manifests, and
+overwrite or replay channel sheets (refused by their signature and sequence number; a sheet is fresh
+for 7 days). It cannot make a machine accept an unsigned or foreign image: that needs a signature
+from the signer in `policy.json`.
+
 ## Not covered here
 
 - The signed channel sheet (channel, version order, freshness): docs/UPDATES.md.
 - Attestations of the SBOM (mkosi package manifest, bootc `Cargo.lock`): later. The vulnerability
   gate on the SBOM is in docs/SBOM.md.
-- Publishing to `updates.nyraos.com`; the update server must also serve the `nyra-base`
-  repository and the `.sig` tags: later.
+- The update server side of publishing (`nyra-updates`: the registry, the channel sheets).
