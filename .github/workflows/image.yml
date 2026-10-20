@@ -1341,6 +1341,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # What the publish job publishes, checked there against the artifacts (never read from them).
+    outputs:
+      image_digest: ${{ steps.export.outputs.image_digest }}
+      signature_digest: ${{ steps.export.outputs.signature_digest }}
     env:
       COSIGN_VERSION: v3.1.3
       COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
@@ -1445,11 +1449,11 @@ jobs:
       - name: Verify with the shipped policy
         run: tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "$IMAGE_DIGEST"
 
-      # For publishing (later): the signature as an OCI layout, tagged as on the registry.
-      # The image itself is the nyra-base-oci-archive artifact (same manifest digest). On a release
-      # that artifact is nyra-base-release-oci-archive, kept for 1 day only, so publishing must not
-      # rely on it.
+      # For publishing (the publish job, docs/UPDATES.md): the signature as an OCI layout, tagged as on
+      # the registry. The image itself is the nyra-base-oci-archive artifact (same manifest digest); on
+      # a release it is nyra-base-release-oci-archive, kept for 1 day only.
       - name: Export the signature
+        id: export
         env:
           SIGNER: ${{ vars.GCP_SIGNER_SA }}
         run: |
@@ -1458,6 +1462,14 @@ jobs:
           sudo podman run --rm --network host --tmpfs /var/tmp -v "$PWD/dist:/w" localhost/nyra-base:ci \
             skopeo copy --insecure-policy --preserve-digests "docker://$REPO:$sig" "oci:/w/signature:$sig"
           sudo chown -R "$(id -u):$(id -g)" dist
+          # The layout holds exactly one manifest: this signature, with its digest and tag name.
+          signature_digest="$(jq -er --arg ref "$sig" '
+            .manifests | select(length == 1) | .[0]
+            | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' dist/signature/index.json)"
+          [[ "$signature_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [ "$(sha256sum < "dist/signature/blobs/sha256/${signature_digest#sha256:}" | cut -d' ' -f1)" = "${signature_digest#sha256:}" ]
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "signature_digest=$signature_digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE_DIGEST" > dist/image-digest
           {
             echo "## Signed"
@@ -1475,6 +1487,203 @@ jobs:
           name: nyra-base-signature
           path: dist
           retention-days: 14
+
+  # Publishing to updates.nyraos.com (docs/UPDATES.md, "Publishing"), off unless the repository
+  # variable PUBLISH_ENABLED is `on`. The only job with the R2 and Cloudflare secrets, which live in the
+  # environment `publish` (main only, reviewed by the owner) and nowhere else; it has no id-token, runs
+  # no image code (no podman, nothing from the image) and reads every value it publishes from a job
+  # output, never from an artifact. ci/check-publish-job.py keeps these invariants.
+  publish:
+    needs: [build, release-image, sign]
+    if: >-
+      ${{ !cancelled() && github.workflow == 'image' && needs.build.outputs.release == 'true'
+      && needs.sign.result == 'success' && vars.PUBLISH_ENABLED == 'on' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: publish
+    permissions:
+      contents: read
+    concurrency:
+      group: publish-nyra-base
+      cancel-in-progress: false
+    env:
+      # The nyra-updates commit whose registry/scripts/publish-image.sh runs next to the tokens. It
+      # moves only by a reviewed pull request that reads the nyra-updates diff from the old pin to the
+      # new one (Dependabot does not move it).
+      UPDATES_PIN: 097f78040352b7570bb99548771b50cc107993e5
+    steps:
+      # The workspace: nyra-base, for ci/check-artifact.sh. Nothing from the artifacts goes into it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # nyra-updates is public: no token. actions/checkout cannot place a repository outside the
+      # workspace, so plain git, into its own directory under the runner's temp. The commit is fetched
+      # as part of main's history: GitHub serves a commit by its SHA from every fork of the network, so
+      # a pin that is not an ancestor of main is refused.
+      - name: Fetch nyra-updates at the pinned commit, which must be on its main
+        run: |
+          [[ "$UPDATES_PIN" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::UPDATES_PIN is not a 40-hex commit"; exit 1; }
+          updates="$RUNNER_TEMP/updates"
+          git init -q "$updates"
+          git -C "$updates" remote add origin https://github.com/NyraOS/nyra-updates.git
+          git -C "$updates" fetch --no-tags origin main
+          git -C "$updates" merge-base --is-ancestor "$UPDATES_PIN" FETCH_HEAD || {
+            echo "::error::$UPDATES_PIN is not on the main branch of NyraOS/nyra-updates"; exit 1; }
+          git -C "$updates" -c advice.detachedHead=false checkout -q "$UPDATES_PIN"
+          [ "$(git -C "$updates" rev-parse HEAD)" = "$UPDATES_PIN" ]
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-release-oci-archive
+          path: ${{ runner.temp }}/image-download
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-signature
+          path: ${{ runner.temp }}/signature-download
+
+      # What is downloaded is data. It is unpacked by tar and read by jq and sha256sum, never run, and
+      # every value that names a digest, a tag or a version comes from a job output.
+      - name: Check the image and the signature against the jobs that made them
+        env:
+          IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
+          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+          SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          die() { echo "::error::$*"; exit 1; }
+          digest_re='^sha256:[0-9a-f]{64}$'
+          version_re='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+          [[ "$IMAGE_DIGEST" =~ $digest_re ]] || die "sign: no image digest ('$IMAGE_DIGEST')"
+          [[ "$SIGNATURE_DIGEST" =~ $digest_re ]] || die "sign: no signature digest ('$SIGNATURE_DIGEST')"
+          [[ "$VERSION" =~ $version_re ]] || die "build: no release version ('$VERSION')"
+          sig_tag="${IMAGE_DIGEST/:/-}.sig"
+
+          # a. The archive is the file release-image made (and the only one in its directory).
+          ci/check-artifact.sh "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$IMAGE_SHA256"
+
+          # b. podman's oci-archive is an OCI layout in a tar: unpacked into an empty directory, as no
+          # one, with no image code.
+          image="$RUNNER_TEMP/image-layout"
+          mkdir "$image"
+          tar -x --no-same-owner --no-same-permissions -f "$RUNNER_TEMP/image-download/nyra-base.oci.tar" -C "$image"
+          signature="$RUNNER_TEMP/signature-download/signature"
+          for layout in "$image" "$signature"; do
+            [ -z "$(find "$layout" ! -type f ! -type d -print -quit)" ] || die "$layout holds more than files and directories"
+            [ -f "$layout/index.json" ] && [ ! -L "$layout/index.json" ] || die "$layout/index.json is not a regular file"
+          done
+
+          # blob LAYOUT DIGEST: the path of a blob of the layout, whose content has that digest.
+          blob() {
+            local file="$1/blobs/sha256/${2#sha256:}"
+            [[ "$2" =~ $digest_re ]] && [ -f "$file" ] && [ ! -L "$file" ] || die "no blob '$2' in $1"
+            [ "$(sha256sum < "$file" | cut -d' ' -f1)" = "${2#sha256:}" ] || die "blob $2 of $1 does not match its digest"
+            echo "$file"
+          }
+
+          # c. The image layout has one manifest, the one sign signed.
+          [ "$(jq -er '.manifests | select(length == 1) | .[0].digest' "$image/index.json")" = "$IMAGE_DIGEST" ] ||
+            die "the image layout is not exactly the manifest $IMAGE_DIGEST that sign signed"
+          manifest="$(blob "$image" "$IMAGE_DIGEST")"
+
+          # d. The signature layout has one manifest, the one sign exported, tagged as the registry expects (e).
+          [ "$(jq -er --arg ref "$sig_tag" '.manifests | select(length == 1) | .[0]
+                | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' "$signature/index.json")" = "$SIGNATURE_DIGEST" ] ||
+            die "the signature layout is not exactly the manifest $SIGNATURE_DIGEST that sign exported as $sig_tag"
+          blob "$signature" "$SIGNATURE_DIGEST" >/dev/null
+
+          # f. The signed content says which version and commit this is, so a tag that is re-pointed to
+          # another image shows (bootc reports the label).
+          config="$(blob "$image" "$(jq -er '.config.digest' "$manifest")")"
+          [ "$(jq -r '.config.Labels["org.opencontainers.image.version"] // ""' "$config")" = "$VERSION" ] ||
+            die "the image's version label is not $VERSION"
+          [ "$(jq -r '.config.Labels["org.opencontainers.image.revision"] // ""' "$config")" = "$GITHUB_SHA" ] ||
+            die "the image's revision label is not $GITHUB_SHA"
+          echo "Checked: $VERSION, $GITHUB_SHA, image $IMAGE_DIGEST, signature $SIGNATURE_DIGEST as $sig_tag"
+
+      # The one step with the secrets, as its own environment: the signature first (the script refuses a
+      # version whose signature tag is not published), then the version. Both layouts were checked above.
+      - name: Publish the signature, then the image
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_KV_TOKEN: ${{ secrets.CLOUDFLARE_KV_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          publish="$RUNNER_TEMP/updates/registry/scripts/publish-image.sh"
+          bash "$publish" --remote "$RUNNER_TEMP/signature-download/signature" nyra-base "${IMAGE_DIGEST/:/-}.sig"
+          bash "$publish" --remote "$RUNNER_TEMP/image-layout" nyra-base "$VERSION"
+
+      - name: Summary
+        env:
+          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          {
+            echo "## Published"
+            echo
+            echo "\`updates.nyraos.com/nyra-base:$VERSION\` -> \`$IMAGE_DIGEST\`; verify-published reads it back."
+            echo
+            echo "Add to \`channels/nyra-base/releases.json\` in nyra-updates:"
+            echo
+            echo '```'
+            echo "\"$VERSION\": \"$IMAGE_DIGEST\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Reads the release back from the registry as a machine would, with no secret and no environment:
+  # the committed policy (its trust roots at the checkout) and registries.d, never --insecure-policy.
+  # Red here is an incident to look into, not a reason to publish again (docs/UPDATES.md).
+  verify-published:
+    needs: [build, sign, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull the version and the digest with the shipped policy
+        env:
+          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]
+          policy="$RUNNER_TEMP/policy.json"
+          jq --arg root "$PWD/files" '
+            (.. | strings | select(startswith("/usr/lib/nyra/"))) |= $root + .' \
+            files/usr/lib/nyra/containers/policy.json > "$policy"
+          jq -e --arg root "$PWD/files/" '[.. | strings | select(startswith("/"))] | length > 0 and all(startswith($root))' \
+            "$policy" >/dev/null
+          repo=updates.nyraos.com/nyra-base
+          # pull REF: accepted by the policy, and the manifest is the one sign signed. The KV namespace
+          # takes a short while to show a new tag: about 2 minutes of retries.
+          pull() {
+            local dest="$RUNNER_TEMP/pull" got
+            for attempt in $(seq 1 12); do
+              rm -rf "$dest"
+              if skopeo --policy "$policy" --registries.d "$PWD/files/usr/lib/nyra/containers/registries.d" \
+                  copy --digestfile "$RUNNER_TEMP/digest" "docker://$repo$1" "dir:$dest"; then
+                got="$(cat "$RUNNER_TEMP/digest")"
+                [ "$got" = "$IMAGE_DIGEST" ] || { echo "::error::$repo$1 is $got, not $IMAGE_DIGEST"; return 1; }
+                echo "$repo$1: accepted by the policy, $got"
+                return 0
+              fi
+              echo "attempt $attempt failed"
+              sleep 10
+            done
+            echo "::error::$repo$1 was not accepted within about 2 minutes"
+            return 1
+          }
+          pull ":$VERSION"
+          pull "@$IMAGE_DIGEST"
 
   # Release mode only (build's `release` output, docs/SIGNING.md): the two jobs that make the image
   # the tests boot and the sign job signs. The credentials of the KMS are in release-sign alone, which
