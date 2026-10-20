@@ -438,13 +438,13 @@ before importing; do not compare a shortened form:
 
 ```sh
 openssl x509 -noout -fingerprint -sha256 -in /usr/lib/nyra/secureboot/nyra.crt
-openssl x509 -in /usr/lib/nyra/secureboot/nyra.crt -outform DER -out /tmp/nyra.der
-mokutil --import /tmp/nyra.der
+openssl x509 -in /usr/lib/nyra/secureboot/nyra.crt -outform DER -out /root/nyra.der
+mokutil --import /root/nyra.der
 ```
 
 Reboot, enroll the key in MokManager with the one-time password, then check
 `mokutil --sb-state` (`SecureBoot enabled`) and `mokutil --list-enrolled`. `mokutil --test-key
-/tmp/nyra.der` says whether the key is already enrolled (do it before the import as well).
+/root/nyra.der` says whether the key is already enrolled (do it before the import as well).
 
 **4. The TPM.** Before the switch, have the disk's recovery key at hand and console access: its
 prompt is in the initrd, not on the network.
