@@ -9,8 +9,8 @@ keyless-signing tokens. Refused:
 - an environment `sign` (any case, spaces ignored) or an environment name with an expression in it,
   anywhere but image.yml's `sign`;
 - a job that calls a reusable workflow (`uses:`) without exactly `permissions: {contents: read}`
-  (missing permissions inherit the workflow's, so they count as wrong), and `secrets: inherit`
-  anywhere.
+  (missing permissions inherit the workflow's, so they count as wrong), with any `secrets:` key,
+  and `secrets: inherit` anywhere.
 This guards against mistakes, not against whoever can change the workflows.
 
   check-credential-jobs.py [REPO]   (the current directory by default)
@@ -30,6 +30,7 @@ READ_ONLY = {"contents": "read"}
 # jobs declare, id-token included; image.yml's sign jobs never run then (docs/SIGNING.md). Exactly these
 # permissions, for this one call, until image.yml no longer needs them.
 TITANIC_CALL = ("titanic.yml", "image")
+TITANIC_CALL_USES = "./.github/workflows/image.yml"
 TITANIC_CALL_PERMISSIONS = {"contents": "read", "actions": "read", "id-token": "write"}
 
 
@@ -52,8 +53,9 @@ def check_workflow(name, workflow):
     for job_name, job in (workflow.get("jobs") or {}).items():
         where = f"{name} job {job_name}"
         key = (name, job_name)
-        allowed = TITANIC_CALL_PERMISSIONS if key == TITANIC_CALL else READ_ONLY
-        if key not in CAN_SIGN and key != TITANIC_CALL and gives_token(job.get("permissions")):
+        titanic_call = key == TITANIC_CALL and job.get("uses") == TITANIC_CALL_USES
+        allowed = TITANIC_CALL_PERMISSIONS if titanic_call else READ_ONLY
+        if key not in CAN_SIGN and not titanic_call and gives_token(job.get("permissions")):
             found.append(f"{where}: only image.yml's release-sign and sign may have id-token: write")
         environment = environment_name(job)
         if environment is not None and "${{" in environment:
@@ -63,6 +65,8 @@ def check_workflow(name, workflow):
         if "uses" in job and job.get("permissions") != allowed:
             found.append(f"{where}: a job calling a reusable workflow must have exactly "
                          "`permissions: {contents: read}`")
+        if "uses" in job and "secrets" in job:
+            found.append(f"{where}: a job calling a reusable workflow must not pass `secrets:`")
         if str(job.get("secrets", "")).strip().lower() == "inherit":
             found.append(f"{where}: `secrets: inherit` is not allowed")
     return found
@@ -125,6 +129,8 @@ def self_test():
         "call of another repository's workflow": lambda w: w["jobs"].__setitem__(
             "caller", {"uses": "other/repo/.github/workflows/x.yml@main"}),
         "call inheriting secrets": call_with("secrets", "inherit"),
+        "call passing secrets": call_with("secrets", {"TOKEN": "${{ secrets.TOKEN }}"}),
+        "call with empty secrets": call_with("secrets", None),
         "build inheriting secrets": job("build", "secrets", "inherit"),
     }
     for what, change in cases.items():
@@ -135,6 +141,9 @@ def self_test():
         "accepted: the Titanic call's permissions in image.yml"
     titanic_call = {"uses": "./.github/workflows/image.yml", "permissions": TITANIC_CALL_PERMISSIONS}
     assert check_workflow("titanic.yml", {"jobs": {"image": titanic_call}}) == []
+    other_call = {**titanic_call, "uses": "./.github/workflows/arm64.yml"}
+    assert check_workflow("titanic.yml", {"jobs": {"image": other_call}}), \
+        "accepted: another workflow"
     titanic_call["permissions"] = {**TITANIC_CALL_PERMISSIONS, "packages": "write"}
     assert check_workflow("titanic.yml", {"jobs": {"image": titanic_call}}), "accepted: more permissions"
     assert len(check_workflow("other.yml", good)) >= 3, "accepted: the exemptions in another workflow"
