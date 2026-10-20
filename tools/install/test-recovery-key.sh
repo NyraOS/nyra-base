@@ -24,12 +24,16 @@ fail() {
   echo "::error::$*" >&2
   exit 1
 }
-# on_terminal TRANSCRIPT STEP ARG...: a step as the installer runs it for the owner.
+# on_terminal TRANSCRIPT STEP ARG...: a step as the installer runs it for the owner. A step that
+# hangs (pty-run.py exits 124) fails the test, it does not count as a refused key. ANSWER, if set,
+# is typed at every passphrase prompt, as cryptsetup asks up to three times.
 on_terminal() {
-  local transcript="$1"
+  local transcript="$1" status=0
   shift
   python3 tools/install/pty-run.py "$transcript" \
-    bash -c '. tools/install/lib.sh; in_image -it --log-driver=none -- "$@"' _ "$@"
+    bash -c '. tools/install/lib.sh; in_image -it --log-driver=none -- "$@"' _ "$@" || status=$?
+  [ "$status" != 124 ] || fail "$1 hung on the terminal (transcript, last lines: $(tail -c 300 "$transcript" | tr -c '[:print:]' ' '))"
+  return "$status"
 }
 # shown KEY_VARIABLE: the recovery key on the terminal, once, and the one key slot it opened.
 shown() {
