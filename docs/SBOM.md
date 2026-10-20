@@ -16,8 +16,9 @@ artifact:
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 | `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
+| `pam-totp.Cargo.lock` | the Rust crates compiled into the SSH two-step authentication (pam-totp, docs/DEFAULTS.md "SSH") |
 
-The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib) are in
+The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib, pam-totp) are in
 `/usr/share/doc/<program>/third-party/`, next to its `Cargo.lock`; the build fails if one is missing.
 
 Once images are published, releases will attach the SBOM next to the image.
@@ -34,8 +35,11 @@ Components:
 - one per Debian package: `pkg:deb/debian/<name>@<version>?arch=<arch>&distro=sid&upstream=<source>`
   (`upstream` carries `@<source version>` when it differs, as syft writes it);
 - bootc itself: `pkg:github/bootc-dev/bootc@<commit>`;
-- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock` and `ntpd-rs/Cargo.lock` (zlib-rs and
-  ntpd-rs, which the image build compiles): `pkg:cargo/<name>@<version>` (git sources add
+- pam-totp itself (the SSH two-step authentication, built from its own repository at the commit in
+  `pam-totp/commit`): `pkg:github/NyraOS/pam-totp@<commit>`;
+- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock`, `ntpd-rs/Cargo.lock` and
+  `pam-totp/Cargo.lock` (zlib-rs, ntpd-rs and pam-totp, which the image build compiles; the last is a
+  copy of pam-totp's own, and the build fails when they differ): `pkg:cargo/<name>@<version>` (git sources add
   `vcs_url`); a crate in several counts once. ntpd-rs's crates `ntpd` and `ntp-proto` are listed at
   their upstream version; the image's `ntp-proto` carries our patch
   (`patches/upstream/ntpd-rs-wrong-clock.md`).
@@ -55,7 +59,7 @@ script refuses a list without any.
 | Question | Source |
 |---|---|
 | Is our version of a Debian source package affected? | [Debian Security Tracker](https://security-tracker.debian.org/tracker/data/json), release `sid`: open, undetermined, or fixed in a version newer than ours |
-| Is a crate of bootc, zlib-rs or ntpd-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
+| Is a crate of bootc, zlib-rs, ntpd-rs or pam-totp affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
 A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
@@ -76,7 +80,9 @@ the point: the gate answers "is anything known now".
    `Snapshot=` in `mkosi/mkosi.conf` to a date that has it. This also rebuilds bootc (the snapshot is
    part of its cache key). A crate of zlib-rs or ntpd-rs with a fixed version: update the version
    in `zlib/` or `ntpd-rs/` (`Cargo.toml`, `Cargo.lock`; Dependabot opens that pull request). A new
-   version of `ntpd` or `ntp-proto` needs our patch made again for it.
+   version of `ntpd` or `ntp-proto` needs our patch made again for it. A crate of pam-totp: update
+   it in pam-totp's repository, then its commit in `pam-totp/commit` and the copy of its
+   `Cargo.lock` in `pam-totp/`.
 2. **No fix yet:** check whether the image is exposed. If it is not, or the damage is limited, add
    an entry to `tools/sbom/mitigations.toml`:
 

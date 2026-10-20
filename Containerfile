@@ -67,6 +67,32 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
     strip target/release/ntp-daemon target/release/ntp-ctl && \
     CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/ntpd-*/ && [ $# = 1 ]
 
+# pam-totp (docs/DEFAULTS.md, "SSH"): the PAM module pam_nyra_totp.so, which asks SSH password logins
+# for a one-time code, and the 2fa command (nyra-2fa), from NyraOS/pam-totp at the commit pinned in
+# pam-totp/commit. Its source is cloned from the repository ci/build-image.sh fetched (the build
+# context "crates"), checked out by that commit: git hashes every object it receives, so the files
+# are the commit's. Its Cargo.lock must be the copy in pam-totp/ (the SBOM's); its crates are checked
+# like nyra-updated's, and the build has no network. The module is a release build with unwinding
+# (pam-totp catches every panic at the module's functions). Its licence and the licence notices of
+# every crate in the programs go to target/doc (ci/crate-licenses.sh).
+FROM ${TOOLS} AS pamtotp
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=pam-totp,target=/pin \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
+    commit="$(cat /pin/commit)" && echo "$commit" | grep -Eqx '[0-9a-f]{40}' && \
+    git -c safe.directory='*' -c transfer.fsckObjects=true clone -q --no-local --no-checkout /crates/pam-totp.git /src && \
+    git -C /src -c advice.detachedHead=false checkout -q "$commit" && test "$(git -C /src rev-parse HEAD)" = "$commit" && \
+    rm -rf /src/.git && cmp /src/Cargo.lock /pin/Cargo.lock && \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    strip target/release/nyra-2fa && strip --strip-unneeded target/release/libpam_nyra_totp.so && \
+    objdump -T target/release/libpam_nyra_totp.so > /root/symbols && \
+    grep -Eq ' pam_sm_authenticate$' /root/symbols && grep -Eq ' pam_sm_setcred$' /root/symbols && \
+    readelf -d target/release/libpam_nyra_totp.so | grep -q 'NEEDED.*\[libpam\.so\.0\]' && \
+    CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/sha1-*/ && [ $# = 1 ] && \
+    cp LICENSE target/doc/LICENSE
+
 FROM ${ROOTFS} AS base
 
 # bootc expects the kernel next to its modules.
@@ -172,8 +198,66 @@ RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
     test "$(grep -c '^mode = "nts"$' /usr/lib/nyra/ntpd-rs/ntp.toml)" = 4 && \
     grep -qx 'minimum-agreeing-sources = 3' /usr/lib/nyra/ntpd-rs/ntp.toml && test -f /usr/lib/clock-epoch
 
+# SSH (docs/DEFAULTS.md, "SSH"): Debian's OpenSSH server is in the image, but off. Every unit that
+# would start or listen for it is blocked with a ConditionPathExists=/usr/lib/nyra/allow-ssh drop-in
+# (a layer that offers SSH creates that file): ssh.service and ssh.socket, which our preset also
+# disables, the per-connection sshd@.service, sshd-keygen.service, and the sockets that
+# systemd-ssh-generator writes whenever sshd is installed (AF_UNIX /run/ssh-unix-local/socket, AF_VSOCK
+# in a VM, AF_UNIX for a container manager), and ssh-access.target, which those sockets pull in even
+# when they do not start (it tells a VM's host that SSH is there). No host keys in the image: those
+# Debian's package script made go, and the build fails if one is left; sshd-keygen.service makes
+# them on the machine before sshd starts (its drop-in: on any boot, not only the first, and wanted by
+# sshd).
+# The server's settings are /usr/lib/nyra/ssh/10-nyra.conf, linked from /etc/ssh/sshd_config.d (the
+# first value of a setting wins in sshd, and Debian's sshd_config includes that directory before its
+# own lines): a key alone, or a password together with a one-time code through PAM; no password
+# alone; no root login; penalties for addresses that fail (PerSourcePenalties). Its PAM stack is
+# /usr/lib/nyra/pam.d/sshd, linked from /etc/pam.d/sshd: Debian's, with its auth lines (common-auth)
+# replaced by pam_unix.so and pam_nyra_totp.so, both required (no nullok); the build fails if any
+# other line differs from Debian's. The console login's PAM stack (login) is Debian's, unchanged.
+# The links keep the content in /usr, so it updates with the image (as /etc/containers below).
+# pam-totp: the module in the architecture's PAM module directory, nyra-2fa in /usr/libexec with 2fa
+# linked to it; the state of each user in /var/lib/nyra/2fa (root, 0700; tmpfiles.d/nyra-2fa.conf).
+# openssh-client's setuid ssh-keysign (host-based authentication, off) and setgid ssh-agent lose
+# those bits, and the tmpfiles line that would set the latter again on the read-only /usr goes.
+COPY --from=pamtotp /src/target/release/libpam_nyra_totp.so /usr/lib/nyra/pam_nyra_totp.so
+COPY --from=pamtotp /src/target/release/nyra-2fa /usr/libexec/nyra-2fa
+COPY --from=pamtotp /src/Cargo.lock /src/target/doc/ /usr/share/doc/pam-totp/
+RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
+    set -- /usr/lib/*-linux-gnu/security/pam_unix.so && test "$#" = 1 && test -f "$1" && \
+    install -m 0644 /usr/lib/nyra/pam_nyra_totp.so "${1%/*}/pam_nyra_totp.so" && rm /usr/lib/nyra/pam_nyra_totp.so && \
+    chmod 0755 /usr/libexec/nyra-2fa && ln -s ../libexec/nyra-2fa /usr/bin/2fa && 2fa --help | grep -q '^Usage: 2fa enable' && \
+    test "$(cat /usr/lib/tmpfiles.d/nyra-2fa.conf | grep -v '^#')" = 'd /var/lib/nyra/2fa 0700 root root -' && \
+    rm -f /etc/ssh/ssh_host_* && test -z "$(find /etc /usr /var -name 'ssh_host_*' 2>/dev/null)" && \
+    test "$(grep -cx '@include common-auth' /etc/pam.d/sshd)" = 1 && \
+    test "$(grep -Ev '^(#|$)' /etc/pam.d/sshd | grep -vx '@include common-auth')" = \
+      "$(grep -Ev '^(#|$)' /usr/lib/nyra/pam.d/sshd | grep -v '^auth ')" && \
+    test "$(grep '^auth ' /usr/lib/nyra/pam.d/sshd)" = "$(printf 'auth required pam_unix.so\nauth required pam_nyra_totp.so')" && \
+    ln -sfn /usr/lib/nyra/pam.d/sshd /etc/pam.d/sshd && ! grep -rq pam_nyra_totp /etc/pam.d/login /etc/pam.d/common-* && \
+    test "$(grep -Ev '^(#|$)' /etc/ssh/sshd_config | head -1)" = 'Include /etc/ssh/sshd_config.d/*.conf' && \
+    ln -sfn /usr/lib/nyra/ssh/10-nyra.conf /etc/ssh/sshd_config.d/10-nyra.conf && \
+    test "$(ls -A /etc/ssh/sshd_config.d)" = 10-nyra.conf && \
+    mkdir -p /run/sshd && ssh-keygen -q -t ed25519 -N '' -f /tmp/hostkey && c="$(sshd -T -h /tmp/hostkey)" && \
+    for l in 'passwordauthentication no' 'kbdinteractiveauthentication yes' 'permitrootlogin no' 'usepam yes' \
+      'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qx "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
+    echo "$c" | grep -qi '^persourcepenalties ' && ! echo "$c" | grep -qix 'persourcepenalties no' && \
+    for u in ssh.socket sshd-vsock.socket sshd-unix-local.socket sshd-unix-export.socket ssh-access.target; do \
+      mkdir -p "/usr/lib/systemd/system/$u.d" && \
+      printf '# Nyra: SSH is off in the base (docs/DEFAULTS.md, "SSH")\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-ssh\n' \
+        > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done && \
+    for u in ssh.service ssh.socket sshd@.service sshd-keygen.service ssh-access.target; do \
+      test -f "/usr/lib/systemd/system/$u" && grep -qx 'ConditionPathExists=/usr/lib/nyra/allow-ssh' "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done && \
+    test -x /usr/lib/systemd/system-generators/systemd-ssh-generator && \
+    systemctl preset ssh.service ssh.socket sshd-keygen.service && \
+    for u in ssh.service ssh.socket sshd-keygen.service; do test "$(systemctl is-enabled "$u")" = disabled || exit 1; done && \
+    test -z "$(find /etc/systemd/system -name 'ssh*')" && \
+    systemd-analyze verify --man=no --recursive-errors=no ssh.service sshd-keygen.service && \
+    chmod u-s /usr/lib/openssh/ssh-keysign && chown root:root /usr/bin/ssh-agent && chmod 0755 /usr/bin/ssh-agent && \
+    f=/usr/lib/tmpfiles.d/openssh-client.conf && grep -qx 'z /usr/bin/ssh-agent 2755 root _ssh' "$f" && \
+    sed -i '\|^z /usr/bin/ssh-agent |d' "$f" && ! grep -q ssh-agent "$f"
+
 # A Rust program's Cargo.lock and licence notices must not drop out of the image silently.
-RUN for p in ntpd-rs nyra-updated nyra-zlib; do \
+RUN for p in ntpd-rs nyra-updated nyra-zlib pam-totp; do \
       test -s /usr/share/doc/$p/Cargo.lock && test -n "$(ls -A /usr/share/doc/$p/third-party)" || exit 1; \
     done
 

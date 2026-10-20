@@ -23,10 +23,12 @@
 #      (ci/final-image.sh, the only script that builds it).
 # Before step 1, the next PCR policy key's public half is put in place for the image (below; a release
 # takes the committed one or fails, never generates one), and
-# the crates of nyra-updated, zlib-rs and ntpd-rs are fetched into UKI_DIR/crates (cargo fetch
-# --locked: the checksums in the Cargo.lock of updated/, zlib/ and ntpd-rs/), the only download of
-# the build; the Containerfile checks each one against its Cargo.lock again and compiles them
-# without network.
+# the crates of nyra-updated, zlib-rs, ntpd-rs and pam-totp are fetched into UKI_DIR/crates (cargo
+# fetch --locked: the checksums in the Cargo.lock of updated/, zlib/, ntpd-rs/ and pam-totp's), the only
+# download of the build together with pam-totp's source, fetched as the commit pinned in
+# pam-totp/commit into the git repository UKI_DIR/crates/pam-totp.git; the Containerfile checks each
+# crate against its Cargo.lock again, clones the source from that repository by its commit (git
+# hashes every object it receives), and compiles them without network.
 # With UKI_DIR/final already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
 # UKI is used again, if it was made in the same mode (its content: release or test; otherwise refused);
 # with UKI_DIR/crates there, those crates are, and nothing is downloaded.
@@ -71,12 +73,23 @@ if [ "${NYRA_RELEASE:-}" = 1 ] || [ ! -f "$uki/pcr-next/tpm2-pcr-public-key-next
 fi
 
 # 10 retries instead of cargo's 3: these span over a minute for each request, cargo's about 10 s.
+# pam-totp (docs/DEFAULTS.md, "SSH"): only the pinned commit is fetched; its crates are fetched from
+# a copy of its files at that commit, whose Cargo.lock must be the one in pam-totp/ (the SBOM's).
 if [ ! -d "$uki/crates" ]; then
   mkdir -p "$uki/crates"
-  for src in updated zlib ntpd-rs; do
-    sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$PWD/$src:/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
+  commit="$(cat pam-totp/commit)"
+  git init -q --bare "$uki/crates/pam-totp.git"
+  git -C "$uki/crates/pam-totp.git" fetch -q --depth 1 https://github.com/NyraOS/pam-totp.git "$commit:refs/heads/pinned"
+  git -C "$uki/crates/pam-totp.git" symbolic-ref HEAD refs/heads/pinned
+  test "$(git -C "$uki/crates/pam-totp.git" rev-parse "$commit^{commit}")" = "$commit"
+  mkdir -p "$uki/pam-totp-src"
+  git -C "$uki/crates/pam-totp.git" archive "$commit" | tar -x -C "$uki/pam-totp-src"
+  cmp "$uki/pam-totp-src/Cargo.lock" pam-totp/Cargo.lock
+  for src in updated zlib ntpd-rs "$uki/pam-totp-src"; do
+    sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$(realpath "$src"):/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
       cargo fetch --locked --manifest-path /src/Cargo.toml
   done
+  rm -rf "$uki/pam-totp-src"
 else
   echo "build-image.sh: the crates are the ones fetched before ($uki/crates), nothing is downloaded" >&2
 fi
