@@ -394,6 +394,83 @@ an error, the prudent side, until the detection covers it. A link lost while boo
 sigstore signature may be reported as an error too, not as no network: the image proxy's message then
 names the signature, which counts as a refusal (the prudent side as well).
 
+## Moving a machine to updates.nyraos.com
+
+For an owner who moves an existing Nyra VM to the published releases. Until the channel sheet key
+is in the image, a machine does not update by itself: each new release is a manual `bootc switch`
+to its version tag, with the same digest check as below. A machine installed from an image built
+before the signer address was committed (its policy names `signer-not-configured@nyra.invalid`)
+cannot switch: reinstall it from a release.
+
+**The guarantee.** containers/image applies `policy.json` to the exact name
+`updates.nyraos.com/nyra-base`: the image must be signed by the Nyra signer (docs/SIGNING.md,
+"Other registries and local images"). It holds only if that policy is the shipped one and the
+reference is exactly that name, which is what the checks below prove. Nothing else gives the
+guarantee (`bootc switch` has no flag for it).
+
+**1. Checks on the running system.** All of them are required.
+
+```sh
+readlink -f /etc/containers/policy.json                # /usr/lib/nyra/containers/policy.json
+readlink -f /etc/containers/registries.d/nyra.yaml     # /usr/lib/nyra/containers/registries.d/nyra.yaml
+jq -r '.transports.docker["updates.nyraos.com"][0].fulcio.subjectEmail' \
+  /usr/lib/nyra/containers/policy.json                 # nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com
+sudo test ! -e /root/.config/containers/policy.json && echo ok
+sudo env | grep CONTAINERS_POLICY_JSON                 # must print nothing
+```
+
+Any other address, including `signer-not-configured@nyra.invalid`, means: reinstall from the
+release. Never edit or replace the policy to get past a check. A per-user policy or
+`CONTAINERS_POLICY_JSON` wins over `/etc`, so those two must be absent.
+
+The reference is exactly `updates.nyraos.com/nyra-base:<version>`: lowercase, no port, a version tag.
+Never `:stable` or any other channel tag by hand.
+
+**2. The expected digest.** It is in the summary of the release run: the `sign` job's "Signed" table
+(`publish` prints it too). Note the version and the `sha256:` digest.
+
+**3. The Machine Owner Key, before the switch.** Take `nyra.crt` from the running system's
+`/usr/lib/nyra/secureboot/nyra.crt`, or from a clone of nyra-base `main`. Check the **full**
+SHA-256 fingerprint, all 32 bytes, against docs/SIGNING.md ("Making the UKI certificate")
+before importing; do not compare a shortened form:
+
+```sh
+openssl x509 -noout -fingerprint -sha256 -in /usr/lib/nyra/secureboot/nyra.crt
+sudo mokutil --import /usr/lib/nyra/secureboot/nyra.crt
+```
+
+Reboot, enroll the key in MokManager with the one-time password, then check
+`mokutil --sb-state` (`SecureBoot enabled`) and `mokutil --list-enrolled`.
+
+**4. The TPM.** Before the switch, have the disk's recovery key at hand and console access: its
+prompt is in the initrd, not on the network.
+
+**5. Switch, and check before rebooting.**
+
+```sh
+sudo bootc switch updates.nyraos.com/nyra-base:<version>
+sudo sync
+sudo bootc status --format json | jq '.status.staged.image | {image: .image.image, digest: .imageDigest, version}'
+```
+
+The staged image must be exactly `updates.nyraos.com/nyra-base:<version>` with the digest from step 2.
+On a mismatch, **do not reboot**: `sudo bootc switch <the booted reference>` back, and report it.
+Otherwise `sudo systemctl reboot`.
+
+**6. After the first good boot.**
+
+- Remove every other MOK, such as a CI run's throwaway key: its private half came from a CI run, and
+  a PR build's key may have left the run. `mokutil --list-enrolled` shows them; for each other one,
+  `sudo mokutil --export` writes `MOK-000N.der` files, and `sudo mokutil --delete MOK-000N.der`
+  removes the one that is not Nyra's (confirm at the next boot). Keep the Nyra key.
+- `sudo systemd-cryptenroll <luks device>` must show only the recovery key and the TPM2
+  enrollments of the current and next Nyra keys. `nyra-tpm-enroll` removes the old one after the
+  recovery key is typed (docs/BOOT.md, "Enrolled again after the TPM refused").
+
+**If the new UKI does not boot** (the MOK is missing, so shim refuses it), boot counting falls back
+to the previous version after three tries. Fix the MOK (import and enroll it as in step 3). Do not
+turn Secure Boot off: that changes PCR 7 and the TPM stops unlocking the disk.
+
 ## Tests in a VM (`tools/vm/updates.sh`)
 
 The `install-boot-updates` job follows one installed VM through 40 boots and real updates. Everything the
