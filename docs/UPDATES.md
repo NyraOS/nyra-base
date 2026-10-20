@@ -406,17 +406,19 @@ cannot switch: reinstall it from a release.
 `updates.nyraos.com/nyra-base`: the image must be signed by the Nyra signer (docs/SIGNING.md,
 "Other registries and local images"). It holds only if that policy is the shipped one and the
 reference is exactly that name, which is what the checks below prove. Nothing else gives the
-guarantee (`bootc switch` has no flag for it).
+guarantee (`--enforce-container-sigpolicy` has no effect on Nyra's composefs backend; the guarantee
+is the policy alone).
 
-**1. Checks on the running system.** All of them are required.
+**1. Checks on the running system.** All of them are required. Nyra has no `sudo`: open one root
+shell with `su -` and run every command of this section in it.
 
 ```sh
 readlink -f /etc/containers/policy.json                # /usr/lib/nyra/containers/policy.json
 readlink -f /etc/containers/registries.d/nyra.yaml     # /usr/lib/nyra/containers/registries.d/nyra.yaml
-jq -r '.transports.docker["updates.nyraos.com"][0].fulcio.subjectEmail' \
-  /usr/lib/nyra/containers/policy.json                 # nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com
-sudo test ! -e /root/.config/containers/policy.json && echo ok
-sudo env | grep CONTAINERS_POLICY_JSON                 # must print nothing
+grep -o '"subjectEmail": *"[^"]*"' /usr/lib/nyra/containers/policy.json
+                                                       # "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
+[ ! -e /root/.config/containers/policy.json ] && echo ok
+[ -z "${CONTAINERS_POLICY_JSON+x}" ] && echo ok        # prints nothing if the variable is set
 ```
 
 Any other address, including `signer-not-configured@nyra.invalid`, means: reinstall from the
@@ -437,11 +439,12 @@ before importing; do not compare a shortened form:
 ```sh
 openssl x509 -noout -fingerprint -sha256 -in /usr/lib/nyra/secureboot/nyra.crt
 openssl x509 -in /usr/lib/nyra/secureboot/nyra.crt -outform DER -out /tmp/nyra.der
-sudo mokutil --import /tmp/nyra.der
+mokutil --import /tmp/nyra.der
 ```
 
 Reboot, enroll the key in MokManager with the one-time password, then check
-`mokutil --sb-state` (`SecureBoot enabled`) and `mokutil --list-enrolled`.
+`mokutil --sb-state` (`SecureBoot enabled`) and `mokutil --list-enrolled`. `mokutil --test-key
+/tmp/nyra.der` says whether the key is already enrolled (do it before the import as well).
 
 **4. The TPM.** Before the switch, have the disk's recovery key at hand and console access: its
 prompt is in the initrd, not on the network.
@@ -449,23 +452,43 @@ prompt is in the initrd, not on the network.
 **5. Switch, and check before rebooting.**
 
 ```sh
-sudo bootc switch updates.nyraos.com/nyra-base:<version>
-sudo sync
-sudo bootc status --format json | jq '.status.staged.image | {image: .image.image, digest: .imageDigest, version}'
+bootc switch updates.nyraos.com/nyra-base:<version>
+sync
+bootc status
 ```
 
-The staged image must be exactly `updates.nyraos.com/nyra-base:<version>` with the digest from step 2.
-On a mismatch, **do not reboot**: `sudo bootc switch <the booted reference>` back, and report it.
-Otherwise `sudo systemctl reboot`.
+In the output of `bootc status`, read the staged entry's image reference and its digest. The staged
+image must be exactly `updates.nyraos.com/nyra-base:<version>` with the digest from step 2.
+On a mismatch, **do not reboot**: `bootc switch <the booted reference>` back, and report it.
+Otherwise `systemctl reboot`.
 
 **6. After the first good boot.**
 
 - Remove every other MOK, such as a CI run's throwaway key: its private half came from a CI run, and
   a PR build's key may have left the run. `mokutil --list-enrolled` shows them; for each other one,
-  `sudo mokutil --export` writes `MOK-000N.der` files, and `sudo mokutil --delete MOK-000N.der`
-  removes the one that is not Nyra's (confirm at the next boot). Keep the Nyra key.
-- `sudo systemd-cryptenroll <luks device>` must show only the recovery key and the TPM2
-  enrollments of the current and next Nyra keys. `nyra-tpm-enroll` removes the old one after the
+  `mokutil --export` writes `MOK-000N.der` files. Print the fingerprint of each:
+
+  ```sh
+  for f in MOK-*.der; do echo "$f"; openssl x509 -inform DER -noout -fingerprint -sha256 -in "$f"; done
+  ```
+
+  The one whose SHA-256 fingerprint is `nyra.crt`'s (step 3) is Nyra's; `mokutil --delete
+  MOK-000N.der` removes each of the others (confirm at the next boot). Keep the Nyra key.
+- The TPM enrollments, in the same root shell. `systemd-cryptenroll` lists only the slot types; the
+  key behind each TPM2 slot is in the record. The LUKS2 device is the one under the opened root:
+
+  ```sh
+  dev="$(cryptsetup status root | sed -n 's/^ *device: *//p')"
+  systemd-cryptenroll "$dev"                           # one recovery slot, two tpm2 slots
+  cat /var/lib/nyra/tpm2-slots
+  sha256sum /usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
+    /usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem
+  ```
+
+  Each record line is `<slot> <sha256 of a PCR public key PEM>` (with ` pin` after it when a PIN
+  is set); `retired <sha256>` lines list keys that were removed. The two `tpm2` slots must be the
+  two slot numbers of the record, and its two hashes must be the two `sha256sum` values above
+  (current and next key, each once, none retired). `nyra-tpm-enroll` removes the old one after the
   recovery key is typed (docs/BOOT.md, "Enrolled again after the TPM refused").
 
 **If the new UKI does not boot** (the MOK is missing, so shim refuses it), boot counting falls back
