@@ -500,6 +500,8 @@ Two **repository variables** are needed:
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
 gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-release-signer@<project>.iam.gserviceaccount.com"
 ```
+Only the jobs `release-sign` and `sign` of `image.yml` may have `id-token: write`, only `sign` may be in the environment `sign`, and a job that calls a reusable workflow must have exactly `permissions: {contents: read}` and pass no secrets (`ci/check-credential-jobs.py`, run on every pull request), because the identity providers check `workflow_ref`, which for a called workflow names its caller.
+
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
 of it) on `main` by push or manual run. Then, in one run:
 
