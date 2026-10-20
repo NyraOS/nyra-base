@@ -12,8 +12,8 @@
 # them keylessly (docs/SIGNING.md), only if their UKI is signed with the committed Nyra certificate
 # and the release's bootc is identical to the build cached on main (bootc-reproducible). Every job
 # that uses the image artifact checks it against the sha256 build reported (ci/check-artifact.sh).
-# With the repository variable KMS_RELEASE a release is signed with the Nyra keys before the tests
-# (release-sign and release-image jobs, docs/SIGNING.md, "Release mode"): the tests boot that image.
+# A release is signed with the Nyra keys before the tests (release-sign and release-image jobs,
+# docs/SIGNING.md, "Release mode"): the tests boot that image.
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md). In parallel, the encryption-tpm and
@@ -160,13 +160,12 @@ jobs:
 
       # Release mode (docs/SIGNING.md): the UKI of this run is signed by the release-sign job with the
       # Nyra keys, and the tests boot the image that results. Only this workflow on main (never
-      # titanic.yml's call of it: github.workflow is then the caller's name) and only once the
-      # repository variable KMS_RELEASE is true; the build below is then made with NYRA_RELEASE=1
-      # (ci/build-image.sh), also for ci/check-reproducible.sh. Without the variable, nothing changes.
+      # titanic.yml's call of it: github.workflow is then the caller's name); the build below is then
+      # made with NYRA_RELEASE=1 (ci/build-image.sh), also for ci/check-reproducible.sh.
       - name: Release mode
         id: mode
         env:
-          RELEASE_MODE: ${{ github.workflow == 'image' && env.RELEASE == 'true' && vars.KMS_RELEASE == 'true' }}
+          RELEASE_MODE: ${{ github.workflow == 'image' && env.RELEASE == 'true' }}
         run: |
           echo "release=$RELEASE_MODE" >> "$GITHUB_OUTPUT"
           if [ "$RELEASE_MODE" = true ]; then echo "NYRA_RELEASE=1" >> "$GITHUB_ENV"; fi
@@ -1330,7 +1329,7 @@ jobs:
   sign:
     needs: [build, release-image, install-boot, encryption, bootc-reproducible]
     # github.workflow == 'image': never when titanic.yml calls this workflow.
-    # release-image is skipped unless this is a release (KMS_RELEASE), so the explicit status checks.
+    # release-image is skipped unless this is a release, so the explicit status checks.
     if: >-
       ${{ !cancelled() && github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
@@ -1503,7 +1502,7 @@ jobs:
           KMS_SIGNER_SA: ${{ vars.KMS_SIGNER_SA }}
         run: |
           if [ -z "$KMS_WIF_PROVIDER" ] || [ -z "$KMS_SIGNER_SA" ]; then
-            echo "::error::KMS_RELEASE is true, but KMS_WIF_PROVIDER or KMS_SIGNER_SA is not set: this release cannot be signed (docs/SIGNING.md)."
+            echo "::error::KMS_WIF_PROVIDER or KMS_SIGNER_SA is not set: this release cannot be signed (docs/SIGNING.md)."
             exit 1
           fi
 

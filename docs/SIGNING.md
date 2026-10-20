@@ -19,8 +19,8 @@ from our registry that do not carry that signature.
    `install-boot-updates`, `install-boot-updates-more`, `encryption`, `boot-repeat`, `sign`, the Titanic jobs) first checks it against the sha256 that `build` reported as
    a job output (on a release, the one `release-image` reported: `ci/check-artifact.sh`); `build` also
    reports the SBOM's.
-   With the repository variable `KMS_RELEASE` set to `true` (the "release mode", below), the release
-   build leaves its UKI unsigned and the next two jobs sign it before any test runs.
+   On a release (the "release mode", below), the release build leaves its UKI unsigned and the next
+   two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
    GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`:
    - GitHub issues an OIDC token for the workflow run;
@@ -426,15 +426,13 @@ they trust the service account's address, not the repository.
 
 ## Release mode: the Nyra keys sign the UKI before the tests
 
-Three **repository variables** switch it on; with `KMS_RELEASE` unset a run behaves as before (the
-UKI is signed with keys made for the run, and `sign` refuses the image):
+Two **repository variables** are needed:
 ```sh
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
 gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-image-signer@<project>.iam.gserviceaccount.com"
-gh variable set KMS_RELEASE      -R NyraOS/nyra-base --body true
 ```
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
-of it) on `main` by push or manual run and `KMS_RELEASE` is `true`. Then, in one run:
+of it) on `main` by push or manual run. Then, in one run:
 
 - `build` makes the UKI with the committed PCR policy key and stops there: unjoined, unsigned
   (`NYRA_RELEASE=1`, `ci/build-image.sh`). It uploads that UKI and the sealed image it was made from
@@ -475,8 +473,8 @@ for the `.pcrsig` signature and the Secure Boot signature.
 
 The service account needs only signing rights, not permission to list key versions: the verification
 against the committed public keys proves the right key version signed. The release mode cannot run
-before it is on `main` (the federation accepts nothing else); `KMS_RELEASE` is the switch, and unsetting
-it is the rollback. It is removed once a release run has passed.
+before it is on `main` (the federation accepts nothing else). There is no switch: the rollback for a
+broken release path is reverting the change on `main`.
 
 ## Making the UKI certificate
 
