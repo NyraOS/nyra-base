@@ -1731,8 +1731,13 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           for attempt in $(seq 1 12); do
-            if sudo tools/install/verified-pull.sh "$VERSION" "$IMAGE_DIGEST" "$RUNNER_TEMP/storage"; then
-              exit 0
+            rc=0
+            sudo tools/install/verified-pull.sh "$VERSION" "$IMAGE_DIGEST" "$RUNNER_TEMP/storage" || rc=$?
+            [ "$rc" != 0 ] || exit 0
+            # 2: pulled, but the digest or a label is wrong; retrying cannot fix that.
+            if [ "$rc" = 2 ]; then
+              echo "::error::updates.nyraos.com/nyra-base:$VERSION is not the release (digest or labels)"
+              exit 1
             fi
             echo "attempt $attempt failed"
             sleep 10

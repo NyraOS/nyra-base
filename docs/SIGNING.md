@@ -553,7 +553,10 @@ with the committed `policy.json` (its trust-root paths pointed at the checkout) 
 `registries.d`, never `--insecure-policy`, from `docker://updates.nyraos.com/nyra-base:<version>`
 into a container storage. It requires acceptance, the digest of `sign`, and the signed labels
 `org.opencontainers.image.version` (the version) and `org.opencontainers.image.revision` (the commit
-of the checkout). It retries for about 2 minutes, as the tag takes a moment to show. **A red
+of the checkout). It then pulls `docker://updates.nyraos.com/nyra-base@<image_digest>` into the same
+storage under the same policy, the reference machines update by (`bootc switch`), and fails if that is
+refused. It retries for about 2 minutes, as the tag takes a moment to show, but only failures that
+may pass (exit code 1): a pulled image with the wrong digest or labels (exit code 2) fails at once. **A red
 `verify-published` is an incident to look into, not a reason to publish again.**
 
 ### Settings (owner)

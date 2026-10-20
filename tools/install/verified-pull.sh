@@ -13,11 +13,20 @@
 # validly signed (a rollback to a version with known holes). The digest, which the person
 # installing takes from the release, and the labels in the signed config tie the image to this
 # release. If any check fails the image is removed from STORAGE again.
+# The image is pulled twice, by tag and by digest (machines update by digest: nyra-updated runs
+# bootc switch with nyra-base@DIGEST), under the same policy; only manifest and signature are new.
+# Exit codes: 0 pulled and verified; 2 pulled but a check failed (digest, labels): a caller must not
+# retry; 1 anything else (usage, policy, the pull itself): a caller may retry.
 set -euo pipefail
 
 die() {
   echo "verified-pull: $*" >&2
   exit 1
+}
+# The pull worked and the image is not the release's: no retry will change that.
+refuse() {
+  echo "verified-pull: $*" >&2
+  exit 2
 }
 
 [ $# = 3 ] || die "usage: verified-pull.sh VERSION DIGEST STORAGE"
@@ -34,10 +43,13 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 revision="$(git --git-dir="$root/.git" rev-parse HEAD)"
 
 tmp="$(mktemp -d)"
-id=""
 cleanup() {
   local rc=$?
-  [ "$rc" = 0 ] || [ -z "$id" ] || podman --root "$storage" rmi --force "$id" >/dev/null 2>&1 || true
+  # No --force: a container that uses the image keeps it.
+  if [ "$rc" != 0 ]; then
+    podman --root "$storage" rmi "$repo:$version" >/dev/null 2>&1 || true
+    podman --root "$storage" rmi "$repo@$digest" >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -59,14 +71,20 @@ skopeo --policy "$policy" --registries.d "$root/files/usr/lib/nyra/containers/re
 id="$(podman --root "$storage" image inspect --format '{{.Id}}' "$repo:$version")"
 
 got="$(cat "$tmp/digest")"
-[ "$got" = "$digest" ] || die "$repo:$version is $got, not $digest"
+[ "$got" = "$digest" ] || refuse "$repo:$version is $got, not $digest"
 [ "$(podman --root "$storage" image inspect --format '{{.Digest}}' "$id")" = "$digest" ] \
-  || die "the stored image does not have the digest $digest"
+  || refuse "the stored image does not have the digest $digest"
 label() {
   podman --root "$storage" image inspect --format "{{index .Labels \"org.opencontainers.image.$1\"}}" "$id"
 }
-[ "$(label version)" = "$version" ] || die "the image's version label is not $version"
-[ "$(label revision)" = "$revision" ] || die "the image's revision label is not $revision, the commit of this checkout"
+[ "$(label version)" = "$version" ] || refuse "the image's version label is not $version"
+[ "$(label revision)" = "$revision" ] || refuse "the image's revision label is not $revision, the commit of this checkout"
 
-echo "verified-pull: $repo:$version has the digest $digest, accepted by the policy" >&2
+# The reference machines switch to, accepted by the same policy; refused means the script fails.
+skopeo --policy "$policy" --registries.d "$root/files/usr/lib/nyra/containers/registries.d" \
+  copy --preserve-digests --digestfile "$tmp/digest-ref" \
+  "docker://$repo@$digest" "containers-storage:[overlay@$storage]$repo@$digest" >&2
+[ "$(cat "$tmp/digest-ref")" = "$digest" ] || refuse "$repo@$digest was stored as another digest"
+
+echo "verified-pull: $repo:$version and $repo@$digest are accepted by the policy; digest $digest" >&2
 echo "$id"

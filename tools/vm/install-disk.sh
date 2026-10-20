@@ -19,7 +19,7 @@ sudo podman run --rm --privileged --pid=host ${target:+--pull=never --network no
 loop="$(sudo losetup -P --show -f "$work/disk.raw")"
 esp="$(tools/vm/esp-of.sh "$loop")"
 mkdir -p "$work/esp" && sudo mount "$esp" "$work/esp"
-sudo podman run --rm --network none -v "$work/esp:/esp" "$image" \
+sudo podman run --rm --network none ${target:+--pull=never} -v "$work/esp:/esp" "$image" \
   /usr/lib/nyra/boot/esp-sync install /esp
 sudo umount "$work/esp" && sudo losetup -d "$loop"
 sudo chown "$(id -u):$(id -g)" "$work/disk.raw"
