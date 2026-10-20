@@ -354,12 +354,16 @@ variables first.
 Google Cloud, with a maintainer's account (2-step verification on). Everything below is free: IAM,
 Workload Identity Federation and the token service need no paid product.
 
-Two identities, two service accounts, two pools: `nyra-image-signer` signs images keylessly and holds
-no Cloud KMS role; `nyra-release-signer` (below, "Release mode") holds the KMS roles and signs
-nothing keyless. The image signer is reachable only from the pool `github-sign`, whose provider also
-requires the GitHub environment `sign`, which only the `sign` job declares (`shellcheck.yml` checks
-it). Create the environment `sign` first (Settings › Environments): deployment branches `main`
-only, no secrets, no required reviewers. Signing stays automatic, as accepted below.
+Two identities, two service accounts, two pools: `nyra-image-signer` signs images keylessly and
+should hold no Cloud KMS role; `nyra-release-signer` (below, "Release mode") holds the KMS roles and
+signs nothing keyless. The final state is that the image signer is reachable only from the pool
+`github-sign`, whose provider also requires the GitHub environment `sign`, which only the `sign`
+job declares (`shellcheck.yml` checks it). Getting there is a split in two phases: the commands
+below are the first (the new pool and binding; the release signer's own roles and binding); the
+second removes the image signer's binding on the pool `github` and its KMS roles. Create the
+environment `sign` first (Settings › Environments): deployment branches `main` only, no required
+reviewers, **no secrets and no variables** (an environment variable `GCP_*` would override the
+repository one). Signing stays automatic, as accepted below.
 
 ```sh
 PROJECT_ID=nyra-signing          # pick a globally unique project ID
@@ -368,20 +372,42 @@ gcloud config set project "$PROJECT_ID"
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com
 
-# The image signer: a service account with no keys, ever. The release signer is the same, with the
-# KMS roles of "Release mode" and a binding from the pool `github` (provider `nyra-base`, the
-# condition below without the environment).
+# The two signers: service accounts with no keys, ever.
 gcloud iam service-accounts create nyra-image-signer --display-name="Nyra image signer (keyless)"
+gcloud iam service-accounts create nyra-release-signer --display-name="Nyra release signer (KMS)"
 SIGNER="nyra-image-signer@$PROJECT_ID.iam.gserviceaccount.com"
+RELEASE_SIGNER="nyra-release-signer@$PROJECT_ID.iam.gserviceaccount.com"
+
+# The release signer holds the KMS roles: sign with `uki` and `pcr-policy-1` only, and view the ring
+# (see "Release mode").
+for k in uki pcr-policy-1; do
+  gcloud kms keys add-iam-policy-binding "$k" --location=europe-west3 --keyring=nyra \
+    --role=roles/cloudkms.signerVerifier --member="serviceAccount:$RELEASE_SIGNER"
+done
+for role in roles/cloudkms.viewer roles/cloudkms.publicKeyViewer; do
+  gcloud kms keyrings add-iam-policy-binding nyra --location=europe-west3 \
+    --role="$role" --member="serviceAccount:$RELEASE_SIGNER"
+done
 
 # GitHub OIDC, accepted only for: this repository (by ID, so a renamed or re-created repository does
-# not match), main, the image workflow, a push or manual run, a GitHub-hosted runner, and the job's
-# environment `sign`. The pool is separate from `github`, which has no environment condition.
+# not match), main, the image workflow, a push or manual run, a GitHub-hosted runner.
+gcloud iam workload-identity-pools create github --location=global --display-name="GitHub Actions"
+gcloud iam workload-identity-pools providers create-oidc nyra-base \
+  --location=global --workload-identity-pool=github --display-name="nyra-base image workflow" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id" \
+  --attribute-condition="assertion.repository_id == '1412332787' && assertion.repository_owner_id == '339787017' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'NyraOS/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted'"
+
+# Only identities from that provider may act as the release signer.
+gcloud iam service-accounts add-iam-policy-binding "$RELEASE_SIGNER" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository_id/1412332787"
+
+# The same, plus the job's environment `sign`, in a separate pool for the image signer.
 gcloud iam workload-identity-pools create github-sign --location=global --display-name="GitHub Actions (image signature)"
 gcloud iam workload-identity-pools providers create-oidc nyra-base-sign \
   --location=global --workload-identity-pool=github-sign --display-name="nyra-base image signature" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.signer=assertion.environment" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.signer=assertion.environment" \
   --attribute-condition="assertion.repository_id == '1412332787' && assertion.repository_owner_id == '339787017' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'NyraOS/nyra-base/.github/workflows/image.yml@refs/heads/main' && assertion.event_name in ['push', 'workflow_dispatch'] && assertion.runner_environment == 'github-hosted' && assertion.environment == 'sign'"
 
 # Only identities from that provider, in the environment `sign`, may act as the image signer.
@@ -416,6 +442,9 @@ Then, in this order:
 - **image signatures: only a job in the environment `sign` of `image.yml` on `main`**, that is, the
   `sign` job. The KMS keys: **any job of `image.yml` on `main`**, the `sign` job included, until the
   `nyra-base` provider also refuses tokens that carry an environment;
+- until the second phase of the split (removing `nyra-image-signer`'s binding on the pool `github`
+  and its KMS roles), the image signer is still reachable through the pool `github`, so also from
+  `release-sign`, and still holds the KMS roles;
 - **anyone who can get a change onto `main` or start the workflow manually on `main`**: the workflow
   runs whatever is on `main`, and the attribute condition cannot tell a reviewed merge from an
   unreviewed one. The branch protection only stops direct pushes. Without a required approval from
