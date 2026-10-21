@@ -21,6 +21,8 @@
 #       the same code again                                        refused (module: already used)
 #       key alone                                                  accepted, no code asked
 #       root: key; password and right code (2fa enabled for root)  refused
+#       (root's answers are never codes: with PermitRootLogin no, OpenSSH's PAM code replaces every
+#       answer of root with a fixed wrong string, so the module refuses without seeing the code)
 #       console login (login(1), as agetty starts it) with the password only   works
 #       failed logins from one address until sshd drops it (PerSourcePenalties), then a key login
 #       from another address                                       works
@@ -70,7 +72,7 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$g accept key maria 7" \
   --command "$g enable root" \
   --command "$g refuse key root 8" \
-  --command "$g refuse ssh root 9 Root-pw-31 fresh" \
+  --command "$g refuse ssh root 9 Root-pw-31 fresh 'refused: neither a right app code nor an unused recovery code'" \
   --command "$g login maria Maria-pw-31" \
   --command "$g penalty maria 99 Maria-pw-31" \
   --command "$g accept key maria 10" \
