@@ -3,15 +3,21 @@
 # CI only: checks the signature policy shipped in IMAGE with the image's own skopeo (the same
 # containers/image code that bootc uses), against the registry from local-registry.sh.
 # The only test-only configuration is "insecure" (plain HTTP) for the two local registry names.
-#   tools/signing/test-policy.sh IMAGE WORKDIR [SIGNED_DIGEST]
+#   tools/signing/test-policy.sh IMAGE WORKDIR [SIGNED_DIGEST [REPOSITORY]]
+# REPOSITORY is nyra-base (default) or nyra-base-arm64 (docs/ARM64.md): the two names of the allow-list,
+# each one architecture's images. The tests run IMAGE's skopeo, so IMAGE must be of the runner's architecture.
 # Always: unsigned and wrongly signed images under updates.nyraos.com are refused; other
 # registries and local transports (oci-archive) are accepted.
 # With SIGNED_DIGEST (the image signed in CI, in the registry as updates.nyraos.com/nyra-base):
 # it is accepted, and its signature is refused on another image and in another repository.
 set -euo pipefail
 
-image="$1" work="$2" signed="${3:-}"
-repo=updates.nyraos.com/nyra-base
+image="$1" work="$2" signed="${3:-}" name="${4:-nyra-base}"
+case "$name" in
+  nyra-base | nyra-base-arm64) ;;
+  *) echo "test-policy: not a Nyra image repository (nyra-base, nyra-base-arm64): $name" >&2; exit 1 ;;
+esac
+repo=updates.nyraos.com/$name
 
 t="$work/policy-test"
 mkdir -p "$t"

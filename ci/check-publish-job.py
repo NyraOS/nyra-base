@@ -3,13 +3,15 @@
 """The publish job's invariants (docs/SIGNING.md, "Publishing"), checked on every workflow in
 .github/workflows. The R2 and Cloudflare secrets live only in the environment `publish`, and the
 only job that uses that environment must not be able to sign:
-- the job `publish` of image.yml exists, with `environment: publish` and exactly
-  `permissions: {contents: read}` (so never `id-token`, never `actions: write`);
-- `verify-published` has no environment and exactly `permissions: {contents: read}`;
+- the jobs `publish` and `publish-arm64` (the repository nyra-base-arm64, docs/ARM64.md) of image.yml
+  exist, with `environment: publish` and exactly `permissions: {contents: read}` (so never
+  `id-token`, never `actions: write`);
+- `verify-published` and `verify-published-arm64` have no environment and exactly
+  `permissions: {contents: read}`;
 - no job with `id-token: write` (its own or the workflow's) declares `environment: publish`;
 - no environment named `publish` (any case, spaces around it ignored) anywhere else, and no
   environment name with an expression in it;
-- nothing in a workflow, other than the job `publish` of image.yml, names a secret `R2_*` or
+- nothing in a workflow, other than the jobs `publish` and `publish-arm64` of image.yml, names a secret `R2_*` or
   `CLOUDFLARE_*`, reads the whole `secrets` context (`toJSON(secrets)`) or inherits the caller's
   secrets (`secrets: inherit`): the workflow's own `env`, `on.workflow_call.secrets` and every job.
 This guards against mistakes, not against whoever can change the workflows.
@@ -30,6 +32,8 @@ NAMED_SECRET = re.compile(r"secrets\s*(\.\s*|\[\s*['\"])\s*(R2_|CLOUDFLARE_)", r
 # `secrets` as a whole (toJSON(secrets)), not `secrets.NAME` or `secrets['NAME']`.
 WHOLE_SECRETS = re.compile(r"\bsecrets\b(?!\s*(\.|\[))", re.I)
 READ_ONLY = {"contents": "read"}
+PUBLISH_JOBS = {("image.yml", "publish"), ("image.yml", "publish-arm64")}
+VERIFY_JOBS = ("verify-published", "verify-published-arm64")
 
 
 def environment_name(job):
@@ -61,38 +65,41 @@ def check_workflow(name, workflow):
     for job_name, job in jobs.items():
         where = f"{name} job {job_name}"
         permissions = job.get("permissions", workflow.get("permissions"))
-        exempt = (name, job_name) == ("image.yml", "publish")
+        exempt = (name, job_name) in PUBLISH_JOBS
         environment = environment_name(job)
         if environment == "publish" and can_sign(permissions):
             found.append(f"{where}: `environment: publish` with `id-token: write`")
         if environment == "publish" and not exempt:
-            found.append(f"{where}: only image.yml's `publish` may use the environment `publish`")
+            found.append(f"{where}: only image.yml's `publish` and `publish-arm64` may use the environment "
+                         "`publish`")
         if environment is not None and "${{" in environment:
             found.append(f"{where}: the environment name has an expression in it")
         if not exempt and str(job.get("secrets", "")).lower() == "inherit":
-            found.append(f"{where}: inherits all secrets: only image.yml's `publish` may use these")
+            found.append(f"{where}: inherits all secrets: only image.yml's `publish` jobs may use these")
     # Everything but the exempt job: workflow-level env, on.workflow_call.secrets, every job.
     rest = {key: value for key, value in workflow.items() if key != "jobs"}
     rest["jobs"] = {job_name: job for job_name, job in jobs.items()
-                    if (name, job_name) != ("image.yml", "publish")}
+                    if (name, job_name) not in PUBLISH_JOBS}
     text = " ".join(EXPRESSION.findall("\n".join(strings(rest))))
     if NAMED_SECRET.search(text):
-        found.append(f"{name}: uses a secret named R2_* or CLOUDFLARE_*: only image.yml's `publish` may")
+        found.append(f"{name}: uses a secret named R2_* or CLOUDFLARE_*: only image.yml's `publish` jobs may")
     if WHOLE_SECRETS.search(text):
-        found.append(f"{name}: reads all secrets: only image.yml's `publish` may use these")
+        found.append(f"{name}: reads all secrets: only image.yml's `publish` jobs may use these")
     if name == "image.yml":
-        publish = jobs.get("publish")
-        if publish is None:
-            found.append("image.yml has no job `publish`")
-        elif environment_name(publish) != "publish" or publish.get("permissions") != READ_ONLY:
-            found.append("image.yml job publish must have `environment: publish` and exactly "
-                         "`permissions: {contents: read}`")
-        verify = jobs.get("verify-published")
-        if verify is None:
-            found.append("image.yml has no job `verify-published`")
-        elif "environment" in verify or verify.get("permissions") != READ_ONLY:
-            found.append("image.yml job verify-published must have no environment and exactly "
-                         "`permissions: {contents: read}`")
+        for publish_name in ("publish", "publish-arm64"):
+            publish = jobs.get(publish_name)
+            if publish is None:
+                found.append(f"image.yml has no job `{publish_name}`")
+            elif environment_name(publish) != "publish" or publish.get("permissions") != READ_ONLY:
+                found.append(f"image.yml job {publish_name} must have `environment: publish` and exactly "
+                             "`permissions: {contents: read}`")
+        for verify_name in VERIFY_JOBS:
+            verify = jobs.get(verify_name)
+            if verify is None:
+                found.append(f"image.yml has no job `{verify_name}`")
+            elif "environment" in verify or verify.get("permissions") != READ_ONLY:
+                found.append(f"image.yml job {verify_name} must have no environment and exactly "
+                             "`permissions: {contents: read}`")
     return found
 
 
@@ -123,6 +130,23 @@ def self_test():
 
     cases = {
         "publish with id-token": put("publish", "permissions", {"contents": "read", "id-token": "write"}),
+        "publish-arm64 with id-token": put("publish-arm64", "permissions",
+                                           {"contents": "read", "id-token": "write"}),
+        "publish-arm64 with actions: write": put("publish-arm64", "permissions",
+                                                 {"contents": "read", "actions": "write"}),
+        "publish-arm64 without permissions": lambda jobs: jobs["publish-arm64"].pop("permissions"),
+        "publish-arm64 without environment": lambda jobs: jobs["publish-arm64"].pop("environment"),
+        "publish-arm64 in another environment": put("publish-arm64", "environment", "release"),
+        "no publish-arm64": lambda jobs: jobs.pop("publish-arm64"),
+        "sign-arm64 in environment publish": put("sign-arm64", "environment", "publish"),
+        "verify-signature-arm64 in environment publish": put("verify-signature-arm64", "environment", "publish"),
+        "verify-published-arm64 in an environment": put("verify-published-arm64", "environment", "publish"),
+        "verify-published-arm64 with write": put("verify-published-arm64", "permissions", {"contents": "write"}),
+        "no verify-published-arm64": lambda jobs: jobs.pop("verify-published-arm64"),
+        "R2 secret in sign-arm64": append_run("sign-arm64", "echo ${{ secrets.R2_ACCESS_KEY_ID }}"),
+        "Cloudflare secret in verify-signature-arm64": append_run("verify-signature-arm64",
+                                                                  "${{ secrets.CLOUDFLARE_KV_TOKEN }}"),
+        "all secrets in verify-published-arm64": append_run("verify-published-arm64", "${{ toJSON(secrets) }}"),
         "publish with actions: write": put("publish", "permissions", {"contents": "read", "actions": "write"}),
         "publish without permissions": lambda jobs: jobs["publish"].pop("permissions"),
         "publish without environment": lambda jobs: jobs["publish"].pop("environment"),
@@ -142,8 +166,11 @@ def self_test():
     }
     for what, change in cases.items():
         assert broken(change), f"accepted: {what}"
-    # The exemption is image.yml's `publish` only, and the secret checks cover the whole document.
+    # The exemptions are image.yml's `publish` and `publish-arm64` only, and the secret checks cover the
+    # whole document.
     assert check_workflow("other.yml", good), "accepted: a job `publish` in another workflow"
+    assert check_workflow("arm64.yml", {"jobs": {"publish-arm64": good["jobs"]["publish-arm64"]}}), \
+        "accepted: a job `publish-arm64` in arm64.yml"
     for what, change in {
         "R2 secret in workflow env": lambda w: w.__setitem__("env", {"K": "${{ secrets.R2_ACCESS_KEY_ID }}"}),
         "all secrets in workflow env": lambda w: w.__setitem__("env", {"K": "${{ toJSON(secrets) }}"}),

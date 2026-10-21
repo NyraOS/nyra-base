@@ -17,6 +17,8 @@
 #   join    on x86_64, no token: the join of release-sign-arm64 (tools/signing/join-pcrsig.sh, the
 #           sealed arm64 image's ukify under Ubuntu's qemu-user-static) on this run's UKI, which must
 #           give the UKI the build joined natively, then sign-uki.sh with a key made for the job
+#   policy  on arm64, no token: the plumbing of image.yml's verify-signature-arm64 (the image's own
+#           skopeo, the throwaway registry, tools/signing/test-policy.sh for nyra-base-arm64)
 #   boot    whether the runner has KVM; install to a disk, two boots (tools/vm/arm64-boot.sh: without
 #           and with Secure Boot), boot counting across updates (tools/vm/boot-counting.sh) when
 #           there is KVM; the installed disk as a compressed qcow2 for UTM on Apple Silicon
@@ -133,6 +135,36 @@ jobs:
           rm "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
           sudo podman image exists localhost/nyra-base:ci-sealed
 
+      # What sign-arm64 (image.yml) does with an arm64 image on its x86_64 runner, rehearsed on the sealed
+      # image: nothing of the image runs. podman creates a container only to copy files out of it
+      # (--platform: no emulator, no warning), and the runner's skopeo copies the oci-archive into the
+      # throwaway registry with the manifest digest unchanged.
+      - name: Read the arm64 image on x86_64 and copy it with the runner's skopeo
+        run: |
+          ci/check-image-repository.sh localhost/nyra-base:ci-sealed nyra-base-arm64
+          if ci/check-image-repository.sh localhost/nyra-base:ci-sealed nyra-base; then
+            echo "::error::an arm64 image was accepted for nyra-base"; exit 1
+          fi
+          cid="$(sudo podman create -q --platform linux/arm64 localhost/nyra-base:ci-sealed)"
+          sudo podman cp "$cid:/boot" "$RUNNER_TEMP/boot"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$RUNNER_TEMP/next.pem"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$RUNNER_TEMP/retired"
+          sudo podman rm -f "$cid" >/dev/null
+          [ -n "$(find "$RUNNER_TEMP/boot" -name '*.efi' -print -quit)" ]
+          reg="$RUNNER_TEMP/registry"
+          mkdir "$reg"
+          ci/pinned-images.sh "$RUNNER_TEMP/pinned-images" registry
+          tools/signing/local-registry.sh "$reg"
+          sudo podman save -q --format oci-archive -o "$reg/sealed.oci.tar" localhost/nyra-base:ci-sealed
+          sudo chown "$(id -u):$(id -g)" "$reg/sealed.oci.tar"
+          skopeo --version
+          skopeo copy --dest-tls-verify=false --preserve-digests --digestfile "$reg/digest" \
+            "oci-archive:$reg/sealed.oci.tar" docker://updates.nyraos.com/nyra-base-arm64:ci
+          digest="$(cat "$reg/digest")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [ "$(tar -xOf "$reg/sealed.oci.tar" index.json | jq -er '.manifests | select(length == 1) | .[0].digest')" = "$digest" ]
+          echo "copied with the manifest digest unchanged: $digest"
+
       - name: Join under qemu-user, compare, sign with a key of the job
         run: |
           files=("$RUNNER_TEMP"/unsigned/*)
@@ -157,6 +189,44 @@ jobs:
           assert machine == 0xAA64, hex(machine)
           print("signed on x86_64: an AArch64 PE (machine 0xaa64)")
           PY
+
+  # The plumbing of image.yml's verify-signature-arm64, without a signature of Nyra's (a pull request has
+  # no token): on an arm64 runner the image's own skopeo (native) puts the image into the throwaway
+  # registry, and tools/signing/test-policy.sh checks the shipped policy for nyra-base-arm64: unsigned
+  # and wrongly signed images refused, other registries and local transports accepted.
+  policy:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-prepare
+
+      - name: Pinned test registry image for arm64 (ci/pinned-images.sh)
+        run: ci/pinned-images.sh "$RUNNER_TEMP/pinned-images" registry
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-oci-archive
+          path: ${{ runner.temp }}/image-download
+
+      - name: The image into the throwaway registry, then the policy tests
+        env:
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+        run: |
+          ci/check-artifact.sh "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$IMAGE_SHA256"
+          mv "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$WORK/nyra-base.oci.tar"
+          tools/signing/local-registry.sh "$WORK"
+          sudo podman load -q -i "$WORK/nyra-base.oci.tar"
+          test "$(sudo podman image inspect -f '{{.Os}}/{{.Architecture}}' localhost/nyra-base:ci)" = linux/arm64
+          sudo podman run --rm --network host --tmpfs /var/tmp -v "$WORK:/w" localhost/nyra-base:ci \
+            skopeo copy --dest-tls-verify=false --preserve-digests --digestfile /w/digest \
+              oci-archive:/w/nyra-base.oci.tar docker://updates.nyraos.com/nyra-base-arm64:ci
+          [[ "$(cat "$WORK/digest")" =~ ^sha256:[0-9a-f]{64}$ ]]
+          tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "" nyra-base-arm64
 
   boot:
     needs: build

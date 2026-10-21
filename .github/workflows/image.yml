@@ -1754,7 +1754,7 @@ jobs:
                   skopeo podman jq git ca-certificates >/dev/null
                 skopeo --version
                 /src/tools/install/verified-pull.sh "$@"
-              ' verify "$VERSION" "$IMAGE_DIGEST" /storage || rc=$?
+              ' verify nyra-base "$VERSION" "$IMAGE_DIGEST" /storage || rc=$?
             [ "$rc" != 0 ] || exit 0
             # 2: pulled, but the digest or a label is wrong; retrying cannot fix that.
             if [ "$rc" = 2 ]; then
@@ -1959,6 +1959,10 @@ jobs:
             exit 1
           }
 
+      # Each architecture's release gate checks its repository (ci/check-image-repository.sh).
+      - name: Architecture and repository (ci/check-image-repository.sh)
+        run: ci/check-image-repository.sh localhost/nyra-base:ci nyra-base
+
       # The sign job's gate (the same commands), on this image before any test boots it.
       - &release-uki-gate
         name: UKI release gate (signed with the committed Nyra certificate)
@@ -1998,8 +2002,9 @@ jobs:
   # build, image and boot jobs run on GitHub's arm64 runners with the steps of arm64.yml (the local
   # actions .github/actions/arm64-*); release-sign-arm64 runs on x86_64, where the KMS library is, and
   # joins with the sealed arm64 image's ukify under Ubuntu's qemu-user-static. Nothing of the x86_64
-  # release needs these jobs, so an arm64 failure never holds back an x86_64 release. The arm64 image
-  # is not signed for the registry nor published yet.
+  # release needs these jobs, so an arm64 failure never holds back an x86_64 release. At the end of the
+  # file, sign-arm64, verify-signature-arm64, publish-arm64 and verify-published-arm64 sign the arm64
+  # image for the registry and publish it as nyra-base-arm64.
   bootc-arm64:
     needs: changes
     if: >-
@@ -2246,3 +2251,448 @@ jobs:
           artifact: nyra-base-arm64-release-oci-archive
           image-sha256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
           uki-cert: ${{ needs.build-arm64.outputs.uki_cert }}
+
+  # The registry signature of the arm64 image, and its publication (docs/ARM64.md, "Releases"; docs/SIGNING.md).
+  # Four jobs after boot-arm64, each with its own permissions: sign-arm64 (the only one with id-token),
+  # verify-signature-arm64 (the shipped policy on the signature, natively on arm64, no token),
+  # publish-arm64 (the only one with the R2 and Cloudflare secrets) and verify-published-arm64 (the
+  # pull a machine makes, no secret). Like the jobs they mirror (sign, publish, verify-published) they
+  # are jobs of this workflow, with the same service account, Fulcio identity and policy: a signature
+  # for nyra-base-arm64 is refused for nyra-base by the policy's matchRepository. The repository is
+  # bound to the architecture (nyra-base: linux/amd64, nyra-base-arm64: linux/arm64), checked on the
+  # image's own config before it is signed and again before it is published. Nothing of the x86_64
+  # release needs any of them. No code of the arm64 image runs in sign-arm64: the runner's skopeo only
+  # copies the archive; the image's own skopeo runs in verify-signature-arm64, which has no token.
+  sign-arm64:
+    needs: [build, install-boot, encryption, build-arm64, release-image-arm64, boot-arm64]
+    # github.workflow == 'image': never when titanic.yml calls this workflow.
+    if: >-
+      ${{ !cancelled() && github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+      && vars.GCP_WIF_PROVIDER != '' && vars.GCP_SIGNER_SA != ''
+      && needs.build.result == 'success' && needs.install-boot.result == 'success' && needs.encryption.result == 'success'
+      && needs.build-arm64.result == 'success' && needs.release-image-arm64.result == 'success'
+      && needs.boot-arm64.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: sign
+    permissions:
+      contents: read
+      id-token: write
+    # What publish-arm64 publishes, checked there against the artifacts (never read from them).
+    outputs:
+      image_digest: ${{ steps.export.outputs.image_digest }}
+      signature_digest: ${{ steps.export.outputs.signature_digest }}
+    env:
+      # The same cosign as sign.
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+      REPO: updates.nyraos.com/nyra-base-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      - name: Pinned base images, cached (ci/pinned-images.sh)
+        uses: ./.github/actions/pinned-images
+        with:
+          images: registry
+
+      - name: Check that the shipped policy trusts this signer
+        env:
+          SIGNER: ${{ vars.GCP_SIGNER_SA }}
+        run: |
+          policy=files/usr/lib/nyra/containers/policy.json
+          trusted="$(jq -r '.transports.docker["updates.nyraos.com"][0].fulcio.subjectEmail' "$policy")"
+          if [ "$trusted" != "$SIGNER" ]; then
+            echo "::error::$policy trusts $trusted, but CI would sign as $SIGNER. Commit the signer address to the policy first (docs/SIGNING.md)."
+            exit 1
+          fi
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-release-oci-archive
+          path: ${{ env.WORK }}
+
+      # The archive is checked against release-image-arm64's hash. The image is only read (podman load,
+      # create, cp) and copied by the runner's skopeo: no code of the image runs in this job.
+      - name: Load the image and push it to the local registry (as updates.nyraos.com)
+        env:
+          IMAGE_SHA256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
+        run: |
+          ci/check-artifact.sh "$WORK/nyra-base.oci.tar" "$IMAGE_SHA256"
+          tools/signing/local-registry.sh "$WORK"
+          sudo podman load -q -i "$WORK/nyra-base.oci.tar"
+          skopeo --version
+          skopeo copy --dest-tls-verify=false --preserve-digests --digestfile "$WORK/digest" \
+            "oci-archive:$WORK/nyra-base.oci.tar" "docker://$REPO:ci"
+          digest="$(cat "$WORK/digest")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          rm "$WORK/nyra-base.oci.tar"
+
+      # Before anything is signed: the architecture and repository (linux/arm64, `repository =
+      # nyra-base-arm64`), then the sign job's UKI release gate on the arm64 image's /boot. podman only
+      # creates the container to copy files out of it.
+      - name: Architecture and repository (ci/check-image-repository.sh)
+        run: ci/check-image-repository.sh localhost/nyra-base:ci nyra-base-arm64
+
+      - name: UKI release gate (signed with the committed Nyra certificate)
+        run: |
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          cid="$(sudo podman create -q --platform linux/arm64 localhost/nyra-base:ci)"
+          sudo podman cp "$cid:/boot" "$WORK/boot"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
+          sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$WORK/image-retired"
+          sudo podman rm -f "$cid" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/boot" "$WORK/image-next.pem" "$WORK/image-retired"
+          tools/signing/uki-gate.sh "$WORK/boot" files/usr/lib/nyra/secureboot/nyra.crt \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem "$WORK/image-next.pem" \
+            files/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys "$WORK/image-retired"
+
+      - name: Install cosign
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  $RUNNER_TEMP/cosign" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/cosign" /usr/local/bin/cosign
+          cosign version
+
+      - id: google
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SIGNER_SA }}
+          token_format: id_token
+          id_token_audience: sigstore
+          id_token_include_email: true
+          create_credentials_file: false
+          export_environment_variables: false
+
+      # As sign: the old signature format, the only one containers/image verifies.
+      - name: Sign the image
+        env:
+          ID_TOKEN: ${{ steps.google.outputs.id_token }}
+        run: |
+          cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+            --fulcio-url https://fulcio.sigstore.dev --rekor-url https://rekor.sigstore.dev \
+            --identity-token "$ID_TOKEN" --allow-http-registry "$REPO@$IMAGE_DIGEST"
+
+      # For publishing: the signature as an OCI layout, tagged as on the registry (as sign). It is
+      # verified with the shipped policy by verify-signature-arm64, not here.
+      - name: Export the signature
+        id: export
+        env:
+          SIGNER: ${{ vars.GCP_SIGNER_SA }}
+        run: |
+          sig="${IMAGE_DIGEST/:/-}.sig"
+          mkdir -p dist
+          skopeo copy --insecure-policy --src-tls-verify=false --preserve-digests \
+            "docker://$REPO:$sig" "oci:dist/signature:$sig"
+          # The layout holds exactly one manifest: this signature, with its digest and tag name.
+          signature_digest="$(jq -er --arg ref "$sig" '
+            .manifests | select(length == 1) | .[0]
+            | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' dist/signature/index.json)"
+          [[ "$signature_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [ "$(sha256sum < "dist/signature/blobs/sha256/${signature_digest#sha256:}" | cut -d' ' -f1)" = "${signature_digest#sha256:}" ]
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "signature_digest=$signature_digest" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE_DIGEST" > dist/image-digest
+          {
+            echo "## Signed (arm64)"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`$REPO@$IMAGE_DIGEST\` |"
+            echo "| Signer | \`$SIGNER\` (keyless, Fulcio + Rekor) |"
+            echo "| Signature | \`$REPO:$sig\` (artifact nyra-base-arm64-signature) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the signature
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-arm64-signature
+          path: dist
+          retention-days: 14
+
+  # sign's "Verify with the shipped policy" for the arm64 image, on an arm64 runner so that the image's
+  # own skopeo (the containers/image code of the arm64 machines) runs natively. No token: the image and
+  # the signature layout are put into a throwaway registry, and tools/signing/test-policy.sh checks them
+  # with the policy the image ships. publish-arm64 waits for it.
+  verify-signature-arm64:
+    needs: [release-image-arm64, sign-arm64]
+    if: >-
+      ${{ !cancelled() && github.workflow == 'image' && github.ref == 'refs/heads/main'
+      && vars.ARM64_RELEASE == 'on' && needs.sign-arm64.result == 'success' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REPO: updates.nyraos.com/nyra-base-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-prepare
+
+      # Not the cached action: its cache key does not name the architecture, and a release pulls anyway.
+      - name: Pinned test registry image for arm64 (ci/pinned-images.sh)
+        run: ci/pinned-images.sh "$RUNNER_TEMP/pinned-images" registry
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-release-oci-archive
+          path: ${{ runner.temp }}/image-download
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-signature
+          path: ${{ runner.temp }}/signature-download
+
+      - name: Check both artifacts against the jobs that made them
+        env:
+          IMAGE_SHA256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+          SIGNATURE_DIGEST: ${{ needs.sign-arm64.outputs.signature_digest }}
+        run: |
+          die() { echo "::error::$*" >&2; exit 1; }
+          digest_re='^sha256:[0-9a-f]{64}$'
+          [[ "$IMAGE_DIGEST" =~ $digest_re ]] || die "sign-arm64: no image digest ('$IMAGE_DIGEST')"
+          [[ "$SIGNATURE_DIGEST" =~ $digest_re ]] || die "sign-arm64: no signature digest ('$SIGNATURE_DIGEST')"
+          sig="${IMAGE_DIGEST/:/-}.sig"
+          ci/check-artifact.sh "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$IMAGE_SHA256"
+          layout="$RUNNER_TEMP/signature-download/signature"
+          [ -z "$(find "$layout" ! -type f ! -type d -print -quit)" ] || die "$layout holds more than files and directories"
+          [ "$(jq -er --arg ref "$sig" '.manifests | select(length == 1) | .[0]
+                | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' "$layout/index.json")" = "$SIGNATURE_DIGEST" ] ||
+            die "the signature layout is not exactly the manifest $SIGNATURE_DIGEST that sign-arm64 exported as $sig"
+          [ "$(sha256sum < "$layout/blobs/sha256/${SIGNATURE_DIGEST#sha256:}" | cut -d' ' -f1)" = "${SIGNATURE_DIGEST#sha256:}" ] ||
+            die "the signature manifest does not match its digest"
+
+      - name: Put the image and its signature into a throwaway registry (as updates.nyraos.com)
+        env:
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+        run: |
+          mv "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$WORK/nyra-base.oci.tar"
+          tools/signing/local-registry.sh "$WORK"
+          sudo podman load -q -i "$WORK/nyra-base.oci.tar"
+          test "$(sudo podman image inspect -f '{{.Os}}/{{.Architecture}}' localhost/nyra-base:ci)" = linux/arm64
+          sig="${IMAGE_DIGEST/:/-}.sig"
+          skopeo() {
+            sudo podman run --rm --network host --tmpfs /var/tmp -v "$WORK:/w" \
+              -v "$RUNNER_TEMP/signature-download/signature:/s:ro" localhost/nyra-base:ci skopeo "$@"
+          }
+          skopeo copy --dest-tls-verify=false --preserve-digests --digestfile /w/digest \
+            oci-archive:/w/nyra-base.oci.tar "docker://$REPO:ci"
+          [ "$(cat "$WORK/digest")" = "$IMAGE_DIGEST" ] || { echo "::error::the image is not the manifest $IMAGE_DIGEST that sign-arm64 signed"; exit 1; }
+          skopeo copy --insecure-policy --dest-tls-verify=false --preserve-digests "oci:/s:$sig" "docker://$REPO:$sig"
+
+      - name: Verify with the shipped policy
+        env:
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+        run: tools/signing/test-policy.sh localhost/nyra-base:ci "$WORK" "$IMAGE_DIGEST" nyra-base-arm64
+
+  # publish for nyra-base-arm64: the same invariants (ci/check-publish-job.py), off unless both
+  # ARM64_RELEASE and PUBLISH_ENABLED are `on`. Publishes the image and its signature, nothing else:
+  # the channel sheets are a separate step (nyra-updates), and the first ones go to `dev` only
+  # (docs/ARM64.md). Its own concurrency group: an arm64 release never waits for the x86_64 publish.
+  publish-arm64:
+    needs: [build-arm64, release-image-arm64, sign-arm64, verify-signature-arm64]
+    if: >-
+      ${{ !cancelled() && github.workflow == 'image' && github.ref == 'refs/heads/main'
+      && vars.ARM64_RELEASE == 'on' && vars.PUBLISH_ENABLED == 'on'
+      && needs.sign-arm64.result == 'success' && needs.verify-signature-arm64.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: publish
+    permissions:
+      contents: read
+    concurrency:
+      group: publish-nyra-base-arm64
+      cancel-in-progress: false
+    env:
+      # The nyra-updates commit whose registry/scripts/publish-image.sh runs next to the tokens: the first
+      # with the repository allow-list (nyra-base, nyra-base-arm64). Moves only as `publish`'s pin does:
+      # by a reviewed pull request that reads the nyra-updates diff from the old pin to the new one.
+      UPDATES_PIN: dafc25a70c75beec98a63e01f5485cef9a5c15f1
+    steps:
+      # The workspace: nyra-base, for ci/check-artifact.sh. Nothing from the artifacts goes into it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As publish: plain git into its own directory, the pin must be on the main branch of nyra-updates.
+      - name: Fetch nyra-updates at the pinned commit, which must be on its main
+        run: |
+          [[ "$UPDATES_PIN" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::UPDATES_PIN is not a 40-hex commit"; exit 1; }
+          updates="$RUNNER_TEMP/updates"
+          git init -q "$updates"
+          git -C "$updates" remote add origin https://github.com/NyraOS/nyra-updates.git
+          git -C "$updates" fetch --no-tags origin main
+          git -C "$updates" merge-base --is-ancestor "$UPDATES_PIN" FETCH_HEAD || {
+            echo "::error::$UPDATES_PIN is not on the main branch of NyraOS/nyra-updates"; exit 1; }
+          git -C "$updates" -c advice.detachedHead=false checkout -q "$UPDATES_PIN"
+          [ "$(git -C "$updates" rev-parse HEAD)" = "$UPDATES_PIN" ]
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-release-oci-archive
+          path: ${{ runner.temp }}/image-download
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-signature
+          path: ${{ runner.temp }}/signature-download
+
+      # What is downloaded is data. It is unpacked by tar and read by jq and sha256sum, never run, and
+      # every value that names a digest, a tag or a version comes from a job output.
+      - name: Check the image and the signature against the jobs that made them
+        env:
+          IMAGE_SHA256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+          SIGNATURE_DIGEST: ${{ needs.sign-arm64.outputs.signature_digest }}
+          VERSION: ${{ needs.build-arm64.outputs.version }}
+        run: |
+          die() { echo "::error::$*" >&2; exit 1; }
+          digest_re='^sha256:[0-9a-f]{64}$'
+          version_re='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+          [[ "$IMAGE_DIGEST" =~ $digest_re ]] || die "sign-arm64: no image digest ('$IMAGE_DIGEST')"
+          [[ "$SIGNATURE_DIGEST" =~ $digest_re ]] || die "sign-arm64: no signature digest ('$SIGNATURE_DIGEST')"
+          [[ "$VERSION" =~ $version_re ]] || die "build-arm64: no release version ('$VERSION')"
+          sig_tag="${IMAGE_DIGEST/:/-}.sig"
+
+          # a. The archive is the file release-image-arm64 made (and the only one in its directory).
+          ci/check-artifact.sh "$RUNNER_TEMP/image-download/nyra-base.oci.tar" "$IMAGE_SHA256"
+
+          # b. podman's oci-archive is an OCI layout in a tar: unpacked into an empty directory, as no
+          # one, with no image code.
+          image="$RUNNER_TEMP/image-layout"
+          mkdir "$image"
+          tar -x --no-same-owner --no-same-permissions -f "$RUNNER_TEMP/image-download/nyra-base.oci.tar" -C "$image"
+          signature="$RUNNER_TEMP/signature-download/signature"
+          for layout in "$image" "$signature"; do
+            [ -z "$(find "$layout" ! -type f ! -type d -print -quit)" ] || die "$layout holds more than files and directories"
+            [ -f "$layout/index.json" ] && [ ! -L "$layout/index.json" ] || die "$layout/index.json is not a regular file"
+          done
+
+          # blob LAYOUT DIGEST: the path of a blob of the layout, whose content has that digest.
+          blob() {
+            local file="$1/blobs/sha256/${2#sha256:}"
+            [[ "$2" =~ $digest_re ]] && [ -f "$file" ] && [ ! -L "$file" ] || die "no blob '$2' in $1"
+            [ "$(sha256sum < "$file" | cut -d' ' -f1)" = "${2#sha256:}" ] || die "blob $2 of $1 does not match its digest"
+            echo "$file"
+          }
+
+          # c. The image layout has one manifest, the one sign-arm64 signed.
+          [ "$(jq -er '.manifests | select(length == 1) | .[0].digest' "$image/index.json")" = "$IMAGE_DIGEST" ] ||
+            die "the image layout is not exactly the manifest $IMAGE_DIGEST that sign-arm64 signed"
+          manifest="$(blob "$image" "$IMAGE_DIGEST")"
+
+          # d. The signature layout has one manifest, the one sign-arm64 exported, tagged as the registry expects.
+          [ "$(jq -er --arg ref "$sig_tag" '.manifests | select(length == 1) | .[0]
+                | select(.annotations["org.opencontainers.image.ref.name"] == $ref) | .digest' "$signature/index.json")" = "$SIGNATURE_DIGEST" ] ||
+            die "the signature layout is not exactly the manifest $SIGNATURE_DIGEST that sign-arm64 exported as $sig_tag"
+          blob "$signature" "$SIGNATURE_DIGEST" >/dev/null
+
+          # e. The signed content says which version and commit this is, and that it is an arm64 image: the
+          # repository takes no other architecture.
+          config="$(blob "$image" "$(jq -er '.config.digest' "$manifest")")"
+          [ "$(jq -r '.config.Labels["org.opencontainers.image.version"] // ""' "$config")" = "$VERSION" ] ||
+            die "the image's version label is not $VERSION"
+          [ "$(jq -r '.config.Labels["org.opencontainers.image.revision"] // ""' "$config")" = "$GITHUB_SHA" ] ||
+            die "the image's revision label is not $GITHUB_SHA"
+          [ "$(jq -r '"\(.os)/\(.architecture)"' "$config")" = linux/arm64 ] ||
+            die "the image is not linux/arm64: nyra-base-arm64 takes no other"
+          echo "Checked: $VERSION, $GITHUB_SHA, linux/arm64, image $IMAGE_DIGEST, signature $SIGNATURE_DIGEST as $sig_tag"
+
+      # The one step with the secrets: the signature first (the script refuses a version whose
+      # signature tag is not published), then the version. The script takes only nyra-base and
+      # nyra-base-arm64 as the repository.
+      - name: Publish the signature, then the image
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_KV_TOKEN: ${{ secrets.CLOUDFLARE_KV_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+          VERSION: ${{ needs.build-arm64.outputs.version }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          publish="$RUNNER_TEMP/updates/registry/scripts/publish-image.sh"
+          bash "$publish" --remote "$RUNNER_TEMP/signature-download/signature" nyra-base-arm64 "${IMAGE_DIGEST/:/-}.sig"
+          bash "$publish" --remote "$RUNNER_TEMP/image-layout" nyra-base-arm64 "$VERSION"
+
+      - name: Summary
+        env:
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+          VERSION: ${{ needs.build-arm64.outputs.version }}
+        run: |
+          {
+            echo "## Published (arm64)"
+            echo
+            echo "\`updates.nyraos.com/nyra-base-arm64:$VERSION\` -> \`$IMAGE_DIGEST\`; verify-published-arm64 reads it back."
+            echo
+            echo "Add to \`channels/nyra-base-arm64/releases.json\` in nyra-updates, \`dev\` channel only (docs/ARM64.md):"
+            echo
+            echo '```'
+            echo "\"$VERSION\": \"$IMAGE_DIGEST\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # verify-published for nyra-base-arm64: the pull a machine makes (tools/install/verified-pull.sh with the
+  # shipped policy), with no secret and no environment, natively on arm64. Red here is an incident to
+  # look into, not a reason to publish again (docs/UPDATES.md).
+  verify-published-arm64:
+    needs: [build-arm64, sign-arm64, publish-arm64]
+    if: ${{ !cancelled() && needs.publish-arm64.result == 'success' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull the version with the shipped policy
+        env:
+          IMAGE_DIGEST: ${{ needs.sign-arm64.outputs.image_digest }}
+          VERSION: ${{ needs.build-arm64.outputs.version }}
+          # As verify-published: Debian 13's skopeo (the runner's has no Fulcio support), the index digest
+          # of debian:trixie-slim, which serves linux/arm64 too.
+          DEBIAN_IMAGE: mirror.gcr.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+        run: |
+          mkdir -p "$RUNNER_TEMP/storage"
+          for attempt in $(seq 1 12); do
+            rc=0
+            sudo podman run --rm --privileged \
+              -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
+              "$DEBIAN_IMAGE" bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  skopeo podman jq git ca-certificates >/dev/null
+                skopeo --version
+                /src/tools/install/verified-pull.sh "$@"
+              ' verify nyra-base-arm64 "$VERSION" "$IMAGE_DIGEST" /storage || rc=$?
+            [ "$rc" != 0 ] || exit 0
+            # 2: pulled, but the digest, a label or the architecture is wrong; retrying cannot fix that.
+            if [ "$rc" = 2 ]; then
+              echo "::error::updates.nyraos.com/nyra-base-arm64:$VERSION is not the release (digest, labels or architecture)"
+              exit 1
+            fi
+            echo "attempt $attempt failed"
+            sleep 10
+          done
+          echo "::error::updates.nyraos.com/nyra-base-arm64:$VERSION was not accepted within about 2 minutes"
+          exit 1
+
+      - name: Remove the pulled image
+        if: always()
+        run: sudo rm -rf "$RUNNER_TEMP/storage"

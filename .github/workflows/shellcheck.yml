@@ -58,7 +58,7 @@ jobs:
             echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
             exit 1
           fi
-      - name: Only the sign job is in the environment sign and only sign and the release-sign jobs have id-token
+      - name: Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token
         run: |
           python3 -I - <<'EOF'
           import sys, yaml
@@ -82,15 +82,15 @@ jobs:
               env = env_name(job)
               if env is not None and "$" + "{{" in str(env):
                   err(f"{name}: the environment name must not be an expression")
-              if name == "sign":
+              if name in ("sign", "sign-arm64"):
                   if env != "sign":
-                      err("the sign job must have exactly environment: sign")
+                      err(f"{name} must have exactly environment: sign")
               elif str(env).strip().lower() == "sign":
-                  err(f"only the sign job may have environment: sign, not {name}")
+                  err(f"only the sign jobs may have environment: sign, not {name}")
               if name in ("release-sign", "release-sign-arm64") and "environment" in job:
                   err(f"{name} must have no environment")
               perms = job.get("permissions")
-              if name in ("sign", "release-sign", "release-sign-arm64"):
+              if name in ("sign", "sign-arm64", "release-sign", "release-sign-arm64"):
                   if not isinstance(perms, dict) or perms.get("id-token") != "write":
                       err(f"{name} must have id-token: write")
               elif perms is not None and may_get_token(perms):

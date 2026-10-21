@@ -5,11 +5,12 @@ workflow in .github/workflows. The identity providers check `workflow_ref`, whic
 workflow names the caller, so a job of any workflow image.yml calls could otherwise get the KMS and
 keyless-signing tokens. Refused:
 - `id-token: write` (a job's, the workflow's, `write-all`, or permissions that are not a mapping)
-  anywhere but the jobs `release-sign`, `release-sign-arm64` and `sign` of image.yml (the arm64
-  release signs its UKI with the same KMS keys in a job of its own, on x86_64, so that the x86_64
-  release never waits for the arm64 build, docs/ARM64.md);
+  anywhere but the jobs `release-sign`, `release-sign-arm64`, `sign` and `sign-arm64` of image.yml
+  (the arm64 release signs its UKI and its image with the same KMS keys and the same service
+  account, in jobs of their own on x86_64, so that the x86_64 release never waits for the arm64
+  build, docs/ARM64.md);
 - an environment `sign` (any case, spaces ignored) or an environment name with an expression in it,
-  anywhere but image.yml's `sign`;
+  anywhere but image.yml's `sign` and `sign-arm64`;
 - a job that calls a reusable workflow (`uses:`) without exactly `permissions: {contents: read}`
   (missing permissions inherit the workflow's, so they count as wrong), with any `secrets:` key,
   and `secrets: inherit` anywhere.
@@ -26,8 +27,8 @@ import sys
 import yaml
 
 CAN_SIGN = {("image.yml", "release-sign"), ("image.yml", "release-sign-arm64"),
-            ("image.yml", "sign")}
-IN_ENVIRONMENT_SIGN = ("image.yml", "sign")
+            ("image.yml", "sign"), ("image.yml", "sign-arm64")}
+IN_ENVIRONMENT_SIGN = {("image.yml", "sign"), ("image.yml", "sign-arm64")}
 READ_ONLY = {"contents": "read"}
 # The nightly Titanic run calls image.yml, and GitHub refuses the call unless it allows what image.yml's
 # jobs declare, id-token included; image.yml's sign jobs never run then (docs/SIGNING.md). Exactly these
@@ -59,13 +60,13 @@ def check_workflow(name, workflow):
         titanic_call = key == TITANIC_CALL and job.get("uses") == TITANIC_CALL_USES
         allowed = TITANIC_CALL_PERMISSIONS if titanic_call else READ_ONLY
         if key not in CAN_SIGN and not titanic_call and gives_token(job.get("permissions")):
-            found.append(f"{where}: only image.yml's release-sign, release-sign-arm64 and sign may have "
-                         "id-token: write")
+            found.append(f"{where}: only image.yml's release-sign, release-sign-arm64, sign and "
+                         "sign-arm64 may have id-token: write")
         environment = environment_name(job)
         if environment is not None and "${{" in environment:
             found.append(f"{where}: the environment name has an expression in it")
-        elif environment == "sign" and key != IN_ENVIRONMENT_SIGN:
-            found.append(f"{where}: only image.yml's `sign` may use the environment `sign`")
+        elif environment == "sign" and key not in IN_ENVIRONMENT_SIGN:
+            found.append(f"{where}: only image.yml's `sign` and `sign-arm64` may use the environment `sign`")
         if "uses" in job and job.get("permissions") != allowed:
             found.append(f"{where}: a job calling a reusable workflow must have exactly "
                          "`permissions: {contents: read}`")
@@ -122,7 +123,17 @@ def self_test():
         "id-token in release-image-arm64": job("release-image-arm64", "permissions",
                                                {"contents": "read", "id-token": "write"}),
         "write-all in boot-arm64": job("boot-arm64", "permissions", "write-all"),
+        "id-token in verify-signature-arm64": job("verify-signature-arm64", "permissions",
+                                                  {"contents": "read", "id-token": "write"}),
+        "id-token in publish-arm64": job("publish-arm64", "permissions", {"contents": "read", "id-token": "write"}),
+        "write-all in publish-arm64": job("publish-arm64", "permissions", "write-all"),
+        "id-token in verify-published-arm64": job("verify-published-arm64", "permissions",
+                                                  {"contents": "read", "id-token": "write"}),
         "environment sign in release-sign-arm64": job("release-sign-arm64", "environment", "sign"),
+        "environment sign in verify-signature-arm64": job("verify-signature-arm64", "environment", "sign"),
+        "environment sign in publish-arm64": job("publish-arm64", "environment", {"name": "sign"}),
+        "environment expression in sign-arm64": job("sign-arm64", "environment", "${{ 'sign' }}"),
+        "sign-arm64 inheriting secrets": job("sign-arm64", "secrets", "inherit"),
         "id-token at workflow level": lambda w: w.__setitem__("permissions", {"id-token": "write"}),
         "write-all at workflow level": lambda w: w.__setitem__("permissions", "write-all"),
         "environment sign in build": job("build", "environment", "sign"),
@@ -160,6 +171,10 @@ def self_test():
     arm64_signer = {"permissions": {"contents": "read", "id-token": "write"}}
     assert check_workflow("arm64.yml", {"jobs": {"release-sign-arm64": arm64_signer}}), \
         "accepted: release-sign-arm64 in arm64.yml"
+    assert check_workflow("arm64.yml", {"jobs": {"sign-arm64": arm64_signer}}), \
+        "accepted: sign-arm64 in arm64.yml"
+    assert check_workflow("arm64.yml", {"jobs": {"sign-arm64": {**arm64_signer, "environment": "sign"}}}), \
+        "accepted: sign-arm64 with the environment sign in arm64.yml"
     print("check-credential-jobs.py self-test: ok")
 
 

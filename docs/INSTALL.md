@@ -1,6 +1,8 @@
 # Installing Nyra OS from a release
 
-`tools/install/nyra-install.sh` installs a published release (`updates.nyraos.com/nyra-base`) on the
+`tools/install/nyra-install.sh` installs a published release (`updates.nyraos.com/nyra-base`, or
+`nyra-base-arm64` on an aarch64 machine: the installer takes the repository from the machine's
+architecture, never from an argument) on the
 whole disk of the machine it runs on, from a Debian live session. It is made for a VM with a vTPM
 and Secure Boot on (shim validation included); it refuses a machine without them (a password-only install is not designed yet).
 It does what `tools/vm/install-encrypted.sh` does in CI, with the same steps
