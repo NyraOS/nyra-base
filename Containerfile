@@ -201,13 +201,13 @@ RUN mv /usr/lib/nyra/ntpd-rs/usr.bin.ntp-daemon /etc/apparmor.d/ && \
 # SSH (docs/DEFAULTS.md, "SSH"): Debian's OpenSSH server is in the image, but off. Every unit that
 # would start or listen for it is blocked with a ConditionPathExists=/usr/lib/nyra/allow-ssh drop-in
 # (a layer that offers SSH creates that file): ssh.service and ssh.socket, which our preset also
-# disables, the per-connection sshd@.service, sshd-keygen.service, and the sockets that
-# systemd-ssh-generator writes whenever sshd is installed (AF_UNIX /run/ssh-unix-local/socket, AF_VSOCK
-# in a VM, AF_UNIX for a container manager), and ssh-access.target, which those sockets pull in even
-# when they do not start (it tells a VM's host that SSH is there). No host keys in the image: those
-# Debian's package script made go, and the build fails if one is left; sshd-keygen.service makes
-# them on the machine before sshd starts (its drop-in: on any boot, not only the first, and wanted by
-# sshd).
+# disables, the per-connection sshd@.service and sshd-keygen.service. systemd-ssh-generator goes: once
+# sshd is installed it writes sockets at every boot (AF_UNIX /run/ssh-unix-local/socket, AF_VSOCK in a
+# VM, and any number from systemd.ssh_listen= or the ssh.listen credential); a layer that offers SSH
+# can bring it back. No host keys in the image: mkosi removes those Debian's package script made
+# (RemoveFiles=, so they are in no layer either), and the build fails if one is there;
+# sshd-keygen.service makes them on the machine before sshd starts (its drop-in: on any boot, not only
+# the first, and wanted by sshd).
 # The server's settings are /usr/lib/nyra/ssh/10-nyra.conf, linked from /etc/ssh/sshd_config.d (the
 # first value of a setting wins in sshd, and Debian's sshd_config includes that directory before its
 # own lines): a key alone, or a password together with a one-time code through PAM; no password
@@ -228,7 +228,7 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     install -m 0644 /usr/lib/nyra/pam_nyra_totp.so "${1%/*}/pam_nyra_totp.so" && rm /usr/lib/nyra/pam_nyra_totp.so && \
     chmod 0755 /usr/libexec/nyra-2fa && ln -s ../libexec/nyra-2fa /usr/bin/2fa && 2fa --help | grep -q '^Usage: 2fa enable' && \
     test "$(cat /usr/lib/tmpfiles.d/nyra-2fa.conf | grep -v '^#')" = 'd /var/lib/nyra/2fa 0700 root root -' && \
-    rm -f /etc/ssh/ssh_host_* && test -z "$(find /etc /usr /var -name 'ssh_host_*' 2>/dev/null)" && \
+    test -z "$(find /etc /usr /var -name 'ssh_host_*' 2>/dev/null)" && \
     test "$(grep -cx '@include common-auth' /etc/pam.d/sshd)" = 1 && \
     test "$(grep -Ev '^(#|$)' /etc/pam.d/sshd | grep -vx '@include common-auth')" = \
       "$(grep -Ev '^(#|$)' /usr/lib/nyra/pam.d/sshd | grep -v '^auth ')" && \
@@ -241,13 +241,13 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     for l in 'passwordauthentication no' 'kbdinteractiveauthentication yes' 'permitrootlogin no' 'usepam yes' \
       'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qix "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
     echo "$c" | grep -qi '^persourcepenalties ' && ! echo "$c" | grep -qix 'persourcepenalties no' && \
-    for u in ssh.socket sshd-vsock.socket sshd-unix-local.socket sshd-unix-export.socket ssh-access.target; do \
-      mkdir -p "/usr/lib/systemd/system/$u.d" && \
-      printf '# Nyra: SSH is off in the base (docs/DEFAULTS.md, "SSH")\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-ssh\n' \
-        > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done && \
-    for u in ssh.service ssh.socket sshd@.service sshd-keygen.service ssh-access.target; do \
+    mkdir -p /usr/lib/systemd/system/ssh.socket.d && \
+    printf '# Nyra: SSH is off in the base (docs/DEFAULTS.md, "SSH")\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-ssh\n' \
+      > /usr/lib/systemd/system/ssh.socket.d/10-nyra.conf && \
+    for u in ssh.service ssh.socket sshd@.service sshd-keygen.service; do \
       test -f "/usr/lib/systemd/system/$u" && grep -qx 'ConditionPathExists=/usr/lib/nyra/allow-ssh' "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done && \
-    test -x /usr/lib/systemd/system-generators/systemd-ssh-generator && \
+    rm /usr/lib/systemd/system-generators/systemd-ssh-generator && \
+    test -z "$(find /usr/lib/systemd /etc/systemd -name '*ssh*generator*')" && \
     systemctl preset ssh.service ssh.socket sshd-keygen.service && \
     for u in ssh.service ssh.socket sshd-keygen.service; do test "$(systemctl is-enabled "$u")" = disabled || exit 1; done && \
     find /etc/systemd/system -depth -name 'ssh*' -type d -empty -delete && test -z "$(find /etc/systemd/system -name 'ssh*')" && \

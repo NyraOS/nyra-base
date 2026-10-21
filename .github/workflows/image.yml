@@ -468,6 +468,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Before any upload: a host key in any layer of the image is published with it, even when a later
+      # layer removes it (docs/DEFAULTS.md, "SSH"). The self-test first.
+      - name: No SSH host key in any layer of the image (ci/no-host-keys.py)
+        run: |
+          python3 -I ci/no-host-keys.py --self-test
+          python3 -I ci/no-host-keys.py dist/nyra-base.oci.tar
+
       # Not in release mode: that image has an unsigned UKI, and only the release-image job's is tested.
       - name: Upload the image
         if: steps.mode.outputs.release != 'true'
@@ -491,6 +498,7 @@ jobs:
           cp "${files[0]}" release/unsigned/
           sudo podman save --format oci-archive -o release/nyra-base-sealed.oci.tar localhost/nyra-base:ci-sealed
           sudo chown -R "$(id -u):$(id -g)" release
+          python3 -I ci/no-host-keys.py release/nyra-base-sealed.oci.tar
           echo "unsigned_uki_sha256=$(sha256sum < "release/unsigned/${files[0]##*/}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "sealed_image_sha256=$(sha256sum < release/nyra-base-sealed.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 

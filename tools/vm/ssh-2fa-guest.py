@@ -10,10 +10,12 @@ SSH_ASKPASS (SSH_ASKPASS_REQUIRE=force), which records each prompt it answers.
   ssh-2fa-guest.py enable USER
       runs `2fa enable USER` as an administrator does, and answers its question with the code of the
       secret it shows (kept in /run/nyra-test/USER.secret)
-  ssh-2fa-guest.py accept|refuse ssh USER SOURCE PASSWORD fresh|last|none|DIGITS
+  ssh-2fa-guest.py accept|refuse ssh USER SOURCE PASSWORD fresh|last|none|DIGITS [VERDICT: REASON]
       a password login (keyboard-interactive through PAM): the code typed is the code of a step later
       than any handed out for USER before (fresh, waiting for the next step when needed), the code
-      handed out last (last), nothing (none) or DIGITS
+      handed out last (last), nothing (none) or DIGITS. With VERDICT: REASON, the journal must also
+      have the line pam_nyra_totp.so wrote for this login, "VERDICT for user USER from 127.0.0.SOURCE:
+      REASON" (REASON a regular expression), so the case failed or passed for its own reason.
   ssh-2fa-guest.py accept|refuse key USER SOURCE
       a login with the test key alone (no password, no keyboard-interactive)
   ssh-2fa-guest.py penalty USER SOURCE PASSWORD
@@ -125,6 +127,21 @@ def outcome(user, result):
     return "error"
 
 
+def module_line(user, source, expected):
+    """The line pam_nyra_totp.so logged for this login, within 10 s; None if there is none."""
+    verdict, _, reason = expected.partition(": ")
+    line = re.compile(rf"pam_nyra_totp\(sshd:auth\): {verdict} for user {re.escape(user)} "
+                      rf"from 127\.0\.0\.{source}: (?:{reason})$", re.M)
+    for _ in range(10):
+        log = subprocess.run(["journalctl", "-b", "-o", "cat", "--no-pager", "SYSLOG_FACILITY=10"],
+                             capture_output=True, text=True).stdout
+        m = line.search(log)
+        if m:
+            return m.group(0)
+        time.sleep(1)
+    return None
+
+
 def password_login(user, source, password, answer):
     write(f"{DIR}/password", password)
     code = {"fresh": lambda: fresh_code(user), "last": lambda: open(f"{DIR}/{user}.last").read(),
@@ -196,12 +213,18 @@ def main(argv):
     if argv[0] == "penalty":
         return penalty(argv[1], argv[2], argv[3])
     want, kind, user, source, *rest = argv
+    expected = rest.pop(2) if kind == "ssh" and len(rest) == 3 else None
     result = password_login(user, source, *rest) if kind == "ssh" else key_login(user, source)
     got = outcome(user, result)
     # An accepted password login asked for the password, then the code; a key login asked nothing.
     asked = [p.strip() for p in result[3]]
     if got == "accept" and asked != (["Password:", "Verification code:"] if kind == "ssh" else []):
         got = f"accepted after the prompts {asked}"
+    if expected:
+        line = module_line(user, source, expected)
+        print(f"the module's journal line: {line or 'none matching ' + repr(expected)}")
+        if not line:
+            got = f"{got}, without the module's line"
     print(f"expected: {want}; got: {got}")
     return 0 if got == want else 1
 

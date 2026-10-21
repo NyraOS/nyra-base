@@ -211,17 +211,18 @@ The OpenSSH server (Debian's `openssh-server`) is in the image, **off**. A layer
 firewall has no opening for it either (see "Firewall").
 
 - **Off as installed.** Our preset disables `ssh.service`, `ssh.socket` and `sshd-keygen.service`,
-  and a `ConditionPathExists=/usr/lib/nyra/allow-ssh` drop-in blocks them, the per-connection
-  `sshd@.service`, and the sockets `systemd-ssh-generator` writes at every boot once sshd is
-  installed: `sshd-unix-local.socket` (`/run/ssh-unix-local/socket`), `sshd-vsock.socket` (AF_VSOCK,
-  in a VM) and `sshd-unix-export.socket` (for a container manager), and `ssh-access.target`, which
-  those sockets pull in even when they do not start (it tells a VM's host that SSH is there). An
+  and a `ConditionPathExists=/usr/lib/nyra/allow-ssh` drop-in blocks them and the per-connection
+  `sshd@.service`. `systemd-ssh-generator` is not in the image: once sshd is installed it writes
+  sockets for it at every boot (`/run/ssh-unix-local/socket`, AF_VSOCK in a VM, and one for each
+  `systemd.ssh_listen=` or `ssh.listen` credential); a layer that offers SSH can bring it back. An
   administrator turns it on as for the other blocked units (see "Units"): a drop-in with an empty
   `ConditionPathExists=` for `ssh.service` and `sshd-keygen.service`, then
   `systemctl enable --now ssh.service`, plus a firewall rule for port 22.
 - **No host keys in the image.** Debian's package script makes them when the package is installed,
-  so they would be the same on every machine and public with the image: the image build removes
-  them and fails if one is left. `sshd-keygen.service` makes the missing ones (`ssh-keygen -A`) on
+  so they would be the same on every machine and public with the image: mkosi removes them where
+  they are made (`RemoveFiles=`), so no layer of the image has them; the Containerfile fails if one
+  is there, and CI reads every layer of the exported image for them (`ci/no-host-keys.py`): a key
+  removed in a later layer would still be in an earlier one. `sshd-keygen.service` makes the missing ones (`ssh-keygen -A`) on
   the machine before sshd starts, on any boot (Debian's runs on the first boot only; SSH may be
   turned on much later).
 - **How one logs in** (`/usr/lib/nyra/ssh/10-nyra.conf`, linked from `/etc/ssh/sshd_config.d`):
