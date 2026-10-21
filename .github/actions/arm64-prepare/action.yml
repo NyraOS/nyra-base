@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 prepare
+description: >-
+  The start of every aarch64 job (docs/ARM64.md), in arm64.yml and in image.yml's arm64 release jobs:
+  podman, no automatic image prune, the build inputs read as image.yml reads them (BOOTC_REF,
+  BOOTC_COMMIT, SNAPSHOT, VERSION, SOURCE_DATE_EPOCH) and the work directory (WORK), all in the job's
+  environment; with `tools`, the CI tools image (localhost/nyra-tools) from the pinned base image.
+  VERSION is year.month.run of the snapshot and the calling workflow's run number, so image.yml's
+  arm64 jobs give the release the same version as its x86_64 build.
+inputs:
+  tools:
+    description: Also build the CI tools image (true or false)
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Podman, the build inputs (as image.yml), the work directory
+      shell: bash
+      run: |
+        command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends podman; }
+        # As in image.yml: no `podman image prune` from the runner during the job (docs/LESSONS.md).
+        if systemctl list-unit-files podman-auto-update.timer >/dev/null 2>&1; then
+          sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+        fi
+        ref="$(sed -n 's/^  BOOTC_REF: //p' .github/workflows/image.yml)"
+        commit="$(sed -n 's/^  BOOTC_COMMIT: //p' .github/workflows/image.yml)"
+        [[ "$ref" =~ ^v[0-9.]+$ && "$commit" =~ ^[0-9a-f]{40}$ ]]
+        snapshot="$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)"
+        [[ "$snapshot" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]
+        m=("${BASH_REMATCH[@]}")
+        # The arm64 runners have no /mnt disk (October 2026): the work directory is then on the root disk.
+        # It replaces image.yml's workflow-level WORK for the rest of the job.
+        if mountpoint -q /mnt; then work=/mnt/work; else work="$HOME/work"; fi
+        sudo mkdir -p "$work" && sudo chown "$(id -u):$(id -g)" "$work"
+        {
+          echo "BOOTC_REF=$ref"
+          echo "BOOTC_COMMIT=$commit"
+          echo "SNAPSHOT=$snapshot"
+          # The image version as in image.yml (year.month.run), with the calling workflow's run number:
+          # it only grows (docs/DEFAULTS.md, "Name and version").
+          echo "VERSION=${m[1]}.$((10#${m[2]})).$GITHUB_RUN_NUMBER"
+          echo "SOURCE_DATE_EPOCH=$(date -u -d "${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z" +%s)"
+          echo "WORK=$work"
+        } >> "$GITHUB_ENV"
+        uname -m; nproc; free -h; df -h / "$work"; podman --version
+
+    - name: Build the CI tools image (pinned base image for arm64, ci/pinned-images.sh)
+      if: inputs.tools == 'true'
+      shell: bash
+      run: |
+        ci/pinned-images.sh "$RUNNER_TEMP/pinned-images" debian
+        sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$SNAPSHOT" -t localhost/nyra-tools -f ci/tools.Containerfile ci

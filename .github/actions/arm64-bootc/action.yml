@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 bootc
+description: >-
+  bootc for aarch64, compiled from its pinned source (ci/build-bootc.sh) with no cache, uploaded as
+  the artifact bootc-arm64-COPY. A workflow runs it on two runners (copy 1 and 2), and arm64-build
+  requires both builds to be identical.
+inputs:
+  copy:
+    description: Which of the two builds (1 or 2)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/arm64-prepare
+      with:
+        tools: "true"
+
+    - name: Build bootc from source
+      shell: bash
+      env:
+        COPY: ${{ inputs.copy }}
+      run: |
+        [[ "$COPY" =~ ^[12]$ ]]
+        mkdir -p ~/cache
+        sudo podman run --rm -v ~/cache:/cache -v "$PWD/ci:/ci:ro" \
+          -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+          localhost/nyra-tools bash /ci/build-bootc.sh
+        sudo chown -R "$(id -u):$(id -g)" ~/cache
+        echo "bootc build $COPY: sha256 $(sha256sum < ~/cache/bootc.tar | cut -d' ' -f1)"
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: bootc-arm64-${{ inputs.copy }}
+        path: ~/cache/bootc.tar
+        retention-days: 3

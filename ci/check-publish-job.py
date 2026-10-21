@@ -129,6 +129,7 @@ def self_test():
         "publish in another environment": put("publish", "environment", "release"),
         "sign in environment publish": put("sign", "environment", "publish"),
         "release-sign in environment publish": put("release-sign", "environment", {"name": "Publish"}),
+        "release-sign-arm64 in environment publish": put("release-sign-arm64", "environment", "publish"),
         "verify-published in an environment": put("verify-published", "environment", "publish"),
         "verify-published with write": put("verify-published", "permissions", {"contents": "write"}),
         "no verify-published": lambda jobs: jobs.pop("verify-published"),

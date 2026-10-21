@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Does a change to .github/workflows/image.yml affect a pull request's build and tests?
 
-The jobs release-sign, release-image, sign, publish and verify-published never run on pull
-requests. If two versions of the file differ only in the other keys of those jobs (compared as
+The jobs release-sign, release-image, sign, publish, verify-published and the arm64 release jobs
+never run on pull requests. If two versions of the file differ only in the other keys of those jobs (compared as
 parsed YAML), the pull request needs no image build for it. Their `if` and `needs` decide whether
 a job runs on a pull request, so a change to either counts as an image change. Anything else counts as an image change: the other
 jobs, the top-level keys (on, env, permissions, concurrency...), a job added, removed or renamed,
@@ -16,7 +16,8 @@ import sys
 
 import yaml
 
-MAIN_ONLY_JOBS = {"release-sign", "release-image", "sign", "publish", "verify-published"}
+MAIN_ONLY_JOBS = {"release-sign", "release-image", "sign", "publish", "verify-published",
+                  "bootc-arm64", "build-arm64", "release-sign-arm64", "release-image-arm64", "boot-arm64"}
 
 
 def without_ignored_keys(name, job):

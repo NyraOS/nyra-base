@@ -5,7 +5,9 @@ workflow in .github/workflows. The identity providers check `workflow_ref`, whic
 workflow names the caller, so a job of any workflow image.yml calls could otherwise get the KMS and
 keyless-signing tokens. Refused:
 - `id-token: write` (a job's, the workflow's, `write-all`, or permissions that are not a mapping)
-  anywhere but the jobs `release-sign` and `sign` of image.yml;
+  anywhere but the jobs `release-sign`, `release-sign-arm64` and `sign` of image.yml (the arm64
+  release signs its UKI with the same KMS keys in a job of its own, on x86_64, so that the x86_64
+  release never waits for the arm64 build, docs/ARM64.md);
 - an environment `sign` (any case, spaces ignored) or an environment name with an expression in it,
   anywhere but image.yml's `sign`;
 - a job that calls a reusable workflow (`uses:`) without exactly `permissions: {contents: read}`
@@ -23,7 +25,8 @@ import sys
 
 import yaml
 
-CAN_SIGN = {("image.yml", "release-sign"), ("image.yml", "sign")}
+CAN_SIGN = {("image.yml", "release-sign"), ("image.yml", "release-sign-arm64"),
+            ("image.yml", "sign")}
 IN_ENVIRONMENT_SIGN = ("image.yml", "sign")
 READ_ONLY = {"contents": "read"}
 # The nightly Titanic run calls image.yml, and GitHub refuses the call unless it allows what image.yml's
@@ -56,7 +59,8 @@ def check_workflow(name, workflow):
         titanic_call = key == TITANIC_CALL and job.get("uses") == TITANIC_CALL_USES
         allowed = TITANIC_CALL_PERMISSIONS if titanic_call else READ_ONLY
         if key not in CAN_SIGN and not titanic_call and gives_token(job.get("permissions")):
-            found.append(f"{where}: only image.yml's release-sign and sign may have id-token: write")
+            found.append(f"{where}: only image.yml's release-sign, release-sign-arm64 and sign may have "
+                         "id-token: write")
         environment = environment_name(job)
         if environment is not None and "${{" in environment:
             found.append(f"{where}: the environment name has an expression in it")
@@ -114,6 +118,11 @@ def self_test():
         "write-all in build": job("build", "permissions", "write-all"),
         "read-all in build": job("build", "permissions", "read-all"),
         "id-token in publish": job("publish", "permissions", {"contents": "read", "id-token": "write"}),
+        "id-token in build-arm64": job("build-arm64", "permissions", {"contents": "read", "id-token": "write"}),
+        "id-token in release-image-arm64": job("release-image-arm64", "permissions",
+                                               {"contents": "read", "id-token": "write"}),
+        "write-all in boot-arm64": job("boot-arm64", "permissions", "write-all"),
+        "environment sign in release-sign-arm64": job("release-sign-arm64", "environment", "sign"),
         "id-token at workflow level": lambda w: w.__setitem__("permissions", {"id-token": "write"}),
         "write-all at workflow level": lambda w: w.__setitem__("permissions", "write-all"),
         "environment sign in build": job("build", "environment", "sign"),
@@ -146,7 +155,11 @@ def self_test():
         "accepted: another workflow"
     titanic_call["permissions"] = {**TITANIC_CALL_PERMISSIONS, "packages": "write"}
     assert check_workflow("titanic.yml", {"jobs": {"image": titanic_call}}), "accepted: more permissions"
-    assert len(check_workflow("other.yml", good)) >= 3, "accepted: the exemptions in another workflow"
+    assert len(check_workflow("other.yml", good)) >= 4, "accepted: the exemptions in another workflow"
+    # The exemption is by job name: a job named like the arm64 signer in another workflow is refused.
+    arm64_signer = {"permissions": {"contents": "read", "id-token": "write"}}
+    assert check_workflow("arm64.yml", {"jobs": {"release-sign-arm64": arm64_signer}}), \
+        "accepted: release-sign-arm64 in arm64.yml"
     print("check-credential-jobs.py self-test: ok")
 
 

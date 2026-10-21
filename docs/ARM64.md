@@ -13,7 +13,11 @@ its arm64 manifest), bootc from the same pinned source (`ci/build-bootc.sh`), mk
 Debian snapshot, the same `Containerfile` and `ci/build-image.sh` (sealed UKI with the recovery and
 reset profiles, signed with a key made for the run, `bootc container lint --fatal-warnings`).
 
-The only change is the architecture, set in `mkosi/mkosi.conf` by the workflow before mkosi runs:
+The steps are local actions, `.github/actions/arm64-prepare`, `arm64-bootc`, `arm64-build` and
+`arm64-boot`, which the arm64 release jobs of `image.yml` run too ("Releases" below), so the image
+`arm64.yml` tests is built exactly as the one a release signs.
+
+The only change is the architecture, set in `mkosi/mkosi.conf` before mkosi runs:
 
 | `mkosi.conf` | x86_64 | aarch64 |
 |---|---|---|
@@ -23,7 +27,11 @@ The only change is the architecture, set in `mkosi/mkosi.conf` by the workflow b
 
 Every other package has the same name, and at the pinned snapshot the same version, on both
 architectures. The step fails if any other line of `mkosi.conf` names an architecture, so a new
-architecture-specific package cannot slip through unnoticed.
+architecture-specific package cannot slip through unnoticed. The same step sets the repository the
+image follows for updates (`repository =` in `/usr/lib/nyra/updates/updated.conf`) to
+`nyra-base-arm64`, and `ci/check-image-repository.sh` then checks the built image: its config says
+`linux/arm64` and its `updated.conf` names exactly `nyra-base-arm64` (the control, `nyra-base`, must
+be refused).
 
 Reproducible, as on x86_64: bootc is compiled twice, on two runners, and the two builds must be
 identical; the image is built a second time from the same inputs and must have the same layers
@@ -31,12 +39,26 @@ identical; the image is built a second time from the same inputs and must have t
 `Containerfile`).
 
 The workflow runs on `main` after every merge, by hand (`workflow_dispatch`), and on pull requests
-that change it or `tools/vm/arm64-boot.sh`. It uses no cache, signs nothing for release and
-publishes nothing. Its artifacts: the image (`nyra-base-arm64-oci-archive`), the package list
+that change it, its local actions, `tools/vm/arm64-boot.sh`, `tools/signing/`, or the scripts that
+make the UKI. It uses no cache, signs nothing for release and publishes nothing. Its artifacts: the image (`nyra-base-arm64-oci-archive`), the package list
 (`nyra-base-arm64-packages`, mkosi's manifest and bootc's `Cargo.lock`), the VM disk image
 (`nyra-base-arm64-vm`) and the serial logs.
 
 ## What the tests prove
+
+The `build` job runs, on the AArch64 UKI (PE machine `0xAA64`), what `image.yml` runs on x86_64: the
+UKI release gate's tests (`tools/signing/test-uki-gate.sh`, every refusal, with the committed
+certificate as the `sign` job uses it), the PCR policy signing's tests
+(`tools/signing/test-pcr-policy.sh`), and on pull requests the release mode build
+(`ci/release-smoke.sh`). `ci/build-image.sh` itself signs the UKI with `tools/signing/sign-uki.sh`
+(sbsign) and the run's key.
+
+The `join` job, on an x86_64 runner without any token, does what `release-sign-arm64` does between its
+checks and the KMS: Ubuntu's `qemu-user-static` installed and registered, the sealed arm64 image
+checked against `build`'s hash and loaded, and `tools/signing/join-pcrsig.sh` joining the run's PCR
+policy signature into the unsigned UKI with that image's `ukify` under qemu-user. The result must be
+byte for byte the UKI `build` joined natively, and `sign-uki.sh` (x86_64 sbsign on an AArch64 PE) must
+sign it with a key made in the job and verify it.
 
 The `boot` job installs the image as the installer does (`tools/vm/install-disk.sh`, then
 `esp-sync install`) and boots it with QEMU's `virt` machine and edk2 (Ubuntu's `qemu-efi-aarch64`,
@@ -77,6 +99,47 @@ architecture; the x86_64 path is unchanged.
 
 Not available on aarch64: Steam and Proton (x86 only). Real ARM laptops (for example Snapdragon)
 need their own firmware, device trees and drivers, and are a separate piece of work.
+
+## Releases
+
+`image.yml` makes an arm64 release in the same run as the x86_64 one, from the same commit and with
+the same version, when the repository variable `ARM64_RELEASE` is `on` (off, the default: the jobs
+are skipped). The jobs are part of `image.yml`, never a workflow it calls (docs/SIGNING.md, "Release
+mode"), and nothing of the x86_64 release needs them: an arm64 failure never holds back an x86_64
+release.
+
+| Job | Runner | Permissions | What it does |
+|---|---|---|---|
+| `bootc-arm64` (two copies) | `ubuntu-24.04-arm` | `contents: read` | bootc from its pinned source, no cache (`arm64-bootc`) |
+| `build-arm64` | `ubuntu-24.04-arm` | `contents: read` | the image in release mode (`arm64-build`, `NYRA_RELEASE=1`): both bootc builds identical, the UKI with the committed PCR policy key, unsigned; architecture and repository checked; the PCR policy tests; a second build with the same layers. Uploads the unsigned UKI and the sealed image (one day), their hashes as job outputs |
+| `release-sign-arm64` | `ubuntu-24.04` (x86_64) | `contents: read`, `id-token: write` | as `release-sign`: the KMS signs the PCR policy, the join under qemu-user (`tools/signing/join-pcrsig.sh`), the KMS signs the UKI (`sign-uki.sh`, the committed `nyra.crt`) |
+| `release-image-arm64` | `ubuntu-24.04-arm` | `contents: read` | as `release-image`: the final image (`ci/final-image.sh`), the same layers as `build-arm64`'s but the UKI's, `ci/check-image-repository.sh`, the UKI release gate. Uploads `nyra-base-arm64-release-oci-archive` (one day) |
+| `boot-arm64` | `ubuntu-24.04-arm` | `contents: read` | `tools/vm/arm64-boot.sh` on the release image: without Secure Boot, and with the Microsoft keys and the committed `nyra.crt` enrolled as the MOK |
+
+Every artifact is checked against the hash its job reported (`ci/check-artifact.sh`). The KMS
+library has no arm64 build, so signing runs on x86_64 (`tools/signing/kms-pkcs11.sh`, unchanged).
+The same KMS keys, certificate and MOK as x86_64; each `release-sign-arm64` run counts as a release
+for revocation, and the SBAT generation is shared (docs/SIGNING.md).
+
+Turning it on (owner): `gh variable set ARM64_RELEASE -R NyraOS/nyra-base --body on`, then a run on
+`main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`). Off again:
+`gh variable delete ARM64_RELEASE -R NyraOS/nyra-base`.
+
+Not run on arm64 (no KVM on GitHub's arm64 runners, and no TPM driver for QEMU's `virt` machine):
+boot counting, disk encryption and TPM unlock, the update tests, Titanic; nor the SBOM, the
+vulnerability scan and the setuid and file-capability lists ("What remains").
+
+**Not published yet.** The arm64 image is not signed for the registry nor published: that comes with
+`sign`, `publish` and `verify-published` for the repository `nyra-base-arm64` (a two-value allow-list
+bound to the architecture: `nyra-base` is `linux/amd64`, `nyra-base-arm64` is `linux/arm64`). When it
+is, arm64 releases go to the `dev` channel only. **Gate:** no arm64 digest enters the `stable`
+channel sheet of `nyra-base-arm64` until disk encryption, TPM unlock and boot counting run on arm64
+in CI (a runner with KVM, or a TPM the arm64 kernel drives).
+
+**Secure Boot on an arm64 VM is weaker than on x86_64.** AAVMF (in CI) and UTM have no SMM and no
+secure world, so root in the guest can write the UEFI variable store, `db` and the MOK list included:
+on such a VM, the Secure Boot variables are not protected against a compromised running system. What
+remains is the TPM's PCR 7 binding: a changed `db` or MOK list makes the disk ask for its recovery key.
 
 ## Running it in UTM on a Mac with Apple Silicon
 
@@ -175,9 +238,8 @@ Secure Boot chain on aarch64 is proven in CI.
 - The Titanic battery on aarch64, then its gate, after the x86_64 gate. Its VM tests need KVM to
   run in reasonable time: without KVM on GitHub's arm64 runners, they need runners with KVM (for
   example a bare-metal ARM machine) or much longer timeouts for emulation.
-- Updates on aarch64 from the update server: images signed and published per architecture (one
-  image index with both), and `nyra-updated` following it.
-- The Nyra Secure Boot key for aarch64 images, so that Secure Boot can stay on in UTM.
+- Updates on aarch64 from the update server: the release image ("Releases") signed and published to
+  `nyra-base-arm64`, and `nyra-updated` following its channel sheets.
 - A TPM on aarch64 in CI: Debian's arm64 kernel has no driver for QEMU's TIS TPMs (`CONFIG_TCG_TIS`
   and `CONFIG_TCG_TIS_I2C` are off), so the CI VM has none. UTM gives a CRB TPM, which the kernel
   does support: to be checked in UTM (see "A TPM in UTM" above).

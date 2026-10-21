@@ -1,0 +1,253 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 build
+description: >-
+  The aarch64 image (docs/ARM64.md), the build job of arm64.yml and of image.yml's arm64 release:
+  the same sources and steps as image.yml's build, only the architecture set in mkosi.conf and the
+  release repository in updated.conf. Needs the artifacts bootc-arm64-1 and bootc-arm64-2 of the run
+  (arm64-bootc), which must be identical. With `release: true` (image.yml on main only) the UKI is made
+  with the committed PCR policy key and left unsigned (NYRA_RELEASE=1, ci/build-image.sh); otherwise it
+  is signed with a key made for the run and the image is uploaded, with the inputs of arm64.yml's join
+  test. Both modes upload the unsigned UKI and the sealed image it was made from, with their hashes as
+  outputs (ci/check-artifact.sh).
+inputs:
+  release:
+    description: Release mode (true or false)
+    default: "false"
+outputs:
+  uki_cert:
+    description: The certificate the tests enrol (base64); in release mode the committed nyra.crt
+    value: ${{ steps.image.outputs.uki_cert }}
+  version:
+    description: The image version
+    value: ${{ steps.image.outputs.version }}
+  source_date_epoch:
+    description: What the final image is built with
+    value: ${{ steps.image.outputs.source_date_epoch }}
+  image_layers:
+    description: The layers of the image this job checked
+    value: ${{ steps.image.outputs.image_layers }}
+  image_sha256:
+    description: The sha256 of the nyra-base-arm64-oci-archive artifact (not in release mode)
+    value: ${{ steps.export.outputs.image_sha256 }}
+  unsigned_uki_sha256:
+    description: The sha256 of the UKI in nyra-base-arm64-unsigned-uki
+    value: ${{ steps.release-export.outputs.unsigned_uki_sha256 }}
+  sealed_image_sha256:
+    description: The sha256 of the nyra-base-arm64-sealed-oci-archive artifact
+    value: ${{ steps.release-export.outputs.sealed_image_sha256 }}
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/arm64-prepare
+      with:
+        tools: "true"
+
+    - name: Release mode
+      shell: bash
+      env:
+        RELEASE_MODE: ${{ inputs.release }}
+      run: |
+        case "$RELEASE_MODE" in
+          true) echo "NYRA_RELEASE=1" >> "$GITHUB_ENV" ;;
+          false) ;;
+          *) echo "::error::release must be true or false, not '$RELEASE_MODE'"; exit 1 ;;
+        esac
+        echo "Release mode: $RELEASE_MODE"
+
+    # The only changes for aarch64. Any other line of mkosi.conf (outside comments) that names an
+    # architecture is a setting this step does not know: the job fails. The repository is the one the
+    # arm64 image is released to (docs/ARM64.md, "Releases"; ci/check-image-repository.sh checks it).
+    - name: Set the architecture in mkosi.conf and the repository in updated.conf (arm64)
+      shell: bash
+      run: |
+        sed -i -e 's/^Architecture=x86-64$/Architecture=arm64/' \
+          -e 's/^        systemd-boot-efi-amd64-signed$/        systemd-boot-efi-arm64-signed/' \
+          -e 's/^        linux-image-amd64$/        linux-image-arm64/' mkosi/mkosi.conf
+        sed -i 's/^repository = nyra-base$/repository = nyra-base-arm64/' files/usr/lib/nyra/updates/updated.conf
+        git diff mkosi/mkosi.conf files/usr/lib/nyra/updates/updated.conf
+        test "$(git diff --numstat mkosi/mkosi.conf | cut -f1,2)" = "$(printf '3\t3')"
+        test "$(git diff --numstat files/usr/lib/nyra/updates/updated.conf | cut -f1,2)" = "$(printf '1\t1')"
+        if grep -nE 'amd64|x86' mkosi/mkosi.conf | grep -v '^[0-9]*:#'; then
+          echo "::error::mkosi.conf names another architecture-specific setting"
+          exit 1
+        fi
+
+    # bootc compiled twice from the same source, on two runners: the two builds must be identical.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: bootc-arm64-*
+        path: ${{ runner.temp }}/bootc
+
+    - name: bootc, reproducible
+      shell: bash
+      run: |
+        a="$(sha256sum < "$RUNNER_TEMP/bootc/bootc-arm64-1/bootc.tar" | cut -d' ' -f1)"
+        b="$(sha256sum < "$RUNNER_TEMP/bootc/bootc-arm64-2/bootc.tar" | cut -d' ' -f1)"
+        echo "bootc builds: $a, $b"
+        if [ "$a" != "$b" ]; then
+          echo "::error::bootc compiled twice from the same source differs: $a, $b"
+          exit 1
+        fi
+        mkdir -p ~/cache && mv "$RUNNER_TEMP/bootc/bootc-arm64-1/bootc.tar" ~/cache/bootc.tar
+        echo "BOOTC_SHA256=$a" >> "$GITHUB_ENV"
+
+    - name: Build the root filesystem with mkosi
+      shell: bash
+      run: |
+        sudo mkdir -p "$WORK/bootc" "$WORK/out" "$WORK/tmp"
+        sudo tar -C "$WORK/bootc" -xf ~/cache/bootc.tar
+        mkdir -p ~/cache/mkosi-packages
+        sudo podman run --rm --privileged -v "$PWD/mkosi:/src" -v "$WORK:/work" -v ~/cache/mkosi-packages:/packages \
+          localhost/nyra-tools mkosi -C /src \
+            --output-directory=/work/out --workspace-directory=/work/tmp --package-cache-dir=/packages \
+            --extra-tree=/work/bootc:/ --source-date-epoch="$SOURCE_DATE_EPOCH" --force build
+        sudo chown -R "$(id -u):$(id -g)" ~/cache/mkosi-packages
+        ls -l "$WORK/out"
+
+    # As image.yml's build: in release mode the UKI is not signed here and the certificate is the
+    # committed Nyra one.
+    - name: Add the bootc layer, the sealed UKI, and lint
+      id: image
+      shell: bash
+      run: |
+        sudo apt-get update -q >/dev/null
+        sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile jq osslsigncode >/dev/null
+        id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
+        sudo podman tag "$id" localhost/nyra-base-rootfs:latest
+        ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
+          --annotation org.opencontainers.image.version="$VERSION" \
+          --label org.opencontainers.image.version="$VERSION" \
+          --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+          --label org.opencontainers.image.revision="$GITHUB_SHA" 2>&1 | tee "$WORK/build.log"
+        if [ "${NYRA_RELEASE:-}" = 1 ]; then cert=files/usr/lib/nyra/secureboot/nyra.crt; else cert="$WORK/uki/uki.crt"; fi
+        echo "uki_cert=$(base64 -w0 "$cert")" >> "$GITHUB_OUTPUT"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "source_date_epoch=$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
+        echo "image_layers=$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci)" >> "$GITHUB_OUTPUT"
+
+    # The image is linux/arm64 and follows nyra-base-arm64; control: the x86_64 repository is refused.
+    - name: Architecture and repository (ci/check-image-repository.sh)
+      shell: bash
+      run: |
+        ci/check-image-repository.sh localhost/nyra-base:ci nyra-base-arm64
+        if ci/check-image-repository.sh localhost/nyra-base:ci nyra-base; then
+          echo "::error::check-image-repository.sh accepted the arm64 image for nyra-base"
+          exit 1
+        fi
+
+    # The release gate's refusals on the AArch64 UKI (machine 0xAA64), as image.yml's build runs them on
+    # x86_64; also sbsign on an AArch64 PE (the test signs with keys made for it).
+    - name: Test the UKI release gate (docs/SIGNING.md)
+      if: inputs.release != 'true'
+      shell: bash
+      run: |
+        tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
+          "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/pcr-next/tpm2-pcr-public-key-next.pem" "$WORK"
+
+    - name: Test the PCR policy signing (docs/BOOT.md)
+      shell: bash
+      run: tools/signing/test-pcr-policy.sh localhost/nyra-base:ci-sealed "$WORK/uki/kernel" "$WORK"
+
+    - name: Release mode build smoke test (ci/release-smoke.sh)
+      if: inputs.release != 'true' && github.event_name == 'pull_request'
+      shell: bash
+      run: ci/release-smoke.sh localhost/nyra-base-rootfs:latest "$WORK"
+
+    - name: Build again and compare the layers
+      shell: bash
+      run: ci/check-reproducible.sh
+
+    - name: Export the image and the package list
+      id: export
+      shell: bash
+      run: |
+        mkdir -p dist
+        cp "$WORK/out/nyra-base-rootfs.manifest" dist/nyra-base-arm64.manifest.json
+        cp "$WORK/bootc/usr/share/doc/bootc/Cargo.lock" "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock"
+        if [ "${NYRA_RELEASE:-}" != 1 ]; then
+          sudo podman save --format oci-archive -o dist/nyra-base.oci.tar localhost/nyra-base:ci
+          echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        fi
+        sudo chown -R "$(id -u):$(id -g)" dist
+        m=dist/nyra-base-arm64.manifest.json
+        {
+          echo "## nyra-base (desktop, aarch64)"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Debian snapshot | \`$SNAPSHOT\` (unstable, arm64) |"
+          echo "| Version | \`$VERSION\`$([ "${NYRA_RELEASE:-}" = 1 ] && echo ", release mode (UKI unsigned here)") |"
+          echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`), two builds identical: sha256 \`$BOOTC_SHA256\` |"
+          echo "| Kernel | linux-image-arm64 $(jq -r '.packages[] | select(.name == "linux-image-arm64") | .version' "$m") |"
+          echo "| Boot files | shim-signed $(jq -r '.packages[] | select(.name == "shim-signed") | .version' "$m"), systemd-boot-efi-arm64-signed $(jq -r '.packages[] | select(.name == "systemd-boot-efi-arm64-signed") | .version' "$m") |"
+          echo "| Packages | $(jq '.packages | length' "$m") Debian packages |"
+          echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), the second build has the same layers |"
+          echo
+          echo "\`bootc container lint --fatal-warnings\`"
+          echo '```'
+          sed -n '/bootc container lint/,$p' "$WORK/build.log" | grep -v '^COMMIT\|^-->\|^STEP\|^Successfully\|^[0-9a-f]\{64\}$' | head -40
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # Not in release mode: that image has an unsigned UKI, and only release-image-arm64's is tested.
+    - name: Upload the image
+      if: inputs.release != 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-base-arm64-oci-archive
+        path: dist/nyra-base.oci.tar
+        retention-days: 7
+
+    - name: Upload the package lists
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-base-arm64-packages
+        path: |
+          dist/nyra-base-arm64.manifest.json
+          dist/bootc-*.Cargo.lock
+        retention-days: 90
+
+    # The inputs of the join (image.yml's release-sign-arm64; arm64.yml's join test): the UKI as ukify
+    # made it (its PCR policy not signed yet) and the sealed image it was made from. One day of
+    # retention: in a release a signature of the release keys is made for them (docs/SIGNING.md).
+    # Not in release mode, also what the join test compares with: the PCR policy signature of the
+    # run's key, its public half and the UKI build-image.sh joined natively (no private key).
+    - name: Export the unsigned UKI and the sealed image
+      id: release-export
+      shell: bash
+      run: |
+        mkdir -p release/unsigned
+        files=("$WORK"/uki/unsigned/*)
+        [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki/unsigned must hold exactly the unsigned UKI"; exit 1; }
+        # The file keeps its name (the kernel version): it is the UKI's name in /boot/EFI/Linux.
+        cp "${files[0]}" release/unsigned/
+        sudo podman save --format oci-archive -o release/nyra-base-sealed.oci.tar localhost/nyra-base:ci-sealed
+        if [ "${NYRA_RELEASE:-}" != 1 ]; then
+          mkdir release/join-test
+          cp "$WORK/uki/pcr/pcrsig.json" "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/policy/${files[0]##*/}" release/join-test/
+        fi
+        sudo chown -R "$(id -u):$(id -g)" release
+        echo "unsigned_uki_sha256=$(sha256sum < "release/unsigned/${files[0]##*/}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        echo "sealed_image_sha256=$(sha256sum < release/nyra-base-sealed.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the unsigned UKI
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-base-arm64-unsigned-uki
+        path: release/unsigned/
+        retention-days: 1
+
+    - name: Upload the sealed image
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-base-arm64-sealed-oci-archive
+        path: release/nyra-base-sealed.oci.tar
+        retention-days: 1
+
+    - name: Upload the join test's reference
+      if: inputs.release != 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-base-arm64-join-test
+        path: release/join-test/
+        retention-days: 1
