@@ -131,11 +131,19 @@ package = "linux"
 reason = "DRM GEM objects can be used to consume memory (local denial of service, no score). Known upstream since 2015 without a fix; the impact is limited to memory exhaustion by a local user."
 expires = 2027-01-07
 
-# ntpd 1.9.0 (pinned) needs rustls-platform-verifier 0.5, which needs webpki-root-certs 0.26. That
-# release has no roots of its own: it only re-exports webpki-root-certs 1.0.x, which ntpd-rs/Cargo.lock
-# has at the fixed 1.0.10 (no 0.26 release is fixed, so the scanner still lists it).
+# UDF is mountable on purpose (optical media, docs/DEFAULTS.md "File systems"), so the bug is
+# reachable. A mount needs root, or a user's request through udisks2, which mounts a removable disc
+# or stick in an active local session without a password. Debian has no fix in any release; SUSE
+# disputes the report (CVE text). Expiry one month out, to look at it again.
 [[mitigation]]
-id = "RUSTSEC-2026-0383"
-package = "webpki-root-certs"
-reason = "Version 0.26.11 holds no certificates, it re-exports the roots of webpki-root-certs 1.0.10, where the distrusted emSign root is removed. End: ntpd with rustls-platform-verifier 0.6 (webpki-root-certs 1)."
-expires = 2027-01-07
+id = "CVE-2023-37454"
+package = "linux"
+reason = "Use-after-free on unmount of a crafted UDF image (udf_put_super, udf_close_lvid). Reached only by mounting such an image: as root, or by a user asking udisks2 to mount a removable disc or stick. The image mounts nothing by itself. Debian lists it unfixed in every release, and SUSE disputes the report. End: a fixed Debian kernel, or UDF no longer mountable by users."
+expires = 2026-11-21
+
+# BPF verifier zero-extension bug (upstream 7ce090afbf72). Reachable on x86_64; needs root or CAP_BPF.
+[[mitigation]]
+id = "CVE-2026-98869"
+package = "linux"
+reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.11-1); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
+expires = 2026-11-07
