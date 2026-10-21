@@ -82,6 +82,10 @@ version booted, one reboot, the new version running. The phases take turns; the 
 seed printed in the log, in the step summary and in `titanic-results.json`. To run the same moments
 again, run the script with that seed (`tools/titanic/power-cuts.sh ... CUTS SEED`, see its header).
 
+The `firstboot` delay counts from the moment the QEMU process exists, not from the start of
+`vm-boot.py`: a delay of 0.0 s once found no QEMU yet to cut. Seed 4296 with 20 rounds (round 16:
+`firstboot`, 0.0 s) is the regression case for that.
+
 These rounds use `bootc` directly, without `nyra-updated`; that `nyra-updated` stages the update
 again by itself after a cut is proven by `tools/vm/updates.sh`.
 
