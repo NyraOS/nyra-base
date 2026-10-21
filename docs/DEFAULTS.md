@@ -9,7 +9,7 @@ it is something the user switches on, not off), and how CI proves it.
 |---|---|---|
 | AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it, and without `/etc/apparmor.d` (an emptied `/etc`) the image's profiles load from a copy in `/usr/lib/nyra/apparmor.d` (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
 | Kernel lockdown `integrity` | `lockdown=integrity` in `/usr/lib/bootc/kargs.d/10-nyra-lockdown.toml`; Debian's kernel also turns it on under Secure Boot | `/sys/kernel/security/lockdown` shows `[integrity]` |
-| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added |
+| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added; the same for a port published by a rootful container and for a container's own address (`forward`), and for a rootless published port, while they answer on the machine and containers still reach out (`tools/vm/container-ports-guest.sh`) |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
@@ -185,12 +185,21 @@ answering before `leave-initrd`, and that way out (without the TPM, the recovery
 
 ## Firewall
 
-The ruleset (`inet nyra`, input hook only) lets in loopback, replies to connections this machine
-started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements, MLD queries) and
-DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
-Outbound and forwarded traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP
-queries (UDP 123) go out, and only their replies come back in (`established`). Nothing listens for
-time: ntpd-rs serves no time and has no network control port (see "Time").
+The ruleset (`inet nyra`) has two chains, both with policy drop.
+
+- `input` lets in loopback, replies to connections this machine started, the ICMPv6 that IPv6 needs
+  (neighbour discovery, router advertisements, MLD queries) and DHCPv6 replies from the link.
+  Everything else that is addressed to this machine is dropped.
+- `forward` covers what this machine routes, which is what containers on a podman bridge
+  (`podman0`, `podman1`, ...) are: it lets through replies to connections that were started
+  (`established`, `related`) and everything that comes from a container bridge, and drops the rest.
+  A new connection from the network to a container is therefore dropped, whether it targets a port
+  published by a rootful container (netavark's DNAT in prerouting) or the container's own address
+  through a route set up on a neighbour.
+
+Outbound traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP queries (UDP 123) go
+out, and only their replies come back in (`established`). Nothing listens for time: ntpd-rs serves no
+time and has no network control port (see "Time").
 
 - nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
   per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
@@ -198,9 +207,19 @@ time: ntpd-rs serves no time and has no network control port (see "Time").
   NetworkManager introspection data into the base before anything uses its API. When firewalld
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
 - Containers can still reach the network, rootless (Distrobox, `podman run` as a user) or rootful.
-  What the firewall stops is inbound traffic: a port published with `podman run -p` or a server
-  started inside Distrobox answers on localhost only, not from other machines, until a rule opens
-  it. Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule.
+  What the firewall stops is inbound traffic. A port published with `podman run -p`, rootful or
+  rootless, and a server started inside Distrobox answer on this machine (`127.0.0.1` and its own
+  addresses) and not from other machines, until a rule opens it: for a rootful container a rule in
+  `forward` (the destination port there is the container's own, after the DNAT), for a rootless one or a Distrobox server a rule in `input`. Rootless containers forward
+  nothing (pasta listens on the host like any other program), and Distrobox shares the host's network.
+  Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule in `input`: the
+  container's queries go to the bridge's address.
+- netavark has a forward chain of its own (table `inet netavark`, policy accept, same priority). Several
+  tables hook the same point independently: an accept in one does not end the evaluation in the
+  others, and a drop in any of them does. What netavark accepts is therefore still dropped by
+  `inet nyra` unless `forward` accepts it too, whichever table was created first. The rule is by
+  interface name (`podman*`, netavark's bridge names); a network created with another bridge name
+  gets no outbound access until a rule names it.
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
 

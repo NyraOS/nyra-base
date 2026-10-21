@@ -1,8 +1,9 @@
 #!/usr/sbin/nft -f
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Nyra inbound firewall (docs/DEFAULTS.md), loaded by nyra-firewall.service before the network.
-# Nothing from the network reaches a local socket unless it answers a connection this machine
-# started. Outbound and forwarded (container) traffic is not filtered here.
+# Nothing from the network reaches a local socket, or a container behind this machine, unless it
+# answers a connection this machine or one of its containers started. Outbound traffic is not
+# filtered.
 destroy table inet nyra
 
 table inet nyra {
@@ -14,5 +15,21 @@ table inet nyra {
 		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, mld-listener-query } accept
 		# DHCPv6 replies from the link (DHCPv4 uses a packet socket, before this hook).
 		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+	}
+
+	# Containers (podman with netavark): their traffic is forwarded, not delivered to a local socket, so
+	# the input chain never sees it. A port published by a rootful container is a DNAT in prerouting;
+	# the same default applies to it as to every other port: closed to the network. Connections that
+	# this machine starts to a container (127.0.0.1, its own addresses, the container's address) are
+	# locally generated and never traverse this hook; their replies come in through the input chain as
+	# established. Rootless containers (pasta) forward nothing.
+	# netavark's own table has a forward chain with policy accept at the same priority: an accept in one
+	# table does not end the evaluation in another and a drop in any of them does, so what netavark
+	# accepts is still dropped here, and it can only drop more. Its bridges are called podman0, podman1, ...
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state established,related accept
+		# Containers reaching out, and between networks.
+		iifname "podman*" accept
 	}
 }
