@@ -49,8 +49,10 @@ name="${uki##*/}"
 mkdir -p "$join/in" "$join/pcr" "$join/out"
 cp -- "$uki" "$join/in/$name"
 cp -- "$pcrsig" "$join/pcr/pcrsig.json"
+# The image's env is uutils multicall coreutils, which gets the wrong argv[0] under qemu-user and fails
+# on "python3", so the interpreter and ukify are run directly.
 sudo podman run --rm --pull=never --platform "$platform" --network none --tmpfs /tmp --tmpfs /var/tmp \
   -v "$join/in:/in:ro" -v "$join/pcr:/pcr:ro" -v "$join/out:/out" "$id" \
-  ukify build --hwids '' --join-pcrsig "/in/$name" --pcrsig @/pcr/pcrsig.json --output "/out/$name"
+  /usr/bin/python3 /usr/bin/ukify build --hwids '' --join-pcrsig "/in/$name" --pcrsig @/pcr/pcrsig.json --output "/out/$name"
 sudo chown -R "$(id -u):$(id -g)" "$join/out"
 [ -f "$join/out/$name" ] || die "ukify wrote no $join/out/$name"
