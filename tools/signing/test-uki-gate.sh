@@ -70,9 +70,15 @@ refused() {
 # copy NAME: a fresh copy of the image's /boot as $t/NAME.
 copy() { rm -rf "${t:?}/$1"; cp -a "$t/image" "$t/$1"; }
 
+# The add-on stub of the image's architecture (the runner's: image.yml on x86_64, arm64.yml on aarch64).
+case "$(uname -m)" in
+  x86_64) stub=addonx64.efi.stub ;;
+  aarch64) stub=addonaa64.efi.stub ;;
+  *) echo "::error::test-uki-gate.sh: unknown architecture $(uname -m)"; exit 1 ;;
+esac
 cid="$(sudo podman create -q "$image")"
 sudo podman cp "$cid:/boot" "$t/image"
-sudo podman cp "$cid:/usr/lib/systemd/boot/efi/addonx64.efi.stub" "$t/"
+sudo podman cp "$cid:/usr/lib/systemd/boot/efi/$stub" "$t/addon.efi.stub"
 sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$t/image-next.pem"
 sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$t/image-retired"
 sudo podman rm -f "$cid" >/dev/null
@@ -124,7 +130,7 @@ sign "$t/unsigned.efi" "$t/resigned/$uki"
 gate "$t/resigned" "$t/gate.crt"
 
 # A signed add-on (a kernel command line that turns credential import back on) in place of the UKI.
-sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$t:/t" "$image" ukify build --stub /t/addonx64.efi.stub \
+sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp -v "$t:/t" "$image" ukify build --stub /t/addon.efi.stub \
   --cmdline systemd.import_credentials=yes --output /t/addon.efi
 sudo chown -R "$(id -u):$(id -g)" "$t"
 copy addon

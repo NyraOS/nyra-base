@@ -134,3 +134,8 @@ mokutil --test-key nyra.der; mokutil --import nyra.der
   (`tools/install/test-verified-pull.sh`), the LUKS, TPM, record and `esp-sync` steps and the header
   check (`tools/vm/install-encrypted.sh` and the encryption tests), and that the recovery key is
   shown once and is in no log (`tools/install/test-recovery-key.sh`).
+- On an arm64 VM (UTM on Apple Silicon, or QEMU with AAVMF) there is no SMM and no secure world, so
+  root in the guest can write the firmware's variable store, Secure Boot's `db` and the MOK list
+  included: there, Secure Boot variables are not protected against a compromised running system.
+  What remains is the TPM's PCR 7 binding: a changed `db` or MOK list makes the disk ask for its
+  recovery key (docs/ARM64.md, "Releases"). arm64 releases are not published yet.

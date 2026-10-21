@@ -549,14 +549,13 @@ LOGO=nyra-logo
   once per run; `ci/build-image.sh` passes it to every build of the run (`NYRA_VERSION`), so the
   reproducibility check builds the same file. A build without it (a local one) says `dev`. Anything
   else fails the build.
-- **arm64** (`arm64.yml`) computes it the same way, with its own run number: year.month of the
-  snapshot and the arm64 workflow's run number. Each workflow's run number only grows, so versions
-  compare correctly among the images of one architecture, which is all an update ever compares
-  (a machine only gets images of its own architecture). The same number on x86_64 and arm64 does
-  not mean the same commit: the image's `org.opencontainers.image.revision` label says which commit
-  it is. A shared counter would need one workflow to wait for the other, or a lookup in the GitHub
-  API, for nothing an update needs today; when arm64 images are published, the release that builds
-  both architectures under one version will give them one number.
+- **arm64**: the arm64 release jobs of `image.yml` (docs/ARM64.md, "Releases") compute it the same
+  way in the same run, so both architectures of a release have one version. `arm64.yml`, which
+  releases nothing, uses its own run number: year.month of the snapshot and the arm64 workflow's run
+  number. Each workflow's run number only grows, so versions compare correctly among the images of
+  one architecture, which is all an update ever compares (a machine only gets images of its own
+  architecture). The same number from `arm64.yml` and `image.yml` does not mean the same commit: the
+  image's `org.opencontainers.image.revision` label says which commit it is.
 - **`/etc/os-release` is a link**, as the os-release specification asks: a file there would keep
   the name and version of the image an installation started from. Programs read `/etc/os-release`
   first.

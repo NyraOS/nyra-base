@@ -22,7 +22,8 @@ from our registry that do not carry that signature.
    On a release (the "release mode", below), the release build leaves its UKI unsigned and the next
    two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
-   GitHub-hosted runners; `sign` and `release-sign` are the only jobs with `id-token: write`, and
+   GitHub-hosted runners; `sign`, `release-sign` and `release-sign-arm64` are the only jobs with
+   `id-token: write`, and
    `sign` is the only job in the GitHub environment `sign`:
    - GitHub issues an OIDC token for the workflow run;
    - Google Workload Identity Federation (the pool `github-sign`) accepts it only for this
@@ -228,7 +229,9 @@ In the `sign` job, the same script also checks that:
 These positive checks first run on the first release build after GCP is configured (below).
 
 The UKI release gate is tested on every build too (`tools/signing/test-uki-gate.sh`), on the image just
-built, whose UKI is signed with that run's throwaway key:
+built, whose UKI is signed with that run's throwaway key; on the x86_64 image in `image.yml` and on the
+AArch64 UKI (PE machine `0xAA64`) in `arm64.yml`, whose pull request runs also cover changes to
+`tools/signing/`:
 
 - accepted with that run's certificate and policy key (so the refusals below are not a gate that
   refuses everything);
@@ -466,7 +469,9 @@ Then, in this order:
 **Who can sign:**
 - **image signatures: only a job in the environment `sign` of `image.yml` on `main`**, that is, the
   `sign` job. The KMS keys: **any job of `image.yml` on `main`**, the `sign` job included, until the
-  `nyra-base` provider also refuses tokens that carry an environment;
+  `nyra-base` provider also refuses tokens that carry an environment; the jobs meant to use them are
+  `release-sign` and `release-sign-arm64`, the only ones besides `sign` with `id-token: write`
+  (`ci/check-credential-jobs.py`);
 - until the second phase of the split (removing `nyra-image-signer`'s binding on the pool `github`
   and its KMS roles), the image signer is still reachable through the pool `github`, so also from
   `release-sign`, and still holds the KMS roles;
@@ -486,8 +491,10 @@ signatures.
 
 Every keyless image signature is public in Rekor under the signer's address, so an unexpected one is
 visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
-logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). An `AsymmetricSign`
-that matches no `release-sign` job is an incident.
+logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). A release run has one
+`release-sign` job, and a second one, `release-sign-arm64`, when the arm64 release is on
+(docs/ARM64.md, "Releases"); each makes two `AsymmetricSign` calls (`pcr-policy-1`, then `uki`). An
+`AsymmetricSign` that matches no `release-sign` or `release-sign-arm64` job is an incident.
 
 **If the repository moves** (another organisation, or a re-created repository), update the
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
@@ -500,7 +507,7 @@ Two **repository variables** are needed:
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
 gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-release-signer@<project>.iam.gserviceaccount.com"
 ```
-Only the jobs `release-sign` and `sign` of `image.yml` may have `id-token: write`, only `sign` may be in the environment `sign`, and a job that calls a reusable workflow must have exactly `permissions: {contents: read}` and pass no secrets (`ci/check-credential-jobs.py`, run on every pull request), because the identity providers check `workflow_ref`, which for a called workflow names its caller.
+Only the jobs `release-sign`, `release-sign-arm64` and `sign` of `image.yml` may have `id-token: write`, only `sign` may be in the environment `sign`, and a job that calls a reusable workflow must have exactly `permissions: {contents: read}` and pass no secrets (`ci/check-credential-jobs.py`, run on every pull request), because the identity providers check `workflow_ref`, which for a called workflow names its caller.
 
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
 of it) on `main` by push or manual run. Then, in one run:
@@ -509,10 +516,10 @@ of it) on `main` by push or manual run. Then, in one run:
   (`NYRA_RELEASE=1`, `ci/build-image.sh`). It uploads that UKI and the sealed image it was made from
   (`nyra-base-unsigned-uki`, `nyra-base-sealed-oci-archive`), not the image archive, and takes the
   committed `nyra.crt` as the certificate the tests enrol.
-- `release-sign` (the only job with `id-token: write` besides `sign`) checks both artifacts against
-  `build`'s hashes, authenticates through Workload Identity Federation, has the key `pcr-policy-1`
-  sign the main profile's PCR policy (`pcr-policy.py sign-kms` first checks the UKI as the sealed UKI,
-  then verifies the signature with the committed public key), joins it into the UKI with the sealed
+- `release-sign` (with `release-sign-arm64`, the only jobs with `id-token: write` besides `sign`)
+  checks both artifacts against `build`'s hashes, authenticates through Workload Identity
+  Federation, has the key `pcr-policy-1` sign the main profile's PCR policy (`pcr-policy.py
+  sign-kms` first checks the UKI as the sealed UKI, then verifies the signature with the committed public key), joins it into the UKI with the sealed
   image's own `ukify`, and has the key `uki` sign the result for Secure Boot (`sign-uki.sh`, with the
   committed certificate). If `KMS_WIF_PROVIDER` or `KMS_SIGNER_SA` is unset the job fails (red, not
   skipped), so a release can never go on with an unsigned image.
@@ -529,15 +536,33 @@ job ends. So `release-sign` runs no image build. The one piece of image code nea
 the join: a container of the sealed image with no network and no environment, and only three fresh
 directories mounted, never the workspace. A container escape would reach the credentials; that risk is
 accepted. `.containerignore` still keeps the credentials file out of any build context.
+For the arm64 UKI (`release-sign-arm64`) that container runs the sealed arm64 image's `ukify` on the
+x86_64 runner under qemu-user (`tools/signing/join-pcrsig.sh`): Ubuntu's `qemu-user-static`,
+installed from Ubuntu's archive and registered for binfmt_misc with the F flag in the apt step, before
+the auth step; never `docker/setup-qemu-action`, `tonistiigi/binfmt` or a container that registers an
+emulator, and the script refuses an emulator that is not that package's. qemu-user is not a boundary:
+it passes the guest's system calls straight to the host kernel, inside the container. The container
+(by image ID, `--pull=never --platform linux/arm64 --network none`, no environment, the three fresh
+directories) stays the only boundary, the same accepted risk as for x86_64.
 
 **Every KMS signature counts as a release.** A run that signs gives a UKI that boots and unlocks
 enrolled disks, also when a test then fails. The signed UKI and the release image are kept one day
-(`retention-days: 1`), but a copy taken in that time stays valid: treat every `release-sign` run as a
-release when revoking (raise the Nyra generation in SBAT, "SBAT" in docs/BOOT.md), and match the audit log's
-`AsymmetricSign` entries against `release-sign` runs, not against published releases.
+(`retention-days: 1`), but a copy taken in that time stays valid: treat every `release-sign` and
+`release-sign-arm64` run as a release when revoking (raise the Nyra generation in SBAT, "SBAT" in
+docs/BOOT.md; both architectures share it, so raising it revokes the older UKIs of both), and match the
+audit log's `AsymmetricSign` entries against those runs, not against published releases.
 
-arm64 images are not released: `arm64.yml` builds without `NYRA_RELEASE`, the Workload Identity
-Federation refuses its workflow, and the signing path for arm64 is not designed.
+**arm64.** With the repository variable `ARM64_RELEASE` set to `on`, the same run also makes an arm64
+release in jobs of `image.yml` (docs/ARM64.md, "Releases"): `build-arm64` (release mode, on an arm64
+runner), `release-sign-arm64` (the same keys, service account and steps as `release-sign`, on x86_64,
+the join under qemu-user, above), `release-image-arm64` (the same gate, plus the architecture and
+repository check of `ci/check-image-repository.sh`) and `boot-arm64`. One certificate and one MOK for
+both architectures: Authenticode and the PCR policy signature cover bytes, not a CPU, and the PCR
+policy signs measurements an x86_64 machine never makes. The jobs are in `image.yml`, never in a
+workflow it calls: the identity providers check `workflow_ref`, which names the caller, so any called
+workflow could otherwise sign. `arm64.yml` builds without `NYRA_RELEASE` and gets no token. The arm64
+image is not signed for the registry nor published yet; when it is, it goes to its own repository,
+`nyra-base-arm64`, whose signatures the policy's `matchRepository` does not accept for `nyra-base`.
 
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
@@ -629,7 +654,7 @@ may pass (exit code 1): a pulled image with the wrong digest or labels (exit cod
   contributor using the owner's account.
 - `ci/check-publish-job.py` (the `shellcheck` workflow) keeps the invariants: `publish` has
   `permissions: {contents: read}` and nothing else, no job with `id-token: write` (`sign`,
-  `release-sign`) uses the environment `publish`, no other job names `R2_*` or `CLOUDFLARE_*`
+  `release-sign`, `release-sign-arm64`) uses the environment `publish`, no other job names `R2_*` or `CLOUDFLARE_*`
   secrets, and `verify-published` has no environment.
 
 ### Re-runs, concurrency and what is not immutable

@@ -14,7 +14,9 @@
 # and the release's bootc is identical to the build cached on main (bootc-reproducible). Every job
 # that uses the image artifact checks it against the sha256 build reported (ci/check-artifact.sh).
 # A release is signed with the Nyra keys before the tests (release-sign and release-image jobs,
-# docs/SIGNING.md, "Release mode"): the tests boot that image.
+# docs/SIGNING.md, "Release mode"): the tests boot that image. With the repository variable
+# ARM64_RELEASE `on`, the same run also makes the aarch64 release (the jobs *-arm64, docs/ARM64.md,
+# "Releases"); no x86_64 job waits for them.
 # Then install-boot installs that oci-archive to a disk image and boots it (KVM), then proves the
 # boot chain on copies of that disk: Secure Boot and boot counting across updates (docs/BOOT.md),
 # and nyra-updated across real updates (docs/UPDATES.md). In parallel, the encryption-tpm and
@@ -314,40 +316,11 @@ jobs:
           e="$(sudo podman run --rm localhost/nyra-base:ci stat -c %Y /usr/lib/clock-epoch)"
           [ "$e" = "$SOURCE_DATE_EPOCH" ] || { echo "::error::/usr/lib/clock-epoch is dated $e, not $SOURCE_DATE_EPOCH"; exit 1; }
 
-      # What a release builds before its UKI is signed outside the job (ci/build-image.sh, NYRA_RELEASE=1):
-      # the image with the unsigned UKI must pass the Containerfile's `bootc container lint`, and the UKI
-      # must carry the committed policy key and no signature at all. Only on pull requests: a release
-      # run does this for real. The crates and the next key of the first build are reused (no download).
+      # What a release builds before its UKI is signed outside the job (ci/release-smoke.sh). Only on
+      # pull requests: a release run does this for real.
       - name: Release mode build smoke test (ci/build-image.sh, NYRA_RELEASE=1)
         if: github.event_name == 'pull_request'
-        run: |
-          mkdir "$WORK/uki-release"
-          sudo cp -a "$WORK/uki/crates" "$WORK/uki/pcr-next" "$WORK/uki-release/"
-          NYRA_RELEASE=1 ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:release-smoke "$WORK/uki-release" \
-            --annotation org.opencontainers.image.version="$VERSION" \
-            --label org.opencontainers.image.version="$VERSION" >/dev/null
-          files=("$WORK"/uki-release/unsigned/*)
-          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::$WORK/uki-release/unsigned must hold exactly the unsigned UKI"; exit 1; }
-          python3 -I tools/signing/uki-check.py "${files[0]}" ci/uki-cmdline.txt 0
-          python3 -I - "${files[0]}" files/usr/lib/nyra/secureboot/tpm2-pcr-public-key.pem <<'PY'
-          import json, sys
-          import pefile
-          sections = [(s.Name.rstrip(b"\0"), s.get_data().rstrip(b"\0")) for s in pefile.PE(sys.argv[1]).sections]
-          committed = open(sys.argv[2], "rb").read().strip()
-          keys = [data.strip() for name, data in sections if name == b".pcrpkey"]
-          assert keys and all(key == committed for key in keys), "the UKI's .pcrpkey is not the committed key"
-          for name, data in sections:
-              if name == b".pcrsig":
-                  assert not any("sig" in policy for bank in json.loads(data).values() for policy in bank), \
-                      "the unsigned UKI carries a PCR policy signature"
-          print("release mode: the UKI has the committed policy key and no signature")
-          PY
-          # Nothing a release signs or certifies is made here: no signing directories, no certificate, no key.
-          for path in signed policy uki.crt; do
-            [ ! -e "$WORK/uki-release/$path" ] || { echo "::error::$WORK/uki-release/$path must not exist in release mode"; exit 1; }
-          done
-          keys="$(grep -rlI --exclude-dir=crates 'PRIVATE KEY' "$WORK/uki-release")" || [ $? = 1 ]
-          [ -z "$keys" ] || { echo "::error::private key in release mode output: $keys"; exit 1; }
+        run: ci/release-smoke.sh localhost/nyra-base-rootfs:latest "$WORK"
 
       # A second build from the same inputs must give the same layers (docs/LESSONS.md). It adds ~3 min,
       # so it runs on main and by hand, not on pull requests: for a branch that changes mkosi/ or the
@@ -1819,7 +1792,8 @@ jobs:
     env:
       KMS_KEY_RING: projects/nyra-signing-3076/locations/europe-west3/keyRings/nyra
     steps:
-      - name: The KMS variables are set
+      - &kms-variables
+        name: The KMS variables are set
         env:
           KMS_WIF_PROVIDER: ${{ vars.KMS_WIF_PROVIDER }}
           KMS_SIGNER_SA: ${{ vars.KMS_SIGNER_SA }}
@@ -1868,7 +1842,8 @@ jobs:
           sudo podman image exists localhost/nyra-base:ci-sealed
 
       # libkmsp11 reads application default credentials. From here on the job can sign until it ends.
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+      - &kms-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.KMS_WIF_PROVIDER }}
           service_account: ${{ vars.KMS_SIGNER_SA }}
@@ -1985,7 +1960,8 @@ jobs:
           }
 
       # The sign job's gate (the same commands), on this image before any test boots it.
-      - name: UKI release gate (signed with the committed Nyra certificate)
+      - &release-uki-gate
+        name: UKI release gate (signed with the committed Nyra certificate)
         run: |
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
@@ -2015,3 +1991,258 @@ jobs:
           name: nyra-base-release-oci-archive
           path: dist/nyra-base.oci.tar
           retention-days: 1
+
+  # The aarch64 release (docs/ARM64.md, "Releases"), off unless the repository variable ARM64_RELEASE
+  # is `on`: a release of this run (same commit and version) for the repository nyra-base-arm64, in
+  # jobs of this workflow (the identity providers name image.yml, never a workflow it calls). The
+  # build, image and boot jobs run on GitHub's arm64 runners with the steps of arm64.yml (the local
+  # actions .github/actions/arm64-*); release-sign-arm64 runs on x86_64, where the KMS library is, and
+  # joins with the sealed arm64 image's ukify under Ubuntu's qemu-user-static. Nothing of the x86_64
+  # release needs these jobs, so an arm64 failure never holds back an x86_64 release. The arm64 image
+  # is not signed for the registry nor published yet.
+  bootc-arm64:
+    needs: changes
+    if: >-
+      needs.changes.outputs.image == 'true' && github.workflow == 'image'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        copy: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-bootc
+        with:
+          copy: ${{ matrix.copy }}
+
+  build-arm64:
+    needs: [changes, bootc-arm64]
+    if: github.workflow == 'image' && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      uki_cert: ${{ steps.build.outputs.uki_cert }}
+      version: ${{ steps.build.outputs.version }}
+      source_date_epoch: ${{ steps.build.outputs.source_date_epoch }}
+      image_layers: ${{ steps.build.outputs.image_layers }}
+      unsigned_uki_sha256: ${{ steps.build.outputs.unsigned_uki_sha256 }}
+      sealed_image_sha256: ${{ steps.build.outputs.sealed_image_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: build
+        uses: ./.github/actions/arm64-build
+        with:
+          release: "true"
+
+  # release-sign for the arm64 UKI: the same KMS keys, service account and steps, but the emulator for
+  # the join. qemu-user-static comes from Ubuntu's archive, installed and registered (binfmt_misc, F
+  # flag) in the apt step before the auth step; the sealed image is checked and loaded before it too.
+  # tools/signing/join-pcrsig.sh runs the join container as release-sign does, plus --platform
+  # linux/arm64, and refuses any other emulator. qemu-user is not a boundary; the container is.
+  # libkmsp11 is the x86_64 library of tools/signing/kms-pkcs11.sh (there is no arm64 build).
+  release-sign-arm64:
+    needs: build-arm64
+    if: github.workflow == 'image' && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      uki_sha256: ${{ steps.sign.outputs.uki_sha256 }}
+    env:
+      KMS_KEY_RING: projects/nyra-signing-3076/locations/europe-west3/keyRings/nyra
+    steps:
+      - *kms-variables
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      # Runs as root, so it comes before the auth step: no credential is present yet.
+      - name: Install sbsign, pefile, the PKCS#11 engine for openssl and qemu-user-static
+        run: |
+          sudo apt-get update -q >/dev/null
+          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
+          sudo /usr/lib/systemd/systemd-binfmt /usr/lib/binfmt.d/qemu-aarch64.conf
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-unsigned-uki
+          path: ${{ runner.temp }}/unsigned
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-sealed-oci-archive
+          path: ${{ runner.temp }}/sealed
+
+      - name: Check both artifacts and load the sealed image
+        env:
+          UNSIGNED_UKI_SHA256: ${{ needs.build-arm64.outputs.unsigned_uki_sha256 }}
+          SEALED_IMAGE_SHA256: ${{ needs.build-arm64.outputs.sealed_image_sha256 }}
+        run: |
+          files=("$RUNNER_TEMP"/unsigned/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::the unsigned UKI artifact must hold exactly one file"; exit 1; }
+          ci/check-artifact.sh "${files[0]}" "$UNSIGNED_UKI_SHA256"
+          ci/check-artifact.sh "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar" "$SEALED_IMAGE_SHA256"
+          sudo podman load -q -i "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          rm "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          sudo podman image exists localhost/nyra-base:ci-sealed
+          test "$(sudo podman image inspect -f '{{.Os}}/{{.Architecture}}' localhost/nyra-base:ci-sealed)" = linux/arm64
+
+      - *kms-auth
+
+      # As release-sign: 1. pcr-policy-1 signs the main profile's PCR 11 policy (sign-kms checks the UKI
+      # first); 2. the join, here under qemu-user (tools/signing/join-pcrsig.sh: no network, no
+      # environment, only fresh directories, never the workspace); 3. the key `uki` signs the whole file
+      # (sign-uki.sh repeats the checks on the joined file and verifies with the committed certificate).
+      - name: Sign the PCR policy and the UKI in the KMS
+        id: sign
+        run: |
+          secureboot=files/usr/lib/nyra/secureboot
+          files=("$RUNNER_TEMP"/unsigned/*)
+          name="${files[0]##*/}"
+          tmp="$(mktemp -d)"
+          . tools/signing/kms-pkcs11.sh "$tmp" "$KMS_KEY_RING"
+          join="$RUNNER_TEMP/join"
+          python3 -I tools/signing/pcr-policy.py sign-kms "${files[0]}" "$secureboot/tpm2-pcr-public-key.pem" \
+            'pkcs11:object=pcr-policy-1;type=private' > "$RUNNER_TEMP/pcrsig.json"
+          tools/signing/join-pcrsig.sh localhost/nyra-base:ci-sealed linux/arm64 "${files[0]}" "$RUNNER_TEMP/pcrsig.json" "$join"
+          PCR_PUBKEY="$secureboot/tpm2-pcr-public-key.pem" tools/signing/sign-uki.sh "$join/out" "$join/signed" \
+            --engine pkcs11 --key 'pkcs11:object=uki;type=private' --cert "$secureboot/nyra.crt"
+          echo "uki_sha256=$(sha256sum < "$join/signed/$name" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # One day of retention: this UKI is signed with the release keys whether or not the tests pass.
+      - name: Upload the signed UKI
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-arm64-release-uki
+          path: ${{ runner.temp }}/join/signed/
+          retention-days: 1
+
+  # As release-image, on an arm64 runner (the final image's RUN is arm64 code), with no token; also
+  # checks that the image is linux/arm64 and follows nyra-base-arm64 (ci/check-image-repository.sh).
+  release-image-arm64:
+    needs: [build-arm64, release-sign-arm64]
+    if: github.workflow == 'image' && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      image_sha256: ${{ steps.export.outputs.image_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-prepare
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-release-uki
+          path: ${{ runner.temp }}/signed
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-base-arm64-sealed-oci-archive
+          path: ${{ runner.temp }}/sealed
+
+      - name: Check both artifacts and load the sealed image
+        env:
+          SIGNED_UKI_SHA256: ${{ needs.release-sign-arm64.outputs.uki_sha256 }}
+          SEALED_IMAGE_SHA256: ${{ needs.build-arm64.outputs.sealed_image_sha256 }}
+        run: |
+          files=("$RUNNER_TEMP"/signed/*)
+          [ "${#files[@]}" = 1 ] && [ -f "${files[0]}" ] || { echo "::error::the signed UKI artifact must hold exactly one file"; exit 1; }
+          ci/check-artifact.sh "${files[0]}" "$SIGNED_UKI_SHA256"
+          ci/check-artifact.sh "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar" "$SEALED_IMAGE_SHA256"
+          sudo podman load -q -i "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          rm "$RUNNER_TEMP/sealed/nyra-base-sealed.oci.tar"
+          sudo podman image exists localhost/nyra-base:ci-sealed
+
+      - name: Build the release image
+        env:
+          VERSION: ${{ needs.build-arm64.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.build-arm64.outputs.source_date_epoch }}
+        run: |
+          ci/final-image.sh localhost/nyra-base:ci-sealed "$RUNNER_TEMP/signed" localhost/nyra-base:ci \
+            --annotation org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA"
+
+      - name: Same layers as the image build-arm64 checked
+        env:
+          BUILT_LAYERS: ${{ needs.build-arm64.outputs.image_layers }}
+        run: |
+          sealed="$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci-sealed)"
+          final="$(sudo podman image inspect -f '{{json .RootFS.Layers}}' localhost/nyra-base:ci)"
+          jq -n -e --argjson built "$BUILT_LAYERS" --argjson sealed "$sealed" --argjson final "$final" '
+            ($sealed | length) as $n
+            | ($final | length) == ($built | length) and ($final | length) > $n
+              and $final[:$n] == $sealed
+              and ($final | del(.[$n])) == ($built | del(.[$n]))' >/dev/null || {
+            echo "::error::The release image's layers are not build-arm64's, except for the UKI's: build $BUILT_LAYERS, release $final, sealed image $sealed."
+            exit 1
+          }
+
+      - name: Architecture and repository (ci/check-image-repository.sh)
+        run: ci/check-image-repository.sh localhost/nyra-base:ci nyra-base-arm64
+
+      - *release-uki-gate
+
+      - name: Export the release image
+        id: export
+        run: |
+          mkdir -p dist
+          sudo podman save --format oci-archive -o dist/nyra-base.oci.tar localhost/nyra-base:ci
+          sudo chown -R "$(id -u):$(id -g)" dist
+          echo "image_sha256=$(sha256sum < dist/nyra-base.oci.tar | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # One day of retention, like the signed UKI: it boots and unlocks disks whether or not the tests pass.
+      - name: Upload the release image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-base-arm64-release-oci-archive
+          path: dist/nyra-base.oci.tar
+          retention-days: 1
+
+  # The boots arm64 CI can run (no KVM on GitHub's arm64 runners: emulated, bounded by the 30-minute
+  # boot timeout and the job's): tools/vm/arm64-boot.sh on the release image, with Secure Boot on the
+  # Microsoft keys and the committed nyra.crt enrolled as the MOK. Not run on arm64: boot counting,
+  # encryption and TPM tests, Titanic (docs/ARM64.md).
+  boot-arm64:
+    needs: [build-arm64, release-image-arm64]
+    if: github.workflow == 'image' && github.ref == 'refs/heads/main' && vars.ARM64_RELEASE == 'on'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-boot
+        with:
+          artifact: nyra-base-arm64-release-oci-archive
+          image-sha256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
+          uki-cert: ${{ needs.build-arm64.outputs.uki_cert }}
