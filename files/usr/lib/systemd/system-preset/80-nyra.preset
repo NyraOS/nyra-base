@@ -12,3 +12,8 @@ disable podman-auto-update.service
 # polkit's password helper waits until something asks users for a password through polkit.
 disable udisks2.service
 disable polkit-agent-helper.socket
+# SSH (docs/DEFAULTS.md, "SSH"): the server is in the image but off; its units are also blocked
+# until a layer creates /usr/lib/nyra/allow-ssh. Debian enables ssh.service.
+disable ssh.service
+disable ssh.socket
+disable sshd-keygen.service

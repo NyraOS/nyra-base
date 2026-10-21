@@ -77,9 +77,21 @@ Each line is something that broke or surprised us once.
   fetches over http, so it checks the InRelease `Suite` and `Date` itself; mkosi fetches the snapshot
   over https (`snapshot.debian.org`), where a network attacker cannot swap files.
 - At runtime bootc needs `ostree` and `zstd` in the image, or `bootc container lint` complains.
-- **No SSH server in the shared base:** Debian's `openssh-server` generates host keys when it is
-  installed, so they would end up in a public image. Enable SSH, with keys generated on the machine, in a
-  layer that needs it.
+- **SSH host keys never go in the image, not even in a hidden layer.** Debian's `openssh-server`
+  generates host keys when it is installed, so they would end up in a public image, the same on every
+  machine. Removing them in the Containerfile is not enough: a `RUN rm` only adds whiteouts in a
+  later layer, and the keys stay in the mkosi layer for whoever pulls the image. mkosi removes them
+  (`RemoveFiles=`), the Containerfile only checks, and CI reads every layer of the exported image
+  (`ci/no-host-keys.py`). The same holds for any secret a package script makes. `sshd-keygen.service`
+  makes the keys on the machine; Debian's runs on the first boot only (`ConditionFirstBoot=yes`): SSH
+  turned on later would start without keys, so a drop-in resets its conditions.
+- **Installing sshd turns on systemd's SSH sockets.** `systemd-ssh-generator` (systemd 256 and later)
+  writes `sshd-unix-local.socket` at every boot once an sshd binary is there, `sshd-vsock.socket` in a
+  VM, and `sshd-extra-N.socket` for each `systemd.ssh_listen=` or `ssh.listen` credential: names a
+  drop-in cannot all cover. The base removes the generator (docs/DEFAULTS.md, "SSH").
+- **Package tmpfiles lines can touch `/usr`.** openssh-client's `z /usr/bin/ssh-agent 2755 root _ssh`
+  would change a file in the read-only `/usr` at every boot; such a line goes from the image (its
+  effect is set at build time, or not at all).
 
 ## Configuration
 - **Never configure through `/etc` in the image.** On an installed system `/etc` is kept across updates

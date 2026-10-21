@@ -204,6 +204,77 @@ time: ntpd-rs serves no time and has no network control port (see "Time").
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
 
+## SSH
+
+The OpenSSH server (Debian's `openssh-server`) is in the image, **off**. A layer that offers SSH
+(a server edition) creates `/usr/lib/nyra/allow-ssh`; on the desktop it stays off, and the
+firewall has no opening for it either (see "Firewall").
+
+- **Off as installed.** Our preset disables `ssh.service`, `ssh.socket` and `sshd-keygen.service`,
+  and a `ConditionPathExists=/usr/lib/nyra/allow-ssh` drop-in blocks them and the per-connection
+  `sshd@.service`. `systemd-ssh-generator` is not in the image: once sshd is installed it writes
+  sockets for it at every boot (`/run/ssh-unix-local/socket`, AF_VSOCK in a VM, and one for each
+  `systemd.ssh_listen=` or `ssh.listen` credential); a layer that offers SSH can bring it back. An
+  administrator turns it on as for the other blocked units (see "Units"): a drop-in with an empty
+  `ConditionPathExists=` for `ssh.service` and `sshd-keygen.service`, then
+  `systemctl enable --now ssh.service`, plus a firewall rule for port 22.
+- **No host keys in the image.** Debian's package script makes them when the package is installed,
+  so they would be the same on every machine and public with the image: mkosi removes them where
+  they are made (`RemoveFiles=`), so no layer of the image has them; the Containerfile fails if one
+  is there, and CI reads every layer of the exported image for them (`ci/no-host-keys.py`): a key
+  removed in a later layer would still be in an earlier one. `sshd-keygen.service` makes the missing ones (`ssh-keygen -A`) on
+  the machine before sshd starts, on any boot (Debian's runs on the first boot only; SSH may be
+  turned on much later).
+- **How one logs in** (`/usr/lib/nyra/ssh/10-nyra.conf`, linked from `/etc/ssh/sshd_config.d`):
+  with a key alone, or with a password **and** a one-time code from an authenticator app; never
+  with a password alone, and never as root.
+
+  ```
+  PasswordAuthentication no
+  KbdInteractiveAuthentication yes
+  AuthenticationMethods publickey keyboard-interactive:pam
+  UsePAM yes
+  PermitRootLogin no
+  PerSourcePenalties yes
+  ```
+
+  sshd takes the first value of each setting it reads, and Debian's `/etc/ssh/sshd_config` includes
+  `sshd_config.d` before its own lines, so these win over them; an administrator's file there that
+  sorts before `10-nyra.conf` wins over these. `PerSourcePenalties` (OpenSSH's defaults) refuses an
+  address for a while after repeated failed logins.
+- **The password and the code** go through PAM (`/usr/lib/nyra/pam.d/sshd`, linked from
+  `/etc/pam.d/sshd`): Debian's stack for sshd with its authentication lines (`@include common-auth`)
+  replaced by
+
+  ```
+  auth required pam_unix.so
+  auth required pam_nyra_totp.so
+  ```
+
+  Both are `required`: the code is asked even after a wrong password (a `requisite` would tell that
+  the password was wrong), and neither factor is enough alone (a `sufficient` would let one in).
+  No `nullok`. `pam_nyra_totp.so` (from [pam-totp](https://github.com/NyraOS/pam-totp), at the
+  commit in `pam-totp/commit`) asks `Verification code:` and accepts a code of the user's
+  authenticator app (TOTP: SHA1, 6 digits, 30 seconds, one step either side, never the same step
+  twice) or an unused recovery code; a user without two-step authentication is always refused, so
+  for that user only a key works. Every other line is Debian's: the image build fails when one
+  differs. Keys do not go through these lines.
+- **The console is unchanged.** `login`'s PAM stack (the consoles, tty1 and the serial console)
+  does not use the module: the password alone still logs in there.
+- **Two-step authentication** is turned on by an administrator, for any user:
+  `2fa enable [USER]` (a QR code, the secret, and recovery codes), `2fa status`, `2fa disable`,
+  `2fa recovery`. `2fa` is a link to `/usr/libexec/nyra-2fa`. Each user's state is
+  `/var/lib/nyra/2fa/<uid>`; the directory belongs to root, mode `0700` (`tmpfiles.d/nyra-2fa.conf`),
+  so a user cannot read or remove it, even after logging in.
+- **The client** (`openssh-client`: `ssh`, `scp`, `sftp`, `ssh-agent`) is in the image too; the
+  server does not pull it in. Changed from Debian's: `ssh-keysign` (host-based authentication, off) is not
+  setuid root, and `ssh-agent` is not setgid `_ssh`; Debian's tmpfiles line that sets the latter
+  again at every boot is removed (it would fail on the read-only `/usr`).
+
+`tools/vm/ssh-2fa.sh` checks all of this in CI: off as installed; then, turned on for the test only
+(a drop-in in `/run`), the logins over SSH from inside the VM, with and without the code, a code
+used twice, a key, root, a console login, and the penalty for an address that keeps failing.
+
 ## Without a network
 
 A boot without any network (a laptop away from its Wi-Fi, the cable unplugged) is an ordinary boot:
@@ -577,7 +648,8 @@ LOGO=nyra-logo
   `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d`, so the health notice (`/run/issue.d`,
   docs/UPDATES.md) is still at the prompt. Both consoles (`getty@tty1`, `serial-getty@ttyS0`) run
   agetty without `--issue-file`, so both show this. `/etc/issue.net`
-  stays Debian's: only a telnet or SSH server would show it, and the base has neither.
+  stays Debian's: only a telnet or SSH server would show it, the base has no telnet server, and
+  sshd shows it only with a `Banner` line, which the image does not set (see "SSH").
 - **The message after a login** is `/usr/lib/motd`: "Welcome to Nyra OS." and "Help and news:
   https://nyraos.com". `pam_motd` (login's PAM stack) shows the first found of `/etc/motd`,
   `/run/motd` and `/usr/lib/motd`, so Debian's `/etc/motd` is removed from the image (one the
