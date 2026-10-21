@@ -85,3 +85,12 @@ skopeo copy --insecure-policy --remove-signatures --preserve-digests \
   "docker://$repo@$signed" docker://updates.nyraos.com/elsewhere:1 >/dev/null
 skopeo copy --insecure-policy "docker://$repo:$sig" "docker://updates.nyraos.com/elsewhere:$sig" >/dev/null
 refused "is not accepted" copy "docker://updates.nyraos.com/elsewhere@$signed" dir:/t/pull
+
+# And to the other repository of the allow-list, the other architecture's: the property that keeps an
+# arm64 signature from vouching for an amd64 image, and the reverse.
+other=nyra-base
+[ "$name" != nyra-base ] || other=nyra-base-arm64
+skopeo copy --insecure-policy --remove-signatures --preserve-digests \
+  "docker://$repo@$signed" "docker://updates.nyraos.com/$other:1" >/dev/null
+skopeo copy --insecure-policy "docker://$repo:$sig" "docker://updates.nyraos.com/$other:$sig" >/dev/null
+refused "is not accepted" copy "docker://updates.nyraos.com/$other@$signed" dir:/t/pull

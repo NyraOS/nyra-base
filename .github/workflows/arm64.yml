@@ -145,12 +145,17 @@ jobs:
           if ci/check-image-repository.sh localhost/nyra-base:ci-sealed nyra-base; then
             echo "::error::an arm64 image was accepted for nyra-base"; exit 1
           fi
+          # The sealed image has no UKI under /boot (ci/final-image.sh adds the signed one): the files
+          # sign-arm64's release gate also copies out of the image are what is read here.
           cid="$(sudo podman create -q --platform linux/arm64 localhost/nyra-base:ci-sealed)"
           sudo podman cp "$cid:/boot" "$RUNNER_TEMP/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$RUNNER_TEMP/next.pem"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-retired-keys" "$RUNNER_TEMP/retired"
           sudo podman rm -f "$cid" >/dev/null
-          [ -n "$(find "$RUNNER_TEMP/boot" -name '*.efi' -print -quit)" ]
+          echo "/boot of the sealed image:"; find "$RUNNER_TEMP/boot" | head -20
+          echo "retired keys:"; ls "$RUNNER_TEMP/retired"
+          [ -s "$RUNNER_TEMP/next.pem" ] || { echo "::error::tpm2-pcr-public-key-next.pem was not copied out of the image"; exit 1; }
+          grep -q 'BEGIN PUBLIC KEY' "$RUNNER_TEMP/next.pem" || { echo "::error::tpm2-pcr-public-key-next.pem is not a public key"; exit 1; }
           reg="$RUNNER_TEMP/registry"
           mkdir "$reg"
           ci/pinned-images.sh "$RUNNER_TEMP/pinned-images" registry
