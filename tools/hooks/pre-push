@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
-# Nyra OS: refuse direct pushes to main (CONTRIBUTING.md). Work goes through a branch and a pull request.
-# An accident guard, not a security boundary: GitHub's branch protection on main is the boundary for
-# direct pushes, this refuses the push before it leaves the machine. NYRA_ALLOW_MAIN=1 skips the check.
-while read -r _ _ remote_ref _; do
+# Nyra OS pre-push guard (CONTRIBUTING.md):
+#  1. refuse direct pushes to main. Work goes through a branch and a pull request. An accident guard,
+#     not a security boundary: GitHub's branch protection on main is the boundary for direct pushes,
+#     this refuses the push before it leaves the machine. NYRA_ALLOW_MAIN=1 skips the check.
+#  2. run ci/precheck.sh (the offline checks of CI, about a minute) when the pushed commits change
+#     anything but documentation; a documentation-only push gets the secret scan alone. The checks run
+#     on the checked-out tree, so the pushed branch must be the checked-out one.
+#     `git push --no-verify` skips this hook, main guard included: for emergencies only (a failed
+#     check is a failure CI would find later, at a cost of minutes of CI and of everyone's time).
+root="$(git rev-parse --show-toplevel)" || exit 1
+head="$(git rev-parse HEAD)"
+changed=0 docs_only=1
+while read -r local_ref local_sha remote_ref _; do
   if [ "$remote_ref" = "refs/heads/main" ] && [ "${NYRA_ALLOW_MAIN:-0}" != "1" ]; then
     echo "pre-push: direct push to main refused. Push a branch and open a pull request (CONTRIBUTING.md)." >&2
     exit 1
   fi
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac # a deletion: nothing to check
+  if [ "$local_sha" != "$head" ]; then
+    echo "pre-push: $local_ref is not the checked-out commit, so ci/precheck.sh cannot check it." >&2
+    echo "Check it out and push again, or skip the checks with git push --no-verify (emergencies only)." >&2
+    exit 1
+  fi
+  # The commits that are not on origin/main yet; without origin/main, everything counts as changed.
+  if base="$(git merge-base origin/main "$local_sha" 2>/dev/null)"; then
+    files="$(git diff --name-only "$base" "$local_sha")"
+  else
+    files="(no origin/main)"
+  fi
+  [ -n "$files" ] || continue
+  changed=1
+  if printf '%s\n' "$files" | grep -qvE '\.md$'; then docs_only=0; fi
 done
-exit 0
+[ "$changed" = 1 ] || exit 0
+if [ "$docs_only" = 1 ]; then
+  exec "$root/ci/precheck.sh" --only gitleaks
+fi
+exec "$root/ci/precheck.sh"

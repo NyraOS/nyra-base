@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Lints the shell scripts with the shellcheck preinstalled on the GitHub-hosted Ubuntu runner.
-# The scripts are the tracked files whose first line is a sh/bash/dash shebang.
-# Also checks the workflows with actionlint (syntax, expressions, reusable workflow calls; the shell in
-# them is not linted) and runs the offline self-tests of the test tools, so a workflow that runs only
-# at night (titanic.yml) is checked on every pull request too.
+# Runs ci/precheck.sh, the list of the offline checks (run it before a push too): lints the shell
+# scripts with the shellcheck preinstalled on the GitHub-hosted Ubuntu runner (the scripts are the
+# tracked files whose first line is a sh/bash/dash shebang), checks the workflows with actionlint
+# (syntax, expressions, reusable workflow calls; the shell in them is not linted) and runs the offline
+# self-tests of the test tools, so a workflow that runs only at night (titanic.yml) is checked on every
+# pull request too.
 name: shellcheck
 on:
   push:
@@ -22,86 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: shellcheck
-        run: |
-          shellcheck --version
-          mapfile -t scripts < <(git ls-files | while read -r f; do
-            head -n 1 "$f" | grep -qE '^#!(/usr)?/bin/(env )?(ba|da)?sh( |$)' && echo "$f"; done)
-          printf '%s\n' "${scripts[@]}"
-          shellcheck -S warning "${scripts[@]}"
-      - name: Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)
-        run: tools/vm/security-defaults.sh --self-test
-      - name: The copies of /etc, their restore, and which a run removes (tools/vm/test-etc-copy.sh)
-        run: sudo tools/vm/test-etc-copy.sh
-      - name: Offline test of the network health check (tools/vm/test-network-health.sh)
-        run: tools/vm/test-network-health.sh
-      - name: Self-test of the console matching (tools/vm/vm-boot.py)
-        run: python3 -I tools/vm/vm-boot.py --self-test
-      - name: Offline test of the disk's TPM2 enrollment script (tools/vm/test-tpm-enroll.sh)
-        run: tools/vm/test-tpm-enroll.sh
-      - name: Self-test of the Titanic results (tools/titanic/results.py)
-        run: python3 -I tools/titanic/results.py --self-test
-      - name: Self-test of the cached image check (ci/verify-oci.py)
-        run: python3 -I ci/verify-oci.py --self-test
-      - name: Self-test of the image.yml change check (ci/image-yml-change.py)
-        run: python3 -I ci/image-yml-change.py --self-test
-      - name: Release jobs unpack no cache (ci/check-release-cache.py)
-        run: python3 -I ci/check-release-cache.py --self-test && python3 -I ci/check-release-cache.py
-      - name: Self-test of the artifact check (ci/check-artifact.sh)
-        run: ci/check-artifact.sh --self-test
-      - name: Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)
-        run: tools/signing/test-sign-uki.sh
-      - name: Only sign-uki.sh signs with an engine or a pkcs11 key
-        run: |
-          # The brackets keep this line from matching itself.
-          if git grep -nE 'sbsign.*(--engin[e]| -[e]( |=|$)|pkcs1[1])' -- . ':!tools/signing/sign-uki.sh'; then
-            echo "only tools/signing/sign-uki.sh may sign with an engine or a pkcs11 key" >&2
-            exit 1
-          fi
-      - name: Only the sign job is in the environment sign and only sign and the release-sign jobs have id-token
-        run: |
-          python3 -I - <<'EOF'
-          import sys, yaml
-          workflow = yaml.safe_load(open(".github/workflows/image.yml"))
-          jobs = workflow["jobs"]
-          errors = []
-          def err(msg):
-              print(f"::error::image.yml: {msg}")
-              errors.append(msg)
-          def env_name(job):
-              env = job.get("environment")
-              return env.get("name") if isinstance(env, dict) else env
-          def may_get_token(perms):
-              # write-all, read-all and the like are not mappings: counted as granting it.
-              return not isinstance(perms, dict) or perms.get("id-token") == "write"
-          if not isinstance(workflow.get("permissions"), dict) or "id-token" in workflow["permissions"]:
-              err("the workflow-level permissions must be a mapping without id-token")
-          for name, job in jobs.items():
-              if "uses" in job:
-                  err(f"{name} must not call a reusable workflow")
-              env = env_name(job)
-              if env is not None and "$" + "{{" in str(env):
-                  err(f"{name}: the environment name must not be an expression")
-              if name == "sign":
-                  if env != "sign":
-                      err("the sign job must have exactly environment: sign")
-              elif str(env).strip().lower() == "sign":
-                  err(f"only the sign job may have environment: sign, not {name}")
-              if name in ("release-sign", "release-sign-arm64") and "environment" in job:
-                  err(f"{name} must have no environment")
-              perms = job.get("permissions")
-              if name in ("sign", "release-sign", "release-sign-arm64"):
-                  if not isinstance(perms, dict) or perms.get("id-token") != "write":
-                      err(f"{name} must have id-token: write")
-              elif perms is not None and may_get_token(perms):
-                  err(f"{name}: permissions must be a mapping without id-token: write")
-          sys.exit(1 if errors else 0)
-          EOF
-      - name: The publish job holds the secrets and cannot sign (ci/check-publish-job.py)
-        run: python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py
-      - name: Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)
-        run: python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py
-      - name: actionlint
+      - name: Install actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -111,4 +33,9 @@ jobs:
             "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$f"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # The checks themselves are listed in ci/precheck.sh, which runs the same on a developer's machine
+      # before a push: shellcheck, the self-tests of the test tools, the lints of ci/ and the workflows,
+      # and actionlint. The secret scan is the secrets workflow's.
+      - name: Offline checks (ci/precheck.sh)
+        run: ci/precheck.sh
