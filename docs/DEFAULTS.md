@@ -9,7 +9,7 @@ it is something the user switches on, not off), and how CI proves it.
 |---|---|---|
 | AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it, and without `/etc/apparmor.d` (an emptied `/etc`) the image's profiles load from a copy in `/usr/lib/nyra/apparmor.d` (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
 | Kernel lockdown `integrity` | `lockdown=integrity` in `/usr/lib/bootc/kargs.d/10-nyra-lockdown.toml`; Debian's kernel also turns it on under Secure Boot | `/sys/kernel/security/lockdown` shows `[integrity]` |
-| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added; the same for a port published by a rootful container and for a container's own address (`forward`), and for a rootless published port, while they answer on the machine and containers still reach out (`tools/vm/container-ports-guest.sh`) |
+| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added; the same for a port published by a rootful container (IPv4 and IPv6) and for a container's own address (`forward`), while they answer on the machine and containers still reach out. Rootless published ports are not covered by this test: the image has no pasta or slirp4netns. The test: `tools/vm/container-ports-guest.sh` |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
@@ -207,11 +207,13 @@ time and has no network control port (see "Time").
   NetworkManager introspection data into the base before anything uses its API. When firewalld
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
 - Containers can still reach the network, rootless (Distrobox, `podman run` as a user) or rootful.
-  What the firewall stops is inbound traffic. A port published with `podman run -p`, rootful or
-  rootless, and a server started inside Distrobox answer on this machine (`127.0.0.1` and its own
-  addresses) and not from other machines, until a rule opens it: for a rootful container a rule in
-  `forward` (the destination port there is the container's own, after the DNAT), for a rootless one or a Distrobox server a rule in `input`. Rootless containers forward
-  nothing (pasta listens on the host like any other program), and Distrobox shares the host's network.
+  What the firewall stops is inbound traffic. A port published by a rootful container with
+  `podman run -p` answers on this machine (`127.0.0.1` and its own addresses; for IPv6 its own
+  addresses, not `::1`) and not from other machines, until a rule in `forward` opens it (the
+  destination port there is the container's own, after the DNAT). A server started inside Distrobox
+  shares the host's network and needs a rule in `input`. Rootless published ports (pasta) would listen
+  on the host like any other program and fall under `input`, but the image has no pasta or slirp4netns
+  and this is not tested.
   Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule in `input`: the
   container's queries go to the bridge's address.
 - netavark has a forward chain of its own (table `inet netavark`, policy accept, same priority). Several

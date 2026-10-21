@@ -8,7 +8,7 @@
 # Containerfile stay inactive), the signature policy in place and owned by root, unused
 # filesystems not autoloaded, the ESP read-only at /boot, no kernel audit lines on the console
 # (with a control) while the journal keeps them. Containers follow the same inbound default deny
-# (tools/vm/container-ports-guest.sh): a rootful or rootless published port is reachable on the
+# (tools/vm/container-ports-guest.sh): a rootful published port (IPv4 and IPv6) is reachable on the
 # machine and not from the network, and a container still reaches out.
 # Each guest command must end with the status of its whole check: vm-boot.py reads only the last
 # status and the guest shell has no set -e or pipefail, so checks are joined with && and loops set

@@ -7,11 +7,11 @@
 # firewall probe there) exactly as far as the policy says:
 #   - a rootful published port answers on this machine (127.0.0.1 and its own address) and not from the
 #     network; neither does the container's own address, with a route to it through this machine
-#   - a rootless published port (pasta) the same
 #   - a container still reaches the network, and the answers come back
 # The container image is this system's /usr in a directory root (no registry, no network needed).
-# Exit status 0 when every check held. SKIP_ROOTLESS=1 skips the rootless part (a rehearsal without a
-# user of its own); PODMAN replaces the podman command line (a rehearsal with a store of its own).
+# Rootless published ports (pasta) are not covered: the image has no pasta or slirp4netns.
+# Exit status 0 when every check held. PODMAN replaces the podman command line (a rehearsal with a
+# store of its own).
 set -u
 cd /
 
@@ -72,16 +72,23 @@ if wait_local http://127.0.0.1:8081/; then
 	expect 200 "$(status http://198.51.100.1:8081/)" "rootful published port, from this machine (its own address)"
 	expect 000 "$(outside http://198.51.100.1:8081/)" "rootful published port, from the network"
 	cip="$($podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cports-web)"
-	echo "container address: $cip"
-	expect 1 "$(echo "$cip" | grep -c '^[0-9.]*$')" "the container has an address"
-	ip -n cports route add 10.88.0.0/16 via 198.51.100.1
+	net="$($podman network inspect podman -f '{{range .Subnets}}{{.Subnet}}{{end}}')"
+	echo "container address: $cip in $net"
+	echo "$cip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+	expect 0 $? "the container has an address"
+	echo "$net" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+	expect 0 $? "the container network has a subnet"
+	ip -n cports route add "$net" via 198.51.100.1
+	expect 0 $? "the probe has a route to the container network through this machine"
 	expect 000 "$(outside "http://$cip:8081/")" "the container's own address, from the network (routed through this machine)"
-	# Control: an explicit accept rule opens the port, so the drop above was the forward chain.
+	# Control: an explicit accept rule opens the port and the address, so the drops were the forward chain.
 	nft insert rule inet nyra forward iifname c0 tcp dport 8081 accept
 	expect 200 "$(outside http://198.51.100.1:8081/)" "rootful published port, from the network, with an accept rule in the forward chain"
+	expect 200 "$(outside "http://$cip:8081/")" "the container's own address, from the network, with an accept rule in the forward chain"
 	h="$(nft -a list chain inet nyra forward | sed -n 's/.*iifname "c0".*# handle \([0-9]*\)$/\1/p')"
 	nft delete rule inet nyra forward handle "$h"
 	expect 000 "$(outside http://198.51.100.1:8081/)" "rootful published port, from the network, with the rule removed"
+	expect 000 "$(outside "http://$cip:8081/")" "the container's own address, from the network, with the rule removed"
 else
 	echo "FAILED: the published port 8081 does not answer on this machine"
 	$podman logs cports-web 2>&1 | tail -5
@@ -100,31 +107,22 @@ expect outside "$(echo "$out" | tail -1)" "a rootful container on a network of i
 $podman network rm cports-net >/dev/null 2>&1
 $podman rm -f cports-web >/dev/null 2>&1
 
-# --- rootless: a published port ----------------------------------------------------------------------------
-if [ -n "${SKIP_ROOTLESS:-}" ]; then
-	echo "skipped: the rootless published port (SKIP_ROOTLESS)"
-elif ! command -v pasta >/dev/null 2>&1 && ! command -v slirp4netns >/dev/null 2>&1; then
-	echo "skipped: the rootless published port (the image has neither pasta nor slirp4netns, so podman cannot publish a port as a user)"
+# --- IPv6: a published port on a network with IPv6 ----------------------------------------------------------
+ip addr add fd00:51::1/64 dev c0 nodad && ip -n cports addr add fd00:51::2/64 dev c1 nodad
+expect 0 $? "IPv6 addresses on the probe link"
+$podman network create --ipv6 --disable-dns cports-v6 >/dev/null
+$podman run -d --name cports-web6 --network cports-v6 -p 8083:8083 --rootfs -v /usr:/usr:ro "$dir/root" /usr/bin/python3 -m http.server 8083 --bind :: >/dev/null
+expect 0 $? "a container on an IPv6 network publishing 8083 starts"
+if wait_local "http://[fd00:51::1]:8083/"; then
+	expect 200 "$(status "http://[fd00:51::1]:8083/")" "IPv6 published port, from this machine (its own address)"
+	expect 000 "$(outside "http://[fd00:51::1]:8083/")" "IPv6 published port, from the network"
 else
-	id cports >/dev/null 2>&1 || useradd -m cports || fail=1
-	uid="$(id -u cports)"
-	# A user's container root must belong to that user (the user namespace maps no other owner).
-	mkroot "$dir/user-root" && chown -R cports "$dir/user-root"
-	install -d -o cports -m 700 "/run/user/$uid"
-	user() { runuser -u cports -- env HOME=/home/cports XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }
-	user podman run -d --name cports-user --cgroups=disabled -p 8082:8082 --rootfs -v /usr:/usr:ro "$dir/user-root" \
-		/usr/bin/python3 -m http.server 8082 --bind 0.0.0.0 >/dev/null
-	expect 0 $? "a rootless container publishing 8082 starts"
-	if wait_local http://127.0.0.1:8082/; then
-		expect 200 "$(status http://127.0.0.1:8082/)" "rootless published port, from this machine (127.0.0.1)"
-		expect 000 "$(outside http://198.51.100.1:8082/)" "rootless published port, from the network"
-	else
-		echo "FAILED: the published port 8082 does not answer on this machine"
-		user podman logs cports-user 2>&1 | tail -5
-		fail=1
-	fi
-	user podman rm -f cports-user >/dev/null 2>&1
+	echo "FAILED: the published port 8083 does not answer on this machine over IPv6"
+	$podman logs cports-web6 2>&1 | tail -5
+	fail=1
 fi
+$podman rm -f cports-web6 >/dev/null 2>&1
+$podman network rm cports-v6 >/dev/null 2>&1
 
 nft list chain inet nyra forward
 kill "$server" 2>/dev/null
