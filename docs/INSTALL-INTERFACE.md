@@ -37,7 +37,10 @@ docs/SIGNING.md). The facts about the machine are not refusals: the program deci
   Key; it has been checked against docs/SIGNING.md.
 - `reserved`: the names of the system, which an administrator cannot take, one per line of the file
   `reserved-names` at the root of the tree (an empty list if the tree has no such file; a file that
-  cannot be read, or that is not a regular file, makes `check` fail).
+  cannot be read, or that is not a regular file, makes `check` fail). Whatever makes the tree writes it
+  from the image it contains with `tools/install/reserved-names.sh IMAGE TREE`: the accounts and groups
+  of the image, the names its `sysusers.d` files declare, and `root`, sorted, one per line, 0644.
+  `install` refuses a name on it, and the image refuses it again.
 
 ## `disks`
 
@@ -91,9 +94,15 @@ it once and takes the verdict and the fields from that one reading.
 
 - The line is read into a variable, checked by `jq` through a pipe and dropped. It is never an
   argument, never in the environment, never in the log.
-- This version does not use the passwords yet: `unlock: password` is refused (a disk meant to open with
-  a password must not be installed as a TPM-only disk), and the administrator is checked and not
-  created.
+- `unlock: password` is refused for now (a disk meant to open with a password must not be installed as a
+  TPM-only disk).
+- The administrator is made at the first boot of the installed system, not by the installer: the image's
+  own tools turn the password into a yescrypt hash before the disk is touched (`admin-record`, which gets
+  the password on the standard input of the container, never as an argument or in the environment), and
+  `NAME:HASH` goes into the new system as `/var/lib/nyra/first-admin` (docs/BOOT.md, "The first
+  administrator and the fixed defaults"). The system then starts with `en_US.UTF-8`, the US keyboard, UTC
+  and the host name `nyra`, and asks nothing. A name or a password that the image refuses is a failure
+  of `verify`, before the first write.
 - A wrong `confirm` is refused before anything is written, like a disk that is not eligible.
 - The whole entry of `disks` for the chosen disk is kept, and checked again after the image is pulled,
   just before the first write: it must be identical (the same model, size, serial, partitions), or
@@ -152,7 +161,10 @@ is in use, read-only, too small or the one the machine started from, of a disk t
 during the pull or replaced by another one (another model and size) under the same name, of a machine
 without Secure Boot, a TPM or memory, of answers that are incomplete, hold two values or a key twice,
 have trailing text or are too long, and of an installation without a terminal; that
-the recovery key is on the terminal after `go` and in no file, event or log; and that no password is in
-an argument, the environment, `ps` or any file. The real steps are tested as before
+the recovery key is on the terminal after `go` and in no file, event or log; that the administrator's
+password reaches the image on the standard input of its container (and a copy that puts it on the
+command line is caught), the record is made before the disk is touched and is given to the step that
+installs the system, and a record that fails is a failure of `verify` with the disk as it was; and that
+no password is in an argument, the environment, `ps` or any file. The real steps are tested as before
 (`tools/install/test-recovery-key.sh`, `tools/install/test-verified-pull.sh`,
 `tools/vm/install-encrypted.sh`); a whole installation from an ISO is not tested by this change.

@@ -21,7 +21,11 @@
 #   3. partitions the disk and runs everything else in that image's container, without network and
 #      without any pull (tools/install/in-image.sh; the same steps CI tests): LUKS2, ext4, bootc
 #      install, the record of what bootc recorded read back, the recovery key shown once and typed
-#      back, the temporary TPM2 enrollment, the removal of the key of the installation, esp-sync;
+#      back, the temporary TPM2 enrollment, the removal of the key of the installation, esp-sync.
+#      With the machine interface below, the first administrator too: the image's own tools make the
+#      yescrypt hash of the password (admin-record, before the disk is touched), and the name and
+#      the hash go into the new system's /var/lib/nyra/first-admin, which the first boot turns into
+#      the account (docs/BOOT.md, "The first administrator");
 #   4. imports the Nyra certificate as a Machine Owner Key (the owner confirms it in MokManager at
 #      the next boot).
 # After a failure past the point where the disk is changed, the disk must be installed again from the
@@ -291,6 +295,17 @@ fi
 image="$("$checkout/tools/install/verified-pull.sh" "$repo_name" "$version" "$digest" "$storage")"
 [[ "$image" =~ ^[0-9a-f]{64}$ ]] || die "verified-pull.sh did not print an image ID"
 echo "nyra-install: installing the image $image ($imgref, $digest)"
+admin=""
+if [ "$cmd" = install ]; then
+  # The first administrator's record, made by the image's own tools before the disk is touched: the
+  # password goes in on the standard input of the container (printf is a builtin: no argument), and the
+  # record, the name and the yescrypt hash, is a file in $secrets until install-system puts it in the new
+  # system. The password is gone from this script after it.
+  printf '%s\n' "$a_admin_password" | in_image -i --log-driver=none -- admin-record "$a_admin_name" /secrets/first-admin \
+    || die "cannot make the record of the administrator $a_admin_name"
+  a_admin_password=""
+  admin=/secrets/first-admin
+fi
 step_end verify
 
 # --- the disk ----------------------------------------------------------------------------------------
@@ -318,7 +333,7 @@ step_end prepare
 step install
 # The record bootc made of the reference and the digest is read back inside, before the volume is
 # closed: a machine that records anything else would update from somewhere else.
-in_image -- install-system "$device" "$key" tpm "$imgref" "$digest"
+in_image -- install-system "$device" "$key" tpm "$imgref" "$digest" ${admin:+"$admin"}
 step_end install
 
 # --- the recovery key --------------------------------------------------------------------------------

@@ -18,6 +18,10 @@
 #     An empty record of the TPM2 enrollments goes inside the encrypted root
 #     (/var/lib/nyra/tpm2-slots): the disk is one installed for the TPM, so a first boot without the
 #     TPM or with Secure Boot off is enrolled later, once the recovery key is typed with them back.
+#   - With SECRETS_DIR/admin-password (taken as it is, no newline), the first administrator as the
+#     installer makes it (docs/BOOT.md, "The first administrator"): the record made by the image's own
+#     tools from that password on the standard input (admin-record, name ADMIN_NAME, default maria) and
+#     put by install-system into the new system for the first boot.
 #   tools/vm/install-encrypted.sh IMAGE WORKDIR SECRETS_DIR [TPM_DIR]
 set -euo pipefail
 
@@ -40,7 +44,12 @@ in_image -- format "$loop" "/secrets/$key"
 [ -n "$tpm" ] || in_image -- password-add "$loop" "/secrets/$key" /secrets/password
 in_image -e NYRA_CI=1 -- recovery-to-file "$loop" "/secrets/$key"
 sudo chown "$(id -u):$(id -g)" "$secrets/recovery-key" && chmod 0600 "$secrets/recovery-key"
-in_image_timeout=900 in_image -- install-system "$loop" "/secrets/$key" "${tpm:+tpm}"
+admin=""
+if [ -e "$secrets/admin-password" ]; then
+  in_image -i --log-driver=none -- admin-record "${ADMIN_NAME:-maria}" /secrets/first-admin < "$secrets/admin-password"
+  admin=/secrets/first-admin
+fi
+in_image_timeout=900 in_image -- install-system "$loop" "/secrets/$key" "${tpm:+tpm}" "" "" ${admin:+"$admin"}
 
 if [ -n "$tpm" ]; then
   # The machine's TPM, reached over TCP from the image's systemd-cryptenroll.

@@ -1,0 +1,98 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra OS: the first administrator and the fixed defaults (docs/BOOT.md, "The first administrator").
+#   first-admin                  nyra-first-admin.service, on the first boot after an installation:
+#                                the file /var/lib/nyra/first-admin that the installer left in the
+#                                encrypted volume (one line, NAME:HASH, the hash made by the installer
+#                                with this image's own tools) becomes an account in the group sudo
+#   first-admin reserved-names   the names an administrator cannot take, one per line: root, the
+#                                accounts and groups of this image and the names its sysusers.d files
+#                                declare. The release tree of the installer carries this list
+#                                (tools/install/reserved-names.sh), the installer's last step checks
+#                                the name against it again, and this script is the last one to check
+# The file is read once and removed whatever follows, so a hash that was refused does not stay on the
+# disk. It is refused unless it is a regular file of root with mode 0600 and no other link in a
+# directory only root can write to, exactly one line, a name of the form the installer takes, and a
+# yescrypt hash: an empty password, "!", "*" and every other kind of hash are not accounts. A name that
+# is root, or is already an account, a group or a sysusers.d name, is refused. Root is not touched: it
+# stays as the image has it, locked.
+# Before that, and whatever the file holds, the fixed defaults are set where nothing is set yet
+# (systemd-firstboot, which runs next, asks for nothing then): en_US.UTF-8, the US keyboard, UTC, the
+# host name nyra.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+
+file=/var/lib/nyra/first-admin
+
+reserved_names() {
+  {
+    echo root
+    cut -d: -f1 /etc/passwd /etc/group
+    # u NAME, g NAME and m USER GROUP lines (the type may carry ! or +). (No awk: it is a link through
+    # /etc/alternatives, which an emptied /etc does not have.)
+    cat /usr/lib/sysusers.d/*.conf /etc/sysusers.d/*.conf 2> /dev/null \
+      | sed -En -e h -e 's/^[ugm][!+]*[[:space:]]+([^[:space:]]+).*/\1/p' \
+        -e g -e 's/^m[!+]*[[:space:]]+[^[:space:]]+[[:space:]]+([^[:space:]]+).*/\1/p' || true
+  } | grep -E '^[a-z][a-z0-9_-]{0,31}$' | sort -u
+}
+
+if [ "${1:-}" = reserved-names ] && [ $# = 1 ]; then
+  reserved_names
+  exit 0
+fi
+[ $# = 0 ] || { echo "usage: first-admin [reserved-names]" >&2; exit 2; }
+
+fail() {
+  echo "first-admin: $*" >&2
+  exit 1
+}
+
+# The file is read once and gone, whatever follows (a trap, so a refusal removes it too).
+trap 'rm -f -- "$file"' EXIT
+
+# The defaults never stop the account: it matters more. One command each, because systemd-firstboot
+# stops at the first setting it refuses, and some versions refuse a locale or a keymap that is not
+# installed (the locale is only a name in a file, written here; without the keymap the kernel's own,
+# US, map stays). Each is set only where nothing is set yet.
+if [ ! -e /etc/locale.conf ]; then
+  ( umask 022; printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf ) || echo "first-admin: the locale could not be set" >&2
+fi
+systemd-firstboot --timezone=UTC || echo "first-admin: the time zone could not be set" >&2
+# The image has an empty /etc/hostname (the build leaves one): that is no name, and systemd-firstboot
+# leaves a file that is there, so it is written over; a name that is there is kept.
+if [ -s /etc/hostname ]; then
+  systemd-firstboot --hostname=nyra || echo "first-admin: the host name could not be set" >&2
+else
+  systemd-firstboot --hostname=nyra --force || echo "first-admin: the host name could not be set" >&2
+fi
+systemd-firstboot --keymap=us 2> /dev/null || echo "first-admin: no keymap us in this image: the kernel's US keyboard stays"
+
+# A directory that anyone but root can write to could have its file swapped.
+dir="$(dirname -- "$file")"
+dirstat="$(stat -c '%U %a' -- "$dir")" || fail "cannot look at $dir"
+{ [ "${dirstat% *}" = root ] && [ $((8#${dirstat#* } & 8#22)) = 0 ]; } || fail "$dir is not root's alone"
+[ -f "$file" ] && [ ! -L "$file" ] || fail "$file is not a regular file"
+# (ls for the number of links: of stat's formats, the base's tests rely on %a, %U, %G and %s.)
+read -ra lsl <<< "$(ls -ld -- "$file")"
+{ [ "$(stat -c '%U %G %a' -- "$file")" = "root root 600" ] && [ "${lsl[1]}" = 1 ]; } \
+  || fail "$file is not owned by root, mode 0600, with one link"
+[ "$(stat -c %s -- "$file")" -le 256 ] || fail "$file is too long"
+content="$(< "$file")"
+# One line and nothing else: no NUL byte (bash drops it), no second line, no missing end of line.
+[ "$(stat -c %s -- "$file")" = $((${#content} + 1)) ] || fail "$file is not exactly one line"
+re='^([a-z][a-z0-9_-]{0,31}):(\$y\$[./A-Za-z0-9]+\$[./A-Za-z0-9]+\$[./A-Za-z0-9]{43})$'
+[[ "$content" =~ $re ]] || fail "$file is not a name and a yescrypt hash"
+name="${BASH_REMATCH[1]}" hash="${BASH_REMATCH[2]}"
+rm -f -- "$file"
+names="$(reserved_names)"
+if grep -qxF -- "$name" <<< "$names"; then
+  fail "$name is the name of an account, a group or the system"
+fi
+
+useradd --create-home --groups sudo --shell /bin/bash -- "$name"
+# The hash on the standard input, not in an argument. The account has no password until then ("!").
+printf '%s:%s\n' "$name" "$hash" | chpasswd --encrypted
+[ "$(getent shadow "$name" | cut -d: -f2)" = "$hash" ] || fail "the password of $name was not set"
+groups=" $(id -nG "$name") "
+[[ "$groups" == *" sudo "* ]] || fail "$name is not in the group sudo"
+echo "first-admin: the administrator $name is made"

@@ -8,6 +8,10 @@
 #   bash in-image.sh STEP ARGS...
 set -euo pipefail
 
+# The script that makes the account at the first boot; it also holds the list of names an administrator
+# cannot take (docs/BOOT.md, "The first administrator").
+first_admin=/usr/lib/nyra/first-admin
+
 # The partition N of DISK: /dev/vda1, /dev/nvme0n1p1, /dev/loop0p1.
 part() {
   case "$1" in
@@ -65,12 +69,13 @@ luks-json() {
   cryptsetup luksDump --dump-json-metadata "$(part "$1" 2)"
 }
 
-# install-system DISK KEYFILE TPM [IMGREF DIGEST]: ext4 with fs-verity on the opened volume, then
+# install-system DISK KEYFILE TPM [IMGREF DIGEST [ADMIN]]: ext4 with fs-verity on the opened volume, then
 # bootc. TPM=tpm adds the empty record of the TPM2 enrollments. With IMGREF and DIGEST, bootc is
 # told the reference the machine updates from and the record it made is read back before anything
-# is closed (tools/install/check-recorded.sh).
+# is closed (tools/install/check-recorded.sh). ADMIN is the file that admin-record made: it goes to
+# /var/lib/nyra/first-admin of the new system, for the first boot (nyra-first-admin.service).
 install-system() {
-  local root key="$2" tpm="$3" imgref="${4:-}" digest="${5:-}"
+  local root key="$2" tpm="$3" imgref="${4:-}" digest="${5:-}" admin="${6:-}"
   root="$(part "$1" 2)"
   # Discards are allowed for good (a flag in the header), so TRIM reaches the disk.
   cryptsetup open --key-file "$key" --allow-discards --persistent "$root" nyra-install-root
@@ -81,15 +86,16 @@ install-system() {
   # No root= argument: the sealed command line has none, the initrd finds the root by its type.
   bootc install to-filesystem --composefs-backend --bootloader systemd --root-mount-spec "" \
     ${imgref:+--target-imgref "$imgref"} /target
-  if [ "$tpm" = tpm ]; then
+  if [ "$tpm" = tpm ] || [ -n "$admin" ]; then
     # The shared /var that bootc made (state/os/default/var), mounted at /var in the running system.
     # bootc's finalization (fstrim, then read-only, which flushes the journal) leaves /target read-only:
-    # writable for this one file, then read-only again, as bootc left it.
+    # writable for these files, then read-only again, as bootc left it.
     local var=/target/state/os/default/var
     [ -d "$var" ] && [ ! -L "$var" ] || { echo "in-image: no $var after bootc install" >&2; exit 1; }
     mount -o remount,rw /target
     install -d -m 0755 "$var/lib/nyra"
-    install -m 0644 /dev/null "$var/lib/nyra/tpm2-slots"
+    [ "$tpm" != tpm ] || install -m 0644 /dev/null "$var/lib/nyra/tpm2-slots"
+    [ -z "$admin" ] || install -m 0600 -o root -g root "$admin" "$var/lib/nyra/first-admin"
     mount -o remount,ro /target
   fi
   if [ -n "$imgref" ]; then
@@ -197,6 +203,34 @@ wipe-install-slot() {
   systemd-cryptenroll "$root"
 }
 
+# admin-record NAME OUTFILE: the first administrator's record, NAME:HASH, in OUTFILE (mode 0600). The
+# password is the first line of the standard input: not an argument, not in the environment, not in a
+# file. The hash is yescrypt, made by this image's own chpasswd on an account in this container, which
+# is removed with it. Exit 4, nothing written: a name that is not 1 to 32 characters of a-z, 0-9, _ and -
+# starting with a letter, or is one of the system (first-admin reserved-names), or a password that is not
+# 12 to 64 printable ASCII characters or the name itself (the rules of the installer, which asks for them first).
+admin-record() {
+  local name="$1" out="$2" pw="" hash names re='^[a-z][a-z0-9_-]{0,31}$'
+  export LC_ALL=C
+  [[ "$name" =~ $re ]] || { echo "in-image: the administrator's name is not one the installer takes" >&2; exit 4; }
+  names="$("$first_admin" reserved-names)"
+  if grep -qxF -- "$name" <<< "$names"; then
+    echo "in-image: the administrator's name is a name of the system" >&2
+    exit 4
+  fi
+  IFS= read -r pw || true
+  [[ "$pw" =~ ^[[:print:]]{12,64}$ ]] || { echo "in-image: the password is not 12 to 64 printable ASCII characters" >&2; exit 4; }
+  [ "$pw" != "$name" ] || { echo "in-image: the password is the name" >&2; exit 4; }
+  useradd --no-create-home --shell /usr/sbin/nologin -- "$name"
+  printf '%s:%s\n' "$name" "$pw" | chpasswd --crypt-method YESCRYPT
+  pw=""
+  hash="$(getent shadow "$name" | cut -d: -f2)"
+  [[ "$hash" =~ ^\$y\$[./A-Za-z0-9]+\$[./A-Za-z0-9]+\$[./A-Za-z0-9]{43}$ ]] \
+    || { echo "in-image: the hash is not yescrypt" >&2; exit 1; }
+  install -m 0600 /dev/null "$out"
+  printf '%s:%s\n' "$name" "$hash" > "$out"
+}
+
 # esp-sync DISK: the boot files and loader.conf on the new ESP.
 esp-sync() {
   mkdir -p /esp
@@ -208,7 +242,7 @@ esp-sync() {
 case "${1:-}" in
   format | recovery-show | recovery-check | recovery-wipe | recovery-to-file | luks-json \
     | install-system | close-root | tpm-enroll | wipe-install-key | esp-sync \
-    | password-memory | password-add | wipe-install-slot)
+    | password-memory | password-add | wipe-install-slot | admin-record)
     step="$1"
     shift
     "$step" "$@"

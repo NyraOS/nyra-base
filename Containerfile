@@ -343,6 +343,21 @@ RUN cp -a /etc/apparmor.d /usr/lib/nyra/apparmor.d && \
     printf '# Nyra: no network without the inbound firewall\n[Unit]\nRequires=nyra-firewall.service\nAfter=nyra-firewall.service\n' \
       > /usr/lib/systemd/system/systemd-networkd.service.d/10-nyra-firewall.conf
 
+# The first administrator (docs/BOOT.md, "The first administrator"): nyra-first-admin.service, in
+# sysinit.target, makes the account the installer left a record for. The build fails if what it uses is
+# not in the image: the group sudo, useradd, chpasswd with yescrypt, systemd-firstboot, and a list of
+# reserved names that has the system's own, and if root is not locked.
+RUN --mount=type=tmpfs,dst=/run mkdir -p /usr/lib/systemd/system/sysinit.target.wants && \
+    ln -s ../nyra-first-admin.service /usr/lib/systemd/system/sysinit.target.wants/ && \
+    test -x /usr/lib/nyra/first-admin && getent group sudo > /dev/null && \
+    test -x /usr/sbin/useradd && test -x /usr/sbin/chpasswd && chpasswd --help | grep -q YESCRYPT && \
+    test -x /usr/bin/systemd-firstboot && grep -q '^root:[*!]' /etc/shadow && \
+    ! cut -d: -f2 /etc/shadow | grep -qx '' && \
+    /usr/lib/nyra/first-admin reserved-names > /tmp/reserved && \
+    for n in root daemon nobody sudo systemd-network; do grep -qx "$n" /tmp/reserved || { echo "not reserved: $n"; exit 1; }; done && \
+    rm /tmp/reserved && \
+    systemd-analyze verify --man=no --recursive-errors=no /usr/lib/systemd/system/nyra-first-admin.service
+
 # Updates (docs/UPDATES.md): the check timer, and the health checks that boot-complete.target requires,
 # with the target pulled in on every boot (not only on counted ones); the daily copy of /etc
 # (docs/BOOT.md, "Restore earlier settings"). The build fails if a unit does
