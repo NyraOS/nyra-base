@@ -58,7 +58,13 @@ if [ ! -e /etc/locale.conf ]; then
   ( umask 022; printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf ) || echo "first-admin: the locale could not be set" >&2
 fi
 systemd-firstboot --timezone=UTC || echo "first-admin: the time zone could not be set" >&2
-systemd-firstboot --hostname=nyra || echo "first-admin: the host name could not be set" >&2
+# The image has an empty /etc/hostname (the build leaves one): that is no name, and systemd-firstboot
+# leaves a file that is there, so it is written over; a name that is there is kept.
+if [ -s /etc/hostname ]; then
+  systemd-firstboot --hostname=nyra || echo "first-admin: the host name could not be set" >&2
+else
+  systemd-firstboot --hostname=nyra --force || echo "first-admin: the host name could not be set" >&2
+fi
 systemd-firstboot --keymap=us 2> /dev/null || echo "first-admin: no keymap us in this image: the kernel's US keyboard stays"
 
 # A directory that anyone but root can write to could have its file swapped.

@@ -178,6 +178,11 @@ Each line is something that broke or surprised us once.
   `--locale=en_US.UTF-8` where that locale is not installed, and writes the time zone link as
   `/usr/share/zoneinfo/Etc/UTC`, not `UTC`. Each setting goes in a command of its own, and a test
   compares the file the link leads to, not the link.
+- **The image's `/etc/hostname` is an empty file** (the build container's bind mount leaves one), and its
+  `/etc/localtime` already links to `Etc/UTC`. `systemd-firstboot` leaves a file that exists, so an empty
+  host name stayed empty until the script wrote over it. Test fixtures should be the image's `/etc`, and
+  the image's layers can be unpacked (`podman unshare tar -xzf` of each layer of the OCI archive of the
+  build) to run a script with the image's own tools, without a VM.
 
 ## Shutdown
 - **A console login could hold the shutdown for 90 s** (about one power-off in ten in CI). After

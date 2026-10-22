@@ -78,10 +78,17 @@ cp --sparse=always "$fa/disk.raw" "$fa/bad.raw"
 prepare "$fa/disk.raw" 0600
 prepare "$fa/bad.raw" 0644
 
+# Every command is traced in the guest (set -x in a subshell), so a failure shows what failed.
 vm() {
+  local args=() prev="" a
+  for a in "$@"; do
+    if [ "$prev" = --command ]; then args+=("( set -x; $a )"); else args+=("$a"); fi
+    prev="$a"
+  done
   python3 -B tools/vm/vm-boot.py --secure-boot "$fa/vars.fd" --keep-vars --disk "${raw:-$fa/disk.raw}" \
-    --autologin --timeout 240 --summary "$summary" "$@"
+    --autologin --timeout 240 --summary "$summary" "${args[@]}"
 }
+defaults='h="$(cat /etc/hostname)"; l="$(cat /etc/locale.conf 2>&1)"; echo "host name: [$h]; /etc/locale.conf: [$l]; /etc/localtime: $(readlink /etc/localtime)"; test "$h" = nyra && echo "$l" | grep -qx LANG=en_US.UTF-8 && cmp /etc/localtime /usr/share/zoneinfo/UTC && echo "the fixed defaults are set"'
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
 oneshot='bootctl set-oneshot nyra-reset.CONF && echo "next boot: reset entry"'
 answer='Type RESET to reset, anything else or Control-D to boot normally: '
@@ -93,7 +100,7 @@ vm --persist --poweroff --log "$logs/serial-first-admin-1.log" \
   --title "First administrator 1: the first boot makes the account, before systemd-firstboot" \
   --command "$running" \
   --command "$account && test \"\$(stat -c %U /var/home/maria)\" = maria && grep -q '^maria:\\\$y\\\$' /etc/shadow && echo 'the account: in sudo, a yescrypt hash, a home; root locked; no empty password; the record is gone'" \
-  --command 'test "$(cat /etc/hostname)" = nyra && grep -qx LANG=en_US.UTF-8 /etc/locale.conf && test "$(readlink /etc/localtime)" = ../usr/share/zoneinfo/UTC && echo "the fixed defaults are set"' \
+  --command "$defaults" \
   --command 'for u in nyra-first-admin systemd-firstboot; do echo "$u: $(systemctl show -P ActiveState $u.service), $(systemctl show -P Result $u.service)"; test "$(systemctl show -P ActiveState $u.service)" = active && test "$(systemctl show -P Result $u.service)" = success; done; a=$(systemctl show -P ExecMainExitTimestampMonotonic nyra-first-admin.service); b=$(systemctl show -P ExecMainStartTimestampMonotonic systemd-firstboot.service); echo "the account was made at $a us, systemd-firstboot started at $b us"; test "$a" -gt 0 && test "$a" -le "$b"' \
   --command "mkdir -p $before && grep '^maria:' /etc/shadow > $before/shadow && id maria > $before/id && id -nG maria > $before/groups && echo kept > /var/home/maria/keep.txt && echo junk > /etc/nyra-test-junk && stat -c %u /var/home/maria > $before/homeuid" \
   --command "$oneshot"
@@ -112,4 +119,4 @@ raw="$fa/bad.raw" vm --poweroff --log "$logs/serial-first-admin-3.log" \
   --command 'f="$(systemctl list-units --state=failed --plain --no-legend | cut -d" " -f1)"; echo "failed: $f"; test "$f" = nyra-first-admin.service' \
   --command 'journalctl -b -u nyra-first-admin.service -o cat --no-pager | grep "is not owned by root, mode 0600, with one link"' \
   --command '! id maria && test ! -e /var/lib/nyra/first-admin && passwd -S root | grep -q " L " && ! cut -d: -f2 /etc/shadow | grep -qx "" && echo "no account, the record is gone, root locked, no empty password"' \
-  --command 'test "$(cat /etc/hostname)" = nyra && grep -qx LANG=en_US.UTF-8 /etc/locale.conf && echo "the fixed defaults are set"'
+  --command "$defaults"

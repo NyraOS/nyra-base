@@ -81,6 +81,10 @@ mkroot() {
   : > "$r/etc/subuid"
   : > "$r/etc/subgid"
   chmod 0640 "$r/etc/shadow" "$r/etc/gshadow"
+  # As the image has them: an empty /etc/hostname (the build leaves one) and a time zone link to Etc/UTC.
+  : > "$r/etc/hostname"
+  chmod 0700 "$r/etc/hostname"
+  ln -s /usr/share/zoneinfo/Etc/UTC "$r/etc/localtime"
   printf 'passwd: files\ngroup: files\nshadow: files\n' > "$r/etc/nsswitch.conf"
   cp /etc/login.defs "$r/etc/login.defs"
   # HOME as the image has it (Containerfile): /var/home.
@@ -223,7 +227,7 @@ echo "first-admin: a file for an account that exists is refused and removed, the
 setup kept
 echo mine > "$root/etc/hostname"
 printf 'LANG=de_DE.UTF-8\n' > "$root/etc/locale.conf"
-ln -s ../usr/share/zoneinfo/Europe/Bucharest "$root/etc/localtime"
+ln -sf ../usr/share/zoneinfo/Europe/Bucharest "$root/etc/localtime"
 run
 [ "$rc" = 0 ] && [ "$(cat "$root/etc/hostname")" = mine ] && grep -qx 'LANG=de_DE.UTF-8' "$root/etc/locale.conf" \
   && [ "$(readlink "$root/etc/localtime")" = ../usr/share/zoneinfo/Europe/Bucharest ] || fail "settings that were there were overwritten"
@@ -277,9 +281,22 @@ mutant mode '/^read -ra lsl/,/is not owned by root, mode 0600, with one link"$/d
 mutant file '/\[ -f "\$file" \] && \[ ! -L "\$file" \]/d' '/^read -ra lsl/,/is not owned by root, mode 0600, with one link"$/d' '/is not exactly one line/d'
 mutant dir "/is not root.s alone/d"
 mutant lines '/is not exactly one line/d'
+mutant noforce 's/ --force//'
 mutant regexloose "s/^re=.*/re='^([a-z][a-z0-9_-]{0,31}):(.*)\$'/"
 mutant reserved '/^if grep -qxF -- "\$name" <<< "\$names"; then/,/^fi$/d'
 
+# The same without a time zone link: the script makes it. And without the --force that writes the host name
+# over the image's empty /etc/hostname: the name stays empty (the control of the case above).
+setup nolink
+rm "$root/etc/localtime"
+run
+[ "$rc" = 0 ] && [ -L "$root/etc/localtime" ] && in_root cmp /etc/localtime /usr/share/zoneinfo/UTC \
+  || { echo "$out"; fail "no time zone link: not made"; }
+echo "first-admin: a time zone link is made where there is none"
+setup noforce
+run /mutant-noforce
+[ "$rc" = 0 ] && [ ! -s "$root/etc/hostname" ] || fail "the empty /etc/hostname was written over without --force: the case above proves nothing"
+echo "control: without --force the image's empty /etc/hostname stays empty"
 prep_mode() { chmod 0644 "$(f)"; }
 refuse "a file of mode 0644" prep_mode mode
 prep_mode2() { chmod 0660 "$(f)"; }
@@ -355,7 +372,7 @@ echo "first-admin refuses: an argument"
 setup names
 in_root bash /script reserved-names > "$t/names" 2> "$t/err" || fail "reserved-names failed"
 [ ! -s "$t/err" ] || fail "reserved-names wrote on stderr"
-[ ! -e "$root/etc/hostname" ] && [ -e "$root/var/lib/nyra/first-admin" ] || fail "reserved-names changed the system"
+[ ! -s "$root/etc/hostname" ] && [ -e "$root/var/lib/nyra/first-admin" ] || fail "reserved-names changed the system"
 for n in root daemon nobody sudo users nogroup systemd-network; do
   grep -qx "$n" "$t/names" || fail "reserved-names has not $n"
 done

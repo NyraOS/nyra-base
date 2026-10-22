@@ -1124,8 +1124,9 @@ there) and before `systemd-firstboot` and before anyone can log in. It starts on
 1. sets the fixed defaults, each only where nothing is set yet and none able to stop the account: the
    locale `en_US.UTF-8` (written to `/etc/locale.conf` by the script itself: some versions of
    `systemd-firstboot` refuse a locale that is not installed), and with `systemd-firstboot`, one command
-   each, the time zone `UTC`, the host name `nyra` and the keyboard `us` where the image has that
-   keymap (without one the kernel's own US map stays; `systemd-firstboot` refuses a keymap that is not
+   each, the time zone `UTC` (the image's link to `Etc/UTC` already says it), the host name `nyra` (the image
+   has an empty `/etc/hostname`, which is no name: it is written over; a name that is there is kept) and the
+   keyboard `us` where the image has that keymap (without one the kernel's own US map stays; `systemd-firstboot` refuses a keymap that is not
    installed, and cannot ask for one then). `systemd-firstboot`, which runs next, has nothing left to
    ask. These are settings of `/etc`, the user's to change; no screen of the installer asks for them yet;
 2. checks the file, and removes it as soon as it has read it: it is read once, and a hash that was
