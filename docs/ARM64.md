@@ -164,6 +164,9 @@ secure world, so root in the guest can write the UEFI variable store, `db` and t
 on such a VM, the Secure Boot variables are not protected against a compromised running system. What
 remains is the TPM's PCR 7 binding: a changed `db` or MOK list makes the disk ask for its recovery key.
 
+The installer ISO for aarch64 (`docs/ISO.md`, "aarch64") is built from the arm64 release image by the
+`iso-arm64` job and, on pull requests, by the `iso` job of `arm64.yml`; both boot it emulated.
+
 ## Running it in UTM on a Mac with Apple Silicon
 
 The VM disk image is the `nyra-base-arm64-vm` artifact of a run of the `arm64` workflow:
