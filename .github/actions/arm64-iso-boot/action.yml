@@ -18,7 +18,9 @@ inputs:
     description: The name of this test, for the console log's file name
     required: true
   args:
-    description: Options of tools/iso/boot-test.py after the paths (--medium, --pull, --decoy, --refusal)
+    description: >-
+      Options of tools/iso/boot-test.py after the paths (--medium, --pull, --decoy, --refusal, --deadline). The first
+      screen is awaited 200 s times 5 (emulated); --deadline is the time budget of the test, set below the job's limit.
     default: ""
 runs:
   using: composite
@@ -78,7 +80,7 @@ runs:
         ARGS: ${{ inputs.args }}
       run: |
         # shellcheck disable=SC2086 # ARGS is a list of options, written in the workflow
-        python3 tools/iso/boot-test.py "$WORK/iso-in/nyra.iso" "$WORK/boot-$NAME" "$RUNNER_TEMP/iso-$NAME-console.log" "$GITHUB_STEP_SUMMARY" --arch arm64 $ARGS
+        python3 tools/iso/boot-test.py "$WORK/iso-in/nyra.iso" "$WORK/boot-$NAME" "$RUNNER_TEMP/iso-$NAME-console.log" "$GITHUB_STEP_SUMMARY" --arch arm64 --timeout 200 $ARGS
 
     - name: Upload the console log
       if: always()

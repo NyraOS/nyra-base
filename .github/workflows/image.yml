@@ -3069,13 +3069,13 @@ jobs:
       matrix:
         include:
           - name: cd
-            args: ""
+            args: "--deadline 1200"
             minutes: 30
           - name: usb
-            args: "--medium usb --decoy"
+            args: "--medium usb --decoy --deadline 1200"
             minutes: 30
           - name: cd-pull
-            args: "--pull"
+            args: "--pull --deadline 2100"
             minutes: 45
           # The altered ISOs (arm64-iso): the pull from each must be refused.
           - name: layer
