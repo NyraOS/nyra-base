@@ -16,8 +16,9 @@ artifact:
 | `bootc-<tag>-<commit>.Cargo.lock` | the Rust crates compiled into bootc |
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 | `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
+| `pam-totp.Cargo.lock` | the Rust crates compiled into the SSH two-step authentication (pam-totp, docs/DEFAULTS.md "SSH") |
 
-The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib) are in
+The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib, pam-totp) are in
 `/usr/share/doc/<program>/third-party/`, next to its `Cargo.lock`; the build fails if one is missing.
 
 Once images are published, releases will attach the SBOM next to the image.
@@ -34,8 +35,11 @@ Components:
 - one per Debian package: `pkg:deb/debian/<name>@<version>?arch=<arch>&distro=sid&upstream=<source>`
   (`upstream` carries `@<source version>` when it differs, as syft writes it);
 - bootc itself: `pkg:github/bootc-dev/bootc@<commit>`;
-- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock` and `ntpd-rs/Cargo.lock` (zlib-rs and
-  ntpd-rs, which the image build compiles): `pkg:cargo/<name>@<version>` (git sources add
+- pam-totp itself (the SSH two-step authentication, built from its own repository at the commit in
+  `pam-totp/commit`): `pkg:github/NyraOS/pam-totp@<commit>`;
+- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock`, `ntpd-rs/Cargo.lock` and
+  `pam-totp/Cargo.lock` (zlib-rs, ntpd-rs and pam-totp, which the image build compiles; the last is a
+  copy of pam-totp's own, and the build fails when they differ): `pkg:cargo/<name>@<version>` (git sources add
   `vcs_url`); a crate in several counts once. ntpd-rs's crates `ntpd` and `ntp-proto` are listed at
   their upstream version; the image's `ntp-proto` carries our patch
   (`patches/upstream/ntpd-rs-wrong-clock.md`).
@@ -55,7 +59,7 @@ script refuses a list without any.
 | Question | Source |
 |---|---|
 | Is our version of a Debian source package affected? | [Debian Security Tracker](https://security-tracker.debian.org/tracker/data/json), release `sid`: open, undetermined, or fixed in a version newer than ours |
-| Is a crate of bootc, zlib-rs or ntpd-rs affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
+| Is a crate of bootc, zlib-rs, ntpd-rs or pam-totp affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
 A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
@@ -76,7 +80,9 @@ the point: the gate answers "is anything known now".
    `Snapshot=` in `mkosi/mkosi.conf` to a date that has it. This also rebuilds bootc (the snapshot is
    part of its cache key). A crate of zlib-rs or ntpd-rs with a fixed version: update the version
    in `zlib/` or `ntpd-rs/` (`Cargo.toml`, `Cargo.lock`; Dependabot opens that pull request). A new
-   version of `ntpd` or `ntp-proto` needs our patch made again for it.
+   version of `ntpd` or `ntp-proto` needs our patch made again for it. A crate of pam-totp: update
+   it in pam-totp's repository, then its commit in `pam-totp/commit` and the copy of its
+   `Cargo.lock` in `pam-totp/`.
 2. **No fix yet:** check whether the image is exposed. If it is not, or the damage is limited, add
    an entry to `tools/sbom/mitigations.toml`:
 
@@ -118,6 +124,51 @@ BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.
   /tmp/sbom/nyra-base.manifest.json /tmp/sbom/bootc-*.Cargo.lock /tmp/sbom/nyra-base.cdx.json \
   /tmp/sbom/nyra-zlib.Cargo.lock
 ```
+
+## Before a push: the scan on a branch
+
+The gate depends on the advisories of the day, not only on the change, so a branch can fail it
+although it touches nothing the scanner looks at. The scan runs in about 20 seconds on a machine
+without KVM, with this checkout's scanner, mitigations and Cargo.lock files against the package list
+of the last image built on main (the same inputs as the `sbom` job of `image.yml`). Run it before
+pushing a change to `tools/sbom/`, to `mitigations.toml`, to the package list or to a Cargo.lock, and
+whenever a pull request failed the gate, to see if a new advisory or the change is the cause. It
+needs `gh` (logged in), `podman` and the network.
+
+```bash
+set -o pipefail         # the exit status of the scan, not of tee
+D=/var/tmp/sbom-main     # main's SBOM inputs, downloaded once and refreshed when main moves
+S=~/.cache/sbom-scan     # a podman store of its own: never use the shared default store for this
+mkdir -p "$D"
+# The newest unexpired nyra-base-sbom artifact of a successful push run on main that built.
+for run in $(gh run list -R NyraOS/nyra-base --workflow image.yml --branch main --event push \
+               --status success -L 30 --json databaseId --jq '.[].databaseId'); do
+  id="$(gh api "repos/NyraOS/nyra-base/actions/runs/$run/artifacts?name=nyra-base-sbom" \
+    --jq '[.artifacts[] | select(.expired == false)][0].id // empty')"
+  [ -z "$id" ] || break
+done
+gh api "repos/NyraOS/nyra-base/actions/artifacts/$id/zip" > "$D/sbom.zip" && python3 -m zipfile -e "$D/sbom.zip" "$D"
+
+# From the root of the checkout of the branch. The tag and commit of bootc are the two lines of image.yml.
+BOOTC_REF="$(sed -n 's/^  BOOTC_REF: //p' .github/workflows/image.yml)"
+BOOTC_COMMIT="$(sed -n 's/^  BOOTC_COMMIT: //p' .github/workflows/image.yml)"
+mkdir -p ~/.cache && install -d -m 700 "$S" && [ ! -L "$S" ] && [ "$(stat -c '%u %a' "$S")" = "$(id -u) 700" ] &&   # yours, mode 700
+podman --root "$S/root" --runroot "$S/run" run --rm -v "$PWD:/repo:ro" -v "$D:/in:ro" -w /repo \
+  -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" \
+  docker.io/library/python@sha256:4873c73fa393882cf10f9d1054c928e95201c1559ca2107c1589786ece10f49f \
+  sh -c 'python3 -m venv /tmp/v &&
+    /tmp/v/bin/pip install -q --no-deps --require-hashes -r tools/sbom/requirements.txt &&
+    /tmp/v/bin/python tools/sbom/test_sbom.py &&
+    /tmp/v/bin/python tools/sbom/sbom.py /in/nyra-base.manifest.json \
+      "/in/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" /tmp/nyra-base.cdx.json \
+      zlib/Cargo.lock ntpd-rs/Cargo.lock pam-totp/Cargo.lock' | tee /tmp/sbom-report.md
+```
+
+The report is the one the job summary shows; the exit status is 1 when a vulnerability blocks. The
+image is python:3.13-slim by digest (the index of the multi-arch image), and the container runs
+as a rootless user with the checkout read-only. Remove the store with `podman unshare rm -rf "$S"`
+when it is not needed any more. This is a safety net, not a gate: CI runs the real one on every
+build.
 
 The offline tests (canned tracker and OSV data) run first in CI:
 `/tmp/sbom-venv/bin/python tools/sbom/test_sbom.py`.

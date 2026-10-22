@@ -9,7 +9,7 @@ it is something the user switches on, not off), and how CI proves it.
 |---|---|---|
 | AppArmor on, profiles loaded | `apparmor` package; `apparmor.service` enabled from `/usr` (`sysinit.target.wants`); when its cache cannot be written (a full root file system), the profiles are loaded without it, and without `/etc/apparmor.d` (an emptied `/etc`) the image's profiles load from a copy in `/usr/lib/nyra/apparmor.d` (drop-in) | AppArmor in the active LSMs, the service active, profiles loaded, at least one in enforce mode |
 | Kernel lockdown `integrity` | `lockdown=integrity` in `/usr/lib/bootc/kargs.d/10-nyra-lockdown.toml`; Debian's kernel also turns it on under Secure Boot | `/sys/kernel/security/lockdown` shows `[integrity]` |
-| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added |
+| Inbound firewall, default deny | `nftables`; `/usr/lib/nyra/firewall.nft` loaded by `nyra-firewall.service` before the network; `systemd-networkd` requires it | the service active, `policy drop`; a TCP connection from a network namespace to a listener times out, and works once an accept rule is added; the same for a port published by a rootful container (IPv4 and IPv6) and for a container's own address (`forward`), while they answer on the machine and containers still reach out. Rootless published ports are not covered by this test: the image has no pasta or slirp4netns. The test: `tools/vm/container-ports-guest.sh` |
 | Only declared units running | units with no purpose in the base blocked from `/usr` (see below) | every running service, waiting timer and listening socket unit matches the allowlist in the script; every blocked unit is inactive |
 | No undeclared listening sockets | resolved without LLMNR and mDNS (Containerfile) | every socket in `ss -tuln` matches the allowlist in the script: resolved's stub on loopback, networkd's DHCP client ports |
 | Signature policy in place | `/etc/containers/policy.json` is a link to `/usr/lib/nyra/containers/policy.json` (read-only `/usr`) | the link, owner `root:root`, not group or world writable, `sigstoreSigned` present. That it refuses unsigned images is proven in the `build` job (`tools/signing/test-policy.sh`, docs/SIGNING.md) |
@@ -185,12 +185,21 @@ answering before `leave-initrd`, and that way out (without the TPM, the recovery
 
 ## Firewall
 
-The ruleset (`inet nyra`, input hook only) lets in loopback, replies to connections this machine
-started, the ICMPv6 that IPv6 needs (neighbour discovery, router advertisements, MLD queries) and
-DHCPv6 replies from the link. Everything else that is addressed to this machine is dropped.
-Outbound and forwarded traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP
-queries (UDP 123) go out, and only their replies come back in (`established`). Nothing listens for
-time: ntpd-rs serves no time and has no network control port (see "Time").
+The ruleset (`inet nyra`) has two chains, both with policy drop.
+
+- `input` lets in loopback, replies to connections this machine started, the ICMPv6 that IPv6 needs
+  (neighbour discovery, router advertisements, MLD queries) and DHCPv6 replies from the link.
+  Everything else that is addressed to this machine is dropped.
+- `forward` covers what this machine routes, which is what containers on a podman bridge
+  (`podman0`, `podman1`, ...) are: it lets through replies to connections that were started
+  (`established`, `related`) and everything that comes from a container bridge, and drops the rest.
+  A new connection from the network to a container is therefore dropped, whether it targets a port
+  published by a rootful container (netavark's DNAT in prerouting) or the container's own address
+  through a route set up on a neighbour.
+
+Outbound traffic is not filtered: ntpd-rs's NTS key exchange (TCP 4460) and NTP queries (UDP 123) go
+out, and only their replies come back in (`established`). Nothing listens for time: ntpd-rs serves no
+time and has no network control port (see "Time").
 
 - nftables, not firewalld, for now: the default firewall is meant to be firewalld, with
   per-network zones and a D-Bus API for a future Security app. firewalld would bring `polkitd`
@@ -198,11 +207,93 @@ time: ntpd-rs serves no time and has no network control port (see "Time").
   NetworkManager introspection data into the base before anything uses its API. When firewalld
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
 - Containers can still reach the network, rootless (Distrobox, `podman run` as a user) or rootful.
-  What the firewall stops is inbound traffic: a port published with `podman run -p` or a server
-  started inside Distrobox answers on localhost only, not from other machines, until a rule opens
-  it. Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule.
+  What the firewall stops is inbound traffic. A port published by a rootful container with
+  `podman run -p` answers on this machine (`127.0.0.1` and its own addresses, IPv4 and IPv6) and not from other machines, until a rule in `forward` opens it (the
+  destination port there is the container's own, after the DNAT). A server started inside Distrobox
+  shares the host's network and needs a rule in `input`. Rootless published ports (pasta) would listen
+  on the host like any other program and fall under `input`, but the image has no pasta or slirp4netns
+  and this is not tested.
+  Rootful podman networks with DNS (aardvark-dns on the bridge) also need a rule in `input`: the
+  container's queries go to the bridge's address.
+- netavark has a forward chain of its own (table `inet netavark`, policy accept, same priority). Several
+  tables hook the same point independently: an accept in one does not end the evaluation in the
+  others, and a drop in any of them does. What netavark accepts is therefore still dropped by
+  `inet nyra` unless `forward` accepts it too, whichever table was created first. The rule is by
+  interface name (`podman*`, netavark's bridge names); a network created with another bridge name
+  gets no outbound access until a rule names it.
 - A port opened on purpose (a server, Quick Share later) needs a rule, and a line in the
   listening-socket allowlist of the test.
+
+## SSH
+
+The OpenSSH server (Debian's `openssh-server`) is in the image, **off**. A layer that offers SSH
+(a server edition) creates `/usr/lib/nyra/allow-ssh`; on the desktop it stays off, and the
+firewall has no opening for it either (see "Firewall").
+
+- **Off as installed.** Our preset disables `ssh.service`, `ssh.socket` and `sshd-keygen.service`,
+  and a `ConditionPathExists=/usr/lib/nyra/allow-ssh` drop-in blocks them and the per-connection
+  `sshd@.service`. `systemd-ssh-generator` is not in the image: once sshd is installed it writes
+  sockets for it at every boot (`/run/ssh-unix-local/socket`, AF_VSOCK in a VM, and one for each
+  `systemd.ssh_listen=` or `ssh.listen` credential); a layer that offers SSH can bring it back. An
+  administrator turns it on as for the other blocked units (see "Units"): a drop-in with an empty
+  `ConditionPathExists=` for `ssh.service` and `sshd-keygen.service`, then
+  `systemctl enable --now ssh.service`, plus a firewall rule for port 22.
+- **No host keys in the image.** Debian's package script makes them when the package is installed,
+  so they would be the same on every machine and public with the image: mkosi removes them where
+  they are made (`RemoveFiles=`), so no layer of the image has them; the Containerfile fails if one
+  is there, and CI reads every layer of the exported image for them (`ci/no-host-keys.py`): a key
+  removed in a later layer would still be in an earlier one. `sshd-keygen.service` makes the missing ones (`ssh-keygen -A`) on
+  the machine before sshd starts, on any boot (Debian's runs on the first boot only; SSH may be
+  turned on much later).
+- **How one logs in** (`/usr/lib/nyra/ssh/10-nyra.conf`, linked from `/etc/ssh/sshd_config.d`):
+  with a key alone, or with a password **and** a one-time code from an authenticator app; never
+  with a password alone, and never as root.
+
+  ```
+  PasswordAuthentication no
+  KbdInteractiveAuthentication yes
+  AuthenticationMethods publickey keyboard-interactive:pam
+  UsePAM yes
+  PermitRootLogin no
+  PerSourcePenalties yes
+  ```
+
+  sshd takes the first value of each setting it reads, and Debian's `/etc/ssh/sshd_config` includes
+  `sshd_config.d` before its own lines, so these win over them; an administrator's file there that
+  sorts before `10-nyra.conf` wins over these. `PerSourcePenalties` (OpenSSH's defaults) refuses an
+  address for a while after repeated failed logins.
+- **The password and the code** go through PAM (`/usr/lib/nyra/pam.d/sshd`, linked from
+  `/etc/pam.d/sshd`): Debian's stack for sshd with its authentication lines (`@include common-auth`)
+  replaced by
+
+  ```
+  auth required pam_unix.so
+  auth required pam_nyra_totp.so
+  ```
+
+  Both are `required`: the code is asked even after a wrong password (a `requisite` would tell that
+  the password was wrong), and neither factor is enough alone (a `sufficient` would let one in).
+  No `nullok`. `pam_nyra_totp.so` (from [pam-totp](https://github.com/NyraOS/pam-totp), at the
+  commit in `pam-totp/commit`) asks `Verification code:` and accepts a code of the user's
+  authenticator app (TOTP: SHA1, 6 digits, 30 seconds, one step either side, never the same step
+  twice) or an unused recovery code; a user without two-step authentication is always refused, so
+  for that user only a key works. Every other line is Debian's: the image build fails when one
+  differs. Keys do not go through these lines.
+- **The console is unchanged.** `login`'s PAM stack (the consoles, tty1 and the serial console)
+  does not use the module: the password alone still logs in there.
+- **Two-step authentication** is turned on by an administrator, for any user:
+  `2fa enable [USER]` (a QR code, the secret, and recovery codes), `2fa status`, `2fa disable`,
+  `2fa recovery`. `2fa` is a link to `/usr/libexec/nyra-2fa`. Each user's state is
+  `/var/lib/nyra/2fa/<uid>`; the directory belongs to root, mode `0700` (`tmpfiles.d/nyra-2fa.conf`),
+  so a user cannot read or remove it, even after logging in.
+- **The client** (`openssh-client`: `ssh`, `scp`, `sftp`, `ssh-agent`) is in the image too; the
+  server does not pull it in. Changed from Debian's: `ssh-keysign` (host-based authentication, off) is not
+  setuid root, and `ssh-agent` is not setgid `_ssh`; Debian's tmpfiles line that sets the latter
+  again at every boot is removed (it would fail on the read-only `/usr`).
+
+`tools/vm/ssh-2fa.sh` checks all of this in CI: off as installed; then, turned on for the test only
+(a drop-in in `/run`), the logins over SSH from inside the VM, with and without the code, a code
+used twice, a key, root, a console login, and the penalty for an address that keeps failing.
 
 ## Without a network
 
@@ -577,7 +668,8 @@ LOGO=nyra-logo
   `/etc/issue.d`, `/run/issue.d` and `/usr/lib/issue.d`, so the health notice (`/run/issue.d`,
   docs/UPDATES.md) is still at the prompt. Both consoles (`getty@tty1`, `serial-getty@ttyS0`) run
   agetty without `--issue-file`, so both show this. `/etc/issue.net`
-  stays Debian's: only a telnet or SSH server would show it, and the base has neither.
+  stays Debian's: only a telnet or SSH server would show it, the base has no telnet server, and
+  sshd shows it only with a `Banner` line, which the image does not set (see "SSH").
 - **The message after a login** is `/usr/lib/motd`: "Welcome to Nyra OS." and "Help and news:
   https://nyraos.com". `pam_motd` (login's PAM stack) shows the first found of `/etc/motd`,
   `/run/motd` and `/usr/lib/motd`, so Debian's `/etc/motd` is removed from the image (one the

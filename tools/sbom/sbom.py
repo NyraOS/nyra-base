@@ -8,7 +8,8 @@ usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
               Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
               counts once
   SBOM_OUT    CycloneDX 1.6 JSON written here
-Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf.
+Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
+commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
 
 Writes the SBOM, then prints a Markdown report and exits 1 if a vulnerability blocks the build:
 critical, high or unknown severity, not marked unimportant by Debian, and not listed in
@@ -35,6 +36,7 @@ from cvss import CVSS2, CVSS3, CVSS4
 HERE = os.path.dirname(os.path.abspath(__file__))
 MKOSI_CONF = os.path.join(HERE, "..", "..", "mkosi", "mkosi.conf")
 MITIGATIONS = os.path.join(HERE, "mitigations.toml")
+PAM_TOTP_COMMIT = os.path.join(HERE, "..", "..", "pam-totp", "commit")
 TRACKER = "https://security-tracker.debian.org/tracker/data/json"
 OSV = "https://api.osv.dev/v1"
 BLOCKING = ("critical", "high", "unknown")
@@ -144,11 +146,14 @@ def debian_sources(manifest, snapshot):
     return out
 
 
-def write_sbom(path, snapshot, debs, crates, bootc_ref, bootc_commit):
+def write_sbom(path, snapshot, debs, crates, bootc_ref, bootc_commit, pam_totp_commit):
     q = lambda s: urllib.parse.quote(s, safe="")
     components = [{
         "type": "application", "bom-ref": "bootc", "name": "bootc", "version": bootc_ref,
         "purl": f"pkg:github/bootc-dev/bootc@{bootc_commit}",
+    }, {
+        "type": "application", "bom-ref": "pam-totp", "name": "pam-totp", "version": pam_totp_commit,
+        "purl": f"pkg:github/NyraOS/pam-totp@{pam_totp_commit}",
     }]
     for p, src, src_version in debs:
         upstream = src if src_version == p["version"] else f"{src}@{src_version}"
@@ -248,7 +253,11 @@ def main():
                 crates.setdefault((p["name"], p["version"], p["source"]), p)
     crates = list(crates.values())
     debs = debian_sources(manifest, snapshot)
-    count = write_sbom(sbom_path, snapshot, debs, crates, os.environ["BOOTC_REF"], os.environ["BOOTC_COMMIT"])
+    pam_totp_commit = open(PAM_TOTP_COMMIT).read().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", pam_totp_commit):
+        sys.exit(f"sbom.py: {PAM_TOTP_COMMIT} is not a commit: {pam_totp_commit!r}")
+    count = write_sbom(sbom_path, snapshot, debs, crates, os.environ["BOOTC_REF"], os.environ["BOOTC_COMMIT"],
+                       pam_totp_commit)
     mitigations = load_mitigations(today)  # after the SBOM: an invalid file still blocks, but the SBOM is there
 
     findings, unimportant = debian_findings(debs)
@@ -290,7 +299,7 @@ def main():
         return text if len(text) <= 140 else text[:137] + "..."
 
     print("## Vulnerability scan (docs/SBOM.md)\n")
-    print(f"SBOM: CycloneDX 1.6, {count} components ({len(debs)} Debian packages, {len(crates)} Rust crates, bootc).")
+    print(f"SBOM: CycloneDX 1.6, {count} components ({len(debs)} Debian packages, {len(crates)} Rust crates, bootc, pam-totp).")
     print(f"Sources: Debian Security Tracker (`sid`) and OSV, {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M} UTC; "
           f"Debian snapshot `{snapshot}`.\n")
     print("| | |\n|---|---|")

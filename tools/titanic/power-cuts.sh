@@ -79,7 +79,7 @@ throttle() { # the registry's answers (port 80) at 2 Mbit/s
 }
 
 # cut LOG MARKER DELAY [vm-boot.py options]: a boot of the round's disk, and QEMU killed DELAY s after
-# MARKER shows up on the console (no MARKER: after QEMU starts). The guest commands end in a long
+# MARKER shows up on the console (no MARKER: after the QEMU process exists). The guest commands end in a long
 # sleep, so QEMU is still running when the moment comes; if it is not, the round fails.
 cut() {
   local log="$1" marker="$2" delay="$3" pid t
@@ -98,6 +98,13 @@ cut() {
       echo "no $marker on the console"
       return 1
     fi
+  else
+    # No marker: the delay counts from the moment QEMU exists, not from the start of vm-boot.py (python
+    # takes a moment to start it, and a delay of 0.0 s would otherwise find no QEMU to kill).
+    for ((t = 0; t < 1000; t++)); do
+      if pgrep -f "^qemu-system-x86_64 .*file=$ov," >/dev/null || ! kill -0 "$pid" 2>/dev/null; then break; fi
+      sleep 0.02
+    done
   fi
   sleep "$delay"
   if ! pkill -KILL -f "^qemu-system-x86_64 .*file=$ov,"; then

@@ -70,6 +70,8 @@ class Gate(unittest.TestCase):
         self.path = lambda name: os.path.join(self.dir, name)
         with open(self.path("mkosi.conf"), "w") as f:
             f.write("Snapshot=20261006T060000Z\nRepositories=main\n")
+        with open(self.path("commit"), "w") as f:
+            f.write("1" * 40 + "\n")
         with open(self.path("manifest.json"), "w") as f:
             json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
                        "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": "amd64"},
@@ -78,7 +80,8 @@ class Gate(unittest.TestCase):
             f.write('[[package]]\nname = "baz"\nversion = "0.1.0"\n'
                     'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
         self.patches = {"fetch": fake_fetch, "MKOSI_CONF": self.path("mkosi.conf"),
-                        "MITIGATIONS": self.path("mitigations.toml")}
+                        "MITIGATIONS": self.path("mitigations.toml"),
+                        "PAM_TOTP_COMMIT": self.path("commit")}
         self.saved = {k: getattr(sbom, k) for k in self.patches}
         for k, v in self.patches.items():
             setattr(sbom, k, v)
@@ -144,7 +147,9 @@ class Gate(unittest.TestCase):
         code, _ = self.run_gate(("CVE-2026-0001", "foo", 10), ("CVE-2026-0001", "foo", 20))
         self.assertIn("is listed twice", str(code))
         with open(self.path("sbom.json")) as f:
-            self.assertEqual(len(json.load(f)["components"]), 4)  # bootc, 2 Debian packages, 1 crate
+            components = json.load(f)["components"]
+        self.assertEqual(len(components), 5)  # bootc, pam-totp, 2 Debian packages, 1 crate
+        self.assertIn("pkg:github/NyraOS/pam-totp@" + "1" * 40, [c["purl"] for c in components])
 
     def test_more_cargo_locks(self):
         # A second Cargo.lock: its crates are in the SBOM and scanned; one already listed counts once.
@@ -156,12 +161,18 @@ class Gate(unittest.TestCase):
                     '[[package]]\nname = "local"\nversion = "0.0.0"\n')
         code, report = self.run_gate(extra_locks=[self.path("other.lock")])
         self.assertEqual(code, 1)
-        self.assertIn("(2 Debian packages, 2 Rust crates, bootc)", report)
+        self.assertIn("(2 Debian packages, 2 Rust crates, bootc, pam-totp)", report)
         self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
         with open(self.path("sbom.json")) as f:
             purls = [c.get("purl") for c in json.load(f)["components"]]
         self.assertEqual(purls.count("pkg:cargo/baz@0.1.0"), 1)
         self.assertIn("pkg:cargo/qux@1.0.0", purls)
+
+    def test_pam_totp_commit_checked(self):
+        with open(self.path("commit"), "w") as f:
+            f.write("main\n")
+        code, _ = self.run_gate()
+        self.assertIn("is not a commit", str(code))
 
     def test_no_debian_packages_refused(self):
         with open(self.path("manifest.json")) as f:
