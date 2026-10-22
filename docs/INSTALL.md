@@ -158,6 +158,11 @@ label of the pulled image, as the commit of a clone must, and the digest stays m
 is neither (no `RELEASE` and no `.git`) is refused. The tree must be read-only to everything but its
 maker; that is for whatever ships it (the ISO) to see to, the scripts cannot.
 
+A program can drive `nyra-install.sh` from a release tree instead of a person: `check`, `disks`,
+`install` and `mok-import` take the version and the digest from `RELEASE`, answer in JSON and hand the
+terminal over for the recovery key and the password of `mokutil` (docs/INSTALL-INTERFACE.md). It is
+the same steps and the same refusals.
+
 ## Notes
 
 - The hypervisor's operator can see the VM's console (where the recovery key is shown) and its vTPM
@@ -167,7 +172,8 @@ maker; that is for whatever ships it (the ISO) to see to, the scripts cannot.
   (`tools/install/test-verified-pull.sh`; the rules of `RELEASE` offline in
   `tools/install/test-release-tree.sh`), the LUKS, TPM, record and `esp-sync` steps and the header
   check (`tools/vm/install-encrypted.sh` and the encryption tests), and that the recovery key is
-  shown once and is in no log (`tools/install/test-recovery-key.sh`).
+  shown once and is in no log (`tools/install/test-recovery-key.sh`). The interface for programs is
+  tested offline, with stand-ins for the machine, in `tools/install/test-machine-interface.sh`.
 - On an arm64 VM (UTM on Apple Silicon, or QEMU with AAVMF) there is no SMM and no secure world, so
   root in the guest can write the firmware's variable store, Secure Boot's `db` and the MOK list
   included: there, Secure Boot variables are not protected against a compromised running system.

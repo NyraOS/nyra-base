@@ -48,3 +48,14 @@ tree_identify() {
     tree_commit="$(git --git-dir="$root/.git" rev-parse HEAD)" || die "cannot read the checkout's commit"
   fi
 }
+
+# release_values ROOT: sets release_version and release_digest to what ROOT/RELEASE names, for a caller
+# that is not given them (the machine interface of nyra-install.sh, which runs from a release tree
+# only). It checks nothing but that the file is there: the caller checks the two values like arguments,
+# and tree_identify then checks the whole file against them.
+release_values() {
+  local root="$1"
+  [ -f "$root/RELEASE" ] && [ ! -L "$root/RELEASE" ] || die "$root has no RELEASE: this runs from a release tree only"
+  release_version="$(sed -n 's/^version=//p' "$root/RELEASE")" || die "cannot read RELEASE"
+  release_digest="$(sed -n 's/^digest=//p' "$root/RELEASE")" || die "cannot read RELEASE"
+}
