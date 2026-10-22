@@ -979,8 +979,9 @@ Each line is something that broke or surprised us once.
   has exited fails only at `flush()`, and the buffer fails again when Python exits ("Exception
   ignored ... BrokenPipeError"). `vm-boot.py` uses unbuffered pipes (`bufsize=0`) and reports the exit.
 - The `shellcheck` workflow lints every tracked file with a sh/bash/dash shebang, with the version
-  preinstalled on the Ubuntu runner, at `-S warning`. Run it locally before pushing: the image workflow
-  takes long and fails much later.
+  preinstalled on the Ubuntu runner, at `-S warning`. Run `ci/precheck.sh` locally before pushing (the
+  workflow runs the same script; the pre-push hook does it for you): the image workflow takes long and
+  fails much later.
 - Emulated (QEMU TCG, GitHub's arm64 runners), the image's 10 s wait for a device ran out before udev
   had even started: `ttyAMA0` and the ESP timed out, the serial getty and `boot.mount` failed with
   them, and the boot reached `boot-complete.target` with no login prompt (seen in CI). A drop-in
