@@ -182,11 +182,32 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
 - **a password**, on a machine without a TPM: argon2id, with cryptsetup's own benchmark on the machine
   (the installer runs there): about 2 s, up to 1 GiB of memory, less on a machine with little memory.
   What protects a password is that cost against an attack on a copy of the header, not the number of
-  tries at the prompt (unlimited, below), so the installer must also require a minimum argon2id memory
+  tries at the prompt (unlimited, below), so the installer also requires a minimum argon2id memory
   and a minimum password strength. The initrd reads the keyboard as US, since it has no user settings,
-  so the installer accepts only password characters that sit in the same place on the user's layout;
-- **with a TPM** (and Secure Boot on; `nyra-install.sh` refuses a machine without them: its
-  password path is not designed yet): no
+  so the installer accepts only password characters that sit in the same place on the user's layout.
+  The steps are in `tools/install/in-image.sh`, in this order, and CI installs with them
+  (`tools/vm/install-encrypted.sh`):
+  - `password-memory`, before anything is written to the disk: runs cryptsetup's benchmark and
+    refuses (exit 3) a machine whose benchmark settles on less than **256 MiB** of memory (a
+    machine with too little memory, or one so slow that a single pass over 256 MiB takes more than
+    2 s). Below that, a password would be cheap to guess from a copy of the header;
+  - `format` makes key slot 0 with a random key of the installation (as for a TPM);
+  - `password-add` makes key slot 1 from the password in a file (`/run/nyra-install`, only its
+    bytes, no newline): argon2id, the benchmark's time cost for about 2 s, memory up to 1 GiB,
+    and checks that the password unlocks that slot. The file is the only place the password
+    passes through, never an argument or the environment, and the caller deletes it as soon as the step
+    is done. It refuses (exit 4), with the disk untouched, a password that is not 12 to 64 printable
+    ASCII characters (0x20 to 0x7e); whatever asks for the password applies the same rules and
+    refuses the most common passwords, which the step has no list of;
+  - the recovery key, as for a TPM, in key slot 2;
+  - `wipe-install-slot` removes key slot 0 only after checking that the key of the installation
+    unlocks that slot, and that it unlocks nothing afterwards (`wipe-install-key` removes every
+    "password" slot, which would include the password);
+  - `check_luks_header_password` (`tools/install/lib.sh`) on the header: exactly two key slots, the
+    recovery key's (one `systemd-recovery` token) and the password's (no token, argon2id with at least 256
+    MiB, 512-bit key), no TPM2 token, nothing else;
+- **with a TPM** (and Secure Boot on; `nyra-install.sh` refuses a machine without them, and does not
+  offer the password steps above yet): no
   password, the TPM2 enrollment of "TPM2 unlock" below. It is made by the installed system in its
   initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's, after
   the separator. The installer leaves a temporary TPM2 enrollment without any policy, so that the first
@@ -391,7 +412,7 @@ answered on the serial console:
 
 | Check | Result |
 |---|---|
-| The partition table and the LUKS2 header, read offline | the layout and format above; one password key slot (argon2id), one recovery key slot with its token, no other token |
+| The partition table and the LUKS2 header, read offline | the layout and format above; one password key slot (argon2id, 256 MiB or more), one recovery key slot with its token, no other token |
 | The password (first boot, kept on the disk) | unlocks in the initrd; the root is `/dev/mapper/root`, LUKS2 with discards; the ESP mounted at `/boot`; the system `running` |
 | The recovery key | unlocks in place of the password |
 | A wrong password, then the recovery key 120 s later | asked again; the late key still unlocks |
@@ -399,6 +420,18 @@ answered on the serial console:
 | No root partition (its type changed on a copy of the disk) | emergency mode after 90 s, from `nyra-root-wait` (its message on the console), then a reboot |
 | Unencrypted swap, `/var/tmp` and `/srv` partitions added to the disk | not swapped to, not mounted; the ESP still at `/boot`; the control: gpt-auto run with a command line without the image policy makes a swap unit for the added partition |
 | Both secrets, searched for | not in the serial logs or the job summary, not in the unencrypted part of the disk (ESP, LUKS2 header), not in the decrypted root file system (the journal included) |
+
+The password steps (`tools/install/test-password.sh`, a disk of its own, no VM):
+
+| Check | Result |
+|---|---|
+| A password of 11 characters, of 65, not ASCII, with a tab, with a newline at its end, empty | refused (exit 4); the disk has key slot 0 only |
+| A benchmark that settles on 100000 KiB (a stand-in `cryptsetup` in the container) | `password-memory` refuses (exit 3) |
+| A password with spaces and symbols | key slot 1; typed at the terminal's prompt it unlocks that slot; a wrong one and the key of the installation do not |
+| `wipe-install-slot` with another key | refuses; the key slots are as they were |
+| `wipe-install-slot` with the key of the installation | key slots 1 (password) and 2 (recovery key) remain |
+| The header, with `check_luks_header_password` | accepted; refused, each in turn: 256 MiB less 1 KiB of memory, no memory, pbkdf2 or argon2i for the password, a third key slot, the key of the installation still there, a TPM2 token, a second recovery token, no token, the recovery token on the password's slot, a 256-bit key |
+| The password, the key of the installation and the recovery key, searched for | not in any process's arguments while the steps ran, not in the journal or a container's log or configuration, not in the unencrypted start of the disk (the LUKS2 header); each search is shown to find a string that was put where it looks |
 
 With a TPM (`tools/vm/encryption-tpm.sh`): its own disk, installed for a TPM with the VM's swtpm,
 booted with Secure Boot (Microsoft keys, the run's UKI certificate as a MOK) and one firmware variable

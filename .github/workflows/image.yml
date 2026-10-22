@@ -1064,6 +1064,15 @@ jobs:
         timeout-minutes: 10
         run: tools/install/test-recovery-key.sh localhost/nyra-base:ci "$WORK"
 
+      # The installer's disk password (tools/install/test-password.sh, docs/BOOT.md): key slot 1 of
+      # a disk of its own, argon2id with 256 MiB or more, refused when it is short, long or not
+      # printable ASCII or when the machine has too little memory, and in no process's arguments,
+      # log or LUKS2 header.
+      - name: Disk password steps, memory threshold and header check (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 10
+        run: tools/install/test-password.sh localhost/nyra-base:ci "$WORK"
+
       # Titanic T10, the rotation of the TPM policy key with a PIN (docs/BOOT.md, "Rotating the policy
       # key"; the same script as the rotation in encryption-tpm): test versions signed with policy keys
       # made in this step (deleted once they are built), installed on their own disk for a TPM and
