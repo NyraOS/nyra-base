@@ -208,8 +208,7 @@ time and has no network control port (see "Time").
   arrives, it replaces this ruleset (and the `nyra-firewall.service` unit).
 - Containers can still reach the network, rootless (Distrobox, `podman run` as a user) or rootful.
   What the firewall stops is inbound traffic. A port published by a rootful container with
-  `podman run -p` answers on this machine (`127.0.0.1` and its own addresses; for IPv6 its own
-  addresses, not `::1`) and not from other machines, until a rule in `forward` opens it (the
+  `podman run -p` answers on this machine (`127.0.0.1` and its own addresses, IPv4 and IPv6) and not from other machines, until a rule in `forward` opens it (the
   destination port there is the container's own, after the DNAT). A server started inside Distrobox
   shares the host's network and needs a rule in `input`. Rootless published ports (pasta) would listen
   on the host like any other program and fall under `input`, but the image has no pasta or slirp4netns

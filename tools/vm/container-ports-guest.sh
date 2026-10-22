@@ -116,6 +116,12 @@ expect 0 $? "a container on an IPv6 network publishing 8083 starts"
 if wait_local "http://[fd00:51::1]:8083/"; then
 	expect 200 "$(status "http://[fd00:51::1]:8083/")" "IPv6 published port, from this machine (its own address)"
 	expect 000 "$(outside "http://[fd00:51::1]:8083/")" "IPv6 published port, from the network"
+	# Control: an explicit accept rule opens the port over IPv6, so the drop was the forward chain.
+	nft insert rule inet nyra forward iifname c0 tcp dport 8083 accept
+	expect 200 "$(outside "http://[fd00:51::1]:8083/")" "IPv6 published port, from the network, with an accept rule in the forward chain"
+	h="$(nft -a list chain inet nyra forward | sed -n 's/.*iifname "c0".*# handle \([0-9]*\)$/\1/p')"
+	nft delete rule inet nyra forward handle "$h"
+	expect 000 "$(outside "http://[fd00:51::1]:8083/")" "IPv6 published port, from the network, with the rule removed"
 else
 	echo "FAILED: the published port 8083 does not answer on this machine over IPv6"
 	$podman logs cports-web6 2>&1 | tail -5
