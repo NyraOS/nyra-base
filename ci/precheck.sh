@@ -52,7 +52,7 @@ check_shellcheck() {
   local scripts
   mapfile -t scripts < <(git ls-files | while read -r f; do
     [ -f "$f" ] && head -n 1 "$f" | grep -qE '^#!(/usr)?/bin/(env )?(ba|da)?sh( |$)' && echo "$f"; done)
-  printf '%s\n' "${scripts[@]}"
+  if [ -n "$IN_CI" ]; then printf '%s\n' "${scripts[@]}"; else echo "${#scripts[@]} scripts"; fi
   if [ -n "$IN_CI" ] || shellcheck --version 2>/dev/null | grep -qx "version: $SHELLCHECK_VERSION"; then
     shellcheck --version
     shellcheck -S warning "${scripts[@]}"
