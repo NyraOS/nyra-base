@@ -265,13 +265,21 @@ mkdir -m 0700 "$pw" "$pw/secrets"
 python3 -I -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20)), end="")' \
   > "$pw/secrets/password"
 tools/vm/install-encrypted.sh "$image" "$pw" "$pw/secrets"
+# The password's key slot: the one the recovery key's token does not name.
+dd if="$pw/disk.raw" of="$pw/header" bs=512 skip="$root_start" count=32768 status=none
+pwslot="$(sudo podman run --rm --network none -v "$pw/header:/header:ro" "$image" \
+  cryptsetup luksDump --dump-json-metadata /header | python3 -I -c '
+import json, sys
+h = json.load(sys.stdin)
+recovery = [k for t in h["tokens"].values() if t["type"] == "systemd-recovery" for k in t["keyslots"]]
+print([k for k in h["keyslots"] if k not in recovery][0])')"
 dd if="$work/disk.raw" of="$work/header" bs=512 skip="$root_start" count=32768 status=none
 sudo podman run --rm --network none -v "$work/header:/header:ro" "$image" \
   cryptsetup luksDump --dump-json-metadata /header | python3 -I -c '
 import json, sys
 t = [t for t in json.load(sys.stdin)["tokens"].values() if t["type"] == "systemd-tpm2"][0]
-t["keyslots"] = ["0"]
-print(json.dumps(t))' > "$pw/secrets/forged.json"
+t["keyslots"] = [sys.argv[1]]
+print(json.dumps(t))' "$pwslot" > "$pw/secrets/forged.json"
 loop="$(sudo losetup -P --show -f "$pw/disk.raw")"
 for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 || true; sleep 0.2; done
 sudo podman run --rm --privileged --network none -v /dev:/dev -v "$pw/secrets:/secrets:ro" "$image" \

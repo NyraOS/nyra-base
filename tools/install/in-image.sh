@@ -117,6 +117,66 @@ wipe-install-key() {
   systemd-cryptenroll "$root"
 }
 
+# The password of a disk without a TPM (docs/BOOT.md, "Disk encryption"). The key slots at the end of
+# an installation: 0 is the key of the installation (format) until wipe-install-slot removes it, 1 is
+# the password. The password is read from a file, never from an argument, a variable or the
+# environment, and the caller deletes the file as soon as password-add is done.
+password_slot=1
+# The least memory the password's key derivation may use: 256 MiB, in KiB (cryptsetup's unit).
+password_memory_floor=262144
+
+# argon2id_memory: the memory, in KiB, that cryptsetup's benchmark settles on for about 2 s on this
+# machine, up to 1 GiB (it takes less on a machine with little memory or a slow one); 0 if it fails.
+argon2id_memory() {
+  local kdf memory
+  while read -r kdf _ _ memory _; do
+    [ "$kdf" = argon2id ] && { echo "$memory"; return; }
+  done < <(cryptsetup benchmark --pbkdf argon2id --iter-time 2000 --pbkdf-memory 1048576 2> /dev/null)
+  echo 0
+}
+
+# password-memory: asks, before anything is written to the disk, whether this machine can derive a
+# key from a password with at least 256 MiB of memory. Exit 3 if not.
+password-memory() {
+  local memory
+  memory="$(argon2id_memory)"
+  echo "in-image: the password's key derivation would use $memory KiB (least: $password_memory_floor)"
+  [ "$memory" -ge "$password_memory_floor" ] 2> /dev/null || exit 3
+}
+
+# password-add DISK KEYFILE PWFILE: the password in PWFILE (exactly its bytes, no newline) as key slot
+# 1, argon2id with cryptsetup's benchmark (about 2 s, up to 1 GiB), authorized by KEYFILE (key slot 0).
+# Exit 4, the disk unchanged: a password that is not 12 to 64 printable ASCII characters (the rules
+# of whatever asks for it; the initrd reads a US keyboard). The password must unlock its slot. That
+# the derivation came out with at least 256 MiB is for check_luks_header_password
+# (tools/install/lib.sh), which the caller runs on the finished header; password-memory said so
+# beforehand, on the same machine.
+password-add() {
+  local root key="$2" pw="$3" size
+  root="$(part "$1" 2)"
+  size="$(wc -c < "$pw")"
+  { [ "$size" -ge 12 ] && [ "$size" -le 64 ] && [ "$(LC_ALL=C tr -d ' -~' < "$pw" | wc -c)" = 0 ]; } \
+    || { echo "in-image: the password is not 12 to 64 printable ASCII characters" >&2; exit 4; }
+  cryptsetup luksAddKey -q --key-file "$key" --key-slot "$password_slot" \
+    --pbkdf argon2id --iter-time 2000 --pbkdf-memory 1048576 "$root" "$pw"
+  cryptsetup open --test-passphrase --key-slot "$password_slot" --key-file "$pw" "$root"
+}
+
+# wipe-install-slot DISK KEYFILE: removes key slot 0, which must be the one KEYFILE unlocks, and
+# checks that KEYFILE unlocks nothing any more. (wipe-install-key above removes every "password" slot:
+# on a disk with a password it would remove that too.)
+wipe-install-slot() {
+  local root
+  root="$(part "$1" 2)"
+  cryptsetup open --test-passphrase --key-slot 0 --key-file "$2" "$root"
+  cryptsetup luksKillSlot -q "$root" 0
+  if cryptsetup open --test-passphrase --key-file "$2" "$root" 2> /dev/null; then
+    echo "in-image: the key of the installation still unlocks the disk" >&2
+    exit 1
+  fi
+  systemd-cryptenroll "$root"
+}
+
 # esp-sync DISK: the boot files and loader.conf on the new ESP.
 esp-sync() {
   mkdir -p /esp
@@ -127,7 +187,8 @@ esp-sync() {
 
 case "${1:-}" in
   format | recovery-show | recovery-check | recovery-wipe | recovery-to-file | luks-json \
-    | install-system | close-root | tpm-enroll | wipe-install-key | esp-sync)
+    | install-system | close-root | tpm-enroll | wipe-install-key | esp-sync \
+    | password-memory | password-add | wipe-install-slot)
     step="$1"
     shift
     "$step" "$@"

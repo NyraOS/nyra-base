@@ -58,3 +58,20 @@ check_luks_header() {
       and ((.keyslots | keys | sort) == ([$tokens[].keyslots[]] | sort))
       and (.keyslots | length) == 2' > /dev/null
 }
+
+# check_luks_header_password: succeeds only if the LUKS2 header's JSON on stdin is that of a finished
+# installation with a password: exactly two key slots, the recovery key (one token, systemd-recovery,
+# for one key slot) and the password (no token), whose key derivation is argon2id with at least
+# 256 MiB of memory (262144 KiB); no TPM2 token, nothing else. The key of the installation is gone.
+check_luks_header_password() {
+  jq -e '
+    [.tokens[]] as $tokens
+    | ($tokens | length) == 1
+      and ($tokens[0].type == "systemd-recovery")
+      and (($tokens[0].keyslots | length) == 1)
+      and ((.keyslots | length) == 2)
+      and ([.keyslots | keys[] | select(. != $tokens[0].keyslots[0])] as $other
+          | ($other | length) == 1
+            and (.keyslots[$other[0]] | .type == "luks2" and .key_size == 64
+                 and .kdf.type == "argon2id" and .kdf.memory >= 262144 and .kdf.time >= 1))' > /dev/null
+}

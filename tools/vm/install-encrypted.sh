@@ -9,7 +9,9 @@
 # writes it nowhere, this script needs it to boot the disk: it goes to SECRETS_DIR/recovery-key
 # (mode 0600), never to the output (tools/install/test-recovery-key.sh tests the installer's way).
 #   - Without a TPM: the password in SECRETS_DIR/password (taken as it is, no newline) is the other
-#     key slot.
+#     key slot, added as the installer adds it: password-memory before anything is written, a random
+#     key of the installation as key slot 0, password-add (key slot 1), the recovery key, then
+#     wipe-install-slot and the header check for a password (check_luks_header_password).
 #   - With TPM_DIR, the state of the machine's TPM (swtpm): no password. A temporary TPM2 enrollment
 #     without any policy, made in that TPM, unlocks the first boot, whose initrd replaces it with the
 #     real enrollment (nyra-tpm-enroll.service). The key used during the installation is removed.
@@ -26,17 +28,16 @@ as_root=sudo
 . tools/install/lib.sh
 loop="" swpid=""
 trap '[ -z "$loop" ] || sudo losetup -d "$loop" || true; [ -z "$swpid" ] || kill "$swpid" 2>/dev/null || true' EXIT
-key=password
-if [ -n "$tpm" ]; then
-  key=install-key
-  ( umask 077; head -c 32 /dev/urandom | base64 -w0 > "$secrets/$key" )
-fi
+key=install-key
+[ -n "$tpm" ] || in_image -- password-memory
+( umask 077; head -c 32 /dev/urandom | base64 -w0 > "$secrets/$key" )
 truncate -s 12G "$work/disk.raw"
 partition_disk "$work/disk.raw"
 loop="$(sudo losetup -P --show -f "$work/disk.raw")"
 for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 || true; sleep 0.2; done
 [ -b "${loop}p2" ] || { echo "::error::No partitions on $loop after 10 s" >&2; exit 1; }
 in_image -- format "$loop" "/secrets/$key"
+[ -n "$tpm" ] || in_image -- password-add "$loop" "/secrets/$key" /secrets/password
 in_image -e NYRA_CI=1 -- recovery-to-file "$loop" "/secrets/$key"
 sudo chown "$(id -u):$(id -g)" "$secrets/recovery-key" && chmod 0600 "$secrets/recovery-key"
 in_image_timeout=900 in_image -- install-system "$loop" "/secrets/$key" "${tpm:+tpm}"
@@ -54,6 +55,13 @@ if [ -n "$tpm" ]; then
     || { echo "::error::The LUKS header is not recovery key + one policy-less TPM2 slot" >&2; exit 1; }
   kill "$swpid" && wait "$swpid" || true
   swpid=""
+  rm "$secrets/$key"
+fi
+
+if [ -z "$tpm" ]; then
+  in_image -- wipe-install-slot "$loop" "/secrets/$key"
+  in_image -- luks-json "$loop" | check_luks_header_password \
+    || { echo "::error::The LUKS header is not recovery key + one password slot (argon2id, 256 MiB or more)" >&2; exit 1; }
   rm "$secrets/$key"
 fi
 

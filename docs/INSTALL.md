@@ -4,7 +4,7 @@
 `nyra-base-arm64` on an aarch64 machine: the installer takes the repository from the machine's
 architecture, never from an argument) on the
 whole disk of the machine it runs on, from a Debian live session. It is made for a VM with a vTPM
-and Secure Boot on (shim validation included); it refuses a machine without them (a password-only install is not designed yet).
+and Secure Boot on (shim validation included); it refuses a machine without them (the steps for a disk password are in `tools/install/in-image.sh` and tested in CI, docs/BOOT.md; this script does not offer them yet).
 It does what `tools/vm/install-encrypted.sh` does in CI, with the same steps
 (`tools/install/in-image.sh`): GPT, LUKS2 with a recovery key, ext4 with fs-verity, `bootc install`,
 `esp-sync install`, and the temporary TPM2 enrollment that the first boot replaces

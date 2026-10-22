@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: Titanic T10, an encrypted disk without a TPM never locks its user out (docs/BOOT.md, "Disk
 # encryption"). The image is installed on an encrypted root with a password and a recovery key, as
-# the installer does it (tools/vm/install-encrypted.sh); the VM has no TPM. Then:
-#   - the LUKS2 header, read offline: the format, one password key slot, one recovery key slot with its
-#     token, discards allowed, no other token;
+# the installer does it (tools/vm/install-encrypted.sh, which adds the password with the installer's
+# own steps and header check); the VM has no TPM. Then:
+#   - the LUKS2 header, read offline: the format, one password key slot (argon2id, 256 MiB of memory
+#     or more), one recovery key slot with its token, discards allowed, no other token;
 #   - the password unlocks the disk in the initrd, without anything on the command line: the root is
 #     the LUKS2 volume the initrd found by its partition type, the ESP is mounted at /boot (first boot,
 #     written to the disk);
@@ -66,10 +67,11 @@ assert [t["type"] for t in tokens] == ["systemd-recovery"], tokens
 recovery = tokens[0]["keyslots"]
 password = [k for k in slots if k not in recovery]
 assert len(recovery) == 1 and len(password) == 1, slots
-assert slots[password[0]]["kdf"]["type"] == "argon2id", slots[password[0]]["kdf"]
+kdf = slots[password[0]]["kdf"]
+assert kdf["type"] == "argon2id" and kdf["memory"] >= 262144 and kdf["time"] >= 1, kdf
 assert "allow-discards" in h["config"].get("flags", []), h["config"]
 print(f"LUKS2, aes-xts-plain64 (512-bit key), 4096-byte sectors, discards allowed; key slot "
-      f"{password[0]}: password (argon2id), key slot {recovery[0]}: recovery key (systemd-recovery "
+      f"{password[0]}: password (argon2id, {kdf['memory'] // 1024} MiB), key slot {recovery[0]}: recovery key (systemd-recovery "
       f"token); no other token")
 EOF
 )"
