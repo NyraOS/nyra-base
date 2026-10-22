@@ -71,6 +71,18 @@ package = "zlib"
 reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no known component of the base image does. Waiting for the Debian zlib upload."
 expires = 2026-11-08
 
+# brotli 1.2.0-4: fixed upstream in brotli 1.2.1, no Debian upload yet. Only libbrotli1 is in the
+# image, pulled in by libcurl, FreeType, libheif and libjxl. Its decoder runs only when one of them
+# is given brotli data: nyra-updated's curl does not ask for compressed responses, and nothing in
+# the base image decodes untrusted fonts or images; Flatpak pulls only from a remote a user adds.
+# Short expiry. End: a fixed brotli in Debian and a snapshot bump.
+
+[[mitigation]]
+id = "CVE-2026-111497"
+package = "brotli"
+reason = "Out-of-bounds write in the brotli decoder, fixed upstream in brotli 1.2.1; Debian has no fixed upload yet. Only libbrotli1 is in the image. The base image has no program that decodes brotli data from outside on its own: nyra-updated fetches the channel sheet with curl without asking for compressed responses, and no font or image from outside is decoded (see the libheif entry). Flatpak (libostree) does ask its server for compressed responses, but the image configures no remote and nothing pulls from one on its own; a user who adds one is exposed to that server until the fix."
+expires = 2026-10-29
+
 # libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with
 # only the dav1d and libde265 decoder plugins, no encoder plugin) has one user: glycin's HEIF/AVIF
 # loader, pulled in by flatpak through gdk-pixbuf. In the base image that loader is reached only by
