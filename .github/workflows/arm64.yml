@@ -310,11 +310,11 @@ jobs:
             minutes: 45
           # The altered ISOs (arm64-iso): the pull from each must be refused.
           - name: layer
-            args: "--refusal layer"
+            args: "--refusal layer --deadline 1200"
             suffix: -layer
             minutes: 30
           - name: digest
-            args: "--refusal digest"
+            args: "--refusal digest --deadline 1200"
             suffix: -digest
             minutes: 30
     steps:
