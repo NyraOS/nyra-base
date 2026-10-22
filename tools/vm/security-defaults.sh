@@ -7,7 +7,9 @@
 # sockets, only declared running services, timers and sockets (the units blocked in the
 # Containerfile stay inactive), the signature policy in place and owned by root, unused
 # filesystems not autoloaded, the ESP read-only at /boot, no kernel audit lines on the console
-# (with a control) while the journal keeps them.
+# (with a control) while the journal keeps them. Containers follow the same inbound default deny
+# (tools/vm/container-ports-guest.sh): a rootful published port (IPv4 and IPv6) is reachable on the
+# machine and not from the network, and a container still reaches out.
 # Each guest command must end with the status of its whole check: vm-boot.py reads only the last
 # status and the guest shell has no set -e or pipefail, so checks are joined with && and loops set
 # a flag. --self-test runs the parsing-heavy commands against stubs, without a VM (shellcheck job).
@@ -111,6 +113,15 @@ if [ "${1:-}" = --self-test ]; then
 fi
 disk="$1" logs="$2" summary="$3"
 
+# The guest script of the container port checks, typed in pieces the console takes (as in updates.sh).
+ports_script=/var/tmp/container-ports-guest.sh
+b64="$(base64 -w0 <tools/vm/container-ports-guest.sh)"
+ports=(--command ": > $ports_script.b64")
+for ((i = 0; i < ${#b64}; i += 1500)); do
+  ports+=(--command "printf %s ${b64:i:1500} >> $ports_script.b64")
+done
+ports+=(--command "base64 -d $ports_script.b64 > $ports_script && bash $ports_script")
+
 # Authenticated time: no systemd-timesyncd and no chrony; ntp-daemon (ntpd-rs) runs as its dynamic
 # user (the unit's UID, in systemd's dynamic range 61184-65519; ps shows no name for it) with
 # CAP_SYS_TIME only (bit 25), no new privileges, under its seccomp filter and its AppArmor profile
@@ -149,6 +160,7 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$units" \
   --command "$blocked" \
   --command "$firewall_probe" \
+  "${ports[@]}" \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \
   --command "$filesystems" \
   --command "$time_client" \
