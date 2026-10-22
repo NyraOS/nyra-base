@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Starts nyra-installer@.service on tty1 and on each console in /sys/class/tty/console/active
+# ("tty0 ttyS0"): tty0 is the screen, whose first terminal is tty1. Nothing is started for a port that
+# the machine does not have, because the kernel lists only the consoles it opened.
+set -eu
+read -r -a active < /sys/class/tty/console/active || active=()
+for console in tty1 "${active[@]}"; do
+  [ "$console" != tty0 ] || continue
+  [[ "$console" =~ ^tty[A-Za-z]*[0-9]+$ ]] || continue
+  systemctl --no-block start "nyra-installer@$console.service"
+done

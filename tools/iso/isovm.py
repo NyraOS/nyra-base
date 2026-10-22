@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""CI only: a QEMU virtual machine that boots the installer ISO (UEFI, Secure Boot with the Microsoft
+keys, a TPM 2.0 from swtpm), and its serial console as the installer's own terminal: the text that
+the installer or a shell prints, and the keys a person would press.
+
+The console is a socket of QEMU's (every byte is also in the log file, which the job uploads). A
+program that draws on a terminal first asks it how big it is, with the escape sequence ESC [ 6 n
+(the installer does, on a serial port, which has no window size); the console answers it as a
+terminal of 80 columns and 24 rows would. What is looked for is the text without escape sequences.
+"""
+import os
+import re
+import select
+import shutil
+import socket
+import subprocess
+import tempfile
+import time
+
+OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
+OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+# Control sequences (CSI, OSC, two-character ones) and the bytes that only move the cursor.
+ESCAPES = re.compile(rb"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78cDEHMNOZ]|\x00")
+
+
+class Timeout(Exception):
+    pass
+
+
+def plain(data: bytes) -> str:
+    """The text of terminal output: no escape sequences, no carriage returns."""
+    return ESCAPES.sub(b"", data).replace(b"\r", b"").decode("utf-8", "replace")
+
+
+class Vm:
+    """QEMU with the ISO and an empty disk. start() boots it; the console methods read and type."""
+
+    def __init__(self, iso, work, log, *, medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
+                 smp=2, disk=True, extra=()):
+        self.iso, self.work, self.log = iso, work, log
+        self.accel = accel or ("kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg")
+        self.medium, self.memory, self.disk_gb, self.tpm, self.smp, self.disk = medium, memory, disk_gb, tpm, smp, disk
+        self.extra = list(extra)
+        self.qemu = self.swtpm = self.sock = None
+        self.raw = b""  # everything the console printed
+        self.answered = 0  # how much of raw has been looked at for size questions
+        self.started = None
+
+    # --- starting and stopping ----------------------------------------------------------------------
+    def start(self):
+        os.makedirs(self.work, exist_ok=True)
+        vars_fd = os.path.join(self.work, "vars.fd")
+        shutil.copyfile(OVMF_VARS, vars_fd)
+        self.vars_fd = vars_fd
+        sock = os.path.join(self.work, "console.sock")
+        for path in (sock,):
+            if os.path.exists(path):
+                os.unlink(path)
+        cpu = "host" if self.accel == "kvm" else "max"
+        cmd = ["qemu-system-x86_64", "-machine", f"q35,smm=on,accel={self.accel}", "-cpu", cpu,
+               "-global", "driver=cfi.pflash01,property=secure,value=on",
+               "-smp", str(self.smp), "-m", str(self.memory), "-nodefaults", "-display", "none",
+               "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+               "-drive", f"if=pflash,format=raw,file={vars_fd}",
+               "-chardev", f"socket,id=console,path={sock},server=on,wait=off,logfile={self.log}",
+               "-serial", "chardev:console", "-device", "virtio-rng-pci", "-nic", "none",
+               ]
+        if self.medium == "usb":
+            # The ISO as a USB stick (a disk, not a CD): the hybrid image boots from its own EFI partition.
+            cmd += ["-drive", f"if=none,id=iso,format=raw,readonly=on,file={self.iso}",
+                    "-device", "qemu-xhci", "-device", "usb-storage,drive=iso,removable=on"]
+        else:
+            cmd += ["-drive", f"if=none,id=iso,format=raw,media=cdrom,readonly=on,file={self.iso}",
+                    "-device", "ich9-ahci,id=ahci", "-device", "ide-cd,drive=iso,bus=ahci.0"]
+        if self.disk:
+            self.disk_path = os.path.join(self.work, "disk.raw")
+            with open(self.disk_path, "wb") as f:
+                f.truncate(self.disk_gb << 30)
+            cmd += ["-drive", f"if=none,id=disk,format=raw,file={self.disk_path}", "-device", "virtio-blk-pci,drive=disk"]
+        if self.tpm:
+            tpm_dir = os.path.join(self.work, "tpm")
+            os.makedirs(tpm_dir, exist_ok=True)
+            tpm_sock = os.path.join(self.work, "swtpm.sock")
+            self.swtpm = subprocess.Popen(["swtpm", "socket", "--tpm2", "--tpmstate", f"dir={tpm_dir}",
+                                           "--ctrl", f"type=unixio,path={tpm_sock}", "--terminate"])
+            for _ in range(50):
+                if os.path.exists(tpm_sock) or self.swtpm.poll() is not None:
+                    break
+                time.sleep(0.2)
+            if not os.path.exists(tpm_sock):
+                raise SystemExit("swtpm did not start")
+            cmd += ["-chardev", f"socket,id=chrtpm,path={tpm_sock}", "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
+                    "-device", "tpm-crb,tpmdev=tpm0"]
+        cmd += self.extra
+        print("+ " + " ".join(cmd), flush=True)
+        self.started = time.monotonic()
+        self.qemu = subprocess.Popen(cmd)
+        for _ in range(100):
+            if os.path.exists(sock) or self.qemu.poll() is not None:
+                break
+            time.sleep(0.1)
+        if not os.path.exists(sock):
+            raise SystemExit("QEMU did not start")
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(sock)
+        self.sock.setblocking(False)
+
+    def stop(self):
+        if self.sock:
+            self.sock.close()
+        if self.qemu and self.qemu.poll() is None:
+            self.qemu.kill()
+        if self.qemu:
+            self.qemu.wait()
+        if self.swtpm:
+            try:
+                self.swtpm.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.swtpm.kill()
+                self.swtpm.wait()
+
+    def seconds(self):
+        return time.monotonic() - self.started
+
+    # --- the console ---------------------------------------------------------------------------------
+    def pump(self, wait=0.5):
+        """Reads what the console printed, and answers the size questions in it."""
+        ready, _, _ = select.select([self.sock], [], [], wait)
+        if ready:
+            try:
+                data = self.sock.recv(65536)
+            except BlockingIOError:
+                data = b""
+            self.raw += data
+        # ESC [ 6 n: where is the cursor? The installer put it at the far corner (999;999) first.
+        while True:
+            i = self.raw.find(b"\x1b[6n", self.answered)
+            if i < 0:
+                break
+            self.answered = i + 4
+            self.sock.send(b"\x1b[24;80R")
+
+    def mark(self):
+        """A position in the console's output: expect(since=mark) looks only at what comes after it."""
+        return len(self.raw)
+
+    def text(self, since=0):
+        return plain(self.raw[since:])
+
+    def expect(self, pattern, timeout, since=0):
+        """Waits until the text after SINCE matches PATTERN (a regular expression); returns the match."""
+        regex = re.compile(pattern, re.S)
+        end = time.monotonic() + timeout
+        while True:
+            self.pump()
+            m = regex.search(self.text(since))
+            if m:
+                return m
+            if self.qemu.poll() is not None:
+                self.pump(0.2)
+                m = regex.search(self.text(since))
+                if m:
+                    return m
+                raise Timeout(f"QEMU ended while waiting for {pattern!r}; the console ended with:\n{self.text()[-1500:]}")
+            if time.monotonic() > end:
+                raise Timeout(f"no {pattern!r} within {timeout} s; the console ended with:\n{self.text()[-1500:]}")
+
+    def send(self, data):
+        self.sock.send(data if isinstance(data, bytes) else data.encode())
+
+    def run(self, command, timeout=60):
+        """Types COMMAND into the shell on the console and returns (exit status, output)."""
+        n = self.mark()
+        self.send(command + "; echo @@RC@@$?@@\n")
+        m = self.expect(r"@@RC@@(\d+)@@", timeout, since=n)
+        out = self.text(n)[: self.text(n).index(m.group(0))]
+        # What the terminal echoed of the command is not its output.
+        lines = [line for line in out.split("\n") if "@@RC@@$?@@" not in line]
+        return int(m.group(1)), "\n".join(lines).strip()

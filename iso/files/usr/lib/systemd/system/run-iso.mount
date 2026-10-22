@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The medium the installer started from: the ISO file system, read-only. Its volume label is NYRA-ISO
+# (ci/build-iso.sh), also on a USB stick written with the ISO, which the installer never offers as a
+# disk to install on.
+[Unit]
+Description=The installer medium
+DefaultDependencies=no
+Before=local-fs.target
+
+[Mount]
+What=/dev/disk/by-label/NYRA-ISO
+Where=/run/iso
+Type=iso9660
+Options=ro,nosuid,nodev
+TimeoutSec=120

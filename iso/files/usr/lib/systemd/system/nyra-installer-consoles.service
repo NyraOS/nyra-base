@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Starts the installer on tty1 and on every other console the kernel writes to (a serial port named by
+# console= on the command line, if the machine has it).
+[Unit]
+Description=Start the installer on every console
+After=nyra-registry.service usr-lib-nyra-release.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nyra/iso/start-consoles
+
+[Install]
+WantedBy=multi-user.target

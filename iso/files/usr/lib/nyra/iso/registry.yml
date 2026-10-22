@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Read-only registry over the image's files on the ISO (ci/build-iso.sh writes them), 127.0.0.1 only.
+version: 0.1
+log:
+  level: warn
+  accesslog:
+    disabled: true
+storage:
+  filesystem:
+    rootdirectory: /run/iso/registry
+  maintenance:
+    readonly:
+      enabled: true
+  delete:
+    enabled: false
+http:
+  addr: 127.0.0.1:80
