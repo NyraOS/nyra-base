@@ -174,8 +174,10 @@ Each line is something that broke or surprised us once.
 - **`/usr/bin/awk` is a link through `/etc/alternatives`.** A script that must run with an emptied or
   missing `/etc` (first boot, Reset settings) uses `sed`, `cut` or `mawk` itself.
 - **`systemd-firstboot` refuses a keymap that is not installed** (`--keymap=us` fails with "Keymap us
-  is not installed") and so does the whole command. The keymap goes in a command of its own, which may
-  fail.
+  is not installed") and so does the whole command, and systemd 255 (Ubuntu 24.04) also refuses
+  `--locale=en_US.UTF-8` where that locale is not installed, and writes the time zone link as
+  `/usr/share/zoneinfo/Etc/UTC`, not `UTC`. Each setting goes in a command of its own, and a test
+  compares the file the link leads to, not the link.
 
 ## Shutdown
 - **A console login could hold the shutdown for 90 s** (about one power-off in ten in CI). After

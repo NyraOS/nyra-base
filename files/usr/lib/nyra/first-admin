@@ -50,10 +50,15 @@ fail() {
 # The file is read once and gone, whatever follows (a trap, so a refusal removes it too).
 trap 'rm -f -- "$file"' EXIT
 
-# The defaults never stop the account: it matters more.
-systemd-firstboot --locale=en_US.UTF-8 --timezone=UTC --hostname=nyra || echo "first-admin: the fixed defaults could not all be set" >&2
-# Apart, because systemd-firstboot refuses a keymap that is not installed; it cannot ask for one then
-# either, and the kernel's own is the US one.
+# The defaults never stop the account: it matters more. One command each, because systemd-firstboot
+# stops at the first setting it refuses, and some versions refuse a locale or a keymap that is not
+# installed (the locale is only a name in a file, written here; without the keymap the kernel's own,
+# US, map stays). Each is set only where nothing is set yet.
+if [ ! -e /etc/locale.conf ]; then
+  ( umask 022; printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf ) || echo "first-admin: the locale could not be set" >&2
+fi
+systemd-firstboot --timezone=UTC || echo "first-admin: the time zone could not be set" >&2
+systemd-firstboot --hostname=nyra || echo "first-admin: the host name could not be set" >&2
 systemd-firstboot --keymap=us 2> /dev/null || echo "first-admin: no keymap us in this image: the kernel's US keyboard stays"
 
 # A directory that anyone but root can write to could have its file swapped.

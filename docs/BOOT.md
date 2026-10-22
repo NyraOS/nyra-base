@@ -1108,7 +1108,7 @@ boot. It leaves one file, `/var/lib/nyra/first-admin`, and the first boot turns 
 
 **The file.** One line, `NAME:HASH`, mode 0600, owned by root, in the directory `/var/lib/nyra`. The
 name is what the installer asked for (`^[a-z][a-z0-9_-]{0,31}$`, not one of the system's names); the
-hash is yescrypt (`$y$...`), made by the image's own `chpasswd` in the container that the installer runs
+hash is yescrypt (`$y$...`), of a password that is not the name, made by the image's own `chpasswd` in the container that the installer runs
 from the image it is installing (`admin-record` in `tools/install/in-image.sh`, before the disk is
 touched). The password comes in on that container's standard input: it is never an argument, never in
 the environment, a log or a file, and the installer's own copy is cleared as soon as the container has
@@ -1121,10 +1121,12 @@ writes the image.
 there) and before `systemd-firstboot` and before anyone can log in. It starts only if the file exists,
 `/etc` is writable and the command line is not the reset entry's. It:
 
-1. sets the fixed defaults with `systemd-firstboot`, each only where nothing is set yet: the locale
-   `en_US.UTF-8`, the time zone `UTC`, the host name `nyra`, and the keyboard `us` where the image has
-   that keymap (without one the kernel's own US map stays; `systemd-firstboot` refuses a keymap that is
-   not installed, and cannot ask for one then). `systemd-firstboot`, which runs next, has nothing left to
+1. sets the fixed defaults, each only where nothing is set yet and none able to stop the account: the
+   locale `en_US.UTF-8` (written to `/etc/locale.conf` by the script itself: some versions of
+   `systemd-firstboot` refuse a locale that is not installed), and with `systemd-firstboot`, one command
+   each, the time zone `UTC`, the host name `nyra` and the keyboard `us` where the image has that
+   keymap (without one the kernel's own US map stays; `systemd-firstboot` refuses a keymap that is not
+   installed, and cannot ask for one then). `systemd-firstboot`, which runs next, has nothing left to
    ask. These are settings of `/etc`, the user's to change; no screen of the installer asks for them yet;
 2. checks the file, and removes it as soon as it has read it: it is read once, and a hash that was
    refused does not stay on the disk. The directory is root's alone (no group or other write bit), the
@@ -1143,7 +1145,8 @@ there) and before `systemd-firstboot` and before anyone can log in. It starts on
 Root is not touched: it stays as the image has it, locked (`*`). The unit does not prompt and logs only
 the name. If it refuses, it fails (visible in `systemctl --failed`, not one of the health checks, so the
 version is not rolled back for it), the fixed defaults are still set, and there is no administrator:
-whoever installed starts again from the installer. A power cut between `useradd` and `chpasswd` leaves
+whoever installed starts again from the installer (with no administrator there is no recovery shell
+either: it asks for a member of `sudo`). A power cut between `useradd` and `chpasswd` leaves
 the account locked and the file gone, with the same result.
 
 **Reset settings keeps it.** The account is a regular user (UID and primary GID in 1000 to 59999) in the

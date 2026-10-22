@@ -197,6 +197,7 @@ read_answers() {
         and ($a.confirm | text("\\A/dev/[A-Za-z0-9._-]{1,32}\\z"))
         and ($a.admin_name | text("\\A[a-z][a-z0-9_-]{0,31}\\z")) and $a.admin_name != "root"
         and ($a.admin_password | text("\\A[ -~]{12,64}\\z"))
+        and $a.admin_password != $a.admin_name
         and (if $a.unlock == "password" then ($a.disk_password | text("\\A[ -~]{12,64}\\z")) else true end)
       then "ok", $a.device, $a.confirm, $a.unlock, $a.admin_name, $a.admin_password
       else "no" end' 2> /dev/null)" || out=no

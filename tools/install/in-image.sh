@@ -208,7 +208,7 @@ wipe-install-slot() {
 # file. The hash is yescrypt, made by this image's own chpasswd on an account in this container, which
 # is removed with it. Exit 4, nothing written: a name that is not 1 to 32 characters of a-z, 0-9, _ and -
 # starting with a letter, or is one of the system (first-admin reserved-names), or a password that is not
-# 12 to 64 printable ASCII characters (the rules of the installer, which asks for them first).
+# 12 to 64 printable ASCII characters or the name itself (the rules of the installer, which asks for them first).
 admin-record() {
   local name="$1" out="$2" pw="" hash names re='^[a-z][a-z0-9_-]{0,31}$'
   export LC_ALL=C
@@ -220,6 +220,7 @@ admin-record() {
   fi
   IFS= read -r pw || true
   [[ "$pw" =~ ^[[:print:]]{12,64}$ ]] || { echo "in-image: the password is not 12 to 64 printable ASCII characters" >&2; exit 4; }
+  [ "$pw" != "$name" ] || { echo "in-image: the password is the name" >&2; exit 4; }
   useradd --no-create-home --shell /usr/sbin/nologin -- "$name"
   printf '%s:%s\n' "$name" "$pw" | chpasswd --crypt-method YESCRYPT
   pw=""

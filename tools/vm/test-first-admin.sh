@@ -138,6 +138,8 @@ opens "$pw" || fail "the password does not open the account made from the record
 ! opens "${pw}x" || fail "a wrong password opens the account"
 ! opens "" || fail "an empty password opens the account"
 echo "admin-record: the password opens the account made from its record, a wrong or empty one does not"
+# (The name of the password rules' cases is one that does not exist in the root: with maria there, a
+# password rule that is missing or loose would still be refused, for the name.)
 refused_rec() { # refused_rec WHAT NAME PASSWORD: exit 4 and no record
   root="$rec_root"
   : > "$root/out"
@@ -147,11 +149,12 @@ refused_rec() { # refused_rec WHAT NAME PASSWORD: exit 4 and no record
   [ -z "$3" ] || ! grep -qF -- "$3" "$t/out" || fail "admin-record, $1: the password is in the output"
   echo "admin-record refuses: $1"
 }
-refused_rec "a short password" "$name" "short pw 1"
-refused_rec "a long password" "$name" "$(printf 'a%.0s' $(seq 65))"
-refused_rec "a password that is not ASCII" "$name" "Sentinel-pässword-4711"
-refused_rec "a password with a tab" "$name" $'Sentinel\t-pw-4711-x'
-refused_rec "an empty password" "$name" ""
+refused_rec "a short password" carol "short pw 1"
+refused_rec "a long password" carol "$(printf 'a%.0s' $(seq 65))"
+refused_rec "a password that is not ASCII" carol "Sentinel-pässword-4711"
+refused_rec "a password with a tab" carol $'Sentinel\t-pw-4711-x'
+refused_rec "an empty password" carol ""
+refused_rec "a password equal to the name" carol-carol-12 carol-carol-12
 refused_rec "an uppercase name" "Maria" "$pw"
 refused_rec "a name with a dot" "ma.ria" "$pw"
 refused_rec "a name that starts with a digit" "1maria" "$pw"
@@ -187,6 +190,8 @@ run
 [[ "$(grep "^$name:" "$root/etc/passwd")" =~ ^maria:x:(1[0-9]{3}):(1[0-9]{3}):[^:]*:/var/home/maria:/bin/bash$ ]] \
   || fail "the account is not a regular user with its home in /var/home: $(grep "^$name:" "$root/etc/passwd")"
 in_root id -nG "$name" | tr ' ' '\n' | grep -qx sudo || fail "the account is not in the group sudo"
+# (shadow 4.13, Ubuntu's, prints "useradd: warning: chown on /var/home/maria failed" in this root and
+# still gives the home to the account, which is what is checked.)
 [ "$(stat -c %u "$root/var/home/$name")" = "${BASH_REMATCH[1]}" ] || fail "the home directory is not the account's"
 [ ! -e "$root/var/lib/nyra/first-admin" ] || fail "the file is still there"
 [ "$(shadow root)" = "$root_before" ] && [[ "$root_before" =~ ^root:\* ]] || fail "root is not as it was, locked"
@@ -199,7 +204,10 @@ if [ -e "$root/etc/vconsole.conf" ]; then
 else
   grep -q 'no keymap us' "$t/out" || fail "no keymap installed, and first-admin does not say so"
 fi
-[ "$(readlink "$root/etc/localtime")" = ../usr/share/zoneinfo/UTC ] || fail "the time zone is not UTC"
+# What the system reads is /etc/localtime, a link into the tz database; the database's layout is the
+# host's (the link may name UTC or Etc/UTC), so the file it leads to is compared with the database's UTC.
+[ -L "$root/etc/localtime" ] && [[ "$(readlink "$root/etc/localtime")" == */UTC ]] \
+  && in_root cmp /etc/localtime /usr/share/zoneinfo/UTC || fail "the time zone is not UTC"
 opens "$pw" || fail "the password does not open the account"
 ! grep -qF -- "$pw" "$t/out" || fail "the password is in the output"
 echo "first-admin: the account in sudo with the file's hash and a home, root locked, no empty password, the file gone, the fixed defaults set, the password opens it"
