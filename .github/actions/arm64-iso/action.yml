@@ -28,10 +28,14 @@ inputs:
   signature-artifact:
     description: Release mode - the name of the signature artifact
     default: nyra-base-arm64-signature
-  iso-artifact:
-    description: The name of the artifact the ISO is uploaded as
-    required: true
 outputs:
+  iso_artifact:
+    description: >-
+      The name of the artifact the ISO is uploaded as for the boot tests, nyra-installer-iso-arm64-untested-unsigned-MODE:
+      it is what the name says. It is uploaded before any boot, built from the inputs of the run (a pull request's
+      too, in test mode, trusting a key made for the run) and it is signed by nobody. The boot and keep jobs take
+      the name from this output.
+    value: ${{ steps.name.outputs.iso_artifact }}
   iso_sha256:
     description: The sha256 of the ISO in the artifact
     value: ${{ steps.build.outputs.iso_sha256 }}
@@ -50,12 +54,14 @@ runs:
         df -h / "$WORK"
 
     - name: Mode
+      id: name
       shell: bash
       env:
         MODE: ${{ inputs.mode }}
       run: |
         case "$MODE" in release | test) ;; *) echo "::error::mode is release or test, not '$MODE'"; exit 1 ;; esac
         echo "ISO mode: $MODE"
+        echo "iso_artifact=nyra-installer-iso-arm64-untested-unsigned-$MODE" >> "$GITHUB_OUTPUT"
         {
           echo "ISO_ARCH=arm64"
           echo "MODE=$MODE"
@@ -117,7 +123,7 @@ runs:
     - name: Upload the bill of materials of the ISO
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ inputs.iso-artifact }}-materials
+        name: ${{ steps.name.outputs.iso_artifact }}-materials
         path: |
           ${{ env.WORK }}/iso/os/nyra-installer-os.manifest
           ${{ env.WORK }}/iso/boot/nyra-installer-boot.manifest
@@ -170,7 +176,7 @@ runs:
     - name: Upload the ISO for the boot tests
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ${{ inputs.iso-artifact }}
+        name: ${{ steps.name.outputs.iso_artifact }}
         path: ${{ env.WORK }}/nyra.iso
         retention-days: 1
         compression-level: 0

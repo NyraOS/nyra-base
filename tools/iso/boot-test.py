@@ -168,6 +168,9 @@ def main():
         check("no getty and no ssh server is running", out == "0", out)
         status, out = sh("systemctl --failed --no-legend --plain | cut -d' ' -f1")
         check("no failed unit", out == "", out.replace("\n", " "))
+        # Secure Boot locks the kernel down (no unsigned modules, no /dev/mem or kexec of unsigned code, ...).
+        status, out = sh("cat /sys/kernel/security/lockdown")
+        check("the kernel is locked down because of Secure Boot", re.search(r"\[(integrity|confidentiality)\]", out) is not None, out)
         status, out = sh("sysctl -n kernel.unprivileged_bpf_disabled")
         check("unprivileged bpf() is off", out in ("1", "2"), out)
         status, out = sh("ps -eo uid=,comm= | awk '$1 != 0 {print $2}' | sort -u")

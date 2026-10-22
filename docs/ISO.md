@@ -221,6 +221,15 @@ five times the x86_64 one. The three boots run in jobs of their own: as a CD, as
 medium, and as a CD with the verified pull of the image on it. On a pull request the ISO is built by the
 `iso` job of `arm64.yml` from the image of that run, in test mode.
 
+**The ISO that passes between the jobs** is the artifact `nyra-installer-iso-arm64-untested-unsigned-<mode>`
+(`<mode>` is `release` or `test`, file `nyra.iso`, one day): it is uploaded before any boot, it is built from
+the inputs of the run (a pull request's too, trusting a key made for the run in test mode) and nobody has
+signed it, and the name says so. The boot and keep jobs take the name from the build job's output. The ISO
+that main keeps for trying (`nyra-installer-iso-arm64-unsigned-<mode>`, 14 days) is the same file, kept only
+after the boots passed. **It has not been scanned for vulnerabilities**: the arm64 bill of materials is
+uploaded (`nyra-installer-iso-arm64-untested-unsigned-<mode>-materials`) but nothing reads it yet, and the
+boots with an altered ISO do not run on arm64 yet.
+
 **What the tests do not prove.** Real firmware, UTM (a Mac is not a CI runner), MokManager, and the
 installation itself on aarch64 (an installation with a disk password does not need a TPM, but it is not run
 here yet). The AAVMF and UTM firmware have no SMM and no secure world, so in these virtual machines root
@@ -268,6 +277,9 @@ to its measurements.
 Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
 unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
+- **aarch64**: the vulnerability scan of the arm64 installer system (with its exceptions file), the boots with
+  an altered ISO, and an installation on aarch64 (none is run on that architecture yet). Until each is, the
+  items below that say "done" are done for x86_64 only.
 - **The tests that need an installation**: the recovery key absent from the journal and the installation
   itself (password and TPM), with `mokutil --sb-state` and the staged Machine Owner Key, in the installer
   session. (Done already: the vulnerability scan, the altered layer, another digest in `RELEASE`, the

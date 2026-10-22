@@ -3032,6 +3032,7 @@ jobs:
       contents: read
     outputs:
       iso_sha256: ${{ steps.iso.outputs.iso_sha256 }}
+      iso_artifact: ${{ steps.iso.outputs.iso_artifact }}
       mode: ${{ steps.mode.outputs.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3053,7 +3054,6 @@ jobs:
           image-sha256: ${{ needs.release-image-arm64.outputs.image_sha256 }}
           image-digest: ${{ needs.sign-arm64.outputs.image_digest }}
           signature-digest: ${{ needs.sign-arm64.outputs.signature_digest }}
-          iso-artifact: nyra-installer-iso-arm64
 
   iso-boot-arm64:
     needs: iso-arm64
@@ -3082,7 +3082,7 @@ jobs:
 
       - uses: ./.github/actions/arm64-iso-boot
         with:
-          iso-artifact: nyra-installer-iso-arm64
+          iso-artifact: ${{ needs.iso-arm64.outputs.iso_artifact }}
           iso-sha256: ${{ needs.iso-arm64.outputs.iso_sha256 }}
           name: ${{ matrix.name }}
           args: ${{ matrix.args }}
@@ -3103,7 +3103,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: nyra-installer-iso-arm64
+          name: ${{ needs.iso-arm64.outputs.iso_artifact }}
           path: ${{ runner.temp }}/in
 
       - name: Check the ISO and name it
