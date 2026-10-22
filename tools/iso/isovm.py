@@ -85,9 +85,11 @@ class Vm:
                 f.truncate(self.disk_gb << 30)
             cmd += ["-drive", f"if=none,id=disk,format=raw,file={self.disk_path}", "-device", "virtio-blk-pci,drive=disk"]
         if self.tpm:
-            tpm_dir = os.path.join(self.work, "tpm")
-            os.makedirs(tpm_dir, exist_ok=True)
-            tpm_sock = os.path.join(self.work, "swtpm.sock")
+            # Where Ubuntu's AppArmor profile of swtpm lets it work, as tools/vm/vm-boot.py has it: the state
+            # in the runner's temporary directory, the control socket in /tmp. Not under the job's own
+            # directory (/mnt/work), where swtpm gets "Could not open UnixIO socket: Permission denied".
+            tpm_dir = tempfile.mkdtemp(prefix="iso-tpm-", dir=os.environ.get("RUNNER_TEMP") or None)
+            tpm_sock = os.path.join(tempfile.mkdtemp(), "swtpm.sock")
             self.swtpm = subprocess.Popen(["swtpm", "socket", "--tpm2", "--tpmstate", f"dir={tpm_dir}",
                                            "--ctrl", f"type=unixio,path={tpm_sock}", "--terminate"])
             for _ in range(50):
