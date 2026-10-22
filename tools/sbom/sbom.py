@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CycloneDX SBOM and vulnerability gate for nyra-base (docs/SBOM.md).
 
-usage: sbom.py MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
+usage: sbom.py [--iso] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
   MANIFEST    mkosi JSON manifest (exact Debian package versions)
   CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc); after SBOM_OUT, the
               Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
               counts once
   SBOM_OUT    CycloneDX 1.6 JSON written here
-Environment: BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
+--iso: the installer ISO (docs/ISO.md) instead of the image. MANIFEST is the manifest of the installer
+system, CARGO_LOCK the Cargo.lock of nyra-installer, whose commit is iso/installer-commit; no bootc or
+pam-totp. Otherwise the same scan, the same mitigations.
+Environment (not with --iso): BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
 commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
 
 Writes the SBOM, then prints a Markdown report and exits 1 if a vulnerability blocks the build:
@@ -37,6 +40,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MKOSI_CONF = os.path.join(HERE, "..", "..", "mkosi", "mkosi.conf")
 MITIGATIONS = os.path.join(HERE, "mitigations.toml")
 PAM_TOTP_COMMIT = os.path.join(HERE, "..", "..", "pam-totp", "commit")
+INSTALLER_COMMIT = os.path.join(HERE, "..", "..", "iso", "installer-commit")
 TRACKER = "https://security-tracker.debian.org/tracker/data/json"
 OSV = "https://api.osv.dev/v1"
 BLOCKING = ("critical", "high", "unknown")
@@ -146,15 +150,10 @@ def debian_sources(manifest, snapshot):
     return out
 
 
-def write_sbom(path, snapshot, debs, crates, bootc_ref, bootc_commit, pam_totp_commit):
+def write_sbom(path, snapshot, debs, crates, applications, name, description):
+    """applications: the programs built from their own repositories, as (name, version, purl)."""
     q = lambda s: urllib.parse.quote(s, safe="")
-    components = [{
-        "type": "application", "bom-ref": "bootc", "name": "bootc", "version": bootc_ref,
-        "purl": f"pkg:github/bootc-dev/bootc@{bootc_commit}",
-    }, {
-        "type": "application", "bom-ref": "pam-totp", "name": "pam-totp", "version": pam_totp_commit,
-        "purl": f"pkg:github/NyraOS/pam-totp@{pam_totp_commit}",
-    }]
+    components = [{"type": "application", "bom-ref": n, "name": n, "version": v, "purl": purl} for n, v, purl in applications]
     for p, src, src_version in debs:
         upstream = src if src_version == p["version"] else f"{src}@{src_version}"
         purl = f"pkg:deb/debian/{p['name']}@{q(p['version'])}?arch={p['architecture']}&distro=sid&upstream={q(upstream)}"
@@ -171,8 +170,8 @@ def write_sbom(path, snapshot, debs, crates, bootc_ref, bootc_commit, pam_totp_c
             "timestamp": created,
             "tools": {"components": [{"type": "application", "name": "nyra-base tools/sbom/sbom.py"}]},
             "component": {
-                "type": "operating-system", "bom-ref": "nyra-base", "name": "nyra-base", "version": snapshot,
-                "description": f"Nyra OS base image (desktop): Debian unstable snapshot {snapshot}, x86_64",
+                "type": "operating-system", "bom-ref": name, "name": name, "version": snapshot,
+                "description": description.format(snapshot=snapshot),
             },
         },
         "components": components,
@@ -242,22 +241,37 @@ def load_mitigations(today):
 
 
 def main():
-    manifest_path, lock_path, sbom_path = sys.argv[1:4]
+    iso = sys.argv[1:2] == ["--iso"]
+    args = sys.argv[2:] if iso else sys.argv[1:]
+    manifest_path, lock_path, sbom_path = args[:3]
     snapshot = mkosi_setting("Snapshot")
     today = datetime.datetime.now(datetime.UTC).date()
     manifest = json.load(open(manifest_path))
     crates = {}
-    for path in [lock_path, *sys.argv[4:]]:
+    for path in [lock_path, *args[3:]]:
         for p in tomllib.load(open(path, "rb"))["package"]:
             if "source" in p:
                 crates.setdefault((p["name"], p["version"], p["source"]), p)
     crates = list(crates.values())
     debs = debian_sources(manifest, snapshot)
-    pam_totp_commit = open(PAM_TOTP_COMMIT).read().strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", pam_totp_commit):
-        sys.exit(f"sbom.py: {PAM_TOTP_COMMIT} is not a commit: {pam_totp_commit!r}")
-    count = write_sbom(sbom_path, snapshot, debs, crates, os.environ["BOOTC_REF"], os.environ["BOOTC_COMMIT"],
-                       pam_totp_commit)
+    def commit_of(path):
+        commit = open(path).read().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            sys.exit(f"sbom.py: {path} is not a commit: {commit!r}")
+        return commit
+
+    if iso:
+        commit = commit_of(INSTALLER_COMMIT)
+        applications = [("nyra-installer", commit, f"pkg:github/NyraOS/installer@{commit}")]
+        name, description = "nyra-installer-iso", "Nyra OS installer ISO (x86_64): Debian unstable snapshot {snapshot}"
+        what = "nyra-installer"
+    else:
+        pam_totp_commit = commit_of(PAM_TOTP_COMMIT)
+        applications = [("bootc", os.environ["BOOTC_REF"], f"pkg:github/bootc-dev/bootc@{os.environ['BOOTC_COMMIT']}"),
+                        ("pam-totp", pam_totp_commit, f"pkg:github/NyraOS/pam-totp@{pam_totp_commit}")]
+        name, description = "nyra-base", "Nyra OS base image (desktop): Debian unstable snapshot {snapshot}, x86_64"
+        what = "bootc, pam-totp"
+    count = write_sbom(sbom_path, snapshot, debs, crates, applications, name, description)
     mitigations = load_mitigations(today)  # after the SBOM: an invalid file still blocks, but the SBOM is there
 
     findings, unimportant = debian_findings(debs)
@@ -299,7 +313,7 @@ def main():
         return text if len(text) <= 140 else text[:137] + "..."
 
     print("## Vulnerability scan (docs/SBOM.md)\n")
-    print(f"SBOM: CycloneDX 1.6, {count} components ({len(debs)} Debian packages, {len(crates)} Rust crates, bootc, pam-totp).")
+    print(f"SBOM: CycloneDX 1.6, {count} components ({len(debs)} Debian packages, {len(crates)} Rust crates, {what}).")
     print(f"Sources: Debian Security Tracker (`sid`) and OSV, {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M} UTC; "
           f"Debian snapshot `{snapshot}`.\n")
     print("| | |\n|---|---|")

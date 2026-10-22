@@ -2211,16 +2211,6 @@ jobs:
           fi
           sudo rm -f "$WORK/nyra-again.iso"
 
-      # Only a release's ISO is kept: the one the owner can try, unsigned (the sign-iso step comes later).
-      - name: Upload the ISO
-        if: ${{ steps.mode.outputs.mode == 'release' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: nyra-installer-iso
-          path: ${{ env.WORK }}/nyra.iso
-          retention-days: 14
-          compression-level: 0
-
       - name: Boot the ISO as a CD (tools/iso/boot-test.py)
         timeout-minutes: 30
         run: python3 tools/iso/boot-test.py "$WORK/nyra.iso" "$WORK/boot-cd" "$RUNNER_TEMP/iso-cd-console.log" "$GITHUB_STEP_SUMMARY" --pull
@@ -2229,6 +2219,76 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: python3 tools/iso/boot-test.py "$WORK/nyra.iso" "$WORK/boot-usb" "$RUNNER_TEMP/iso-usb-console.log" "$GITHUB_STEP_SUMMARY" --medium usb --decoy
+
+      # Two altered ISOs, made like the real one from a copy of its inputs: a byte of the image's layer
+      # changed in the registry store, and a RELEASE that names another digest. The session must refuse the
+      # pull from each and keep no image.
+      - name: ISOs with an altered layer and with another digest (ci/build-iso.sh)
+        if: ${{ !cancelled() }}
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_date_epoch }}
+        run: |
+          for kind in layer digest; do
+            t="$WORK/tamper-$kind"
+            sudo rm -rf "$t"
+            mkdir "$t"
+            ln -s "$WORK/iso/os" "$t/os"
+            sudo cp -a "$WORK/iso/registry" "$t/registry"
+            cp "$WORK/iso/registry-digest" "$t/registry-digest"
+            if [ -f "$WORK/iso/registry-test.pub" ]; then cp "$WORK/iso/registry-test.pub" "$t/"; fi
+            if [ "$kind" = layer ]; then
+              # The biggest blob of the store is the image's layer: its byte 100 is changed.
+              blob="$(sudo find "$t/registry" -path '*/blobs/sha256/*' -name data -printf '%s %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)"
+              printf '\377' | sudo dd of="$blob" bs=1 seek=100 conv=notrunc status=none
+            else
+              echo "sha256:$(printf 'f%.0s' {1..64})" > "$t/registry-digest"
+            fi
+            sudo -E ci/build-iso.sh "$t" "$WORK/tamper-$kind.iso" "$VERSION" "$GITHUB_SHA" "$MODE" localhost/nyra-base:ci
+          done
+
+      - name: Boot the ISO with an altered layer (tools/iso/boot-test.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: python3 tools/iso/boot-test.py "$WORK/tamper-layer.iso" "$WORK/boot-layer" "$RUNNER_TEMP/iso-layer-console.log" "$GITHUB_STEP_SUMMARY" --refusal layer
+
+      - name: Boot the ISO with another digest in RELEASE (tools/iso/boot-test.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: python3 tools/iso/boot-test.py "$WORK/tamper-digest.iso" "$WORK/boot-digest" "$RUNNER_TEMP/iso-digest-console.log" "$GITHUB_STEP_SUMMARY" --refusal digest
+
+      # The installer system's packages and the installer program's crates, scanned like the image's
+      # (docs/SBOM.md); a critical or high finding without a documented mitigation fails the job.
+      - name: SBOM and vulnerability scan of the ISO (tools/sbom/sbom.py --iso)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso "$WORK/iso/os/nyra-installer-os.manifest" \
+            "$WORK/iso/installer/Cargo.lock" "$WORK/iso/nyra-installer-iso.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$WORK/iso/nyra-installer-iso.cdx.json" "$RUNNER_TEMP/"
+
+      - name: Upload the SBOM of the ISO
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-installer-iso-sbom
+          path: ${{ runner.temp }}/nyra-installer-iso.cdx.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Kept only when everything above passed, and only from main: the ISO the owner can try. It is
+      # UNSIGNED (docs/ISO.md); in test mode (main without the signing variables) it also trusts a key
+      # made for the run instead of the release signer, which the name says.
+      - name: Upload the ISO (unsigned)
+        if: ${{ success() && env.RELEASE == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-installer-iso-unsigned-${{ steps.mode.outputs.mode }}
+          path: ${{ env.WORK }}/nyra.iso
+          retention-days: 14
+          compression-level: 0
 
       - name: Upload the console logs
         if: always()

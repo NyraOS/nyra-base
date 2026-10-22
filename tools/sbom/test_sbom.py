@@ -79,7 +79,9 @@ class Gate(unittest.TestCase):
         with open(self.path("Cargo.lock"), "w") as f:
             f.write('[[package]]\nname = "baz"\nversion = "0.1.0"\n'
                     'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
-        self.patches = {"fetch": fake_fetch, "MKOSI_CONF": self.path("mkosi.conf"),
+        with open(self.path("installer-commit"), "w") as f:
+            f.write("2" * 40 + "\n")
+        self.patches = {"fetch": fake_fetch, "INSTALLER_COMMIT": self.path("installer-commit"), "MKOSI_CONF": self.path("mkosi.conf"),
                         "MITIGATIONS": self.path("mitigations.toml"),
                         "PAM_TOTP_COMMIT": self.path("commit")}
         self.saved = {k: getattr(sbom, k) for k in self.patches}
@@ -92,14 +94,14 @@ class Gate(unittest.TestCase):
             setattr(sbom, k, v)
         shutil.rmtree(self.dir)
 
-    def run_gate(self, *entries, extra_locks=()):
+    def run_gate(self, *entries, extra_locks=(), iso=False):
         """Runs main() with these (id, package, days until expiry); returns (exit code, report)."""
         today = datetime.datetime.now(datetime.UTC).date()
         with open(self.path("mitigations.toml"), "w") as f:
             for vid, package, days in entries:
                 f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
                         f"expires = {today + datetime.timedelta(days=days)}\n")
-        sys.argv = ["sbom.py", self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
+        sys.argv = ["sbom.py", *(["--iso"] if iso else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
         out = io.StringIO()
         code = 0
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -172,6 +174,40 @@ class Gate(unittest.TestCase):
         with open(self.path("commit"), "w") as f:
             f.write("main\n")
         code, _ = self.run_gate()
+        self.assertIn("is not a commit", str(code))
+
+    def test_iso_mode(self):
+        # The ISO: the installer program instead of bootc and pam-totp, no bootc environment, the same scan.
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            code, report = self.run_gate(iso=True)
+        finally:
+            os.environ.update(saved)
+        self.assertEqual(code, 1)
+        self.assertIn("Rust crates, nyra-installer).", report)
+        self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
+
+    def test_iso_sbom_names_the_installer(self):
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            self.run_gate(iso=True)
+        finally:
+            os.environ.update(saved)
+        with open(self.path("sbom.json")) as f:
+            bom = json.load(f)
+        self.assertEqual(bom["metadata"]["component"]["name"], "nyra-installer-iso")
+        purls = [c.get("purl") for c in bom["components"]]
+        self.assertIn("pkg:github/NyraOS/installer@" + "2" * 40, purls)
+        self.assertFalse([p for p in purls if p and ("bootc" in p or "pam-totp" in p)])
+
+    def test_iso_installer_commit_checked(self):
+        with open(self.path("installer-commit"), "w") as f:
+            f.write("main\n")
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            code, _ = self.run_gate(iso=True)
+        finally:
+            os.environ.update(saved)
         self.assertIn("is not a commit", str(code))
 
     def test_no_debian_packages_refused(self):

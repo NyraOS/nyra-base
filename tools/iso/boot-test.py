@@ -12,9 +12,13 @@ disk) and checks what a person sees and what the session is (docs/ISO.md):
   - with --decoy, a second USB stick is attached before the ISO: labelled NYRA-ISO, with a /boot/vmlinuz and
     a release tree of its own, which name another release. The session must use the ISO it booted from
     only: its kernel, its release tree and its registry, not the decoy's;
+  - with --refusal, the ISO has been altered (one byte of the image's layer in the registry store, or a
+    RELEASE that names another digest): in the shell, the verified pull must be refused and leave no image;
+  - leaving the shell goes back to the installer's menu, not to a prompt;
   - the memory the session uses, and the time to the first screen, go to the summary.
 
     tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--medium cd|usb] [--memory MiB] [--pull] [--decoy]
+                               [--refusal layer|digest]
 """
 import argparse
 import json
@@ -38,6 +42,24 @@ def volume_label(iso):
     if pvd[1:6] != b"CD001":
         raise SystemExit(f"{iso} has no ISO 9660 volume descriptor")
     return pvd[40:72].decode("ascii").rstrip()
+
+
+class Done(Exception):
+    pass
+
+
+def refusal(sh, check, kind):
+    """The pull of the image on an altered ISO is refused, and nothing is left in the storage."""
+    status, out = sh("cat /usr/lib/nyra/release/RELEASE")
+    release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    storage = "/var/lib/containers/storage"
+    status, out = sh(f"r=$(/usr/lib/nyra/release/tools/install/verified-pull.sh nyra-base {release['version']} {release['digest']} {storage} 2>&1); "
+                     'rc=$?; echo "$r" | tail -n 4; echo "pull-status=$rc"', 900)
+    m = re.search(r"pull-status=(\d+)", out)
+    check(f"the pull from the ISO with {'an altered layer' if kind == 'layer' else 'another digest in RELEASE'} is refused",
+          m is not None and m.group(1) != "0" and "are accepted by the policy" not in out, out.replace("\n", " ")[-300:])
+    status, out = sh(f"podman --root {storage} images -q | wc -l")
+    check("no image is left in the storage", out == "0", out)
 
 
 def make_decoy(directory):
@@ -64,6 +86,7 @@ def main():
     p.add_argument("--medium", choices=["cd", "usb"], default="cd")
     p.add_argument("--memory", type=int, default=8192, help="MiB")
     p.add_argument("--pull", action="store_true", help="also run the verified pull of the image on the ISO")
+    p.add_argument("--refusal", choices=["layer", "digest"], help="the ISO is altered; the pull must be refused")
     p.add_argument("--decoy", action="store_true", help="attach a second medium that looks like an installer, first")
     p.add_argument("--timeout", type=int, default=600, help="seconds to the first screen")
     a = p.parse_args()
@@ -109,6 +132,10 @@ def main():
         time.sleep(1)
         sh("stty cols 400 rows 50; PS1=''; echo shell")
 
+        if a.refusal:
+            refusal(sh, check, a.refusal)
+            raise Done
+
         status, out = sh("id -u; mokutil --sb-state")
         check("Secure Boot is on in the session", status == 0 and out.splitlines()[0] == "0" and "SecureBoot enabled" in out, out.replace("\n", " "))
         status, out = sh("ls /sys/class/net")
@@ -119,6 +146,8 @@ def main():
         check("no getty and no ssh server is running", out == "0", out)
         status, out = sh("systemctl --failed --no-legend | wc -l")
         check("no failed unit", out == "0", out)
+        status, out = sh("systemctl is-enabled getty@tty1.service serial-getty@ttyS0.service console-getty.service emergency.service rescue.service; true")
+        check("the login prompts and the emergency and rescue shells are masked", out.split() == ["masked"] * 5, out.replace("\n", " "))
         status, out = sh("getent shadow root | cut -d: -f2; getent passwd root | cut -d: -f2")
         check("root has no password", all(line in ("*", "!", "x") for line in out.split()), out.replace("\n", " "))
 
@@ -170,6 +199,13 @@ def main():
             status2, out2 = sh("awk '/^(MemTotal|MemFree|MemAvailable|Shmem):/ {printf \"%s %d MiB, \", $1, $2/1024}' /proc/meminfo; df -m --output=used /var/lib/containers | tail -n 1")
             check("the image on the ISO passes the verified pull, offline", status == 0 and "are accepted by the policy" in out, f"{seconds:.0f} s")
             mem_pull = out2.replace("\n", ", used storage (MiB): ")
+        n = vm.mark()
+        vm.send("exit\n")
+        try:
+            vm.expect(r"Welcome to Nyra OS\.", 30, since=n)
+            check("leaving the shell goes back to the installer's menu", True)
+        except isovm.Timeout:
+            check("leaving the shell goes back to the installer's menu", False, vm.text(n)[-300:])
         medium = "USB stick" if a.medium == "usb" else "CD"
         with open(a.summary, "a") as f:
             f.write(f"## Installer ISO boot ({medium}, {a.memory} MiB, {vm.accel})\n\n| | |\n|---|---|\n")
@@ -183,11 +219,19 @@ def main():
             for what, result, detail in rows:
                 f.write(f"| {what} | {result} |\n")
             f.write("\n")
+    except Done:
+        pass
     except isovm.Timeout as e:
         print(f"FAIL {e}", flush=True)
         failed.append("timeout")
     finally:
         vm.stop()
+    if a.refusal:
+        with open(a.summary, "a") as f:
+            f.write(f"## Installer ISO, altered ({a.refusal})\n\n| Check | Result |\n|---|---|\n")
+            for what, result, detail in rows:
+                f.write(f"| {what} | {result} |\n")
+            f.write("\n")
     if failed:
         print("failed: " + "; ".join(failed), flush=True)
         sys.exit(1)
