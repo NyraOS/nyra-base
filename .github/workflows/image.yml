@@ -2195,6 +2195,22 @@ jobs:
           echo "iso_sha256=$sha256" >> "$GITHUB_OUTPUT"
           echo "ISO: $(stat -c %s "$WORK/nyra.iso") bytes, sha256 $sha256, $MODE mode"
 
+      # The same inputs give the same file: the last step (the RAM disk, the EFI image, xorriso) runs again.
+      # The installer system and the program are built once; their reproducibility is not checked here.
+      - name: The same ISO again (ci/build-iso.sh)
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_date_epoch }}
+        run: |
+          sudo -E ci/build-iso.sh "$WORK/iso" "$WORK/nyra-again.iso" "$VERSION" "$GITHUB_SHA" "$MODE" localhost/nyra-base:ci
+          if ! sudo cmp "$WORK/nyra.iso" "$WORK/nyra-again.iso"; then
+            echo "::error::two builds of the same inputs are not the same ISO"
+            sha256sum "$WORK/nyra.iso" "$WORK/nyra-again.iso"
+            exit 1
+          fi
+          sudo rm -f "$WORK/nyra-again.iso"
+
       # Only a release's ISO is kept: the one the owner can try, unsigned (the sign-iso step comes later).
       - name: Upload the ISO
         if: ${{ steps.mode.outputs.mode == 'release' }}
@@ -2212,7 +2228,7 @@ jobs:
       - name: Boot the ISO as a USB stick (tools/iso/boot-test.py)
         if: ${{ !cancelled() }}
         timeout-minutes: 20
-        run: python3 tools/iso/boot-test.py "$WORK/nyra.iso" "$WORK/boot-usb" "$RUNNER_TEMP/iso-usb-console.log" "$GITHUB_STEP_SUMMARY" --medium usb
+        run: python3 tools/iso/boot-test.py "$WORK/nyra.iso" "$WORK/boot-usb" "$RUNNER_TEMP/iso-usb-console.log" "$GITHUB_STEP_SUMMARY" --medium usb --decoy
 
       - name: Upload the console logs
         if: always()

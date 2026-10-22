@@ -5,8 +5,8 @@
 # Leaving the installer without a reboot starts it again, never a prompt.
 [Unit]
 Description=Nyra OS installer on %I
-Wants=nyra-registry.service usr-lib-nyra-release.mount var-lib-containers.mount
-After=nyra-registry.service usr-lib-nyra-release.mount var-lib-containers.mount
+Wants=nyra-registry.service var-lib-containers.mount
+After=nyra-registry.service var-lib-containers.mount
 Conflicts=getty@%i.service serial-getty@%i.service
 StartLimitIntervalSec=0
 
@@ -23,3 +23,5 @@ TTYPath=/dev/%I
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
+# What the installer trusts is in the RAM disk (docs/ISO.md); neither it nor a shell it opens can change it.
+ReadOnlyPaths=/usr/lib/nyra/release

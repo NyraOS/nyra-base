@@ -36,11 +36,12 @@ class Vm:
     """QEMU with the ISO and an empty disk. start() boots it; the console methods read and type."""
 
     def __init__(self, iso, work, log, *, medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
-                 smp=2, disk=True, extra=()):
+                 smp=2, disk=True, decoy=None, extra=()):
         self.iso, self.work, self.log = iso, work, log
         self.accel = accel or ("kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg")
         self.medium, self.memory, self.disk_gb, self.tpm, self.smp, self.disk = medium, memory, disk_gb, tpm, smp, disk
         self.extra = list(extra)
+        self.decoy = decoy  # a second medium, attached before the ISO: a file
         self.qemu = self.swtpm = self.sock = None
         self.raw = b""  # everything the console printed
         self.answered = 0  # how much of raw has been looked at for size questions
@@ -65,10 +66,16 @@ class Vm:
                "-chardev", f"socket,id=console,path={sock},server=on,wait=off,logfile={self.log}",
                "-serial", "chardev:console", "-device", "virtio-rng-pci", "-nic", "none",
                ]
+        if self.decoy or self.medium == "usb":
+            cmd += ["-device", "qemu-xhci,id=xhci"]
+        if self.decoy:
+            # Another medium that looks like an installer: a second USB stick, attached before the ISO.
+            cmd += ["-drive", f"if=none,id=decoy,format=raw,readonly=on,file={self.decoy}",
+                    "-device", "usb-storage,drive=decoy,bus=xhci.0,removable=on"]
         if self.medium == "usb":
             # The ISO as a USB stick (a disk, not a CD): the hybrid image boots from its own EFI partition.
             cmd += ["-drive", f"if=none,id=iso,format=raw,readonly=on,file={self.iso}",
-                    "-device", "qemu-xhci", "-device", "usb-storage,drive=iso,removable=on"]
+                    "-device", "usb-storage,drive=iso,bus=xhci.0,removable=on"]
         else:
             cmd += ["-drive", f"if=none,id=iso,format=raw,media=cdrom,readonly=on,file={self.iso}",
                     "-device", "ich9-ahci,id=ahci", "-device", "ide-cd,drive=iso,bus=ahci.0"]

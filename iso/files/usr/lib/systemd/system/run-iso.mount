@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The medium the installer started from: the ISO file system, read-only. Its volume label is NYRA-ISO
-# (ci/build-iso.sh), also on a USB stick written with the ISO, which the installer never offers as a
+# The medium the installer started from, read-only: it holds the registry store with the signed image,
+# which is not trusted for being there (the policy and the digest in the release tree decide). Its volume
+# label is NYRA-ISO- and the build's identifier (ci/build-iso.sh); the name below is replaced by a drop-in
+# in the RAM disk, written with the same identifier that GRUB looked for, so that no other medium, with
+# the label NYRA-ISO or any other, is mounted in its place. The installer never offers this medium as a
 # disk to install on.
 [Unit]
 Description=The installer medium
@@ -8,7 +11,7 @@ DefaultDependencies=no
 Before=local-fs.target
 
 [Mount]
-What=/dev/disk/by-label/NYRA-ISO
+What=/dev/disk/by-label/NYRA-ISO-no-build-id
 Where=/run/iso
 Type=iso9660
 Options=ro,nosuid,nodev

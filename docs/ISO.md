@@ -7,22 +7,60 @@ is on the ISO itself, offline. This document is about the ISO: how it boots, wha
 rests on, and how CI builds and tests it. The installation steps are in `docs/INSTALL.md` and the interface
 between the installer program and the script in `docs/INSTALL-INTERFACE.md`.
 
-The ISO is built and tested by the `iso` job of `.github/workflows/image.yml`. Until it is signed and
-published (a later step), the ISO of a release is kept as the `nyra-installer-iso` artifact of the run, and
-is unsigned.
+The ISO is built and tested by the `iso` job of `.github/workflows/image.yml`.
+
+**Status: the ISO is UNSIGNED, for testing only.** There is no signature of the ISO yet and nothing
+verifies one. The only check a person can make is the SHA-256 of the file against the one the run prints
+(the `iso` job's log), read in their own logged-in browser; it shows that the file is the run's, not that
+the run is Nyra's. The ISO of a release is kept as the `nyra-installer-iso` artifact of the run (14 days).
+Do not install anything you care about from it. "Before the ISO is signed or published" below is what has to
+be done first.
+
+## Trying the ISO
+
+What you need: a computer (or a virtual machine) with UEFI firmware, **Secure Boot on** (the Microsoft keys,
+which are the default), a TPM 2.0, **at least 6 GiB of memory (8 GiB recommended)** and an empty disk of **at
+least 32 GB**. These are the thresholds of `tools/install/machine.sh` today (`min_memory_gib`,
+`min_disk_gb`); this ISO's tests do not determine them, and the memory the real image needs is in the
+summary of the `iso` job.
+
+1. **Check the file** on your own computer before you write it. The ISO is unsigned: all there is to check is
+   the SHA-256 that the run printed (the `iso` job's log), read in your own logged-in browser, against
+   `sha256sum nyra-installer.iso` (`shasum -a 256` on macOS).
+2. **Write it to a USB stick** (the stick is erased). The file is a hybrid image: it is written as it is,
+   byte for byte, not extracted.
+   - Linux: `lsblk` to find the stick, then
+     `sudo dd if=nyra-installer.iso of=/dev/sdX bs=4M conv=fsync status=progress`. **Double-check
+     `/dev/sdX`**: `dd` overwrites whatever disk you name, and the stick is the one whose size you recognise.
+   - macOS: `diskutil list`, `diskutil unmountDisk /dev/diskN`, then
+     `sudo dd if=nyra-installer.iso of=/dev/rdiskN bs=4m`. Check `N` the same way.
+   - A graphical tool that writes a raw image works too: GNOME Disks ("Restore Disk Image"), balenaEtcher, or
+     Rufus in "DD Image" mode. These are not tested here.
+3. **Boot from the stick**: use the firmware's boot menu (often F12, F10, Esc or F8 at power-on). Do not turn
+   Secure Boot off. GRUB shows one entry, "Install Nyra OS", for three seconds.
+4. **What you see.** After about a minute the installer's first screen, "Nyra OS installer", with "Welcome to
+   Nyra OS." It is the same program on the screen and on the serial console (`ttyS0`, 115200 8N1, if the
+   machine has one): use either; only one of them can run an installation at a time. There is no login and
+   no password. The keyboard is US: the installer has no language or layout choice yet, and MokManager's blue
+   screen at the first boot uses a US layout too. The menu's "Open a shell" is for recovery and experts.
+5. **In a virtual machine**: attach the ISO as a USB disk or as a CD/DVD, with UEFI and Secure Boot on (the
+   Microsoft keys) and a virtual TPM 2.0. Leave the ISO attached until the installer says to restart, then
+   detach it.
 
 ## What is on it
 
 | Where | What |
 |---|---|
-| EFI partition (the ISO's El Torito boot image, and the second partition of a stick written with it) | `EFI/BOOT/BOOTX64.EFI` (shim, signed by Microsoft), `grubx64.efi` (GRUB, signed by Debian: its CD build, which looks for `/boot/grub/grub.cfg`), `mmx64.efi` (MokManager), and `nyra.cer`, the Nyra certificate in DER form, for MokManager's "Enroll key from disk" |
+| EFI partition (the ISO's El Torito boot image, and the second partition of a stick written with it) | `EFI/BOOT/BOOTX64.EFI` (shim, signed by Microsoft), `grubx64.efi` (GRUB, signed by Debian: its CD build, which looks for `/boot/grub/grub.cfg`), `mmx64.efi` (MokManager), `boot/grub/grub.cfg` (a stub, below), and `nyra.cer`, the Nyra certificate in DER form, for MokManager's "Enroll key from disk" |
 | `/boot/vmlinuz` | Debian's kernel, signed by Debian |
-| `/boot/initrd.img` | the installer system (below), as a zstd-compressed cpio archive: the whole system is the initial RAM disk |
+| `/boot/initrd.img` | the installer system (below) and the release tree, as a zstd-compressed cpio archive: the whole system is the initial RAM disk |
 | `/boot/grub/grub.cfg` | one menu entry, "Install Nyra OS", with a three-second timeout |
-| `/release/` | the release tree (below) |
 | `/registry/` | the files of a registry that holds the signed image: `updates.nyraos.com/nyra-base:<version>` and its signature |
 
-The volume label is `NYRA-ISO`. The installer never offers the disk or partition it started from: a disk with
+The volume label is `NYRA-ISO-` and sixteen hexadecimal digits, the **build identifier** (a hash of the
+release tree's `RELEASE` file and the mode of the build). GRUB looks for this label, and the session mounts
+the medium with it, so that no other medium, even one labelled `NYRA-ISO` that has a `/boot/vmlinuz`, an
+older Nyra stick or an installed system, takes the place of the ISO that was booted. The installer never offers the disk or partition it started from: a disk with
 an `iso9660` file system or a label starting with `NYRA-ISO` is "booted" in `nyra-install.sh disks`. A CD or
 DVD drive is not a disk at all.
 
@@ -33,13 +71,19 @@ chain is Debian's, not Nyra's: a fresh machine trusts Microsoft's keys, and Debi
 **The ISO needs no Machine Owner Key.** The MOK of Nyra's certificate is for the installed system, and it is
 requested by the installer at the end of the installation.
 
-Secure Boot covers shim, GRUB and the kernel. It does **not** cover `grub.cfg`, the initial RAM disk (the whole
-installer system), the release tree, the policy or the trust roots on the ISO: a modified ISO or USB stick
-still boots with Secure Boot on. What the ISO's trust rests on is its own signature, which is checked on the
-person's own computer before it is written to a stick (`docs/INSTALL.md`). Anyone at the console can edit
-GRUB's command line or open a shell from the installer's menu, and has root in the installer system either
-way; the safeguards are in the install script (it checks the disk, the confirmation and the image again), not
-in the screen.
+Secure Boot covers shim, GRUB and the kernel. It does **not** cover `grub.cfg`, the stub `grub.cfg` on the
+stick's EFI partition, the initial RAM disk (the whole installer system and the release tree: the policy and
+the trust roots), or the registry store: a modified ISO or USB stick still boots with Secure Boot on. What
+the ISO's trust will rest on is its own signature, checked on the person's own computer before the stick is
+written. **That signature does not exist yet** (see the status above and the checklist below). Anyone at the
+console can edit GRUB's command line or open a shell from the installer's menu, and has root in the
+installer system either way; the safeguards are in the install script (it checks the disk, the
+confirmation and the image again), not in the screen.
+
+Once the kernel runs, **nothing the session trusts is read from a medium**: the release tree is in the RAM
+disk, which GRUB loaded from the medium it found by the build identifier. The medium is mounted afterwards
+only for the registry store, which is data: what it serves is accepted by the signature policy and the
+digest of the release tree, or refused.
 
 ## The session
 
@@ -56,15 +100,17 @@ in the CI tools image. It runs from memory.
   menu ("Open a shell"), which says that it is a temporary system in memory.
 - There is **no network**: no network manager is enabled, no SSH server is installed, only the loopback
   interface exists. The tests check it.
-- `/usr/lib/nyra/release` is the ISO's `/release` directory, bound read-only (the file system is read-only
-  anyway). `/var/lib/containers` is a tmpfs, where the verified pull puts the image.
+- `/usr/lib/nyra/release` is in the RAM disk and is read-only for the installer and the shell it opens
+  (`ReadOnlyPaths=`). `/run/iso` is the medium of this build (`run-iso.mount`, whose `What=` is the label with
+  the build identifier, set by a drop-in in the RAM disk). `/var/lib/containers` is a tmpfs, where the
+  verified pull puts the image.
 - `nyra-registry.service` serves the files in `/registry` on `127.0.0.1:80` (Debian's `docker-registry`,
   read-only, as a dynamic user). `/etc/hosts` names `updates.nyraos.com` as 127.0.0.1, and
   `registries.conf` allows plain HTTP for that name, on the ISO only.
 
 ## The release tree
 
-`/usr/lib/nyra/release` is what `tools/install/` reads when it runs without a git checkout (`docs/INSTALL.md`,
+`/usr/lib/nyra/release`, in the RAM disk, is what `tools/install/` reads when it runs without a git checkout (`docs/INSTALL.md`,
 "From a release tree"): `RELEASE` (version, digest, commit, architecture), the install scripts, the signature
 policy and `registries.d`, the trust roots (`files/usr/lib/nyra/sigstore`), `nyra.crt`, `docs/SIGNING.md` (the
 fingerprint the script checks), and `reserved-names`. The scripts read the policy, the trust roots and the
@@ -83,7 +129,7 @@ commit in it must be the image's revision label.
 | 1 | `ci/build-installer.sh` | `nyra-installer` from the commit in `iso/installer-commit`: only that commit is fetched, the crates by the checksums of its `Cargo.lock`, and the build runs with `--locked --offline` and no network |
 | 2 | `ci/build-iso-os.sh` | the installer system with mkosi; its package list (`nyra-installer-os.manifest`) is exact |
 | 3 | `ci/iso-registry.sh` | the image and its signature copied into a registry, with the registry and skopeo of the installer system (run as a container from its own tree, without network), so the files are what the ISO's registry reads |
-| 4 | `ci/build-iso.sh` | the release tree, the RAM disk (cpio, without the kernel, GRUB and shim, which are on the ISO already), the EFI image, and the ISO with xorriso (hybrid: a CD and a GPT with the EFI partition second) |
+| 4 | `ci/build-iso.sh` | the release tree and the drop-in with the build identifier, the RAM disk (two cpio archives, the system's without the kernel, GRUB and shim, which are on the ISO already, and the tree's), the EFI image, and the ISO with xorriso (hybrid: a CD and a GPT with the EFI partition second) |
 
 Two modes, one code path:
 
@@ -106,7 +152,11 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
   the registry on 127.0.0.1; no getty and no SSH server runs; no unit failed; root has no password; the
   release tree is read-only and root's; `check` sees UEFI, Secure Boot, shim validation and the TPM; `disks`
   offers the empty disk and not the medium the ISO started from (as a CD it is not a disk, as a USB stick it
-  is "booted"); each installer instance uses under 15 MiB;
+  is "booted"); the medium mounted has the label of the build; each installer instance uses under 15 MiB;
+- (USB stick only) with a **second USB stick attached before the ISO**, labelled `NYRA-ISO`, with a
+  `/boot/vmlinuz` and a release tree that names another release: the session still boots (GRUB finds the
+  ISO by the build identifier), has the ISO's own `RELEASE`, mounts its own medium, and lists both sticks as
+  "booted";
 - (CD only) the image on the ISO passes the verified pull with the policy of the release tree, offline, and
   the memory after it is in the summary.
 
@@ -117,10 +167,11 @@ Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other 
 - **The root is the cpio, not a squashfs.** Debian's kernel runs systemd from a cpio initial RAM disk with
   no initramfs tools and no live-boot: the system is the RAM disk (`rootfs`), `podman run` works on it with
   `no_pivot_root` (a root that is the initial RAM disk cannot be pivoted away from), and the script's pull goes
-  to a tmpfs on `/var/lib/containers`. The cost is the memory of the whole system (about 0.5 GiB in use, 0.2
-  GiB compressed on the ISO); a squashfs would keep it on the medium.
-- **The ISO file system is mounted, not copied.** The image (the largest part) and the release tree are read
-  from the medium; only the container storage is in memory.
+  to a tmpfs on `/var/lib/containers`. The cost is the memory of the whole system (see "Limits"); a squashfs would keep it on the medium.
+- **The registry store is read from the medium, the release tree is not.** The image (the largest part) is
+  read from the medium; only the container storage is in memory. What decides whether the image may be
+  installed (policy, trust roots, scripts, digest) is in the RAM disk, so it cannot come from another
+  medium.
 - **A registry, not a directory.** The signature policy's sigstore attachments are only looked up through the
   registry protocol, so the policy and `verified-pull.sh` stay exactly as they are.
 - **The registry is a package of the distribution.** Debian's `docker-registry` reads the files that the same
@@ -129,14 +180,40 @@ Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other 
   podman uses `cgroupfs`.
 - **Hybrid image.** The same file boots as a CD (El Torito) and as a stick (the EFI partition is the second
   partition of the GPT); the ISO file system is also the first, so a stick shows `iso9660` and the label
-  `NYRA-ISO`.
+  `NYRA-ISO-` and the build identifier.
 
 ## Limits
 
-- Memory: the installer system uses about 0.65 GiB at idle (measured in a VM with a small image); the
-  pull then holds the unpacked image in the tmpfs on `/var/lib/containers` (up to 75% of the memory). The
-  registry's files are read from the medium and are only in the page cache. The installer asks for the memory
-  that `check` reports as `mem_need_gib`; the boot test's summary records what a pull of the real image
-  used.
+- Memory: **about 0.65 GiB of RAM is in use after the installer system has booted**, measured in a QEMU
+  virtual machine (6 GiB, a small stand-in image, `MemTotal - MemFree` after boot). That is the whole system,
+  the RAM disk included. The pull then holds the unpacked image in the tmpfs on `/var/lib/containers` (up to
+  75% of the memory); the registry's files are read from the medium and are only in the page cache. The
+  summary of the `iso` job's boot test (`Memory, idle` and `Memory, after the pull`) has the numbers for the
+  real image; they, not this figure, decide the memory the installer asks for.
+- Reproducibility: the ISO is built so that the same inputs give the same file (times in the tree are
+  `SOURCE_DATE_EPOCH`, the archive is sorted and root's, the ESP image has fixed times and volume ID), and
+  the `iso` job builds the last step twice and compares the two files. The installer system itself (mkosi)
+  and the installer program are built once per job: their reproducibility is not checked here.
 - Debian's GRUB, shim and kernel are the pinned snapshot's. When Microsoft's or Debian's keys change (the
   Microsoft UEFI CA 2011 expires), the ISO needs a newer snapshot; nothing on it is signed by Nyra.
+
+## Before the ISO is signed or published
+
+Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
+unsigned, and `iso` is not a dependency of `sign` or `publish`.)
+
+- **A vulnerability gate for the ISO**: the SBOM of the installer system's packages (`nyra-installer-iso-materials`
+  has the inputs) and of the installer program's crates, scanned like the image's (`docs/SBOM.md`), failing
+  on a critical or high finding without a documented mitigation.
+- **Tests of the refusals**: an image layout altered on the ISO, a `RELEASE` with another digest, and the
+  recovery key absent from the journal, in the installer session; the full installation test
+  (TPM and password), with `mokutil --sb-state` and the staged Machine Owner Key.
+- **The artifact only after the boot tests**: the `nyra-installer-iso` artifact is uploaded before the
+  tests run; it must be uploaded after both boot tests pass.
+- **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
+  decoy scope (the shipped signer under a name no image has) can go.
+- **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in
+  `iso/installer-commit`.
+- **The ISO's signature**: `SHA256SUMS` signed by the release signer, published with the ISO, verified by
+  `verify-iso`, and the exact commands in `docs/INSTALL.md` (the person verifies on their own computer
+  before writing the stick); this document's status paragraph then changes.

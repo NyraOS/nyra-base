@@ -17,8 +17,13 @@
 #   ISO 9660 file system, volume NYRA-ISO:
 #     boot/vmlinuz, boot/initrd.img  Debian's signed kernel, and the installer system as its RAM disk
 #     boot/grub/grub.cfg             not covered by Secure Boot (docs/ISO.md)
-#     release/                       the release tree (RELEASE, the scripts, the policy, the trust roots)
-#     registry/                      the registry store: the signed image
+#     registry/                      the registry store: the signed image (data: the policy and the digest
+#                                    of the release tree decide what it may be)
+# The release tree (RELEASE, the scripts, the policy, the trust roots) is in the RAM disk, at
+# /usr/lib/nyra/release: after the kernel starts, nothing the session trusts is read from a medium.
+# The build identifier (a hash of RELEASE and the mode) is in the volume label, NYRA-ISO-<id>, which GRUB
+# looks for and which the session mounts (a drop-in in the RAM disk): no other medium takes their place.
+#     (the volume label is NYRA-ISO-<id>)
 # release: the policy of the tree is the shipped one. test: it trusts the key of this run for
 # updates.nyraos.com instead (a pull request has no release signature), with the shipped signer kept under
 # a scope of no image so that `check` still names it; the test policy is only in test ISOs.
@@ -43,12 +48,14 @@ digest="$(cat "$work/registry-digest")"
 stage="$work/stage"
 rm -rf "$stage"
 mkdir -p "$stage/iso/boot/grub" "$stage/esp"
+# The RAM disk gets the tree, and the drop-in with the identifier, as a second archive after the system's.
+extra="$stage/extra"
 
 # --- the release tree --------------------------------------------------------------------------------
 # Only what tools/install reads (docs/INSTALL.md, "From a release tree"); the tests and the rest of the
 # repository stay out. Owned by root, as the cpio and the ISO make everything.
-tree="$stage/iso/release"
-install -d -m 0755 "$tree" "$tree/tools/install" "$tree/docs" "$tree/files/usr/lib/nyra/containers/registries.d" \
+tree="$extra/usr/lib/nyra/release"
+install -d -m 0755 "$extra/usr" "$extra/usr/lib" "$extra/usr/lib/nyra" "$tree" "$tree/tools/install" "$tree/docs" "$tree/files/usr/lib/nyra/containers/registries.d" \
   "$tree/files/usr/lib/nyra/sigstore" "$tree/files/usr/lib/nyra/secureboot"
 for f in nyra-install.sh in-image.sh verified-pull.sh check-recorded.sh; do install -m 0755 "tools/install/$f" "$tree/tools/install/$f"; done
 for f in lib.sh machine.sh release-tree.sh; do install -m 0644 "tools/install/$f" "$tree/tools/install/$f"; done
@@ -71,24 +78,36 @@ fi
 printf 'version=%s\ndigest=%s\ncommit=%s\narchitecture=amd64\n' "$version" "$digest" "$commit" > "$tree/RELEASE"
 chmod 0644 "$tree/RELEASE"
 tools/install/reserved-names.sh "$image" "$tree"
+build_id="$(printf '%s\n' "$mode" | cat "$tree/RELEASE" - | sha256sum | cut -c1-16)"
+label="NYRA-ISO-$build_id"
+install -d -m 0755 "$extra/etc" "$extra/etc/systemd" "$extra/etc/systemd/system" "$extra/etc/systemd/system/run-iso.mount.d"
+printf '# Written by ci/build-iso.sh: the medium of this build.\n[Mount]\nWhat=/dev/disk/by-label/%s\n' "$label" \
+  > "$extra/etc/systemd/system/run-iso.mount.d/10-build.conf"
+chmod 0644 "$extra/etc/systemd/system/run-iso.mount.d/10-build.conf"
 
 # --- the registry store, the kernel -------------------------------------------------------------------
 cp -a "$work/registry" "$stage/iso/registry"
 kernels=("$os"/boot/vmlinuz-*)
 [ "${#kernels[@]}" = 1 ] || { echo "build-iso.sh: expected one kernel in $os/boot" >&2; exit 1; }
 install -m 0644 "${kernels[0]}" "$stage/iso/boot/vmlinuz"
-install -m 0644 iso/grub.cfg "$stage/iso/boot/grub/grub.cfg"
+sed "s/@BUILD_ID@/$build_id/" iso/grub.cfg > "$stage/iso/boot/grub/grub.cfg"
 
 # --- the installer system as the RAM disk -------------------------------------------------------------
 # The whole tree but the boot files, which are on the ISO already, the kernel's initial RAM disk of the
 # package (the installer system is the initial RAM disk), and the files of the boot chain.
 ln -sfn usr/lib/systemd/systemd "$os/init"
+# Same inputs, same bytes: mkosi sets every time in the tree to SOURCE_DATE_EPOCH; what is newer (the link
+# above) is set to it too, and the archive lists the files in a fixed order, as root's.
+find "$os" -newermt "@$SOURCE_DATE_EPOCH" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+find "$extra" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (
   cd "$os"
   find . \( -path ./boot -o -path ./usr/lib/shim -o -path ./usr/lib/grub -o -path ./initrd.img -o -path ./initrd.img.old \
             -o -path ./vmlinuz -o -path ./vmlinuz.old -o -path './var/cache/*' -o -path './var/lib/apt/*' \) -prune -o -print0 \
     | LC_ALL=C sort -z \
     | cpio --null --create --format newc --quiet --reproducible --owner 0:0
+  cd "$extra"
+  find . -print0 | LC_ALL=C sort -z | cpio --null --create --format newc --quiet --reproducible --owner 0:0
 ) | zstd -T0 -19 --quiet -o "$stage/iso/boot/initrd.img"
 
 # --- the boot files, and the ESP image ----------------------------------------------------------------
@@ -97,6 +116,8 @@ mm="$os/usr/lib/shim/mmx64.efi.signed"
 grub="$os/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed"
 for f in "$shim" "$mm" "$grub"; do [ -f "$f" ] || { echo "build-iso.sh: no $f" >&2; exit 1; }; done
 openssl x509 -in files/usr/lib/nyra/secureboot/nyra.crt -outform DER -out "$stage/nyra.cer"
+sed "s/@BUILD_ID@/$build_id/" iso/grub-esp.cfg > "$stage/grub-esp.cfg"
+touch -d "@$SOURCE_DATE_EPOCH" "$stage/nyra.cer" "$stage/grub-esp.cfg"
 esp="$stage/esp.img"
 truncate -s 16M "$esp"
 mkfs.vfat -n NYRA-ESP -F 12 --invariant "$esp" > /dev/null
@@ -105,15 +126,18 @@ mcopy -i "$esp" "$shim" ::EFI/BOOT/BOOTX64.EFI
 mcopy -i "$esp" "$grub" ::EFI/BOOT/grubx64.efi
 mcopy -i "$esp" "$mm" ::EFI/BOOT/mmx64.efi
 mcopy -i "$esp" "$stage/nyra.cer" ::nyra.cer
-mcopy -i "$esp" iso/grub-esp.cfg ::boot/grub/grub.cfg
+mcopy -i "$esp" "$stage/grub-esp.cfg" ::boot/grub/grub.cfg
 
 # --- the ISO --------------------------------------------------------------------------------------------
 # Hybrid: the ESP image is the El Torito boot image of a CD and, as the second partition of a GPT, what
 # the firmware boots from a USB stick. The volume label starts with NYRA-ISO: the installer does not offer
 # the disk or partition it started from (docs/INSTALL-INTERFACE.md, "disks").
+# The times of the files and directories on the ISO are SOURCE_DATE_EPOCH (xorriso takes the volume's from
+# it too), so that two builds of the same inputs are the same file.
+find "$stage/iso" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 mkdir -p "$(dirname "$iso")"
 rm -f "$iso"
-xorriso -as mkisofs -quiet -o "$iso" -r -iso-level 3 -V NYRA-ISO \
+xorriso -as mkisofs -quiet -o "$iso" -r -iso-level 3 -V "$label" \
   -append_partition 2 0xef "$esp" -appended_part_as_gpt \
   -e --interval:appended_partition_2:all:: -no-emul-boot -isohybrid-gpt-basdat \
   "$stage/iso"

@@ -9,6 +9,9 @@ disk) and checks what a person sees and what the session is (docs/ISO.md):
     release tree is read-only and root's, `check` and `disks` answer, the empty disk is offered and the
     medium the ISO was started from is not (as a CD and as a USB stick), and the image on the ISO passes
     the verified pull with the policy of the release tree, offline;
+  - with --decoy, a second USB stick is attached before the ISO: labelled NYRA-ISO, with a /boot/vmlinuz and a release
+    tree of its own, which name another release. The session must use the ISO it booted from only: its
+    kernel, its release tree and its registry, not the decoy's;
   - the memory the session uses, and the time to the first screen, go to the summary.
 
     tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--medium cd|usb] [--memory MiB] [--pull]
@@ -17,12 +20,28 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
 import isovm
 
 MENU_DOWN = b"\x1b[B"
+
+
+def make_decoy(directory):
+    """An ISO image that a naive installer could take for the ISO it booted from: the label NYRA-ISO, a
+    /boot/vmlinuz and a release tree that names another release."""
+    os.makedirs(os.path.join(directory, "boot"), exist_ok=True)
+    os.makedirs(os.path.join(directory, "release"), exist_ok=True)
+    with open(os.path.join(directory, "boot", "vmlinuz"), "wb") as f:
+        f.write(b"not a kernel\n")
+    with open(os.path.join(directory, "release", "RELEASE"), "w") as f:
+        f.write("version=1999.1.1\ndigest=sha256:" + "0" * 64 + "\ncommit=" + "0" * 40 + "\narchitecture=amd64\n")
+    image = directory + ".iso"
+    subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-r", "-V", "NYRA-ISO", "-o", image, directory], check=True,
+                   stderr=subprocess.DEVNULL)
+    return image
 
 
 def main():
@@ -34,10 +53,14 @@ def main():
     p.add_argument("--medium", choices=["cd", "usb"], default="cd")
     p.add_argument("--memory", type=int, default=8192, help="MiB")
     p.add_argument("--pull", action="store_true", help="also run the verified pull of the image on the ISO")
+    p.add_argument("--decoy", action="store_true", help="attach a second medium that looks like an installer, first")
     p.add_argument("--timeout", type=int, default=600, help="seconds to the first screen")
     a = p.parse_args()
 
-    vm = isovm.Vm(a.iso, a.work, a.log, medium=a.medium, memory=a.memory)
+    decoy = None
+    if a.decoy:
+        decoy = make_decoy(os.path.join(a.work, "decoy"))
+    vm = isovm.Vm(a.iso, a.work, a.log, medium=a.medium, memory=a.memory, decoy=decoy)
     rows = []  # (what, result) for the summary
     failed = []
 
@@ -90,6 +113,8 @@ def main():
 
         status, out = sh("findmnt -no OPTIONS /usr/lib/nyra/release; touch /usr/lib/nyra/release/x 2>&1; stat -c '%U:%G' /usr/lib/nyra/release/tools/install/nyra-install.sh /usr/lib/nyra/release/RELEASE")
         check("the release tree is read-only and root's", "ro," in out and "Read-only file system" in out and out.count("root:root") == 2, out.replace("\n", " "))
+        status, out = sh("findmnt -no SOURCE /run/iso | xargs blkid -s LABEL -o value")
+        check("the medium mounted is the one of this build, by its own label", re.fullmatch(r"NYRA-ISO-[0-9a-f]{16}", out) is not None, out)
         status, out = sh("cat /usr/lib/nyra/release/RELEASE")
         release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
         check("RELEASE names the version, digest, commit and architecture", set(release) == {"version", "digest", "commit", "architecture"}, out.replace("\n", " "))
@@ -101,16 +126,20 @@ def main():
         facts = json.loads(out) if status == 0 else {}
         check("check: UEFI, Secure Boot, shim validation and the TPM are seen", all(facts.get(k) is True for k in ("uefi", "secure_boot", "shim_checks", "tpm")), out.replace("\n", " ")[:300])
         check("check: the release is the one on the ISO", facts.get("release", {}).get("digest") == release.get("digest"))
-        mem_tenths = facts.get("mem_tenths", 0)
+        if a.decoy:
+            status, out = sh("blkid -L NYRA-ISO; head -n 3 /usr/lib/nyra/release/RELEASE; cat /proc/cmdline")
+            check("with a second medium labelled NYRA-ISO attached, the session has this ISO's release",
+                  "/dev/sd" in out and "version=1999.1.1" not in out and f"digest={release.get('digest')}" in out, out.replace("\n", " "))
         status, out = sh("/usr/lib/nyra/release/tools/install/nyra-install.sh disks", 60)
         disks = json.loads(out) if status == 0 else []
         paths = {d["path"]: d for d in disks}
         if a.medium == "cd":
             check("disks: the empty disk is offered, and the CD is not a disk", list(paths) == ["/dev/vda"] and paths["/dev/vda"]["eligible"], out.replace("\n", " ")[:300])
         else:
+            booted = [d for d in disks if d["reason"] == "booted" and not d["eligible"]]
             check("disks: the empty disk is offered; the USB stick the ISO is on is 'booted'",
-                  paths.get("/dev/vda", {}).get("eligible") is True
-                  and any(d["reason"] == "booted" and not d["eligible"] for d in disks if d["path"] != "/dev/vda"),
+                  len([d for d in disks if d["eligible"]]) == 1 and len(booted) == (2 if a.decoy else 1)
+                  and not any(d["path"] == "/dev/vda" for d in booted),
                   out.replace("\n", " ")[:300])
 
         # --- memory ---------------------------------------------------------------------------------

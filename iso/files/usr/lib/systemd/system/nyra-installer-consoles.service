@@ -3,7 +3,7 @@
 # console= on the command line, if the machine has it).
 [Unit]
 Description=Start the installer on every console
-After=nyra-registry.service usr-lib-nyra-release.mount
+After=nyra-registry.service
 
 [Service]
 Type=oneshot
