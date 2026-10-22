@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 installer ISO boot test
+description: >-
+  One boot test of the aarch64 installer ISO (docs/ISO.md, "aarch64"): tools/iso/boot-test.py --arch arm64 on
+  the ISO that arm64-iso built, in QEMU's virt machine with edk2 (AAVMF) and the Microsoft Secure Boot keys.
+  GitHub's arm64 runners have no /dev/kvm (the step records what this runner has), so the guest is emulated
+  (TCG) and the waits are five times longer; no TPM. The ISO is checked against the hash of the job that made
+  it. Security: the ISO is built from this run's inputs, including those of pull requests; it boots in
+  QEMU as an ordinary process on a GitHub-hosted runner, with no network and no secret.
+inputs:
+  iso-artifact:
+    description: The name of the artifact holding nyra.iso
+    required: true
+  iso-sha256:
+    description: Its sha256, as the job that made it reported
+    required: true
+  name:
+    description: The name of this test, for the console log's file name
+    required: true
+  args:
+    description: Options of tools/iso/boot-test.py after the paths (--medium, --pull, --decoy, --refusal)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/arm64-prepare
+
+    - name: KVM on the runner?
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+      run: |
+        if [ -e /dev/kvm ]; then
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+        fi
+        if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then kvm=true; else kvm=false; fi
+        echo "kvm=$kvm ($(ls -l /dev/kvm 2>&1))"
+        {
+          echo "## aarch64 runner (ISO test $NAME)"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| CPU | $(lscpu | sed -n 's/^Model name: *//p' | head -1), $(nproc) CPUs |"
+          echo "| Kernel | $(uname -r) |"
+          echo "| /dev/kvm | $(ls -l /dev/kvm 2>&1) |"
+          echo "| Guest | $([ "$kvm" = true ] && echo "KVM" || echo "emulated (QEMU TCG)") |"
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # ipxe-qemu: the virtio NIC's option ROM file, which QEMU must find (only recommended on arm64).
+    - name: Install QEMU, edk2 (AAVMF) and the tools that write the decoy medium
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q --no-install-recommends qemu-system-arm qemu-efi-aarch64 ipxe-qemu xorriso
+        qemu-system-aarch64 --version | head -1
+        ls -l /usr/share/AAVMF
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.iso-artifact }}
+        path: ${{ env.WORK }}/iso-in
+
+    - name: Check the ISO
+      shell: bash
+      env:
+        ISO_SHA256: ${{ inputs.iso-sha256 }}
+      run: ci/check-artifact.sh "$WORK/iso-in/nyra.iso" "$ISO_SHA256"
+
+    - name: Boot the ISO (tools/iso/boot-test.py)
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        ARGS: ${{ inputs.args }}
+      run: |
+        # shellcheck disable=SC2086 # ARGS is a list of options, written in the workflow
+        python3 tools/iso/boot-test.py "$WORK/iso-in/nyra.iso" "$WORK/boot-$NAME" "$RUNNER_TEMP/iso-$NAME-console.log" "$GITHUB_STEP_SUMMARY" --arch arm64 $ARGS
+
+    - name: Upload the console log
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: iso-arm64-console-log-${{ inputs.name }}
+        path: ${{ runner.temp }}/iso-*-console.log
+        if-no-files-found: ignore
+        retention-days: 14

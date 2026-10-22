@@ -1,13 +1,14 @@
 # The installer ISO
 
-The installer ISO (x86_64) is what a person writes to a USB stick, or attaches to a virtual machine, to
+The installer ISO (x86_64, and aarch64: see "aarch64" below) is what a person writes to a USB stick, or attaches to a virtual machine, to
 install Nyra OS without a terminal. It boots to the text installer of github.com/NyraOS/installer on the
 screen and on the serial console, with no login and no command to type, and installs the signed image that
 is on the ISO itself, offline. This document is about the ISO: how it boots, what is on it, what its trust
 rests on, and how CI builds and tests it. The installation steps are in `docs/INSTALL.md` and the interface
 between the installer program and the script in `docs/INSTALL-INTERFACE.md`.
 
-The ISO is built and tested by the `iso` job of `.github/workflows/image.yml`.
+The ISO is built and tested by the `iso` job of `.github/workflows/image.yml` (x86_64) and by the
+`iso-arm64` and `iso-boot-arm64` jobs (aarch64, "aarch64" below).
 
 **Status: the ISO is UNSIGNED, for testing only.** There is no signature of the ISO yet and nothing
 verifies one. The only check a person can make is the SHA-256 of the file against the one the run prints
@@ -184,6 +185,48 @@ The scan refuses an empty scan: every package of `iso/mkosi.conf` is in the mani
 and none comes from a git source. The SBOM is the `nyra-installer-iso-sbom` artifact.
 
 Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other than US.
+
+## aarch64
+
+The aarch64 ISO is the same ISO built from the same sources: `ISO_ARCH=arm64` in `ci/build-iso-os.sh`,
+`ci/iso-registry.sh`, `ci/build-iso.sh` and `ci/iso-manifest.sh` (default `amd64`), run natively on an arm64
+runner. It installs `nyra-base-arm64` (the image of the arm64 release, `docs/ARM64.md`), and `RELEASE` says
+`architecture=arm64`. What differs:
+
+| | x86_64 | aarch64 |
+|---|---|---|
+| Boot files on the EFI image | `BOOTX64.EFI` (shim), `grubx64.efi`, `mmx64.efi` | `BOOTAA64.EFI` (shim), `grubaa64.efi`, `mmaa64.efi`: the same Debian packages for arm64 (`shim-signed`, `shim-helpers-arm64-signed`, `grub-efi-arm64-signed`; its CD build is `gcdaa64.efi.signed`) |
+| Kernel | `linux-image-amd64` | `linux-image-arm64`, signed by Debian like the other |
+| Packages the scan must find (`ci/iso-manifest.sh`) | `grub-efi-amd64-signed`, `grub-efi-amd64-unsigned`, `shim-helpers-amd64-signed`, `shim-signed`, `shim-unsigned` | the same five with `arm64`; the build fails unless exactly these are found, and unless every package is built for arm64 or all |
+| Menu (`iso/grub-arm64.cfg`) | `serial` and `terminal_*` on `com0`; `console=tty0 console=ttyS0,115200n8` | no `serial` or `terminal_*` lines; `console=tty0 console=ttyAMA0,115200n8` |
+| CD in the tests | AHCI CD-ROM | SCSI CD-ROM on virtio-scsi (the `virt` machine has no IDE) |
+| TPM in the tests | swtpm (CRB) | none |
+| Machine | `q35`, OVMF, KVM | `virt`, AAVMF (edk2), emulated (TCG) |
+
+**The console.** GRUB's `serial` command names the ports `com0`, `com1`: those are x86 I/O ports. As far as
+GRUB's source goes (not run here), the ports of its EFI serial driver are `efi0`, `efi1`, so `serial
+--unit=0` would find nothing on aarch64, and the menu file leaves out the `serial` and `terminal_*` lines: GRUB writes to the firmware's console, which on QEMU
+and UTM reaches the screen and the serial port. The kernel is told `console=tty0 console=ttyAMA0,115200n8`
+(ttyAMA0 is the PL011 serial port of QEMU's `virt` machine, UTM and most boards). It has to be said: with
+a `console=` option the kernel does not add the console that the firmware describes (ACPI SPCR) by
+itself. A board whose serial port is not a PL011 (an 8250 one is `ttyS0`) shows the installer on the screen
+only. `nyra-installer-consoles.service` starts the installer on `tty1` and on every console in
+`/sys/class/tty/console/active`, which the test checks lists the screen and `ttyAMA0`.
+
+**The tests on aarch64.** `tools/iso/boot-test.py --arch arm64` runs the tests above, except the TPM: QEMU's
+`virt` machine has only TIS TPMs and Debian's arm64 kernel has no driver for them, so `check` must see UEFI,
+Secure Boot and shim validation, and must report no TPM. The guest is emulated: GitHub's arm64 runners have no
+`/dev/kvm` (each job's summary records what its runner has, and uses KVM if it ever appears), and every wait is
+five times the x86_64 one. The three boots run in jobs of their own: as a CD, as a USB stick with the decoy
+medium, and as a CD with the verified pull of the image on it. On a pull request the ISO is built by the
+`iso` job of `arm64.yml` from the image of that run, in test mode.
+
+**What the tests do not prove.** Real firmware, UTM (a Mac is not a CI runner), MokManager, and the
+installation itself on aarch64 (an installation with a disk password does not need a TPM, but it is not run
+here yet). The AAVMF and UTM firmware have no SMM and no secure world, so in these virtual machines root
+in the guest can write the UEFI variable store, the Secure Boot databases and the MOK list included
+(`docs/ARM64.md`): Secure Boot there is weaker than on x86_64, and what is left is the binding of a TPM
+to its measurements.
 
 ## Decisions, and why
 

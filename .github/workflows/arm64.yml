@@ -22,6 +22,11 @@
 #   boot    whether the runner has KVM; install to a disk, two boots (tools/vm/arm64-boot.sh: without
 #           and with Secure Boot), boot counting across updates (tools/vm/boot-counting.sh) when
 #           there is KVM; the installed disk as a compressed qcow2 for UTM on Apple Silicon
+#   iso     the aarch64 installer ISO (docs/ISO.md, "aarch64") built from this run's image, in test mode (the
+#           image signed with a key made for the run), natively on arm64 (the .github/actions/arm64-iso
+#           that image.yml's iso-arm64 runs too); then iso-boot, three emulated boots of it in parallel
+#           (QEMU TCG, AAVMF with Secure Boot, no TPM): as a CD, as a USB stick with a decoy medium, and as
+#           a CD with the verified pull of the image on it
 # Security: as in image.yml, the boot job runs images built from pull requests with --privileged and
 # /dev mounted: GitHub-hosted runners only.
 name: arm64
@@ -38,6 +43,12 @@ on:
       - ci/ukify.sh
       - ci/release-smoke.sh
       - ci/check-image-repository.sh
+      - iso/**
+      - ci/build-installer.sh
+      - ci/build-iso.sh
+      - ci/build-iso-os.sh
+      - ci/iso-*.sh
+      - tools/iso/**
   workflow_dispatch:
 permissions:
   contents: read
@@ -248,3 +259,57 @@ jobs:
           image-sha256: ${{ needs.build.outputs.image_sha256 }}
           uki-cert: ${{ needs.build.outputs.uki_cert }}
           vm-disk: "true"
+
+  # The installer ISO for aarch64, in test mode: the image of this run, signed for the ISO's registry with a
+  # key made here, which the ISO's policy trusts instead of the release signer. image.yml's iso-arm64 does the
+  # same with the release image and its signature. No secret.
+  iso:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    outputs:
+      iso_sha256: ${{ steps.iso.outputs.iso_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: iso
+        uses: ./.github/actions/arm64-iso
+        with:
+          mode: test
+          image-artifact: nyra-base-arm64-oci-archive
+          image-sha256: ${{ needs.build.outputs.image_sha256 }}
+          iso-artifact: nyra-installer-iso-arm64
+
+  # The boots of that ISO (tools/iso/boot-test.py --arch arm64), emulated: each in a job of its own, so that
+  # each stays within its time. The medium, the decoy medium and the verified pull as on x86_64
+  # (image.yml's iso job).
+  iso-boot:
+    needs: iso
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: ${{ matrix.minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cd
+            args: ""
+            minutes: 30
+          - name: usb
+            args: "--medium usb --decoy"
+            minutes: 30
+          - name: cd-pull
+            args: "--pull"
+            minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-iso-boot
+        with:
+          iso-artifact: nyra-installer-iso-arm64
+          iso-sha256: ${{ needs.iso.outputs.iso_sha256 }}
+          name: ${{ matrix.name }}
+          args: ${{ matrix.args }}

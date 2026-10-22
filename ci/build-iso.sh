@@ -29,10 +29,20 @@
 # updates.nyraos.com instead (a pull request has no release signature), with the shipped signer kept under
 # a scope of no image so that `check` still names it; the test policy is only in test ISOs.
 # SOURCE_DATE_EPOCH must be set.
+# ISO_ARCH: amd64 (default) or arm64. For arm64 the three EFI files are shim, MokManager and GRUB for aarch64
+# (shimaa64, mmaa64, gcdaa64: BOOTAA64.EFI, mmaa64.efi, grubaa64.efi on the EFI image), RELEASE names arm64,
+# and the menu is iso/grub-arm64.cfg: GRUB uses the firmware's console, and the kernel gets the PL011 serial
+# port, ttyAMA0 (docs/ISO.md, "aarch64"). Everything else is the same.
 set -euo pipefail
 
 [ $# = 6 ] || { echo "usage: build-iso.sh WORKDIR ISO VERSION COMMIT release|test IMAGE" >&2; exit 1; }
 work="$(realpath -m "$1")" iso="$(realpath -m "$2")" version="$3" commit="$4" mode="$5" image="$6"
+arch="${ISO_ARCH:-amd64}"
+case "$arch" in
+  amd64) efi=x64 grub_dir=x86_64-efi-signed menu=iso/grub.cfg ;;
+  arm64) efi=aa64 grub_dir=arm64-efi-signed menu=iso/grub-arm64.cfg ;;
+  *) echo "build-iso.sh: ISO_ARCH is amd64 or arm64, not $arch" >&2; exit 1 ;;
+esac
 [ "$(id -u)" = 0 ] || { echo "build-iso.sh: run as root" >&2; exit 1; }
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH must be set}"
 [[ "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "build-iso.sh: not a version: $version" >&2; exit 1; }
@@ -76,7 +86,7 @@ else
     files/usr/lib/nyra/containers/policy.json > "$tree/files/usr/lib/nyra/containers/policy.json"
   chmod 0644 "$tree/files/usr/lib/nyra/containers/policy.json"
 fi
-printf 'version=%s\ndigest=%s\ncommit=%s\narchitecture=amd64\n' "$version" "$digest" "$commit" > "$tree/RELEASE"
+printf 'version=%s\ndigest=%s\ncommit=%s\narchitecture=%s\n' "$version" "$digest" "$commit" "$arch" > "$tree/RELEASE"
 chmod 0644 "$tree/RELEASE"
 tools/install/reserved-names.sh "$image" "$tree"
 build_id="$(printf '%s\n' "$mode" | cat "$tree/RELEASE" - | sha256sum | cut -c1-16)"
@@ -91,7 +101,7 @@ cp -a "$work/registry" "$stage/iso/registry"
 kernels=("$os"/boot/vmlinuz-*)
 [ "${#kernels[@]}" = 1 ] || { echo "build-iso.sh: expected one kernel in $os/boot" >&2; exit 1; }
 install -m 0644 "${kernels[0]}" "$stage/iso/boot/vmlinuz"
-sed "s/@BUILD_ID@/$build_id/" iso/grub.cfg > "$stage/iso/boot/grub/grub.cfg"
+sed "s/@BUILD_ID@/$build_id/" "$menu" > "$stage/iso/boot/grub/grub.cfg"
 
 # --- the installer system as the RAM disk -------------------------------------------------------------
 # The whole tree but the boot files, which are on the ISO already, and the kernel's initial RAM disk of
@@ -113,9 +123,9 @@ find "$extra" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 # --- the boot files, and the ESP image ----------------------------------------------------------------
 boot="$work/boot/nyra-installer-boot"
-shim="$boot/usr/lib/shim/shimx64.efi.signed"
-mm="$boot/usr/lib/shim/mmx64.efi.signed"
-grub="$boot/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed"
+shim="$boot/usr/lib/shim/shim$efi.efi.signed"
+mm="$boot/usr/lib/shim/mm$efi.efi.signed"
+grub="$boot/usr/lib/grub/$grub_dir/gcd$efi.efi.signed"
 for f in "$shim" "$mm" "$grub"; do [ -f "$f" ] || { echo "build-iso.sh: no $f" >&2; exit 1; }; done
 openssl x509 -in files/usr/lib/nyra/secureboot/nyra.crt -outform DER -out "$stage/nyra.cer"
 sed "s/@BUILD_ID@/$build_id/" iso/grub-esp.cfg > "$stage/grub-esp.cfg"
@@ -124,9 +134,9 @@ esp="$stage/esp.img"
 truncate -s 16M "$esp"
 mkfs.vfat -n NYRA-ESP -F 12 --invariant "$esp" > /dev/null
 mmd -i "$esp" ::EFI ::EFI/BOOT ::boot ::boot/grub
-mcopy -i "$esp" "$shim" ::EFI/BOOT/BOOTX64.EFI
-mcopy -i "$esp" "$grub" ::EFI/BOOT/grubx64.efi
-mcopy -i "$esp" "$mm" ::EFI/BOOT/mmx64.efi
+mcopy -i "$esp" "$shim" "::EFI/BOOT/BOOT${efi^^}.EFI"
+mcopy -i "$esp" "$grub" "::EFI/BOOT/grub$efi.efi"
+mcopy -i "$esp" "$mm" "::EFI/BOOT/mm$efi.efi"
 mcopy -i "$esp" "$stage/nyra.cer" ::nyra.cer
 mcopy -i "$esp" "$stage/grub-esp.cfg" ::boot/grub/grub.cfg
 

@@ -18,7 +18,8 @@ import yaml
 
 MAIN_ONLY_JOBS = {"release-sign", "release-image", "sign", "publish", "verify-published",
                   "bootc-arm64", "build-arm64", "release-sign-arm64", "release-image-arm64", "boot-arm64",
-                  "sign-arm64", "verify-signature-arm64", "publish-arm64", "verify-published-arm64"}
+                  "sign-arm64", "verify-signature-arm64", "publish-arm64", "verify-published-arm64",
+                  "iso-arm64", "iso-boot-arm64", "iso-keep-arm64"}
 
 
 def without_ignored_keys(name, job):
