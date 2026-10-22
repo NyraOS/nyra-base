@@ -59,10 +59,15 @@ summary of the `iso` job.
 
 The volume label is `NYRA-ISO-` and sixteen hexadecimal digits, the **build identifier** (a hash of the
 release tree's `RELEASE` file and the mode of the build). GRUB looks for this label, and the session mounts
-the medium with it, so that no other medium, even one labelled `NYRA-ISO` that has a `/boot/vmlinuz`, an
-older Nyra stick or an installed system, takes the place of the ISO that was booted. The installer never offers the disk or partition it started from: a disk with
-an `iso9660` file system or a label starting with `NYRA-ISO` is "booted" in `nyra-install.sh disks`. A CD or
-DVD drive is not a disk at all.
+the medium with it, so that another medium that is there by accident (one labelled `NYRA-ISO` that has a
+`/boot/vmlinuz`, an older Nyra stick, an installed system) does not take the place of the ISO that was
+booted. This does **not** hold against a medium made to copy the label: the label is a name, not a check.
+What limits that is that the medium serves only the registry store, which fails closed against the
+signature policy and the digest of the release tree in the RAM disk; and copying the label, or editing
+the stub `grub.cfg` on a stick's EFI partition, needs physical access to the stick, which is the same as
+editing the stick. The installer never offers the disk or partition it started from: a disk with an `iso9660`
+file system or a label starting with `NYRA-ISO` is "booted" in `nyra-install.sh disks`. A CD or DVD drive is
+not a disk at all.
 
 ## The boot chain, and what Secure Boot covers
 

@@ -9,12 +9,12 @@ disk) and checks what a person sees and what the session is (docs/ISO.md):
     release tree is read-only and root's, `check` and `disks` answer, the empty disk is offered and the
     medium the ISO was started from is not (as a CD and as a USB stick), and the image on the ISO passes
     the verified pull with the policy of the release tree, offline;
-  - with --decoy, a second USB stick is attached before the ISO: labelled NYRA-ISO, with a /boot/vmlinuz and a release
-    tree of its own, which name another release. The session must use the ISO it booted from only: its
-    kernel, its release tree and its registry, not the decoy's;
+  - with --decoy, a second USB stick is attached before the ISO: labelled NYRA-ISO, with a /boot/vmlinuz and
+    a release tree of its own, which name another release. The session must use the ISO it booted from
+    only: its kernel, its release tree and its registry, not the decoy's;
   - the memory the session uses, and the time to the first screen, go to the summary.
 
-    tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--medium cd|usb] [--memory MiB] [--pull]
+    tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--medium cd|usb] [--memory MiB] [--pull] [--decoy]
 """
 import argparse
 import json
@@ -27,6 +27,17 @@ import time
 import isovm
 
 MENU_DOWN = b"\x1b[B"
+
+
+def volume_label(iso):
+    """The volume identifier of an ISO 9660 image: 32 bytes at offset 40 of the primary volume descriptor
+    (the 17th sector), padded with spaces."""
+    with open(iso, "rb") as f:
+        f.seek(16 * 2048)
+        pvd = f.read(2048)
+    if pvd[1:6] != b"CD001":
+        raise SystemExit(f"{iso} has no ISO 9660 volume descriptor")
+    return pvd[40:72].decode("ascii").rstrip()
 
 
 def make_decoy(directory):
@@ -114,7 +125,8 @@ def main():
         status, out = sh("findmnt -no OPTIONS /usr/lib/nyra/release; touch /usr/lib/nyra/release/x 2>&1; stat -c '%U:%G' /usr/lib/nyra/release/tools/install/nyra-install.sh /usr/lib/nyra/release/RELEASE")
         check("the release tree is read-only and root's", "ro," in out and "Read-only file system" in out and out.count("root:root") == 2, out.replace("\n", " "))
         status, out = sh("findmnt -no SOURCE /run/iso | xargs blkid -s LABEL -o value")
-        check("the medium mounted is the one of this build, by its own label", re.fullmatch(r"NYRA-ISO-[0-9a-f]{16}", out) is not None, out)
+        label = volume_label(a.iso)
+        check("the medium mounted is the one of this build, by its own label", re.fullmatch(r"NYRA-ISO-[0-9a-f]{16}", label) is not None and out == label, f"{out}, the ISO's is {label}")
         status, out = sh("cat /usr/lib/nyra/release/RELEASE")
         release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
         check("RELEASE names the version, digest, commit and architecture", set(release) == {"version", "digest", "commit", "architecture"}, out.replace("\n", " "))

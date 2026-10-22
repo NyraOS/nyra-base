@@ -14,7 +14,7 @@
 #     EFI/BOOT/mmx64.efi    MokManager
 #     nyra.cer              the Nyra certificate (DER) for MokManager's "Enroll key from disk"
 #     boot/grub/grub.cfg    for a stick: finds the ISO file system and reads the menu there (iso/grub-esp.cfg)
-#   ISO 9660 file system, volume NYRA-ISO:
+#   ISO 9660 file system, volume NYRA-ISO-<id>:
 #     boot/vmlinuz, boot/initrd.img  Debian's signed kernel, and the installer system as its RAM disk
 #     boot/grub/grub.cfg             not covered by Secure Boot (docs/ISO.md)
 #     registry/                      the registry store: the signed image (data: the policy and the digest
@@ -22,8 +22,8 @@
 # The release tree (RELEASE, the scripts, the policy, the trust roots) is in the RAM disk, at
 # /usr/lib/nyra/release: after the kernel starts, nothing the session trusts is read from a medium.
 # The build identifier (a hash of RELEASE and the mode) is in the volume label, NYRA-ISO-<id>, which GRUB
-# looks for and which the session mounts (a drop-in in the RAM disk): no other medium takes their place.
-#     (the volume label is NYRA-ISO-<id>)
+# looks for and which the session mounts (a drop-in in the RAM disk). It is a name, not a check: it keeps
+# another medium that was not made to copy it (docs/ISO.md) from taking the ISO's place.
 # release: the policy of the tree is the shipped one. test: it trusts the key of this run for
 # updates.nyraos.com instead (a pull request has no release signature), with the shipped signer kept under
 # a scope of no image so that `check` still names it; the test policy is only in test ISOs.
