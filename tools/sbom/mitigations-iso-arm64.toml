@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Reviewed exceptions to the vulnerability gate of the aarch64 installer ISO (docs/ISO.md, docs/SBOM.md):
+# `tools/sbom/sbom.py --iso --arch arm64`. Its own file, like the x86_64 ISO's and the image's: an exception of
+# one never applies to another. Same format and rules: each entry accepts one vulnerability in one package
+# (Debian source package or Rust crate) until its expiry date, at most 90 days ahead; say why the ISO is not
+# exposed or what limits the damage, and what would end the exception (a fix in Debian, a snapshot bump).
+# Prefer removal to acceptance: an entry is here only for a finding that cannot be removed by dropping or
+# replacing a package of the installer system.
+#
+# The vulnerabilities are those of the Debian source packages, which are the same for both architectures
+# (the tracker has no architecture), and the installer system has the same packages: so the findings are the
+# x86_64 ISO's, judged again for aarch64, where the facts the reasons rest on are checked by the same boot
+# test (tools/iso/boot-test.py --arch arm64): the registry is the only process that is not root's and runs
+# under a system-call filter, no PAM file loads pam_namespace, unprivileged bpf() is off. The kernel is
+# Debian's arm64 build of the same source, with the same f2fs, UDF, overlayfs, Bluetooth and DRM code.
+# The expiry dates are those of the x86_64 file, so that a snapshot bump reviews both together.
+#
+# [[mitigation]]
+# id = "CVE-2026-00000"
+# package = "example"
+# reason = "Only reachable through X, which the installer system does not run."
+# expires = 2026-12-31
+
+[[mitigation]]
+id = "CVE-2026-107161"
+package = "cyrus-sasl2"
+reason = "Heap overflow in the DIGEST-MD5 plugin, fixed in Debian unstable (2.1.28+dfsg1-12): the entry bridges the time until the snapshot is bumped, which ends it. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the installer system; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code, and nothing in the session speaks SASL."
+expires = 2026-11-05
+
+[[mitigation]]
+id = "CVE-2026-102010"
+package = "gcc-16"
+reason = "libstdc++ reallocation bug in erase_if on a binary-heap priority queue. libstdc++6 is not in the installer system: of this source only gcc-16-base and libgcc-s1 are. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95619"
+package = "gcc-16"
+reason = "libstdc++ integer overflow in aligned operator new with huge sizes. libstdc++6 is not in the installer system: of this source only gcc-16-base and libgcc-s1 are. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-82560"
+package = "perl"
+reason = "CPU/memory exhaustion in Pod::Text. Pod::Text is in perl-modules-5.42, which is not in the installer system; perl-base ships no Pod/Text.pm. Nothing in the session formats POD."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2025-8941"
+package = "pam"
+reason = "Symlink/race in pam_namespace. pam_namespace.so is installed, but no file in /etc/pam.d or /usr/lib/pam.d loads it, and nothing in the session logs in: there is no login."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-85091"
+package = "zlib"
+reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no program of the installer system writes gzip files so (the RAM disk is unpacked by the kernel, the session's programs are Go and systemd). Waiting for the Debian zlib upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2013-7445"
+package = "linux"
+reason = "DRM/GEM memory exhaustion by a local user who opens a DRM device. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It has no device access, and everything else is root's, which has the machine anyway."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2019-19449"
+package = "linux"
+reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2019-19814"
+package = "linux"
+reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3847"
+package = "linux"
+reason = "OverlayFS copy-up of file capabilities on setuid files; a local attacker who can mount overlayfs. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It cannot create the namespaces that mounting overlayfs needs from an unprivileged process, and no upstream fix exists; Debian tracks it unfixed in every release."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3864"
+package = "linux"
+reason = "The dumpable flag after a setuid program runs its descendants; a local privilege escalation by an unprivileged user. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It cannot gain privileges (no new privileges), so it runs no setuid program."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2023-37454"
+package = "linux"
+reason = "Use-after-free write on a crafted UDF file system image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make, the installer reads disks with lsblk only, and the UDF module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2024-21803"
+package = "linux"
+reason = "Use-after-free in the Bluetooth modules, local code execution. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. Its address families are limited to IPv4 and Unix sockets, so it cannot open a Bluetooth socket; the modules load only with hardware."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-98869"
+package = "linux"
+reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program."
+expires = 2027-01-07

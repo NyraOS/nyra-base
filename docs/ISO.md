@@ -217,9 +217,67 @@ only. `nyra-installer-consoles.service` starts the installer on `tty1` and on ev
 `virt` machine has only TIS TPMs and Debian's arm64 kernel has no driver for them, so `check` must see UEFI,
 Secure Boot and shim validation, and must report no TPM. The guest is emulated: GitHub's arm64 runners have no
 `/dev/kvm` (each job's summary records what its runner has, and uses KVM if it ever appears), and every wait is
-five times the x86_64 one. The three boots run in jobs of their own: as a CD, as a USB stick with the decoy
-medium, and as a CD with the verified pull of the image on it. On a pull request the ISO is built by the
-`iso` job of `arm64.yml` from the image of that run, in test mode.
+five times the x86_64 one. The boots run in jobs of their own: as a CD, as a USB stick with the decoy
+medium, as a CD with the verified pull of the image on it, and the two altered ISOs (an image layer replaced
+in the registry store, a `RELEASE` that names another digest; made like the real one from a copy of its
+inputs, by the build job, which uploads them), in which the pull must be refused for the reason that was
+made. On a pull request the ISO is built by the `iso` job of `arm64.yml` from the image of that run, in test
+mode.
+
+**The scan.** The installer system's packages, the five of the boot tree (`ci/iso-manifest.sh`) and the
+installer program's crates are scanned like the x86_64 ISO's (`tools/sbom/sbom.py --iso --arch arm64`, run
+on an x86_64 runner against the arm64 package index, `docs/SBOM.md`), with an exceptions file of its own,
+`tools/sbom/mitigations-iso-arm64.toml`. The vulnerabilities are those of the Debian source packages and
+the packages are the same, so its entries are the x86_64 ISO's, judged again for aarch64: the facts they
+rest on are checked by the same boot test on this architecture, and the expiry dates are the same, so that a
+snapshot bump reviews both files together. The SBOM is the `nyra-installer-iso-arm64-sbom` artifact.
+
+## Trying the aarch64 ISO in UTM (Mac with Apple Silicon)
+
+**Nothing in this section has been run on a Mac.** What CI proves is in "aarch64" above; every step here that
+depends on UTM's own screens or firmware is marked **UNVERIFIED** and is the owner's first test. The ISO is
+unsigned (see the status at the top): take it only from a successful run on `main` (`nyra-installer-iso-arm64-unsigned-<mode>`,
+14 days), and compare its SHA-256 with the one in that run's job summary, read in your own logged-in browser.
+
+1. **Create the machine.** In UTM: "Create a New Virtual Machine", "Virtualize", "Linux". Leave "Use Apple
+   Virtualization" **off** (UTM's QEMU backend is the one with the Secure Boot firmware and a TPM; the
+   installer is not tested on Apple's). "Boot ISO Image": the ISO. Memory **8192 MiB** or more (6 GiB is the
+   minimum the install script accepts), 4 CPU cores, a disk of **at least 32 GB**. On "Summary", tick "Open VM
+   Settings".
+2. **Secure Boot and the TPM.** The installer needs Secure Boot on. In the VM's settings, "QEMU": "UEFI Boot"
+   on, **"TPM 2.0 Device" on, and "Preload Secure Boot Keys" on** (Maintenance). **UNVERIFIED**: these are the
+   names from `docs/ARM64.md` and may differ in your UTM version; switching the TPM on is believed to tick
+   "Preload Secure Boot Keys" and "Reset UEFI Variables" by itself. Untick "Reset UEFI Variables" after the
+   first start: it erases the firmware's variables, the Machine Owner Key of Nyra included. With the keys
+   preloaded, the installer's `check` sees Secure Boot on; without them it refuses to install. The installation
+   with a TPM is not tested on aarch64 anywhere (CI has no TPM there): **UNVERIFIED**, and the first thing the
+   owner's run shows. An installation with a disk password does not use the TPM.
+3. **The ISO as a drive.** "Drives": the ISO as a "CD/DVD" drive. **UNVERIFIED**: UTM's default interface for it
+   (USB, as far as is known); CI boots the ISO as a SCSI CD and as a USB stick, not as UTM's USB CD-ROM.
+   If the machine does not start from the ISO, press Esc at the first screen for the firmware's boot menu.
+4. **Start it.** The installer appears in the window (about a minute or more). With a "Serial" device added in
+   the VM's settings, it appears there too (`ttyAMA0`, `docs/ISO.md` "aarch64"); one installation runs at a
+   time. The keyboard is US. Click the window so that it gets the keys. There is no login.
+5. **Install.** Follow the screens (`docs/INSTALL.md`). It ends by asking for a one-time password for the
+   Machine Owner Key and telling you to restart.
+6. **Remove the ISO.** In UTM, the CD/DVD drive's menu, "Eject" (**UNVERIFIED** label; or "Clear" in the drive
+   settings with the machine off). Restart the VM.
+7. **The blue screen (MokManager).** It appears right after the restart and waits only 10 seconds: "Press any
+   key", "Enroll MOK", "View key 0" (compare the name and the full fingerprint with the ones the installer
+   showed and with your notes), "Continue", "Yes", the one-time password, "Reboot". **UNVERIFIED**: the labels
+   are those of shim 15 as documented, not seen in UTM; whether the screen is usable in UTM's window (a US
+   keyboard); and whether the fingerprint shown is the full SHA-256. Never choose "Change Secure Boot state"
+   or "Delete MOK". If you miss the 10 seconds, shim starts without the key and Nyra OS does not start: start
+   the ISO again and register the key again.
+8. **Afterwards**, in the running system, `mokutil --sb-state` says "SecureBoot enabled". Whether the MOK
+   and the TPM's state survive a restart of the VM, and whether PCR 7 and 11 stay the same between boots (so
+   that the TPM unlocks the disk), are **UNVERIFIED** too.
+
+**The limit of Secure Boot in UTM.** UTM's firmware (like AAVMF in CI) has no SMM and no secure world: root in
+the guest can write the UEFI variable store, the Secure Boot databases and the MOK list included. In this
+virtual machine Secure Boot is not protected against a compromised running system. What remains is the TPM's
+binding of the disk to PCR 7: a changed database makes the disk ask for the recovery key. Do not read more
+security into a virtual machine than that.
 
 **What the tests do not prove.** Real firmware, UTM (a Mac is not a CI runner), MokManager, and the
 installation itself on aarch64 (an installation with a disk password does not need a TPM, but it is not run

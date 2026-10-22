@@ -6,9 +6,11 @@ description: >-
   against the hash of the job that made it and loaded; in release mode the signature of the sign job is
   checked against that job's outputs. Then the installer program (ci/build-installer.sh), the installer
   system and the boot files (ci/build-iso-os.sh), the registry store (ci/iso-registry.sh) and the ISO
-  (ci/build-iso.sh, built twice: the two files must be the same). The ISO is uploaded for the boot tests
-  (arm64-iso-boot) with its hash as an output. No secret and no id-token; nothing from the image or the ISO
-  runs outside the build containers.
+  (ci/build-iso.sh, built twice: the two files must be the same). Then two altered ISOs, made like the real
+  one from a copy of its inputs: a layer of the image replaced in the registry store, and a RELEASE that
+  names another digest. The three are uploaded for the boot tests (arm64-iso-boot) with their hashes as
+  outputs, and the package lists and Cargo.lock for the scan (arm64-iso-sbom). No secret and no id-token;
+  nothing from the image or the ISO runs outside the build containers.
 inputs:
   mode:
     description: release (the image of the release run and its signature) or test (an image signed with a key made here)
@@ -35,6 +37,12 @@ outputs:
   iso_sha256:
     description: The sha256 of the ISO in the artifact
     value: ${{ steps.build.outputs.iso_sha256 }}
+  layer_sha256:
+    description: The sha256 of the ISO with an altered layer, in the artifact iso-artifact-layer
+    value: ${{ steps.layer.outputs.sha256 }}
+  digest_sha256:
+    description: The sha256 of the ISO with another digest in RELEASE, in the artifact iso-artifact-digest
+    value: ${{ steps.digest.outputs.sha256 }}
 runs:
   using: composite
   steps:
@@ -114,15 +122,17 @@ runs:
       shell: bash
       run: ci/build-iso-os.sh "$WORK/iso"
 
+    # One directory, so that the files are at the root of the artifact (arm64-iso-sbom reads them there).
     - name: Upload the bill of materials of the ISO
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      shell: bash
+      run: |
+        mkdir "$WORK/materials"
+        cp "$WORK/iso/os/nyra-installer-os.manifest" "$WORK/iso/boot/nyra-installer-boot.manifest" \
+          "$WORK/iso/installer/Cargo.lock" "$WORK/materials/"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.iso-artifact }}-materials
-        path: |
-          ${{ env.WORK }}/iso/os/nyra-installer-os.manifest
-          ${{ env.WORK }}/iso/boot/nyra-installer-boot.manifest
-          ${{ env.WORK }}/iso/installer/Cargo.lock
-          iso/installer-commit
+        path: ${{ env.WORK }}/materials
         retention-days: 14
 
     - name: The registry store with the signed image (ci/iso-registry.sh)
@@ -172,5 +182,64 @@ runs:
       with:
         name: ${{ inputs.iso-artifact }}
         path: ${{ env.WORK }}/nyra.iso
+        retention-days: 1
+        compression-level: 0
+
+    # The altered ISOs, made like the real one from a copy of its inputs (as image.yml's iso job): the biggest
+    # blob of the registry store is the image's layer, replaced by another valid gzip stream so that what
+    # fails is its digest and nothing else; and a RELEASE that names another digest. One at a time, so that
+    # the disk holds one extra ISO. The boot tests must see the pull refused (tools/iso/boot-test.py --refusal).
+    - name: The ISO with an altered layer (ci/build-iso.sh)
+      id: layer
+      shell: bash
+      run: |
+        t="$WORK/tamper-layer"
+        sudo rm -rf "$t"
+        mkdir "$t"
+        ln -s "$WORK/iso/os" "$t/os"
+        ln -s "$WORK/iso/boot" "$t/boot"
+        sudo cp -a "$WORK/iso/registry" "$t/registry"
+        cp "$WORK/iso/registry-digest" "$t/registry-digest"
+        if [ -f "$WORK/iso/registry-test.pub" ]; then cp "$WORK/iso/registry-test.pub" "$t/"; fi
+        blob="$(sudo find "$t/registry" -path '*/blobs/sha256/*' -name data -printf '%s %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)"
+        echo "a layer that is not the image's" | gzip -c | sudo tee "$blob" > /dev/null
+        sudo -E ci/build-iso.sh "$t" "$t/nyra.iso" "$VERSION" "$GITHUB_SHA" "$MODE" localhost/nyra-base:ci
+        sudo rm -rf "$t/registry"
+        sudo chown "$(id -u):$(id -g)" "$t/nyra.iso"
+        echo "sha256=$(sha256sum < "$t/nyra.iso" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        mkdir "$WORK/up-layer" && mv "$t/nyra.iso" "$WORK/up-layer/"
+
+    - name: Upload the ISO with an altered layer
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.iso-artifact }}-layer
+        path: ${{ env.WORK }}/up-layer/nyra.iso
+        retention-days: 1
+        compression-level: 0
+
+    - name: The ISO with another digest in RELEASE (ci/build-iso.sh)
+      id: digest
+      shell: bash
+      run: |
+        sudo rm -rf "$WORK/tamper-layer" "$WORK/up-layer"
+        t="$WORK/tamper-digest"
+        sudo rm -rf "$t"
+        mkdir "$t"
+        ln -s "$WORK/iso/os" "$t/os"
+        ln -s "$WORK/iso/boot" "$t/boot"
+        sudo cp -a "$WORK/iso/registry" "$t/registry"
+        if [ -f "$WORK/iso/registry-test.pub" ]; then cp "$WORK/iso/registry-test.pub" "$t/"; fi
+        echo "sha256:$(printf 'f%.0s' {1..64})" > "$t/registry-digest"
+        sudo -E ci/build-iso.sh "$t" "$t/nyra.iso" "$VERSION" "$GITHUB_SHA" "$MODE" localhost/nyra-base:ci
+        sudo rm -rf "$t/registry"
+        sudo chown "$(id -u):$(id -g)" "$t/nyra.iso"
+        echo "sha256=$(sha256sum < "$t/nyra.iso" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        mkdir "$WORK/up-digest" && mv "$t/nyra.iso" "$WORK/up-digest/"
+
+    - name: Upload the ISO with another digest
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.iso-artifact }}-digest
+        path: ${{ env.WORK }}/up-digest/nyra.iso
         retention-days: 1
         compression-level: 0
