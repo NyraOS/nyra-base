@@ -181,7 +181,47 @@ installer system's Debian packages and the installer program's crates, with its 
 The scan refuses an empty scan: every package of `iso/mkosi.conf` is in the manifest, the program has crates,
 and none comes from a git source. The SBOM is the `nyra-installer-iso-sbom` artifact.
 
-Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other than US.
+### The installation test
+
+The `iso-install` job (a matrix of two: the disk unlocked by a **password**, and by the **TPM**) installs from
+the ISO, by the keys a person presses, and boots what it installed:
+
+1. `tools/iso/install-test.py` boots the ISO in QEMU (KVM, UEFI, Secure Boot with the Microsoft keys, swtpm)
+   with an empty 64 GB disk, and drives the installer on the serial console. `tools/iso/screen.py` is a small
+   terminal emulator (cursor positions, erasing, scrolling) that keeps the screen the installer drew, so that
+   the test knows which of the eight screens it is on by its title, and which item has the focus, and never
+   waits for a time. It answers the installer's `ESC [ 6 n` size question like a terminal of 80 columns.
+2. It goes through: the menu, "1 of 8 This computer" (UEFI, Secure Boot, TPM, memory all ok), the release, the
+   disk (`vda`), the encryption (password: typed twice), the administrator (name and password twice), the
+   review (the disk name typed to confirm), the installation, and then the two handoffs: the recovery key,
+   read from the console and typed back at the prompt, and the one-time password of the Secure Boot key,
+   typed twice at `mokutil`'s prompts. It ends on "8 of 8 Done".
+3. It checks that the recovery key was on the console once, that no password was echoed, and that the
+   Machine Owner Key was **requested**: the firmware variable `MokNew` holds the Nyra certificate.
+4. `tools/iso/installed-test.sh` boots the installed disk with Secure Boot on: the disk unlocks (the password
+   typed at the prompt, or the TPM), the first administrator exists in `sudo` with a home and a yescrypt
+   hash, root is locked, no empty password, the record is gone, the fixed defaults are set, nothing failed,
+   `bootc status` names `updates.nyraos.com/nyra-base`, the digest and the version of the release. A second
+   boot: the recovery key opens the disk (both ways). With the TPM the first boot is opened by the temporary
+   enrollment, without a prompt (checked); the real enrollment is made by a boot without the test console, which
+   the encryption tests cover (`tools/vm/encryption-first-boot.sh`).
+
+**The console of the installed system.** The installed image's command line is sealed and has no console,
+so, as in the other tests of the base (`tools/vm/first-admin.sh`), the test puts a signed add-on that turns
+credential import on on the disk's EFI partition, and `vm-boot.py` passes the console and the login as
+credentials. The add-on is signed with a key made for the run; that key and the image's certificate are
+enrolled as Machine Owner Keys in a copy of the firmware variables, which stands in for MokManager. That
+step is not the installer's: the screen of MokManager, and the installer's request, are checked as far as
+CI can (`MokNew`).
+
+**The recovery key and the QR code.** `systemd-cryptenroll --recovery-key` draws a QR code with block
+characters and prints the key as text next to it: on the Linux console and on a serial console the text is
+there and readable (64 letters in 8 groups of 8). The test takes the key from that text, so the QR code's
+looks on a serial terminal do not matter for the test; only a person with a phone can tell if the code scans.
+
+Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other than US, whether the QR code
+scans, and that the recovery key is not in the installer session's journal (that session has no shell by
+then; `tools/install/test-recovery-key.sh` checks the same steps for the journal and the container logs).
 
 ## Decisions, and why
 
@@ -223,10 +263,8 @@ Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other 
 Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
 unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
-- **The tests that need an installation**: the recovery key absent from the journal and the installation
-  itself (password and TPM), with `mokutil --sb-state` and the staged Machine Owner Key, in the installer
-  session. (Done already: the vulnerability scan, the altered layer, another digest in `RELEASE`, the
-  artifact kept only after the tests.)
+- **The recovery key and the session's journal**: checked for the steps themselves (`tools/install/test-recovery-key.sh`),
+  not in the installer session, which the install test cannot enter once the installation has begun.
 - **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
   decoy scope (the shipped signer under a name no image has) can go.
 - **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in

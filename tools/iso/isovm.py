@@ -192,19 +192,29 @@ class Vm:
             if time.monotonic() > end:
                 raise Timeout(f"no {text!r} on the screen within {timeout} s:\n{self.screen.text()}")
 
+    def settle(self, quiet=0.6, limit=20):
+        """Waits until the console has been silent for QUIET seconds: the installer has drawn what the last key
+        asked for (a frame arrives in pieces, slowly under emulation), and the screen can be read."""
+        end = time.monotonic() + limit
+        last = time.monotonic()
+        size = len(self.raw)
+        while time.monotonic() < end:
+            self.pump(0.1)
+            if len(self.raw) != size:
+                size, last = len(self.raw), time.monotonic()
+            elif time.monotonic() - last >= quiet:
+                return
+
     def press_until(self, label):
         """Moves the focus (Tab) to the item LABEL of the screen, marked with '>' in front. Each key waits
-        for the screen to change before the next, so that none is sent over the redraw of the one before."""
+        for the console to be quiet before the screen is read and the next key is sent."""
         item = re.compile(rf"^\s*> {re.escape(label)}", re.M)
-        self.pump(0.5)
+        self.settle()
         for _ in range(12):
             if item.search(self.screen.text()):
                 return
-            before = self.screen.text()
             self.send(b"\t")
-            end = time.monotonic() + 3
-            while self.screen.text() == before and time.monotonic() < end:
-                self.pump(0.2)
+            self.settle()
         raise Timeout(f"cannot focus {label!r}:\n{self.screen.text()}")
 
     def send(self, data):

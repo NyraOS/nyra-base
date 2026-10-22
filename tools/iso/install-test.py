@@ -55,17 +55,18 @@ def main():
         if not ok:
             failed.append(what)
 
-    def key(*data, wait=0.4):
+    def key(*data):
         for d in data:
             vm.send(d)
-            time.sleep(wait)
+            vm.settle()
 
     def type_into(text):
         vm.send(text.encode())
-        time.sleep(0.5)
+        vm.settle()
 
     def screen_title(title, timeout=120):
         vm.wait_screen(title, timeout)
+        vm.settle()
         print(f"screen: {title}", flush=True)
 
     try:
@@ -97,7 +98,8 @@ def main():
         else:
             key(ENTER)
         screen_title("5 of 8 · Administrator")
-        key(*[BACKSPACE] * 40, wait=0.02)
+        vm.send(BACKSPACE * 40)
+        vm.settle()
         type_into(ADMIN)
         key(TAB)
         type_into(ADMIN_PASSWORD)

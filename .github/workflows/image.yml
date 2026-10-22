@@ -2063,6 +2063,7 @@ jobs:
       contents: read
     outputs:
       iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2108,16 +2109,17 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ${{ steps.mode.outputs.mode == 'release' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
           path: ${{ env.WORK }}/image
 
       - name: Check the image and load it
         env:
-          MODE: ${{ steps.mode.outputs.mode }}
+          RELEASE_BUILD: ${{ needs.build.outputs.release }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
           RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
-          [ "$MODE" != release ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
+          # A release build's image is the one release-image made (signed UKI), whether or not sign ran.
+          [ "$RELEASE_BUILD" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
           ci/check-artifact.sh "$WORK/image/nyra-base.oci.tar" "$IMAGE_SHA256"
           sudo podman load -q -i "$WORK/image/nyra-base.oci.tar"
           sudo podman image exists localhost/nyra-base:ci
@@ -2193,6 +2195,7 @@ jobs:
           sudo chown "$(id -u):$(id -g)" "$WORK/nyra.iso"
           sha256="$(sha256sum < "$WORK/nyra.iso" | cut -d' ' -f1)"
           echo "iso_sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$(cat "$WORK/iso/registry-digest")" >> "$GITHUB_OUTPUT"
           echo "ISO: $(stat -c %s "$WORK/nyra.iso") bytes, sha256 $sha256, $MODE mode"
 
       # The same inputs give the same file: the last step (the RAM disk, the EFI image, xorriso) runs again.
@@ -2210,6 +2213,15 @@ jobs:
             exit 1
           fi
           sudo rm -f "$WORK/nyra-again.iso"
+
+      # For the install tests (iso-install): the ISO of this run, a day, checked there against the hash above.
+      - name: Keep the ISO for the install tests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-installer-iso-for-tests
+          path: ${{ env.WORK }}/nyra.iso
+          retention-days: 1
+          compression-level: 0
 
       - name: Boot the ISO as a CD (tools/iso/boot-test.py)
         timeout-minutes: 30
@@ -2305,6 +2317,104 @@ jobs:
         with:
           name: iso-console-log
           path: ${{ runner.temp }}/iso-*-console.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The installer ISO, used: the keys of the installer's eight screens on an empty virtual disk (QEMU, UEFI,
+  # Secure Boot, swtpm), the disk unlocked by a password or by the TPM, then the installed system booted
+  # (tools/iso/install-test.py, tools/iso/installed-test.sh, docs/ISO.md). No secret, no id-token. It uses
+  # the ISO of the iso job (an artifact checked against the hash that job reported) and, to build the test
+  # console of the installed system, the image of the run.
+  iso-install:
+    needs: [build, release-image, iso]
+    if: ${{ !cancelled() && github.workflow == 'image' && needs.iso.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        unlock: [password, tpm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in image.yml's build job: no `podman image prune` from the runner during the job.
+      - name: Stop the runner's automatic image prune
+        run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf python3-virt-firmware \
+            systemd-ukify sbsigntool swtpm python3-pefile
+          sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nyra-installer-iso-for-tests
+          path: ${{ env.WORK }}/iso
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.release == 'true' && 'nyra-base-release-oci-archive' || 'nyra-base-oci-archive' }}
+          path: ${{ env.WORK }}/image
+
+      - name: Check the ISO and the image, load the image
+        env:
+          RELEASE_BUILD: ${{ needs.build.outputs.release }}
+          ISO_SHA256: ${{ needs.iso.outputs.iso_sha256 }}
+          IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
+          RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
+        run: |
+          ci/check-artifact.sh "$WORK/iso/nyra.iso" "$ISO_SHA256"
+          [ "$RELEASE_BUILD" != true ] || IMAGE_SHA256="$RELEASE_IMAGE_SHA256"
+          ci/check-artifact.sh "$WORK/image/nyra-base.oci.tar" "$IMAGE_SHA256"
+          sudo podman load -q -i "$WORK/image/nyra-base.oci.tar"
+          rm "$WORK/image/nyra-base.oci.tar"
+          sudo podman image exists localhost/nyra-base:ci
+
+      - name: Install from the ISO (tools/iso/install-test.py)
+        timeout-minutes: 40
+        env:
+          UNLOCK: ${{ matrix.unlock }}
+        run: |
+          python3 tools/iso/install-test.py "$WORK/iso/nyra.iso" "$WORK/install" "$RUNNER_TEMP/iso-install-$UNLOCK-console.log" \
+            "$GITHUB_STEP_SUMMARY" --unlock "$UNLOCK" --tpm-dir "$RUNNER_TEMP/iso-tpm-$UNLOCK"
+
+      - name: Boot the installed system (tools/iso/installed-test.sh)
+        timeout-minutes: 25
+        env:
+          UNLOCK: ${{ matrix.unlock }}
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+          DIGEST: ${{ needs.iso.outputs.image_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/iso/installed-test.sh localhost/nyra-base:ci "$WORK/install" "$RUNNER_TEMP/uki.crt" "$RUNNER_TEMP/iso-tpm-$UNLOCK" \
+            "$UNLOCK" "$DIGEST" "$VERSION" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # The console logs hold the recovery key and the passwords' prompts of a throwaway disk.
+      - name: Upload the console logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: iso-install-${{ matrix.unlock }}-log
+          path: |
+            ${{ runner.temp }}/iso-install-*-console.log
+            ${{ runner.temp }}/serial-installed-*.log
           if-no-files-found: ignore
           retention-days: 14
 
