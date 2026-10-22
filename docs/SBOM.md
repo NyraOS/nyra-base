@@ -23,7 +23,7 @@ The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, ny
 
 Once images are published, releases will attach the SBOM next to the image.
 
-The installer ISO has its own SBOM and the same scan (`tools/sbom/sbom.py --iso`, run by the `iso` job, docs/ISO.md): the packages of the installer system (mkosi's manifest) and the crates of `nyra-installer` (its `Cargo.lock`, at the commit in `iso/installer-commit`), with the same `mitigations.toml`. The artifact is `nyra-installer-iso-sbom`.
+The installer ISO has its own SBOM and the same scan (`tools/sbom/sbom.py --iso`, run by the `iso` job, docs/ISO.md): the packages of the installer system (mkosi's manifest) and the crates of `nyra-installer` (its `Cargo.lock`, at the commit in `iso/installer-commit`), with its own exceptions, `tools/sbom/mitigations-iso.toml` (an exception of the image never applies to the ISO, nor one of the ISO to the image; the same format and rules). The scan refuses an empty scan: every package of `iso/mkosi.conf` must be in the manifest, the program must have crates, and none may come from a git source. The artifact is `nyra-installer-iso-sbom`.
 
 ## The SBOM
 

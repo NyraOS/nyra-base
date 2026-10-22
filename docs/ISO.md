@@ -144,7 +144,8 @@ Two modes, one code path:
   against the sign job's outputs, and the policy of the tree is the shipped one.
 - **test** (pull requests, and main without signing): the image is signed with a key made for the run, and the
   policy of the tree trusts that key for `updates.nyraos.com` instead. The shipped signer stays in the file,
-  under a scope that no image has, so that `check` still names it. A test ISO is never uploaded.
+  under a scope that no image has, so that `check` still names it. A test ISO is kept only from main and
+  named `test` (below).
 
 The job has no secret and no `id-token`, runs no code from the image, and is not a dependency of `sign` or
 `publish`.
@@ -167,14 +168,18 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
 - (CD only) the image on the ISO passes the verified pull with the policy of the release tree, offline, and
   the memory after it is in the summary;
 - leaving the shell goes back to the installer's menu, not to a prompt;
-- **altered ISOs** (two more ISOs, made like the real one from a copy of its inputs): one with a byte of the
-  image's layer changed in the registry store, one whose `RELEASE` names another digest. In each, the verified
-  pull is refused (an exit status other than 0, no "accepted by the policy") and leaves no image in the
-  storage.
+- **altered ISOs** (two more ISOs, made like the real one from a copy of its inputs): one with the
+  image's layer replaced in the registry store by another gzip stream, one whose `RELEASE` names another digest. In each, the verified
+  pull is refused for the reason that was made, which the messages of `verified-pull.sh` tell from a failing
+  registry or tool (another digest: exit 2, "is sha256:X, not sha256:f..."; a layer replaced by another valid
+  gzip stream: exit 1, "Digest did not match" and no registry error), and that podman answers and no
+  image is left in the storage. The unaltered CD boot with `--pull` is the control.
 
 The job also runs the vulnerability scan of the ISO (`tools/sbom/sbom.py --iso`, `docs/SBOM.md`): the
-installer system's Debian packages and the installer program's crates, with the same mitigations file as the
-image. The SBOM is the `nyra-installer-iso-sbom` artifact.
+installer system's Debian packages and the installer program's crates, with its own file of exceptions,
+`tools/sbom/mitigations-iso.toml` (the image's file never applies to the ISO, nor this one to the image).
+The scan refuses an empty scan: every package of `iso/mkosi.conf` is in the manifest, the program has crates,
+and none comes from a git source. The SBOM is the `nyra-installer-iso-sbom` artifact.
 
 Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other than US.
 

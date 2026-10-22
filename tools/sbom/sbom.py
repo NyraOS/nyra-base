@@ -10,7 +10,8 @@ usage: sbom.py [--iso] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
   SBOM_OUT    CycloneDX 1.6 JSON written here
 --iso: the installer ISO (docs/ISO.md) instead of the image. MANIFEST is the manifest of the installer
 system, CARGO_LOCK the Cargo.lock of nyra-installer, whose commit is iso/installer-commit; no bootc or
-pam-totp. Otherwise the same scan, the same mitigations.
+pam-totp. The same scan, with its own exceptions, tools/sbom/mitigations-iso.toml: an exception of the
+image never applies to the ISO, nor one of the ISO to the image.
 Environment (not with --iso): BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
 commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
 
@@ -39,8 +40,10 @@ from cvss import CVSS2, CVSS3, CVSS4
 HERE = os.path.dirname(os.path.abspath(__file__))
 MKOSI_CONF = os.path.join(HERE, "..", "..", "mkosi", "mkosi.conf")
 MITIGATIONS = os.path.join(HERE, "mitigations.toml")
+MITIGATIONS_ISO = os.path.join(HERE, "mitigations-iso.toml")
 PAM_TOTP_COMMIT = os.path.join(HERE, "..", "..", "pam-totp", "commit")
 INSTALLER_COMMIT = os.path.join(HERE, "..", "..", "iso", "installer-commit")
+ISO_MKOSI_CONF = os.path.join(HERE, "..", "..", "iso", "mkosi.conf")
 TRACKER = "https://security-tracker.debian.org/tracker/data/json"
 OSV = "https://api.osv.dev/v1"
 BLOCKING = ("critical", "high", "unknown")
@@ -225,17 +228,18 @@ def crate_findings(crates):
     return findings
 
 
-def load_mitigations(today):
-    entries = tomllib.load(open(MITIGATIONS, "rb")).get("mitigation", [])
+def load_mitigations(today, path):
+    name = f"tools/sbom/{os.path.basename(path)}"
+    entries = tomllib.load(open(path, "rb")).get("mitigation", [])
     out = {}
     for e in entries:
         ok = all(isinstance(e.get(k), str) and e[k].strip() for k in ("id", "package", "reason"))
         if not ok or type(e.get("expires")) is not datetime.date:
-            sys.exit(f"sbom.py: tools/sbom/mitigations.toml: each entry needs id, package, reason and expires (a date): {e}")
+            sys.exit(f"sbom.py: {name}: each entry needs id, package, reason and expires (a date): {e}")
         if (e["expires"] - today).days > MAX_DAYS:
-            sys.exit(f"sbom.py: tools/sbom/mitigations.toml: {e['id']} expires more than {MAX_DAYS} days ahead; review it closer to the date")
+            sys.exit(f"sbom.py: {name}: {e['id']} expires more than {MAX_DAYS} days ahead; review it closer to the date")
         if (e["id"], e["package"]) in out:
-            sys.exit(f"sbom.py: tools/sbom/mitigations.toml: {e['id']} ({e['package']}) is listed twice")
+            sys.exit(f"sbom.py: {name}: {e['id']} ({e['package']}) is listed twice")
         out[e["id"], e["package"]] = e
     return out
 
@@ -261,6 +265,18 @@ def main():
         return commit
 
     if iso:
+        # No silent empty scan: every package the ISO is configured with is in the manifest, and the
+        # installer program has crates, all from the registry (a git source is not pinned by a checksum).
+        block = re.search(r"^Packages=\s*\n((?:[ \t]+\S+\n)+)", open(ISO_MKOSI_CONF).read(), re.M)
+        wanted = set(block.group(1).split()) if block else set()
+        missing = sorted(wanted - {p["name"] for p in manifest["packages"]})
+        if not wanted or missing:
+            sys.exit(f"sbom.py: iso/mkosi.conf lists {len(wanted)} packages, not in the manifest: {missing}")
+        if not crates:
+            sys.exit("sbom.py: --iso: the Cargo.lock lists no crate from a registry")
+        git = sorted(c["name"] for c in crates if not c["source"].startswith("registry+"))
+        if git:
+            sys.exit(f"sbom.py: --iso: crates from a git source are not accepted: {git}")
         commit = commit_of(INSTALLER_COMMIT)
         applications = [("nyra-installer", commit, f"pkg:github/NyraOS/installer@{commit}")]
         name, description = "nyra-installer-iso", "Nyra OS installer ISO (x86_64): Debian unstable snapshot {snapshot}"
@@ -272,7 +288,7 @@ def main():
         name, description = "nyra-base", "Nyra OS base image (desktop): Debian unstable snapshot {snapshot}, x86_64"
         what = "bootc, pam-totp"
     count = write_sbom(sbom_path, snapshot, debs, crates, applications, name, description)
-    mitigations = load_mitigations(today)  # after the SBOM: an invalid file still blocks, but the SBOM is there
+    mitigations = load_mitigations(today, MITIGATIONS_ISO if iso else MITIGATIONS)  # after the SBOM: an invalid file still blocks, but the SBOM is there
 
     findings, unimportant = debian_findings(debs)
     findings += crate_findings(crates)
@@ -318,7 +334,7 @@ def main():
           f"Debian snapshot `{snapshot}`.\n")
     print("| | |\n|---|---|")
     print(f"| **Blocking** (critical, high or unknown severity) | **{len(blocking)}** |")
-    print(f"| Accepted (`tools/sbom/mitigations.toml`) | {len(accepted)} |")
+    print(f"| Accepted (`tools/sbom/{os.path.basename(MITIGATIONS_ISO if iso else MITIGATIONS)}`) | {len(accepted)} |")
     print(f"| Not blocking (medium, low, Rust informational) | {len(other)} |")
     print(f"| Marked unimportant by Debian | {unimportant} |\n")
     if blocking:

@@ -79,10 +79,12 @@ class Gate(unittest.TestCase):
         with open(self.path("Cargo.lock"), "w") as f:
             f.write('[[package]]\nname = "baz"\nversion = "0.1.0"\n'
                     'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+        with open(self.path("iso-mkosi.conf"), "w") as f:
+            f.write("[Content]\nPackages=\n        libfoo1\n        bar\n\n[Build]\n")
         with open(self.path("installer-commit"), "w") as f:
             f.write("2" * 40 + "\n")
-        self.patches = {"fetch": fake_fetch, "INSTALLER_COMMIT": self.path("installer-commit"), "MKOSI_CONF": self.path("mkosi.conf"),
-                        "MITIGATIONS": self.path("mitigations.toml"),
+        self.patches = {"fetch": fake_fetch, "INSTALLER_COMMIT": self.path("installer-commit"), "ISO_MKOSI_CONF": self.path("iso-mkosi.conf"), "MKOSI_CONF": self.path("mkosi.conf"),
+                        "MITIGATIONS": self.path("mitigations.toml"), "MITIGATIONS_ISO": self.path("mitigations-iso.toml"),
                         "PAM_TOTP_COMMIT": self.path("commit")}
         self.saved = {k: getattr(sbom, k) for k in self.patches}
         for k, v in self.patches.items():
@@ -94,13 +96,14 @@ class Gate(unittest.TestCase):
             setattr(sbom, k, v)
         shutil.rmtree(self.dir)
 
-    def run_gate(self, *entries, extra_locks=(), iso=False):
+    def run_gate(self, *entries, extra_locks=(), iso=False, iso_entries=()):
         """Runs main() with these (id, package, days until expiry); returns (exit code, report)."""
         today = datetime.datetime.now(datetime.UTC).date()
-        with open(self.path("mitigations.toml"), "w") as f:
-            for vid, package, days in entries:
-                f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
-                        f"expires = {today + datetime.timedelta(days=days)}\n")
+        for name, listed in (("mitigations.toml", entries), ("mitigations-iso.toml", iso_entries)):
+            with open(self.path(name), "w") as f:
+                for vid, package, days in listed:
+                    f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
+                            f"expires = {today + datetime.timedelta(days=days)}\n")
         sys.argv = ["sbom.py", *(["--iso"] if iso else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
         out = io.StringIO()
         code = 0
@@ -187,6 +190,38 @@ class Gate(unittest.TestCase):
         self.assertIn("Rust crates, nyra-installer).", report)
         self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
 
+    def test_image_exceptions_do_not_apply_to_the_iso(self):
+        everything = (("CVE-2026-0001", "foo", 10), ("CVE-2026-0003", "bar", 10), ("RUSTSEC-2026-0001", "baz", 10))
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            code, report = self.run_gate(*everything, iso=True)
+            own, own_report = self.run_gate(iso=True, iso_entries=everything)
+        finally:
+            os.environ.update(saved)
+        self.assertEqual(code, 1)
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso.toml`) | 0 |", report)
+        self.assertNotIn("remove it", report)  # the image's entries are not the ISO's business
+        self.assertEqual(own, 0)
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso.toml`) | 4 |", own_report)
+
+    def test_iso_exceptions_do_not_apply_to_the_image(self):
+        everything = (("CVE-2026-0001", "foo", 10), ("CVE-2026-0003", "bar", 10), ("RUSTSEC-2026-0001", "baz", 10))
+        code, report = self.run_gate(iso_entries=everything)
+        self.assertEqual(code, 1)
+        self.assertIn("| Accepted (`tools/sbom/mitigations.toml`) | 0 |", report)
+        self.assertNotIn("remove it", report)
+
+    def test_iso_exception_file_is_checked_like_the_image_one(self):
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            code, _ = self.run_gate(iso=True, iso_entries=(("CVE-2026-0001", "foo", 91),))
+            code2, report = self.run_gate(iso=True, iso_entries=(("CVE-2026-9999", "nothing", 10),))
+        finally:
+            os.environ.update(saved)
+        self.assertIn("mitigations-iso.toml", str(code))
+        self.assertIn("expires more than 90 days ahead", str(code))
+        self.assertIn("matches nothing any more", report)
+
     def test_iso_sbom_names_the_installer(self):
         saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
         try:
@@ -200,7 +235,31 @@ class Gate(unittest.TestCase):
         self.assertIn("pkg:github/NyraOS/installer@" + "2" * 40, purls)
         self.assertFalse([p for p in purls if p and ("bootc" in p or "pam-totp" in p)])
 
+    def iso_refused(self):
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            return self.run_gate(iso=True)[0]
+        finally:
+            os.environ.update(saved)
+
+    def test_iso_needs_all_its_packages_and_a_crate(self):
+        with open(self.path("iso-mkosi.conf"), "w") as f:
+            f.write("[Content]\nPackages=\n        libfoo1\n        bar\n        missing-one\n")
+        self.assertIn("missing-one", str(self.iso_refused()))
+        with open(self.path("iso-mkosi.conf"), "w") as f:
+            f.write("[Content]\nPackages=\n        libfoo1\n        bar\n")
+        with open(self.path("Cargo.lock"), "w") as f:
+            f.write('[[package]]\nname = "nyra-installer"\nversion = "0.1.0"\n')  # the program itself: no source
+        self.assertIn("no crate", str(self.iso_refused()))
+
+    def test_iso_refuses_git_crates(self):
+        with open(self.path("Cargo.lock"), "a") as f:
+            f.write('[[package]]\nname = "gitty"\nversion = "0.1.0"\nsource = "git+https://example.invalid/x#abc"\n')
+        self.assertIn("git source", str(self.iso_refused()))
+
     def test_iso_installer_commit_checked(self):
+        with open(self.path("iso-mkosi.conf"), "w") as f:
+            f.write("[Content]\nPackages=\n        libfoo1\n        bar\n\n[Build]\n")
         with open(self.path("installer-commit"), "w") as f:
             f.write("main\n")
         saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
