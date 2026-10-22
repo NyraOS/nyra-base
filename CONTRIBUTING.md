@@ -36,11 +36,13 @@ CI runs the same script, so the two cannot drift. The pre-push hook runs it when
 but Markdown files (only the secret scan for those).
 
 - A tool that is not installed (shellcheck, actionlint, gitleaks) runs from a container image pinned
-  by digest, in a podman store of its own (`/var/tmp/nyra-precheck-UID`; the first run pulls the
-  images). A check that cannot run at all prints `SKIPPED` and fails the run; `--allow-skip` accepts
+  by digest, in a podman store of its own (`~/.cache/nyra-precheck`, which must be yours with mode
+  700, or the check is refused; the first run pulls the images). The test that needs root runs in a
+  user namespace (`podman unshare`), never through `sudo`. A check that cannot run at all prints `SKIPPED` and fails the run; `--allow-skip` accepts
   that, and the SKIPPED line stays in the output. Never read a skipped check as a pass.
-- `git push --no-verify` skips the hook, including its guard against pushes to `main`. It is for
-  emergencies (the hook itself is broken, the registry is down); anything else it lets through, CI
+- The hook checks the checked-out tree, so it refuses to push any other ref (a tag, another branch):
+  check the branch out, or push with `--no-verify`. `git push --no-verify` skips the hook, including
+  its guard against pushes to `main`. It is for emergencies (the hook itself is broken, the registry is down); anything else it lets through, CI
   finds minutes later.
 - A new offline check goes in `ci/precheck.sh`, not in a new workflow step.
 

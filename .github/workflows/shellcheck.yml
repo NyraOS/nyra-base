@@ -32,8 +32,9 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" \
             "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$f"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" actionlint
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          mkdir "$RUNNER_TEMP/actionlint-bin"
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/actionlint-bin" actionlint
+          echo "$RUNNER_TEMP/actionlint-bin" >> "$GITHUB_PATH"
       # The checks themselves are listed in ci/precheck.sh, which runs the same on a developer's machine
       # before a push: shellcheck, the self-tests of the test tools, the lints of ci/ and the workflows,
       # and actionlint. The secret scan is the secrets workflow's.

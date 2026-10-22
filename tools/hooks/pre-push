@@ -5,7 +5,8 @@
 #     this refuses the push before it leaves the machine. NYRA_ALLOW_MAIN=1 skips the check.
 #  2. run ci/precheck.sh (the offline checks of CI, about a minute) when the pushed commits change
 #     anything but documentation; a documentation-only push gets the secret scan alone. The checks run
-#     on the checked-out tree, so the pushed branch must be the checked-out one.
+#     on the checked-out tree, so the pushed branch must be the checked-out one: a push of any other
+#     ref (a tag, another branch) is refused; check the branch out, or use --no-verify.
 #     `git push --no-verify` skips this hook, main guard included: for emergencies only (a failed
 #     check is a failure CI would find later, at a cost of minutes of CI and of everyone's time).
 root="$(git rev-parse --show-toplevel)" || exit 1
@@ -34,6 +35,6 @@ while read -r local_ref local_sha remote_ref _; do
 done
 [ "$changed" = 1 ] || exit 0
 if [ "$docs_only" = 1 ]; then
-  exec "$root/ci/precheck.sh" --only gitleaks
+  exec "$root/ci/precheck.sh" --only gitleaks --only gitleaks-control
 fi
 exec "$root/ci/precheck.sh"

@@ -9,8 +9,9 @@
 # It checks the working tree, so commit or stash what is not part of the push.
 #
 # A tool that is missing (shellcheck, actionlint, gitleaks) runs from a container image pinned by
-# digest, in a podman store of its own (NYRA_PRECHECK_STORE, default /var/tmp/nyra-precheck-UID, never
-# the shared default store; remove it with `podman unshare rm -rf` on it). A check that cannot run at
+# digest, in a podman store of its own (NYRA_PRECHECK_STORE, default ~/.cache/nyra-precheck, never the
+# shared default store; it must be a directory of yours with mode 700, or the check is refused; remove it
+# with `podman unshare rm -rf` on it). A check that cannot run at
 # all is reported as SKIPPED and fails the run unless --allow-skip is given: it never passes silently.
 # Exit status: 0 all passed (or skipped with --allow-skip), 1 a check failed, 2 a check was skipped.
 # Under GitHub Actions (GITHUB_ACTIONS set) the tools of the runner are used and the secret scan is
@@ -26,26 +27,37 @@ SHELLCHECK_VERSION=0.9.0 # the version preinstalled on ubuntu-24.04
 SHELLCHECK_IMAGE=docker.io/koalaman/shellcheck@sha256:f35e8987b02760d4e76fc99a68ad5c42cc10bb32f3dd2143a3cf92f1e5446a45
 ACTIONLINT_VERSION=1.7.12
 ACTIONLINT_IMAGE=docker.io/rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-STORE="${NYRA_PRECHECK_STORE:-/var/tmp/nyra-precheck-$(id -u)}"
+STORE="${NYRA_PRECHECK_STORE:-${XDG_CACHE_HOME:-$HOME/.cache}/nyra-precheck}"
 IN_CI="${GITHUB_ACTIONS:+1}"
 
 SKIPPED=77 # what a check returns when it cannot run
 skip() { echo "SKIPPED: $*"; return "$SKIPPED"; }
 
+# store: podman with the store of its own. The store holds the images that the checks trust, so it is
+# used only if it is a real directory of this user that nobody else can enter (not a link, mode 700);
+# anyone else who made it first could have put other images under the pinned names.
+store() {
+  command -v podman >/dev/null || return 127
+  if [ -L "$STORE" ]; then
+    echo "precheck: $STORE is a symbolic link: refused" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$STORE")" && install -d -m 700 "$STORE" || return 1
+  if [ "$(stat -c '%u %a' "$STORE")" != "$(id -u) 700" ] || [ -L "$STORE" ]; then
+    echo "precheck: $STORE is not a directory of yours with mode 700: refused (remove it, or set NYRA_PRECHECK_STORE)" >&2
+    return 1
+  fi
+  podman --root "$STORE/root" --runroot "$STORE/run" "$@"
+}
 # container IMAGE ARGS...: run IMAGE with the working tree mounted read-only at /repo, no network.
 container() {
   local image="$1"
   shift
-  command -v podman >/dev/null || return 127
-  mkdir -p "$STORE" || return 127
-  podman --root "$STORE/root" --runroot "$STORE/run" run --rm -i --network=none \
-    -v "$PWD:/repo:ro" -w /repo "$image" "$@"
+  store run --rm -i --network=none -v "$PWD:/repo:ro" -w /repo "$image" "$@"
 }
 # pull IMAGE: fetch it into the store of its own (needs the network, once).
 pull() {
-  command -v podman >/dev/null && mkdir -p "$STORE" || return 1
-  podman --root "$STORE/root" --runroot "$STORE/run" image exists "$1" ||
-    podman --root "$STORE/root" --runroot "$STORE/run" pull -q "$1" >/dev/null
+  store image exists "$1" || store pull -q "$1" >/dev/null
 }
 
 check_shellcheck() {
@@ -75,16 +87,18 @@ check_actionlint() {
   fi
 }
 
-# The root-only test: as root, with sudo, or in a user namespace (podman unshare), whichever works.
+# The test that needs root: in a user namespace (podman unshare), so that a script of the branch never
+# runs as the real root on a developer's machine. On the CI runner, root is the runner's, with sudo.
 check_etc_copy() {
-  if [ "$(id -u)" = 0 ]; then
-    tools/vm/test-etc-copy.sh
-  elif sudo -n true 2>/dev/null; then
+  if [ -n "$IN_CI" ]; then
     sudo -n tools/vm/test-etc-copy.sh
+  elif [ "$(id -u)" = 0 ]; then
+    tools/vm/test-etc-copy.sh
   elif command -v podman >/dev/null; then
-    mkdir -p "$STORE" && podman --root "$STORE/root" --runroot "$STORE/run" unshare tools/vm/test-etc-copy.sh
+    store unshare tools/vm/test-etc-copy.sh
   else
-    skip "needs root: run as root, with passwordless sudo, or with podman (podman unshare)"
+    skip "needs a user namespace: install podman (podman unshare)"
+    return "$SKIPPED"
   fi
 }
 
@@ -98,14 +112,55 @@ check_engine_lint() {
 
 # The secret scan of the commits that are not on origin/main yet (the secrets workflow scans every
 # push in CI, with the same image: its digest is read from there).
+# Every commit is scanned with its patch, so a secret added in one commit and removed in the next
+# is found, as it stays in the history that is pushed. Whether there is anything to scan is decided
+# by the commits, never by the difference of the trees.
+gitleaks_image() {
+  grep -oE 'ghcr\.io/gitleaks/gitleaks@sha256:[0-9a-f]{64}' .github/workflows/secrets.yml | head -n 1
+}
+# scan_commits DIR RANGE...: the patches of the commits of RANGE in the repository DIR, through gitleaks.
+scan_commits() {
+  git -C "$1" log -p --no-color --format=fuller "${@:2}" | container "$(gitleaks_image)" stdin --redact --no-banner -v
+}
 check_gitleaks() {
-  local image base
-  image="$(grep -oE 'ghcr.io/gitleaks/gitleaks@sha256:[0-9a-f]{64}' .github/workflows/secrets.yml | head -n 1)"
+  local image range=()
+  image="$(gitleaks_image)"
   [ -n "$image" ] || { echo "no gitleaks image digest in .github/workflows/secrets.yml"; return 1; }
-  base="$(git merge-base origin/main HEAD 2>/dev/null)" || base="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
-  git diff --quiet "$base" HEAD && { echo "no commits since $base to scan"; return 0; }
+  if base="$(git merge-base origin/main HEAD 2>/dev/null)"; then
+    range=("$base..HEAD")
+  else
+    range=(HEAD) # no origin/main: all the history counts
+  fi
+  [ "$(git rev-list --count "${range[@]}")" != 0 ] || { echo "no commits to scan (${range[*]})"; return 0; }
   pull "$image" || { skip "gitleaks is not available (podman and the network)"; return "$SKIPPED"; }
-  git log -p --no-color --format=fuller "$base..HEAD" | container "$image" stdin --redact --no-banner -v
+  scan_commits . "${range[@]}"
+}
+# The control of the scan: a secret added in one commit and removed in the next must be found, and a
+# repository without it must pass. Without this, a scan that finds nothing looks the same as one that works.
+check_gitleaks_control() {
+  local image repo status=0
+  image="$(gitleaks_image)"
+  pull "$image" || { skip "gitleaks is not available (podman and the network)"; return "$SKIPPED"; }
+  repo="$(mktemp -d)"
+  git -C "$repo" init -q
+  git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m base
+  printf '%s\n' 'key = 1' >"$repo/f"
+  git -C "$repo" add f && git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -m clean
+  scan_commits "$repo" HEAD >/dev/null 2>&1 || { echo "control: a repository without a secret was refused"; status=1; }
+  # A private key block built here, so that no secret-like text is in this file.
+  { printf -- '-----BEGIN %s KEY-----\n' 'RSA PRIVATE'; printf '%s\n' MIIEowIBAAKCAQEAyfakefakefakefakefakefakefakefakefakefakefake1 QwErTyUiOpAsDfGhJkLzXcVbNm0123456789qwertyuiopASDFGHJKLZXCVBNMabcd xK9mP2vL8nQ4tR7yU1wE5oI3aS6dF0gH2jK4lZ8xC9vB1nM3qW5eR7tY9uI0oP2a; printf -- '-----END %s KEY-----\n' 'RSA PRIVATE'; } >"$repo/f"
+  git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -am secret
+  printf '%s\n' 'key = 1' >"$repo/f"
+  git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -am revert
+  [ -z "$(git -C "$repo" diff HEAD~2 HEAD)" ] || { echo "control: the trees should be equal"; status=1; }
+  if scan_commits "$repo" HEAD~2..HEAD >/dev/null 2>&1; then
+    echo "control: a secret added and removed in the next commit was not found"
+    status=1
+  else
+    echo "control: the secret added and removed in the next commit was found"
+  fi
+  rm -rf "$repo"
+  return "$status"
 }
 
 # THE LIST: ID, the heading of its output (the step names of the shellcheck workflow), the command.
@@ -129,6 +184,7 @@ check publish-job "The publish job holds the secrets and cannot sign (ci/check-p
 check credential-jobs "Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)" "python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py"
 check actionlint "actionlint" check_actionlint
 check gitleaks "Secret scan of the commits not on origin/main (gitleaks)" check_gitleaks local
+check gitleaks-control "Control of the secret scan: a secret added, then removed in the next commit, is found" check_gitleaks_control local
 
 allow_skip=0 verbose=${IN_CI:+1} jobs=4 only=()
 while [ $# -gt 0 ]; do
