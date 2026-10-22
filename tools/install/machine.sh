@@ -172,10 +172,11 @@ step_end() {
 # one JSON value, an object with exactly the fields of the protocol, none twice (jq itself keeps the
 # last of a repeated key and judges only the last of several values), strings that match their
 # patterns. The passwords are checked too (12 to 64 printable ASCII characters). The result is put in
-# a_device, a_confirm, a_unlock and a_admin_name; nothing uses the passwords yet, so they are not
-# kept. The line is never an argument, never in the environment, never in the log; jq's own errors,
-# which can quote a value, go nowhere. \A and \z: in jq's regular expressions $ also matches before a
-# final newline.
+# a_device, a_confirm, a_unlock, a_admin_name and a_admin_password: the administrator's password stays
+# in that variable (never exported) until admin_record has given it to the image on its standard input
+# and cleared it. The disk's password is not kept: nothing uses it yet. The line is never an argument,
+# never in the environment, never in the log; jq's own errors, which can quote a value, go nowhere. \A
+# and \z: in jq's regular expressions $ also matches before a final newline.
 read_answers() {
   local line out fields
   IFS= read -r -n 4097 -u "$answers_fd" line || die "no answers"
@@ -197,12 +198,15 @@ read_answers() {
         and ($a.admin_name | text("\\A[a-z][a-z0-9_-]{0,31}\\z")) and $a.admin_name != "root"
         and ($a.admin_password | text("\\A[ -~]{12,64}\\z"))
         and (if $a.unlock == "password" then ($a.disk_password | text("\\A[ -~]{12,64}\\z")) else true end)
-      then "ok", $a.device, $a.confirm, $a.unlock, $a.admin_name
+      then "ok", $a.device, $a.confirm, $a.unlock, $a.admin_name, $a.admin_password
       else "no" end' 2> /dev/null)" || out=no
   line=""
   mapfile -t fields <<< "$out"
-  [ "${fields[0]:-}" = ok ] && [ "${#fields[@]}" = 5 ] || die "the answers are not the answers of protocol $protocol"
+  out=""
+  [ "${fields[0]:-}" = ok ] && [ "${#fields[@]}" = 6 ] || die "the answers are not the answers of protocol $protocol"
   a_device="${fields[1]}" a_confirm="${fields[2]}" a_unlock="${fields[3]}" a_admin_name="${fields[4]}"
+  a_admin_password="${fields[5]}"
+  fields=()
 }
 
 # chosen_disk: dies unless a_device is a whole disk of this machine that can be installed on, and the

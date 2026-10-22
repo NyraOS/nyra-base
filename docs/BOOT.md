@@ -816,7 +816,7 @@ the kernel command line or systemd-stub. Nothing outside the signed image config
 boot; settings for a machine come from the installer and from `/etc`. Only an add-on signed with an
 enrolled key could turn import back on, which is why the Nyra key never signs a generic
 command-line add-on, or the platform itself (below). Without credentials, `systemd-firstboot` asks
-for its settings at the first boot, so the installer must provide them.
+for its settings at the first boot, so the installer provides them (next section).
 
 **The platform is trusted.** systemd-stub appends the SMBIOS OEM string
 `io.systemd.stub.kernel-cmdline-extra` to the command line even under Secure Boot (upstream treats
@@ -1099,6 +1099,69 @@ and a plain user and picks the entry for the next boot only (`bootctl set-onesho
 profile 1 (`LoaderEntrySelected`, `StubProfile`, `systemd.unit=rescue.target` on the command line,
 Secure Boot on): an administrator with an empty password and a plain user are refused without a
 password prompt, a wrong password gives no shell, the right one gives root in `rescue.target`.
+
+## The first administrator and the fixed defaults
+
+The installer makes no account on the disk it writes: the files of `/etc` of a bootc image are not
+its place, and `/var` (in the encrypted volume) already holds what the installer leaves for the first
+boot. It leaves one file, `/var/lib/nyra/first-admin`, and the first boot turns it into the account.
+
+**The file.** One line, `NAME:HASH`, mode 0600, owned by root, in the directory `/var/lib/nyra`. The
+name is what the installer asked for (`^[a-z][a-z0-9_-]{0,31}$`, not one of the system's names); the
+hash is yescrypt (`$y$...`), made by the image's own `chpasswd` in the container that the installer runs
+from the image it is installing (`admin-record` in `tools/install/in-image.sh`, before the disk is
+touched). The password comes in on that container's standard input: it is never an argument, never in
+the environment, a log or a file, and the installer's own copy is cleared as soon as the container has
+it. The hash is made on an account of the container, which is removed with the container; the file is
+made in memory (`/run/nyra-install`) and put in the new system by `install-system`, in the step that
+writes the image.
+
+**The service.** `nyra-first-admin.service` (`/usr/lib/nyra/first-admin`) is in `sysinit.target`, after
+`systemd-sysusers` and `systemd-tmpfiles-setup` (so the system's own accounts exist and `/var/home` is
+there) and before `systemd-firstboot` and before anyone can log in. It starts only if the file exists,
+`/etc` is writable and the command line is not the reset entry's. It:
+
+1. sets the fixed defaults with `systemd-firstboot`, each only where nothing is set yet: the locale
+   `en_US.UTF-8`, the time zone `UTC`, the host name `nyra`, and the keyboard `us` where the image has
+   that keymap (without one the kernel's own US map stays; `systemd-firstboot` refuses a keymap that is
+   not installed, and cannot ask for one then). `systemd-firstboot`, which runs next, has nothing left to
+   ask. These are settings of `/etc`, the user's to change; no screen of the installer asks for them yet;
+2. checks the file, and removes it as soon as it has read it: it is read once, and a hash that was
+   refused does not stay on the disk. The directory is root's alone (no group or other write bit), the
+   file is a regular file, not a link, root's with mode 0600 and no other hard link, of at most 256 bytes,
+   exactly one line, a name of the form above, a yescrypt hash. An empty hash, `!`, `*` and every other
+   kind of hash are refused;
+3. refuses a name that is `root`, an account or a group of the system, or a name that a `sysusers.d`
+   file declares (`first-admin reserved-names` prints that list: the release tree of the installer
+   carries it as `reserved-names`, `tools/install/reserved-names.sh`, and the installer refuses a name
+   on it before it writes anything; `admin-record` checks it against the image once more);
+4. makes the account: `useradd --create-home --groups sudo --shell /bin/bash`, so a regular user (the first
+   free UID from 1000, a group of its own) in `sudo`, the administrators of the base (recovery, polkit),
+   with its home in `/var/home`; then sets the hash with `chpasswd --encrypted` on its standard input
+   (the account has the locked password `!` until then, never an empty one), and reads both back.
+
+Root is not touched: it stays as the image has it, locked (`*`). The unit does not prompt and logs only
+the name. If it refuses, it fails (visible in `systemctl --failed`, not one of the health checks, so the
+version is not rolled back for it), the fixed defaults are still set, and there is no administrator:
+whoever installed starts again from the installer. A power cut between `useradd` and `chpasswd` leaves
+the account locked and the file gone, with the same result.
+
+**Reset settings keeps it.** The account is a regular user (UID and primary GID in 1000 to 59999) in the
+running `/etc`, so "Reset settings" and "Restore earlier settings" keep its lines, its group and its
+membership of `sudo` (see below), and `/var/home` is not touched. The file is gone by then, so nothing
+makes the account again. The fixed defaults are not kept: the reset brings back the image's settings
+(the host name and the machine ID stay, so it is not a first boot and nothing is asked).
+
+**Tests.** `tools/vm/test-first-admin.sh` (offline, in the shellcheck workflow) runs the real script and
+the real `admin-record` step in a root of its own with the host's `useradd`, `chpasswd` and
+`systemd-firstboot`: the account, the refusals above one by one (each shown to be its check's by running
+the same file through a copy of the script without that check), the defaults, a password found in no
+process's arguments. `tools/install/test-admin-record.sh` does the record on the image in CI, and
+`tools/vm/encryption.sh` installs it on an encrypted disk, boots it, and checks the account, root, the
+empty passwords, the order of the two units, and, offline on the disk's `/etc`, that the password opens
+the account (it is never typed on the console, and it is among the secrets searched for in the serial
+logs, the ESP and the decrypted root). `tools/vm/first-admin.sh` boots a disk with Secure Boot on:
+the first boot, "Reset settings" keeping the account as it was, and a file with the wrong mode refused.
 
 ## Reset system settings (`tools/vm/reset-settings.sh`)
 

@@ -93,9 +93,10 @@ echo "podman $*" >> "$CALLS"
 env >> "$ENVLOG"
 ps -eww -o args= >> "$PROCLOG"
 args=("$@")
-step=""
+step="" host_secrets=""
 for i in "${!args[@]}"; do
-  [ "${args[$i]}" = /nyra-install/in-image.sh ] && step="${args[$((i + 1))]}"
+  [ "${args[$i]}" = /nyra-install/in-image.sh ] && { step="${args[$((i + 1))]}"; step_args=("${args[@]:$((i + 2))}"); }
+  case "${args[$i]}" in *:/secrets) host_secrets="${args[$i]%:/secrets}" ;; esac
 done
 if [ -z "$step" ]; then
   cat "$IMAGE_CERT"
@@ -110,6 +111,18 @@ case "$step" in
     [ "$got" = "$(cat "$KEYFILE")" ]
     ;;
   luks-json) cat "$LUKS_JSON" ;;
+  admin-record)
+    # The record of the first administrator: the password is on the standard input, the name and the file
+    # are arguments. Only a hash of the password is kept, to see that it came through the standard input.
+    IFS= read -r pw
+    printf '%s' "$pw" | sha256sum | cut -c1-64 > "$ADMIN_STDIN"
+    printf '%s:$y$j9T$stand-in$%s\n' "${step_args[0]}" "$(printf '%s' "$pw" | sha256sum | cut -c1-43)" > "$host_secrets/${step_args[1]#/secrets/}"
+    ;;
+  install-system)
+    # The record must be there, made before the disk was touched, and named as the last argument.
+    [ "${step_args[5]:-}" = /secrets/first-admin ] && [ -s "$host_secrets/first-admin" ] || exit 1
+    cp "$host_secrets/first-admin" "$ADMIN_PLACED"
+    ;;
 esac
 EOF2
 chmod +x "$t/bin/"*
@@ -147,6 +160,7 @@ EOF2
 printf '%s' "$key" > "$t/key.txt"
 export CALLS="$t/calls.log" ENVLOG="$t/env.log" PROCLOG="$t/proc.log" DISKFILE="$t/disk" KEYFILE="$t/key.txt"
 export SB_STATE="$t/sb-state" LUKS_JSON="$t/luks.json" FIXTURE="$t/one-disk.json" IMAGE_CERT="$t/image.crt"
+export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed"
 : > "$CALLS"
 : > "$ENVLOG"
 : > "$PROCLOG"
@@ -253,6 +267,12 @@ untouched() { # untouched HASH
   [ "$(disk_hash)" = "$1" ] || fail "the disk was written to"
   ! called '^sfdisk' || fail "sfdisk ran"
   ! called '^podman' || fail "a container ran"
+  [ ! -e "$t/secrets" ] || fail "the keys of the installation are still there"
+}
+# The same, but the image's container ran (the record of the administrator is made from it before the disk).
+untouched_but_podman() { # untouched_but_podman HASH
+  [ "$(disk_hash)" = "$1" ] || fail "the disk was written to"
+  ! called '^sfdisk' || fail "sfdisk ran"
   [ ! -e "$t/secrets" ] || fail "the keys of the installation are still there"
 }
 # refused_install MESSAGE_IN_LOG [ID]: the run that just ended failed before any write, as the text installer
@@ -362,7 +382,7 @@ run ok install
 [ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to: the test would not see a write"
 called '^verified-pull ' || fail "no pull"
 [ "$(grep -c '^sfdisk' "$CALLS")" = 1 ] || fail "sfdisk did not run exactly once"
-for s in format install-system recovery-show recovery-check tpm-enroll wipe-install-key esp-sync; do
+for s in admin-record format install-system recovery-show recovery-check tpm-enroll wipe-install-key esp-sync; do
   called "/nyra-install/in-image.sh $s" || fail "the step $s did not run"
 done
 called '^mokutil --import ' || fail "no import of the key"
@@ -378,6 +398,29 @@ grep -qF 'nyra-install: done' "$t/log/install.log" || fail "the log does not end
 [ "$(stat -c %a "$t/log/install.log")" = 600 ] || fail "the log is not 0600"
 no_secrets_anywhere
 echo "install: the recovery key is in no file, event or log; no password is in an argument, the environment, ps or the log"
+# The first administrator: the record is made by the image from the password on its standard input,
+# before the disk is touched, and the record goes to install-system.
+called "/nyra-install/in-image.sh admin-record maria /secrets/first-admin" || fail "the record of the administrator was not asked for with the name and the file"
+[ "$(cat "$ADMIN_STDIN")" = "$(printf '%s' "$admin_pw" | sha256sum | cut -c1-64)" ] \
+  || fail "the administrator's password did not reach the image on its standard input"
+grep -q '^maria:\$y\$' "$ADMIN_PLACED" || fail "the record was not given to install-system"
+[ "$(grep -n 'admin-record' "$CALLS" | head -n 1 | cut -d: -f1)" -lt "$(grep -n '^sfdisk' "$CALLS" | head -n 1 | cut -d: -f1)" ] \
+  || fail "the record was made after the disk was written to"
+[ "$(grep -n 'admin-record' "$CALLS" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'in-image.sh install-system' "$CALLS" | head -n 1 | cut -d: -f1)" ] \
+  || fail "the record was made after the system was installed"
+! grep -F -e "$admin_pw" "$CALLS" "$ENVLOG" "$PROCLOG" > /dev/null || fail "the administrator's password is in an argument, the environment or ps"
+echo "install: the administrator's record is made from the password on the standard input before the disk is touched, and goes to the new system"
+# The control of that search: a copy that gives the password to the container as an environment variable
+# is found (the password is then in the arguments of podman), so the search above does see a leak.
+tree leaky
+sed -i 's|in_image -i --log-driver=none -- admin-record|in_image -i --log-driver=none -e "PW=$a_admin_password" -- admin-record|' "$t/leaky/tools/install/nyra-install.sh"
+grep -qF 'in_image -i --log-driver=none -e "PW=$a_admin_password" -- admin-record' "$t/leaky/tools/install/nyra-install.sh" || fail "the leaky copy is not leaky"
+run leaky install
+[ "$rc" = 0 ] && grep -qF -e "$admin_pw" "$CALLS" || fail "the control of the search for the password: a leak was not found"
+echo "control: a password given to the container as an argument is found by the search"
+: > "$ENVLOG"
+: > "$PROCLOG"
+answers /dev/vda /dev/vda tpm
 
 # --- install, refused: nothing is written ------------------------------------------------------------
 refuse() { # refuse MESSAGE [ID]: with the answers and the machine as set, the installation is refused
@@ -519,6 +562,14 @@ failing() { # failing STEP ID MESSAGE: a step of the image fails after the disk 
   no_secrets_anywhere
   echo "a failure of $1 is $2, with a change, status 11"
 }
+# The record of the administrator is asked for before the disk is touched: a failure there changes nothing.
+hash="$(disk_hash)"
+FAIL_STEP=admin-record run ok install
+refused_install "cannot make the record of the administrator maria"
+untouched_but_podman "$hash"
+! called '^sfdisk' && ! called 'install-system' || fail "a failed record did not stop the installation before the disk"
+no_secrets_anywhere
+echo "a failure of admin-record is verify, without a change, status 10"
 failing format write
 failing install-system write
 failing tpm-enroll protect

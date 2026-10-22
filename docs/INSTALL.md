@@ -161,7 +161,9 @@ maker; that is for whatever ships it (the ISO) to see to, the scripts cannot.
 A program can drive `nyra-install.sh` from a release tree instead of a person: `check`, `disks`,
 `install` and `mok-import` take the version and the digest from `RELEASE`, answer in JSON and hand the
 terminal over for the recovery key and the password of `mokutil` (docs/INSTALL-INTERFACE.md). It is
-the same steps and the same refusals.
+the same steps and the same refusals. It also leaves the first administrator for the first boot, with
+the fixed defaults (docs/BOOT.md, "The first administrator and the fixed defaults"); the terminal mode
+makes no account, and leaves no way to log in but recovery.
 
 ## Notes
 
@@ -173,7 +175,10 @@ the same steps and the same refusals.
   `tools/install/test-release-tree.sh`), the LUKS, TPM, record and `esp-sync` steps and the header
   check (`tools/vm/install-encrypted.sh` and the encryption tests), and that the recovery key is
   shown once and is in no log (`tools/install/test-recovery-key.sh`). The interface for programs is
-  tested offline, with stand-ins for the machine, in `tools/install/test-machine-interface.sh`.
+  tested offline, with stand-ins for the machine, in `tools/install/test-machine-interface.sh`; the
+  administrator's record and the first boot that turns it into an account, in
+  `tools/install/test-admin-record.sh`, `tools/vm/encryption.sh`, `tools/vm/first-admin.sh` and, offline,
+  `tools/vm/test-first-admin.sh`.
 - On an arm64 VM (UTM on Apple Silicon, or QEMU with AAVMF) there is no SMM and no secure world, so
   root in the guest can write the firmware's variable store, Secure Boot's `db` and the MOK list
   included: there, Secure Boot variables are not protected against a compromised running system.
