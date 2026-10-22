@@ -134,7 +134,7 @@ commit in it must be the image's revision label.
 | Step | Script | What |
 |---|---|---|
 | 1 | `ci/build-installer.sh` | `nyra-installer` from the commit in `iso/installer-commit`: only that commit is fetched, the crates by the checksums of its `Cargo.lock`, and the build runs with `--locked --offline` and no network |
-| 2 | `ci/build-iso-os.sh` | the installer system with mkosi; its package list (`nyra-installer-os.manifest`) is exact |
+| 2 | `ci/build-iso-os.sh` | the installer system with mkosi; its package list (`nyra-installer-os.manifest`) is exact. The boot files (shim and GRUB, signed) come from a tree of their own (`iso/boot/mkosi.conf`): only three `.efi` files are copied from it to the ISO, so GRUB's dependencies (grub2-common, freetype, brotli, png, fuse and the rest) are not in the installer system. The kernel package asks for an initial RAM disk tool: `initramfs-tools` is listed so that apt does not take dracut |
 | 3 | `ci/iso-registry.sh` | the image and its signature copied into a registry, with the registry and skopeo of the installer system (run as a container from its own tree, without network), so the files are what the ISO's registry reads |
 | 4 | `ci/build-iso.sh` | the release tree and the drop-in with the build identifier, the RAM disk (two cpio archives, the system's without the kernel, GRUB and shim, which are on the ISO already, and the tree's), the EFI image, and the ISO with xorriso (hybrid: a CD and a GPT with the EFI partition second) |
 
@@ -157,7 +157,7 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
 
 - the installer's first screen appears on the serial console and no login prompt does;
 - from the menu, a shell opens as root, and in it: Secure Boot is on; only `lo` exists; the only listener is
-  the registry on 127.0.0.1; no getty and no SSH server runs; no unit failed; the login prompts and the emergency and rescue shells are masked; root has no password; the
+  the registry on 127.0.0.1; no getty and no SSH server runs; no unit failed; the only process that is not root's is the registry; no PAM configuration names `pam_namespace`; unprivileged `bpf()` is off; the login prompts and the emergency and rescue shells are masked; root has no password; the
   release tree is read-only and root's; `check` sees UEFI, Secure Boot, shim validation and the TPM; `disks`
   offers the empty disk and not the medium the ISO started from (as a CD it is not a disk, as a USB stick it
   is "booted"); the medium mounted has the label of the build; each installer instance uses under 15 MiB;
@@ -265,6 +265,7 @@ unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
 - **The recovery key and the session's journal**: checked for the steps themselves (`tools/install/test-recovery-key.sh`),
   not in the installer session, which the install test cannot enter once the installation has begun.
+- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
 - **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
   decoy scope (the shipped signer under a name no image has) can go.
 - **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in
