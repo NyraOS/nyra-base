@@ -1,10 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The one verified pull of a Nyra release (installer, verify-published): the image
-# updates.nyraos.com/nyra-base:VERSION, accepted by the signature policy of this checkout, with the
+# updates.nyraos.com/REPOSITORY:VERSION, accepted by the signature policy of this checkout, with the
 # manifest digest DIGEST, into the container storage under STORAGE. Prints the local image ID (and
 # only that) on stdout; the caller then uses that ID and never the name.
-#   tools/install/verified-pull.sh VERSION DIGEST STORAGE
+#   tools/install/verified-pull.sh REPOSITORY VERSION DIGEST STORAGE
+# REPOSITORY is one of two names, each the images of one architecture (docs/ARM64.md, "Releases"):
+# nyra-base is linux/amd64 and nyra-base-arm64 is linux/arm64. Anything else is refused, and so is a
+# pulled image whose config says another OS or architecture.
 # Run as root, from a checkout of the release commit. STORAGE is a podman --root directory; bootc
 # finds the image there when it is /var/lib/containers/storage.
 #
@@ -29,15 +32,20 @@ refuse() {
   exit 2
 }
 
-[ $# = 3 ] || die "usage: verified-pull.sh VERSION DIGEST STORAGE"
-version="$1" digest="$2" storage="$3"
+[ $# = 4 ] || die "usage: verified-pull.sh REPOSITORY VERSION DIGEST STORAGE"
+name="$1" version="$2" digest="$3" storage="$4"
+# The allow-list: a constant per run, never a free name (nobody can point this script at another registry).
+case "$name" in
+  nyra-base) platform=linux/amd64 ;;
+  nyra-base-arm64) platform=linux/arm64 ;;
+  *) die "not a Nyra image repository (nyra-base, nyra-base-arm64): $name" ;;
+esac
 [[ "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || die "not a version: $version"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "not a sha256 digest: $digest"
 # A policy from the environment would replace the one checked here.
 [ -z "${CONTAINERS_POLICY_JSON:-}" ] || die "CONTAINERS_POLICY_JSON is set"
 
-# The repository is not an argument: nobody can point this script at another registry.
-repo=updates.nyraos.com/nyra-base
+repo=updates.nyraos.com/$name
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # --git-dir: git refuses to read a checkout owned by another user (sudo), unless told which one.
 revision="$(git --git-dir="$root/.git" rev-parse HEAD)" || die "cannot read the checkout's commit"
@@ -79,6 +87,9 @@ repo_digests="$(podman --root "$storage" image inspect --format '{{json .RepoDig
   || die "cannot read the digests of the pulled image"
 jq -e --arg ref "$repo@$digest" 'index($ref) != null' <<< "$repo_digests" > /dev/null \
   || refuse "the stored image does not have the digest $digest"
+# The signed config says which architecture this is: an image of the other one is never installed.
+[ "$(podman --root "$storage" image inspect --format '{{.Os}}/{{.Architecture}}' "$id")" = "$platform" ] \
+  || refuse "$repo:$version is not $platform, the platform of $name"
 label() {
   podman --root "$storage" image inspect --format "{{index .Labels \"org.opencontainers.image.$1\"}}" "$id"
 }

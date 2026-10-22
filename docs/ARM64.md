@@ -40,9 +40,9 @@ identical; the image is built a second time from the same inputs and must have t
 
 The workflow runs on `main` after every merge, by hand (`workflow_dispatch`), and on pull requests
 that change it, its local actions, `tools/vm/arm64-boot.sh`, `tools/signing/`, or the scripts that
-make the UKI. It uses no cache, signs nothing for release and publishes nothing. Its artifacts: the image (`nyra-base-arm64-oci-archive`), the package list
-(`nyra-base-arm64-packages`, mkosi's manifest and bootc's `Cargo.lock`), the VM disk image
-(`nyra-base-arm64-vm`) and the serial logs.
+make the UKI. It uses no cache, signs nothing for release and publishes nothing. Its artifacts: the
+image (`nyra-base-arm64-oci-archive`), the package list (`nyra-base-arm64-packages`, mkosi's manifest
+and bootc's `Cargo.lock`), the VM disk image (`nyra-base-arm64-vm`) and the serial logs.
 
 ## What the tests prove
 
@@ -59,6 +59,14 @@ checked against `build`'s hash and loaded, and `tools/signing/join-pcrsig.sh` jo
 policy signature into the unsigned UKI with that image's `ukify` under qemu-user. The result must be
 byte for byte the UKI `build` joined natively, and `sign-uki.sh` (x86_64 sbsign on an AArch64 PE) must
 sign it with a key made in the job and verify it.
+
+The `policy` job, on an arm64 runner without a token, runs what `verify-signature-arm64` runs on a
+release, minus Nyra's signature: the image's own skopeo (native) puts the image into the throwaway
+registry, and `tools/signing/test-policy.sh` checks the policy the image ships for `nyra-base-arm64`
+(unsigned and wrongly signed images refused, other registries and local transports accepted). The
+`join` job also reads the sealed arm64 image the way `sign-arm64` does on its x86_64 runner (podman
+creates a container only to copy files out of it, the runner's skopeo copies the archive into the
+registry with its manifest digest unchanged) and checks the repository allow-list on it.
 
 The `boot` job installs the image as the installer does (`tools/vm/install-disk.sh`, then
 `esp-sync install`) and boots it with QEMU's `virt` machine and edk2 (Ubuntu's `qemu-efi-aarch64`,
@@ -115,11 +123,19 @@ release.
 | `release-sign-arm64` | `ubuntu-24.04` (x86_64) | `contents: read`, `id-token: write` | as `release-sign`: the KMS signs the PCR policy, the join under qemu-user (`tools/signing/join-pcrsig.sh`), the KMS signs the UKI (`sign-uki.sh`, the committed `nyra.crt`) |
 | `release-image-arm64` | `ubuntu-24.04-arm` | `contents: read` | as `release-image`: the final image (`ci/final-image.sh`), the same layers as `build-arm64`'s but the UKI's, `ci/check-image-repository.sh`, the UKI release gate. Uploads `nyra-base-arm64-release-oci-archive` (one day) |
 | `boot-arm64` | `ubuntu-24.04-arm` | `contents: read` | `tools/vm/arm64-boot.sh` on the release image: without Secure Boot, and with the Microsoft keys and the committed `nyra.crt` enrolled as the MOK |
+| `sign-arm64` | `ubuntu-24.04` (x86_64) | `contents: read`, `id-token: write`; environment `sign` | after the x86_64 `build`, `install-boot` and `encryption` and the arm64 jobs above: as `sign`, for `updates.nyraos.com/nyra-base-arm64`: hash check, the architecture and repository check, the UKI release gate, keyless cosign signature, the signature exported as an OCI layout (`nyra-base-arm64-signature`). Runs no code of the image |
+| `verify-signature-arm64` | `ubuntu-24.04-arm` | `contents: read` | the image and the signature in a throwaway registry, checked with the policy the image ships (`tools/signing/test-policy.sh`, the image's own skopeo) |
+| `publish-arm64` | `ubuntu-24.04` | `contents: read`; environment `publish` | only with `PUBLISH_ENABLED` `on`: as `publish`, to `nyra-base-arm64` (docs/SIGNING.md, "Publishing") |
+| `verify-published-arm64` | `ubuntu-24.04-arm` | `contents: read` | the pull a machine makes (`tools/install/verified-pull.sh nyra-base-arm64`), no secret |
 
 Every artifact is checked against the hash its job reported (`ci/check-artifact.sh`). The KMS
 library has no arm64 build, so signing runs on x86_64 (`tools/signing/kms-pkcs11.sh`, unchanged).
 The same KMS keys, certificate and MOK as x86_64; each `release-sign-arm64` run counts as a release
 for revocation, and the SBAT generation is shared (docs/SIGNING.md).
+
+The run's concurrency group is one per branch and a running release is never cancelled, so a slow
+arm64 run (boots under TCG, up to a few hours) holds the next run on `main` in the queue even though no
+x86_64 job waits for it.
 
 Turning it on (owner): `gh variable set ARM64_RELEASE -R NyraOS/nyra-base --body on`, then a run on
 `main` (`gh workflow run image.yml -R NyraOS/nyra-base --ref main`). Off again:
@@ -129,12 +145,19 @@ Not run on arm64 (no KVM on GitHub's arm64 runners, and no TPM driver for QEMU's
 boot counting, disk encryption and TPM unlock, the update tests, Titanic; nor the SBOM, the
 vulnerability scan and the setuid and file-capability lists ("What remains").
 
-**Not published yet.** The arm64 image is not signed for the registry nor published: that comes with
-`sign`, `publish` and `verify-published` for the repository `nyra-base-arm64` (a two-value allow-list
-bound to the architecture: `nyra-base` is `linux/amd64`, `nyra-base-arm64` is `linux/arm64`). When it
-is, arm64 releases go to the `dev` channel only. **Gate:** no arm64 digest enters the `stable`
-channel sheet of `nyra-base-arm64` until disk encryption, TPM unlock and boot counting run on arm64
-in CI (a runner with KVM, or a TPM the arm64 kernel drives).
+**Signed and published as `nyra-base-arm64`.** The repository is bound to the architecture, a
+two-value allow-list: `nyra-base` is `linux/amd64`, `nyra-base-arm64` is `linux/arm64`. It is applied
+in `ci/check-image-repository.sh` (config and `updated.conf`, both architectures' `release-image` and
+`sign-arm64`), `publish-arm64`, `publish-image.sh` of `nyra-updates`, `tools/install/verified-pull.sh`
+(which also refuses a pulled image of the other architecture), `tools/install/nyra-install.sh` (the
+repository comes from `uname -m`, never from an argument) and `tools/install/check-recorded.sh`.
+Publishing needs `PUBLISH_ENABLED` as well and writes the image and its signature only: the channel
+sheets are a separate step in `nyra-updates`, and the arm64 releases go to the **`dev` channel only**.
+**Gate:** no arm64 digest enters the `stable` channel sheet of `nyra-base-arm64` until disk
+encryption, TPM unlock and boot counting run on arm64 in CI (a runner with KVM, or a TPM the arm64
+kernel drives). The arm64 jobs of `image.yml` are skipped on pull requests; their steps are
+rehearsed as far as possible without a token by `arm64.yml` (`join`, `policy`), and only a run on
+`main` proves the KMS and keyless signatures, the publication and the pull from the registry.
 
 **Secure Boot on an arm64 VM is weaker than on x86_64.** AAVMF (in CI) and UTM have no SMM and no
 secure world, so root in the guest can write the UEFI variable store, `db` and the MOK list included:

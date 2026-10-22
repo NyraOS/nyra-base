@@ -8,6 +8,17 @@
 set -euo pipefail
 
 root="$1" imgref="$2" digest="$3"
+# IMGREF is the reference of this machine's architecture, from the two-value allow-list
+# (nyra-base is x86_64, nyra-base-arm64 is aarch64), and nothing else.
+case "$(uname -m)" in
+  x86_64) name=nyra-base ;;
+  aarch64) name=nyra-base-arm64 ;;
+  *) echo "check-recorded: no Nyra image for the architecture $(uname -m)" >&2; exit 1 ;;
+esac
+[[ "$imgref" =~ ^updates\.nyraos\.com/"$name":(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || {
+  echo "check-recorded: $imgref is not a version of updates.nyraos.com/$name, the repository of $(uname -m)" >&2
+  exit 1
+}
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "check-recorded: not a sha256 digest: $digest" >&2; exit 1; }
 
 origins=("$root"/state/deploy/*/*.origin)

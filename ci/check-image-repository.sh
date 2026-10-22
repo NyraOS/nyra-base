@@ -6,7 +6,9 @@
 # and nothing else. Refuses unless REPOSITORY is one of these, the image's config says that OS and
 # architecture, and the image's /usr/lib/nyra/updates/updated.conf names exactly that repository
 # (one `repository = ` line), so that a machine follows the channel sheets of its own architecture.
-# Reads the image with podman create and cp: nothing from the image runs.
+# Reads the image with podman create and cp: nothing from the image runs, so it can read an image of
+# another architecture than the runner's (create is given the image's platform, so podman does not
+# complain, and no emulator is needed).
 #   ci/check-image-repository.sh IMAGE REPOSITORY
 set -euo pipefail
 
@@ -23,7 +25,7 @@ got="$(sudo podman image inspect -f '{{.Os}}/{{.Architecture}}' "$image")"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-cid="$(sudo podman create -q "$image")"
+cid="$(sudo podman create -q --platform "$want" "$image")"
 sudo podman cp "$cid:/usr/lib/nyra/updates/updated.conf" "$tmp/updated.conf"
 sudo podman rm -f "$cid" >/dev/null
 lines="$(sudo grep -E '^[[:space:]]*repository[[:space:]]*=' "$tmp/updated.conf")" || true

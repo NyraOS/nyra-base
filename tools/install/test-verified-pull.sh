@@ -6,6 +6,8 @@
 # with a key made for this run, so the checkout the script runs from is a copy whose policy trusts
 # that key instead of the release signer (the script is the same file).
 #   - signed image: accepted, the image ID printed;
+#   - a repository outside the two-value allow-list, and the amd64 image published as nyra-base-arm64
+#     (validly signed there): refused, by the name and by the image's architecture;
 #   - a tag re-pointed to an older, validly signed image: refused, by the digest and, given that
 #     image's digest, by the version label; an image with another revision label: refused;
 #   - an unsigned image: refused; nothing is left in the storage after a refusal;
@@ -100,25 +102,30 @@ push old "$old" signed
 push other-revision 2026.10.5 signed
 push unsigned 2026.10.3
 push two "$v2" signed
+# The same (amd64) image under the arm64 repository, with a valid signature for that name: only its
+# architecture is wrong.
+sudo podman push -q --tls-verify=false --format oci --sign-by-sigstore-private-key "$t/sigstore.private" \
+  --sign-passphrase-file "$t/pass" localhost/nyra-test:one "docker://updates.nyraos.com/nyra-base-arm64:$v1"
 
 # --- refusals, each into an empty storage ---------------------------------------------------------
 n=0
-refused() { # refused VERSION DIGEST MESSAGE
+refused_in() { # refused_in REPOSITORY VERSION DIGEST MESSAGE
   local s out
   n=$((n + 1))
   s="$t/storage-$n"
-  if out="$(sudo "$pull" "$1" "$2" "$s" 2>&1)"; then
-    echo "::error::accepted, but must be refused: $1 $2"
+  if out="$(sudo "$pull" "$1" "$2" "$3" "$s" 2>&1)"; then
+    echo "::error::accepted, but must be refused: $1 $2 $3"
     return 1
   fi
-  if ! grep -qF -- "$3" <<<"$out"; then
+  if ! grep -qF -- "$4" <<<"$out"; then
     printf '%s\n' "$out"
-    echo "::error::refused for another reason than \"$3\": $1 $2"
+    echo "::error::refused for another reason than \"$4\": $1 $2 $3"
     return 1
   fi
   [ -z "$(sudo podman --root "$s" images -q)" ] || { echo "::error::an image is left after the refusal"; return 1; }
-  echo "refused as expected ($3): $1 $2"
+  echo "refused as expected ($4): $1 $2 $3"
 }
+refused() { refused_in nyra-base "$@"; } # refused VERSION DIGEST MESSAGE
 refused "$v1" "not-a-digest" "not a sha256 digest"
 refused "$v1" "" "not a sha256 digest"
 refused 2026.10.3 "$(digest unsigned)" "A signature was required, but no signature exists"
@@ -128,6 +135,10 @@ if sudo podman --root "$t/storage-3" run --pull=never --network none "$repo:2026
   exit 1
 fi
 cat "$t/never.err"
+for other in nyra-base-x86 nyra-base-arm64/x elsewhere "" "../nyra-base"; do
+  refused_in "$other" "$v1" "$(digest one)" "not a Nyra image repository"
+done
+refused_in nyra-base-arm64 "$v1" "$(digest one)" "is not linux/arm64, the platform of nyra-base-arm64"
 refused 2026.10.5 "$(digest other-revision)" "revision label is not $revision"
 # The tag of version 1 re-pointed to the older image, whose signature is valid.
 push old "$v1" signed
@@ -137,7 +148,7 @@ push one "$v1" signed
 
 # --- the pull, then the install from the image ID --------------------------------------------------
 storage=/var/lib/containers/storage
-id="$(sudo "$pull" "$v1" "$(digest one)" "$storage")"
+id="$(sudo "$pull" nyra-base "$v1" "$(digest one)" "$storage")"
 [[ "$id" =~ ^[0-9a-f]{64}$ ]]
 sudo podman --root "$storage" image inspect --format '{{json .RepoDigests}}' "$id" \
   | jq -e --arg ref "$repo@$(digest one)" 'index($ref) != null' > /dev/null

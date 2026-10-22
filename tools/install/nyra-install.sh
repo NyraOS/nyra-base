@@ -34,9 +34,15 @@ device="$1" version="$2" digest="$3"
 [ -z "${NYRA_CI:-}" ] || die "NYRA_CI is set: the recovery key would go to a file"
 [ -t 0 ] && [ -t 1 ] || die "run it from a terminal: the recovery key is shown there and typed back"
 
-# The repository is a constant: nobody can point this script at another registry or name. The
-# reference is spelled exactly like this (docs/UPDATES.md): the policy compares the name as written.
-repo=updates.nyraos.com/nyra-base
+# The repository is chosen by this machine's architecture, from a two-value allow-list, and is not an
+# argument: nobody can point this script at another registry or name. The reference is spelled exactly
+# like this (docs/UPDATES.md): the policy compares the name as written.
+case "$(uname -m)" in
+  x86_64) repo_name=nyra-base ;;
+  aarch64) repo_name=nyra-base-arm64 ;;
+  *) die "no Nyra image for the architecture $(uname -m)" ;;
+esac
+repo=updates.nyraos.com/$repo_name
 imgref="$repo:$version"
 checkout="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 storage=/var/lib/containers/storage
@@ -110,7 +116,7 @@ mkdir -p /var/lib/containers
 if [ "$(findmnt -no FSTYPE -T /var/lib/containers)" = overlay ]; then
   mount -t tmpfs tmpfs /var/lib/containers || die "cannot mount a tmpfs on /var/lib/containers"
 fi
-image="$("$checkout/tools/install/verified-pull.sh" "$version" "$digest" "$storage")"
+image="$("$checkout/tools/install/verified-pull.sh" "$repo_name" "$version" "$digest" "$storage")"
 [[ "$image" =~ ^[0-9a-f]{64}$ ]] || die "verified-pull.sh did not print an image ID"
 echo "nyra-install: installing the image $image ($imgref, $digest)"
 

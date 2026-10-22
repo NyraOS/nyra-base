@@ -185,7 +185,7 @@ check release-cache "Release jobs unpack no cache (ci/check-release-cache.py)" "
 check check-artifact "Self-test of the artifact check (ci/check-artifact.sh)" "ci/check-artifact.sh --self-test"
 check sign-uki "Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)" "tools/signing/test-sign-uki.sh"
 check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_engine_lint
-check sign-jobs "Only the sign job is in the environment sign and only sign and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"
+check sign-jobs "Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"
 check publish-job "The publish job holds the secrets and cannot sign (ci/check-publish-job.py)" "python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py"
 check credential-jobs "Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)" "python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py"
 check actionlint "actionlint" check_actionlint

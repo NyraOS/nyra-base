@@ -22,9 +22,9 @@ from our registry that do not carry that signature.
    On a release (the "release mode", below), the release build leaves its UKI unsigned and the next
    two jobs sign it before any test runs.
 2. **The `sign` job** (`.github/workflows/image.yml`) runs only for release builds, only on
-   GitHub-hosted runners; `sign`, `release-sign` and `release-sign-arm64` are the only jobs with
-   `id-token: write`, and
-   `sign` is the only job in the GitHub environment `sign`:
+   GitHub-hosted runners; `sign`, `sign-arm64` (the arm64 image, below), `release-sign` and
+   `release-sign-arm64` are the only jobs with `id-token: write`, and
+   `sign` and `sign-arm64` are the only jobs in the GitHub environment `sign`:
    - GitHub issues an OIDC token for the workflow run;
    - Google Workload Identity Federation (the pool `github-sign`) accepts it only for this
      repository, `refs/heads/main`, the `image.yml` workflow, a `push` or `workflow_dispatch` event,
@@ -47,6 +47,21 @@ from our registry that do not carry that signature.
    digest; `nyra-base-release-oci-archive` on a release). `sign` checks that the layout holds
    exactly one manifest, tagged so, and reports `image_digest` and `signature_digest` as job
    outputs: the publish job takes every digest from those, never from the artifacts.
+
+The arm64 image is signed the same way by `sign-arm64`, under the name
+`updates.nyraos.com/nyra-base-arm64` (docs/ARM64.md, "Releases"), with the same service account and
+the same policy. The repository is bound to the architecture, a two-value allow-list: `nyra-base` is
+`linux/amd64` and `nyra-base-arm64` is `linux/arm64`, and nothing else is signed, published or
+installed. `ci/check-image-repository.sh` checks the image's config (`os` and `architecture`) and the
+`repository =` line of its `updated.conf` against that list before anything is signed, in both
+architectures' `release-image` jobs and in `sign-arm64`; `publish-arm64` checks the config again, and
+`tools/install/verified-pull.sh` refuses a pulled image of the other architecture. A signature made for
+one repository is not accepted for the other (`matchRepository`). `sign-arm64` runs no code of the arm64
+image: the runner's own skopeo copies the archive into the throwaway registry and exports the
+signature, and podman only creates a container to copy files out of it for the release gate. The
+signature is then checked with the policy the image ships, by the image's own skopeo, natively on an
+arm64 runner without a token (`verify-signature-arm64`, `tools/signing/test-policy.sh`); `publish-arm64`
+waits for it.
 
 The signature uses cosign's older format: a `sha256-<digest>.sig` tag whose layer carries the
 certificate and the Rekor v1 signed entry timestamp (SET). It is the only format that
@@ -191,7 +206,10 @@ reference of the system image needs root, and root can also edit the policy.
 `--enforce-container-sigpolicy`: that flag has no effect with the composefs backend, and a live
 system's own policy accepts anything. The guarantee is made by the installer itself:
 - the image is pulled by `tools/install/verified-pull.sh` under the policy and trust roots of the
-  checkout, never `--insecure-policy`, from `updates.nyraos.com/nyra-base:<version>`;
+  checkout, never `--insecure-policy`, from `updates.nyraos.com/nyra-base:<version>` (on aarch64
+  `nyra-base-arm64`: the installer takes the repository from `uname -m`, from a two-value allow-list,
+  never from an argument, and `verified-pull.sh` refuses any other name and a pulled image whose
+  config is of the other architecture);
 - the digest the owner took from the release is mandatory and must be the pulled one, and the signed
   labels `org.opencontainers.image.version` and `org.opencontainers.image.revision` must be the
   version and the commit of the checkout (the policy's `matchRepository` binds a signature to the
@@ -213,8 +231,9 @@ as `updates.nyraos.com`:
 
 The `verified-pull` job (`tools/install/test-verified-pull.sh`, no secrets) runs the verified-pull
 script itself against the same kind of registry, with test images signed by a key made for the run and
-a copy of the checkout whose policy trusts that key: a signed image is accepted; a tag re-pointed to an
-older, validly signed image, an image with another revision label and an unsigned image are refused
+a copy of the checkout whose policy trusts that key: a signed image is accepted; a repository outside
+the allow-list, and the amd64 image published (and validly signed) as `nyra-base-arm64`, a tag
+re-pointed to an older, validly signed image, an image with another revision label and an unsigned image are refused
 and leave nothing in the storage; a name that was never pulled does not run
 (`podman run --pull=never`). Then `bootc install to-disk --target-imgref` from the image ID, and
 `bootc status` in the booted system shows that reference and digest; `bootc switch` to a second signed
@@ -468,10 +487,10 @@ Then, in this order:
 
 **Who can sign:**
 - **image signatures: only a job in the environment `sign` of `image.yml` on `main`**, that is, the
-  `sign` job. The KMS keys: **any job of `image.yml` on `main`**, the `sign` job included, until the
+  `sign` job and, with `ARM64_RELEASE` on, `sign-arm64`. The KMS keys: **any job of `image.yml` on `main`**, the `sign` job included, until the
   `nyra-base` provider also refuses tokens that carry an environment; the jobs meant to use them are
-  `release-sign` and `release-sign-arm64`, the only ones besides `sign` with `id-token: write`
-  (`ci/check-credential-jobs.py`);
+  `release-sign` and `release-sign-arm64`, the only ones besides `sign` and `sign-arm64` with
+  `id-token: write` (`ci/check-credential-jobs.py`);
 - until the second phase of the split (removing `nyra-image-signer`'s binding on the pool `github`
   and its KMS roles), the image signer is still reachable through the pool `github`, so also from
   `release-sign`, and still holds the KMS roles;
@@ -493,8 +512,9 @@ Every keyless image signature is public in Rekor under the signer's address, so 
 visible. KMS signatures are **not** recorded in Rekor. Their record is Cloud Audit Logs: Data Access
 logging for `cloudkms.googleapis.com` must be enabled (a maintainer action). A release run has one
 `release-sign` job, and a second one, `release-sign-arm64`, when the arm64 release is on
-(docs/ARM64.md, "Releases"); each makes two `AsymmetricSign` calls (`pcr-policy-1`, then `uki`). An
-`AsymmetricSign` that matches no `release-sign` or `release-sign-arm64` job is an incident.
+(docs/ARM64.md, "Releases"); each makes two `AsymmetricSign` calls (`pcr-policy-1`, then `uki`).
+`sign-arm64` makes none (it signs keylessly, in Rekor). An `AsymmetricSign` that matches no
+`release-sign` or `release-sign-arm64` job is an incident.
 
 **If the repository moves** (another organisation, or a re-created repository), update the
 attribute condition and the binding with the new repository and owner IDs. Machines do not change:
@@ -507,7 +527,7 @@ Two **repository variables** are needed:
 gh variable set KMS_WIF_PROVIDER -R NyraOS/nyra-base --body "projects/<number>/locations/global/workloadIdentityPools/github/providers/nyra-base"
 gh variable set KMS_SIGNER_SA    -R NyraOS/nyra-base --body "nyra-release-signer@<project>.iam.gserviceaccount.com"
 ```
-Only the jobs `release-sign`, `release-sign-arm64` and `sign` of `image.yml` may have `id-token: write`, only `sign` may be in the environment `sign`, and a job that calls a reusable workflow must have exactly `permissions: {contents: read}` and pass no secrets (`ci/check-credential-jobs.py`, run on every pull request), because the identity providers check `workflow_ref`, which for a called workflow names its caller.
+Only the jobs `release-sign`, `release-sign-arm64`, `sign` and `sign-arm64` of `image.yml` may have `id-token: write`, only `sign` and `sign-arm64` may be in the environment `sign`, and a job that calls a reusable workflow must have exactly `permissions: {contents: read}` and pass no secrets (`ci/check-credential-jobs.py`, run on every pull request), because the identity providers check `workflow_ref`, which for a called workflow names its caller.
 
 A run is a release (`build`'s `release` output) when it is this workflow (`image`, not Titanic's call
 of it) on `main` by push or manual run. Then, in one run:
@@ -516,7 +536,7 @@ of it) on `main` by push or manual run. Then, in one run:
   (`NYRA_RELEASE=1`, `ci/build-image.sh`). It uploads that UKI and the sealed image it was made from
   (`nyra-base-unsigned-uki`, `nyra-base-sealed-oci-archive`), not the image archive, and takes the
   committed `nyra.crt` as the certificate the tests enrol.
-- `release-sign` (with `release-sign-arm64`, the only jobs with `id-token: write` besides `sign`)
+- `release-sign` (with `release-sign-arm64`, the only jobs with `id-token: write` besides `sign` and `sign-arm64`)
   checks both artifacts against `build`'s hashes, authenticates through Workload Identity
   Federation, has the key `pcr-policy-1` sign the main profile's PCR policy (`pcr-policy.py
   sign-kms` first checks the UKI as the sealed UKI, then verifies the signature with the committed public key), joins it into the UKI with the sealed
@@ -561,8 +581,9 @@ both architectures: Authenticode and the PCR policy signature cover bytes, not a
 policy signs measurements an x86_64 machine never makes. The jobs are in `image.yml`, never in a
 workflow it calls: the identity providers check `workflow_ref`, which names the caller, so any called
 workflow could otherwise sign. `arm64.yml` builds without `NYRA_RELEASE` and gets no token. The arm64
-image is not signed for the registry nor published yet; when it is, it goes to its own repository,
-`nyra-base-arm64`, whose signatures the policy's `matchRepository` does not accept for `nyra-base`.
+image is signed for the registry by `sign-arm64` ("How an image is signed") and published as its own
+repository, `nyra-base-arm64`, whose signatures the policy's `matchRepository` does not accept for
+`nyra-base` ("Publishing").
 
 A third party can check a release: rebuild, and the release's UKI equals the rebuilt unsigned UKI except
 for the `.pcrsig` signature and the Secure Boot signature.
@@ -607,6 +628,19 @@ Each signed release can be published to `updates.nyraos.com` (repository `nyra-b
 It runs for a release (`build`'s `release` output) after `sign` succeeded, one at a time
 (`concurrency: publish-nyra-base`), and then `verify-published` reads the result back.
 
+**arm64.** With `ARM64_RELEASE` and `PUBLISH_ENABLED` both `on`, the jobs `publish-arm64` and
+`verify-published-arm64` do the same for the repository `nyra-base-arm64`, after `sign-arm64` and
+`verify-signature-arm64` succeeded, in a concurrency group of their own (`publish-nyra-base-arm64`):
+the same environment `publish`, the same invariants, the same steps with the arm64 jobs' outputs
+(`build-arm64`'s version, `release-image-arm64`'s hash, `sign-arm64`'s digests), and one more check, that
+the image config says `linux/arm64`. `UPDATES_PIN` of `publish-arm64` is the first `nyra-updates` commit
+with the repository allow-list in `publish-image.sh` (only `nyra-base` and `nyra-base-arm64`); `publish`
+keeps its own pin. No x86_64 job needs an arm64 job, and an arm64 failure holds nothing back.
+`verify-published-arm64` runs on an arm64 runner, with `nyra-base-arm64` as the repository of
+`verified-pull.sh`. Publishing writes the image and its signature only: no channel sheet. The first
+arm64 releases go to the `dev` channel only (docs/ARM64.md), by hand, in `nyra-updates`:
+`channels/nyra-base-arm64/releases.json` takes its digests from the arm64 publish summary only.
+
 ### What `publish` does
 
 1. Fetches `NyraOS/nyra-updates` at the commit pinned in the job (`UPDATES_PIN`) into the runner's
@@ -631,7 +665,8 @@ It runs for a release (`build`'s `release` output) after `sign` succeeded, one a
    `channels/nyra-base/releases.json` in `nyra-updates` adds it by hand.
 
 `verify-published` (no secrets, no environment, `contents: read`) runs
-`tools/install/verified-pull.sh <version> <image_digest>`, the pull the installer makes too: `skopeo`
+`tools/install/verified-pull.sh nyra-base <version> <image_digest>`, the pull the installer makes too
+(on x86_64; on aarch64 the installer's repository is `nyra-base-arm64`): `skopeo`
 with the committed `policy.json` (its trust-root paths pointed at the checkout) and the committed
 `registries.d`, never `--insecure-policy`, from `docker://updates.nyraos.com/nyra-base:<version>`
 into a container storage. It requires acceptance, the digest of `sign`, and the signed labels
@@ -652,15 +687,16 @@ may pass (exit code 1): a pulled image with the wrong digest or labels (exit cod
   version reaches no machine by itself: machines update only through signed channel sheets, or by
   hand to a version tag after checking the digest. A reviewer would also not stop an automated
   contributor using the owner's account.
-- `ci/check-publish-job.py` (the `shellcheck` workflow) keeps the invariants: `publish` has
-  `permissions: {contents: read}` and nothing else, no job with `id-token: write` (`sign`,
-  `release-sign`, `release-sign-arm64`) uses the environment `publish`, no other job names `R2_*` or `CLOUDFLARE_*`
-  secrets, and `verify-published` has no environment.
+- `ci/check-publish-job.py` (the `shellcheck` workflow) keeps the invariants: `publish` and
+  `publish-arm64` have `permissions: {contents: read}` and nothing else, no job with `id-token: write`
+  (`sign`, `sign-arm64`, `release-sign`, `release-sign-arm64`) uses the environment `publish`, no other
+  job names `R2_*` or `CLOUDFLARE_*` secrets, and `verify-published` and `verify-published-arm64` have
+  no environment.
 
 ### Re-runs, concurrency and what is not immutable
 
-- A pending `publish` can be cancelled by the `publish` of a newer release (one group, not
-  cancelled while running). Recovery: "Re-run failed jobs" within 1 day, otherwise a new release.
+- A pending `publish` can be cancelled by the `publish` of a newer release (one group per
+  repository, not cancelled while running). Recovery: "Re-run failed jobs" within 1 day, otherwise a new release.
 - A full re-run can rebuild the identical image digest. Its new signature has another `.sig` digest
   and is refused. That is expected: the published signature stays valid.
 - The immutability of a version tag is a rule of the publishing script, **not of the storage**. Every
