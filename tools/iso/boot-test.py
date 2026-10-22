@@ -49,17 +49,32 @@ class Done(Exception):
 
 
 def refusal(sh, check, kind):
-    """The pull of the image on an altered ISO is refused, and nothing is left in the storage."""
+    """The pull of the image on an altered ISO is refused for the reason that was made, and nothing is left
+    in the storage. A registry or a tool that fails is not a refusal: the messages of verified-pull.sh tell
+    the cases apart."""
     status, out = sh("cat /usr/lib/nyra/release/RELEASE")
     release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     storage = "/var/lib/containers/storage"
     status, out = sh(f"r=$(/usr/lib/nyra/release/tools/install/verified-pull.sh nyra-base {release['version']} {release['digest']} {storage} 2>&1); "
-                     'rc=$?; echo "$r" | tail -n 4; echo "pull-status=$rc"', 900)
+                     'rc=$?; echo "$r" | tail -n 6; echo "pull-status=$rc"', 900)
     m = re.search(r"pull-status=(\d+)", out)
-    check(f"the pull from the ISO with {'an altered layer' if kind == 'layer' else 'another digest in RELEASE'} is refused",
-          m is not None and m.group(1) != "0" and "are accepted by the policy" not in out, out.replace("\n", " ")[-300:])
-    status, out = sh(f"podman --root {storage} images -q | wc -l")
-    check("no image is left in the storage", out == "0", out)
+    code = m.group(1) if m else None
+    if kind == "digest":
+        # verified-pull.sh: the pull worked and the image is not the release's (exit 2).
+        ok = code == "2" and re.search(r"nyra-base:[0-9.]+ is sha256:[0-9a-f]{64}, not sha256:f{64}", out) is not None
+        what = "another digest in RELEASE: refused as not the release (exit 2, the tag's digest is not the one asked)"
+    else:
+        # The layer's bytes are not the ones its digest names: skopeo stops the copy (exit 1, "cannot pull")
+        # with "Digest did not match", and the reason is the content, not the registry (connection, missing
+        # manifest or blob).
+        infrastructure = re.search(r"connection refused|no such host|manifest unknown|blob unknown|not found|timeout|name unknown", out, re.I)
+        ok = (code == "1" and "cannot pull" in out and infrastructure is None
+              and re.search(r"Digest did not match, expected sha256:[0-9a-f]{64}, got sha256:[0-9a-f]{64}", out) is not None)
+        what = "an altered layer: refused for its content (exit 1, the blob's digest is not the one in the manifest)"
+    check(f"the pull from the ISO with {what}", ok and "are accepted by the policy" not in out, out.replace("\n", " ")[-400:])
+    # podman itself must answer, and there is no image.
+    status, out = sh(f"podman --root {storage} images -q > /tmp/images 2> /tmp/images.err; rc=$?; echo \"podman=$rc images=$(wc -l < /tmp/images) errors=$(wc -c < /tmp/images.err)\"")
+    check("podman answers and no image is left in the storage", out == "podman=0 images=0 errors=0", out)
 
 
 def make_decoy(directory):
@@ -146,8 +161,8 @@ def main():
         check("no getty and no ssh server is running", out == "0", out)
         status, out = sh("systemctl --failed --no-legend | wc -l")
         check("no failed unit", out == "0", out)
-        status, out = sh("systemctl is-enabled getty@tty1.service serial-getty@ttyS0.service console-getty.service emergency.service rescue.service; true")
-        check("the login prompts and the emergency and rescue shells are masked", out.split() == ["masked"] * 5, out.replace("\n", " "))
+        status, out = sh("systemctl is-enabled getty@tty1.service autovt@tty2.service serial-getty@ttyS0.service console-getty.service emergency.service rescue.service; true")
+        check("the login prompts and the emergency and rescue shells are masked", out.split() == ["masked"] * 6, out.replace("\n", " "))
         status, out = sh("getent shadow root | cut -d: -f2; getent passwd root | cut -d: -f2")
         check("root has no password", all(line in ("*", "!", "x") for line in out.split()), out.replace("\n", " "))
 

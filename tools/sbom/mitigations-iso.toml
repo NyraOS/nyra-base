@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Reviewed exceptions to the vulnerability gate of the installer ISO (docs/ISO.md, docs/SBOM.md):
+# `tools/sbom/sbom.py --iso`. The ISO is another system than the image, with other packages and another
+# exposure (a session in memory with no network, no login and no user programs), so it has its own file:
+# an exception in tools/sbom/mitigations.toml never applies here, and one in this file never applies to the
+# image. Same format and rules: each entry accepts one vulnerability in one package (Debian source package
+# or Rust crate) until its expiry date, at most 90 days ahead; say why the ISO is not exposed or what limits
+# the damage, and what would end the exception (a fix in Debian, a snapshot bump).
+#
+# [[mitigation]]
+# id = "CVE-2026-00000"
+# package = "example"
+# reason = "Only reachable through X, which the installer system does not run."
+# expires = 2026-12-31
+
+[[mitigation]]
+id = "CVE-2026-111497"
+package = "brotli"
+reason = "Out-of-bounds write in the brotli decoder, fixed upstream in brotli 1.2.1; Debian has no fixed upload yet. Only libbrotli1 is in the installer system, and only libfreetype links its decoder; no program of the session renders fonts or decodes brotli data. There is no network, and the only inputs are the ISO's own files and the disks the owner chose."
+expires = 2026-10-29
+
+[[mitigation]]
+id = "CVE-2026-107161"
+package = "cyrus-sasl2"
+reason = "Heap overflow in the DIGEST-MD5 plugin. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the installer system; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code. Nothing in the session speaks SASL."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-102010"
+package = "gcc-16"
+reason = "libstdc++ reallocation bug in erase_if on a binary-heap priority queue. libstdc++6 is not in the installer system: of this source only gcc-16-base and libgcc-s1 are. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-95619"
+package = "gcc-16"
+reason = "libstdc++ integer overflow in aligned operator new with huge sizes. libstdc++6 is not in the installer system: of this source only gcc-16-base and libgcc-s1 are. Waiting for a gcc-16 upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2026-82560"
+package = "perl"
+reason = "CPU/memory exhaustion in Pod::Text. Pod::Text is in perl-modules-5.42, which is not in the installer system; perl-base ships no Pod/Text.pm. Nothing in the session formats POD."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2025-8941"
+package = "pam"
+reason = "Symlink/race in pam_namespace. pam_namespace.so is installed, but no file in /etc/pam.d or /usr/lib/pam.d loads it, and nothing in the session logs in: there is no login."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-85091"
+package = "zlib"
+reason = "Heap overflow in gz_vacate() when writing gzip files to a non-blocking descriptor. Needs a program using gzwrite on a non-blocking fd with attacker-influenced data; no program of the installer system writes gzip files so (the RAM disk is unpacked by the kernel, the session's programs are Go and systemd). Waiting for the Debian zlib upload."
+expires = 2026-11-08
+
+[[mitigation]]
+id = "CVE-2013-7445"
+package = "linux"
+reason = "DRM/GEM memory exhaustion by a local user who opens a DRM device. A local attack needs an unprivileged local user: the installer system has none (the installer and the shell it opens are root's, and have root anyway)."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2019-19449"
+package = "linux"
+reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. Nothing in the session mounts a file system it did not make or the ISO's own (iso9660): there is no automounter, no udisks, and the filesystem module loads only when something mounts that type."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2019-19814"
+package = "linux"
+reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. Nothing in the session mounts a file system it did not make or the ISO's own (iso9660): no automounter, and the module loads only when something mounts that type."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3847"
+package = "linux"
+reason = "OverlayFS copy-up of file capabilities on setuid files; a local attacker who can mount overlayfs. The session has no unprivileged local user; no upstream fix; Debian tracks it unfixed in every release."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2021-3864"
+package = "linux"
+reason = "The dumpable flag after a setuid program runs its descendants; a local privilege escalation by an unprivileged user. The session has no unprivileged user and no setuid program is run for one."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2023-37454"
+package = "linux"
+reason = "Use-after-free write on a crafted UDF file system image. Nothing in the session mounts a file system it did not make or the ISO's own: the installer reads disks with lsblk only, and the UDF module loads only when something mounts that type."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2024-21803"
+package = "linux"
+reason = "Use-after-free in the Bluetooth modules, local code execution. The session has no Bluetooth user space and no unprivileged user to open a Bluetooth socket; the modules load only with hardware, and the session lasts as long as an installation."
+expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2026-98869"
+package = "linux"
+reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. The session has no unprivileged user to call it (Debian's kernel also disables unprivileged bpf by default), and no program of it loads bpf programs."
+expires = 2027-01-07

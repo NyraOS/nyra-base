@@ -2239,9 +2239,10 @@ jobs:
             cp "$WORK/iso/registry-digest" "$t/registry-digest"
             if [ -f "$WORK/iso/registry-test.pub" ]; then cp "$WORK/iso/registry-test.pub" "$t/"; fi
             if [ "$kind" = layer ]; then
-              # The biggest blob of the store is the image's layer: its byte 100 is changed.
+              # The biggest blob of the store is the image's layer: it is replaced by another valid gzip
+              # stream, so that what fails is its digest and nothing else.
               blob="$(sudo find "$t/registry" -path '*/blobs/sha256/*' -name data -printf '%s %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)"
-              printf '\377' | sudo dd of="$blob" bs=1 seek=100 conv=notrunc status=none
+              echo "a layer that is not the image's" | gzip -c | sudo tee "$blob" > /dev/null
             else
               echo "sha256:$(printf 'f%.0s' {1..64})" > "$t/registry-digest"
             fi
@@ -2281,12 +2282,20 @@ jobs:
       # Kept only when everything above passed, and only from main: the ISO the owner can try. It is
       # UNSIGNED (docs/ISO.md); in test mode (main without the signing variables) it also trusts a key
       # made for the run instead of the release signer, which the name says.
+      - name: Name the ISO file
+        if: ${{ success() && env.RELEASE == 'true' }}
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          mkdir -p "$WORK/keep"
+          ln "$WORK/nyra.iso" "$WORK/keep/nyra-installer-unsigned-$MODE.iso"
+
       - name: Upload the ISO (unsigned)
         if: ${{ success() && env.RELEASE == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nyra-installer-iso-unsigned-${{ steps.mode.outputs.mode }}
-          path: ${{ env.WORK }}/nyra.iso
+          path: ${{ env.WORK }}/keep/nyra-installer-unsigned-${{ steps.mode.outputs.mode }}.iso
           retention-days: 14
           compression-level: 0
 
