@@ -128,7 +128,7 @@ BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.
 ## Before a push: the scan on a branch
 
 The gate depends on the advisories of the day, not only on the change, so a branch can fail it
-although it touches nothing the scanner looks at. The scan runs in about a minute on a machine
+although it touches nothing the scanner looks at. The scan runs in about 20 seconds on a machine
 without KVM, with this checkout's scanner, mitigations and Cargo.lock files against the package list
 of the last image built on main (the same inputs as the `sbom` job of `image.yml`). Run it before
 pushing a change to `tools/sbom/`, to `mitigations.toml`, to the package list or to a Cargo.lock, and
@@ -138,7 +138,7 @@ needs `gh` (logged in), `podman` and the network.
 ```bash
 set -o pipefail         # the exit status of the scan, not of tee
 D=/var/tmp/sbom-main     # main's SBOM inputs, downloaded once and refreshed when main moves
-S=/var/tmp/sbom-scan     # a podman store of its own: never use the shared default store for this
+S=~/.cache/sbom-scan     # a podman store of its own: never use the shared default store for this
 mkdir -p "$D"
 # The newest unexpired nyra-base-sbom artifact of a successful push run on main that built.
 for run in $(gh run list -R NyraOS/nyra-base --workflow image.yml --branch main --event push \
@@ -152,6 +152,7 @@ gh api "repos/NyraOS/nyra-base/actions/artifacts/$id/zip" > "$D/sbom.zip" && pyt
 # From the root of the checkout of the branch. The tag and commit of bootc are the two lines of image.yml.
 BOOTC_REF="$(sed -n 's/^  BOOTC_REF: //p' .github/workflows/image.yml)"
 BOOTC_COMMIT="$(sed -n 's/^  BOOTC_COMMIT: //p' .github/workflows/image.yml)"
+mkdir -p ~/.cache && install -d -m 700 "$S" && [ ! -L "$S" ] && [ "$(stat -c '%u %a' "$S")" = "$(id -u) 700" ] &&   # yours, mode 700
 podman --root "$S/root" --runroot "$S/run" run --rm -v "$PWD:/repo:ro" -v "$D:/in:ro" -w /repo \
   -e BOOTC_REF="$BOOTC_REF" -e BOOTC_COMMIT="$BOOTC_COMMIT" \
   docker.io/library/python@sha256:4873c73fa393882cf10f9d1054c928e95201c1559ca2107c1589786ece10f49f \

@@ -29,7 +29,7 @@ strict but short.
 
 ## Before every push
 
-Run `ci/precheck.sh`. In about half a minute it runs what the `shellcheck` workflow runs (shellcheck
+Run `ci/precheck.sh`. In about 40 seconds it runs what the `shellcheck` workflow runs (shellcheck
 at the CI's version, the self-tests of the test tools, the lints of `ci/` and of the workflows,
 actionlint) and a secret scan of your commits (gitleaks). The list of checks lives in that script and
 CI runs the same script, so the two cannot drift. The pre-push hook runs it when you push anything

@@ -24,14 +24,17 @@ while read -r local_ref local_sha remote_ref _; do
     exit 1
   fi
   # The commits that are not on origin/main yet; without origin/main, everything counts as changed.
+  # Whether there is anything to check is decided by the commits, not by the tree: a secret added in
+  # one commit and removed in the next leaves the same tree, and is still pushed. Such a push has no
+  # changed file and gets the secret scan.
   if base="$(git merge-base origin/main "$local_sha" 2>/dev/null)"; then
+    [ "$(git rev-list --count "$base..$local_sha")" != 0 ] || continue
     files="$(git diff --name-only "$base" "$local_sha")"
   else
     files="(no origin/main)"
   fi
-  [ -n "$files" ] || continue
   changed=1
-  if printf '%s\n' "$files" | grep -qvE '\.md$'; then docs_only=0; fi
+  if printf '%s\n' "$files" | grep -qvE '\.md$|^$'; then docs_only=0; fi
 done
 [ "$changed" = 1 ] || exit 0
 if [ "$docs_only" = 1 ]; then

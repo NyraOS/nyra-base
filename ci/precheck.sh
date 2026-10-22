@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The offline checks of the shellcheck workflow, and the secret scan, in one place: the workflow
-# runs this script, so what runs on your machine before a push is what runs in CI. About a minute.
+# runs this script, so what runs on your machine before a push is what runs in CI. About 40 seconds.
 #   ci/precheck.sh [--allow-skip] [--verbose] [--jobs N] [--only ID]...
 #   ci/precheck.sh --list
 # Run it from any directory of a checkout, before every push (tools/hooks/pre-push does it for you).
