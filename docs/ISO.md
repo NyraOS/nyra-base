@@ -12,7 +12,9 @@ The ISO is built and tested by the `iso` job of `.github/workflows/image.yml`.
 **Status: the ISO is UNSIGNED, for testing only.** There is no signature of the ISO yet and nothing
 verifies one. The only check a person can make is the SHA-256 of the file against the one the run prints
 (the `iso` job's log), read in their own logged-in browser; it shows that the file is the run's, not that
-the run is Nyra's. The ISO of a release is kept as the `nyra-installer-iso` artifact of the run (14 days).
+the run is Nyra's. A build on main keeps the ISO as the `nyra-installer-iso-unsigned-<mode>` artifact of the run (14 days),
+only after every test of the job passed; `test` in the name means that the ISO trusts a key made for the run
+instead of the release signer (below).
 Do not install anything you care about from it. "Before the ISO is signed or published" below is what has to
 be done first.
 
@@ -132,7 +134,7 @@ commit in it must be the image's revision label.
 | Step | Script | What |
 |---|---|---|
 | 1 | `ci/build-installer.sh` | `nyra-installer` from the commit in `iso/installer-commit`: only that commit is fetched, the crates by the checksums of its `Cargo.lock`, and the build runs with `--locked --offline` and no network |
-| 2 | `ci/build-iso-os.sh` | the installer system with mkosi; its package list (`nyra-installer-os.manifest`) is exact |
+| 2 | `ci/build-iso-os.sh` | the installer system with mkosi; its package list (`nyra-installer-os.manifest`) is exact. The boot files (shim and GRUB, signed) come from a tree of their own (`iso/boot/mkosi.conf`): only three `.efi` files are copied from it to the ISO, so GRUB's dependencies (grub2-common, freetype, brotli, png, fuse and the rest) are not in the installer system. The kernel package asks for an initial RAM disk tool: `initramfs-tools` is listed so that apt does not take dracut |
 | 3 | `ci/iso-registry.sh` | the image and its signature copied into a registry, with the registry and skopeo of the installer system (run as a container from its own tree, without network), so the files are what the ISO's registry reads |
 | 4 | `ci/build-iso.sh` | the release tree and the drop-in with the build identifier, the RAM disk (two cpio archives, the system's without the kernel, GRUB and shim, which are on the ISO already, and the tree's), the EFI image, and the ISO with xorriso (hybrid: a CD and a GPT with the EFI partition second) |
 
@@ -142,7 +144,8 @@ Two modes, one code path:
   against the sign job's outputs, and the policy of the tree is the shipped one.
 - **test** (pull requests, and main without signing): the image is signed with a key made for the run, and the
   policy of the tree trusts that key for `updates.nyraos.com` instead. The shipped signer stays in the file,
-  under a scope that no image has, so that `check` still names it. A test ISO is never uploaded.
+  under a scope that no image has, so that `check` still names it. A test ISO is kept only from main and
+  named `test` (below).
 
 The job has no secret and no `id-token`, runs no code from the image, and is not a dependency of `sign` or
 `publish`.
@@ -154,7 +157,7 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
 
 - the installer's first screen appears on the serial console and no login prompt does;
 - from the menu, a shell opens as root, and in it: Secure Boot is on; only `lo` exists; the only listener is
-  the registry on 127.0.0.1; no getty and no SSH server runs; no unit failed; root has no password; the
+  the registry on 127.0.0.1; no getty and no SSH server runs; no unit failed; the only process that is not root's is the registry; no PAM configuration names `pam_namespace`; unprivileged `bpf()` is off; the login prompts and the emergency and rescue shells are masked; root has no password; the
   release tree is read-only and root's; `check` sees UEFI, Secure Boot, shim validation and the TPM; `disks`
   offers the empty disk and not the medium the ISO started from (as a CD it is not a disk, as a USB stick it
   is "booted"); the medium mounted has the label of the build; each installer instance uses under 15 MiB;
@@ -163,7 +166,22 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
   ISO by the build identifier), has the ISO's own `RELEASE`, mounts its own medium, and lists both sticks as
   "booted";
 - (CD only) the image on the ISO passes the verified pull with the policy of the release tree, offline, and
-  the memory after it is in the summary.
+  the memory after it is in the summary;
+- leaving the shell goes back to the installer's menu, not to a prompt;
+- **altered ISOs** (two more ISOs, made like the real one from a copy of its inputs): one with the
+  image's layer replaced in the registry store by another gzip stream, one whose `RELEASE` names another digest. In each, the verified
+  pull is refused for the reason that was made, which the messages of `verified-pull.sh` tell from a failing
+  registry or tool (another digest: exit 2, "is sha256:X, not sha256:f..."; a layer replaced by another valid
+  gzip stream: exit 1, "Digest did not match" and no registry error), and that podman answers and no
+  image is left in the storage. The unaltered CD boot with `--pull` is the control.
+
+The job also runs the vulnerability scan of the ISO (`tools/sbom/sbom.py --iso`, `docs/SBOM.md`): the
+installer system's Debian packages, the five packages of the boot tree whose files reach the ISO (the signed ones
+and the unsigned ones that are the sources the tracker knows GRUB and shim by; `ci/iso-manifest.sh` fails unless
+exactly these are found) and the installer program's crates, with its own file of exceptions,
+`tools/sbom/mitigations-iso.toml` (the image's file never applies to the ISO, nor this one to the image).
+The scan refuses an empty scan: every package of `iso/mkosi.conf` is in the manifest, the program has crates,
+and none comes from a git source. The SBOM is the `nyra-installer-iso-sbom` artifact.
 
 Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other than US.
 
@@ -207,14 +225,11 @@ Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other 
 Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
 unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
-- **A vulnerability gate for the ISO**: the SBOM of the installer system's packages (`nyra-installer-iso-materials`
-  has the inputs) and of the installer program's crates, scanned like the image's (`docs/SBOM.md`), failing
-  on a critical or high finding without a documented mitigation.
-- **Tests of the refusals**: an image layout altered on the ISO, a `RELEASE` with another digest, and the
-  recovery key absent from the journal, in the installer session; the full installation test
-  (TPM and password), with `mokutil --sb-state` and the staged Machine Owner Key.
-- **The artifact only after the boot tests**: the `nyra-installer-iso` artifact is uploaded before the
-  tests run; it must be uploaded after both boot tests pass.
+- **The tests that need an installation**: the recovery key absent from the journal and the installation
+  itself (password and TPM), with `mokutil --sb-state` and the staged Machine Owner Key, in the installer
+  session. (Done already: the vulnerability scan, the altered layer, another digest in `RELEASE`, the
+  artifact kept only after the tests.)
+- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
 - **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
   decoy scope (the shipped signer under a name no image has) can go.
 - **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in
