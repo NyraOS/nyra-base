@@ -20,6 +20,10 @@
 # To add a check: one line at "THE LIST" below (and its function, if it is more than one command).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# A git hook runs with GIT_DIR and the like set: every git command here, in a temporary repository too,
+# would act on the pushed repository. Find the repository from the directory instead.
+# shellcheck disable=SC2046 # the names of the variables, one word each
+unset $(git rev-parse --local-env-vars)
 
 # Pinned: multi-arch index digests (the version is in the comment). The workflow installs the same
 # actionlint version (checked below); gitleaks is the digest that .github/workflows/secrets.yml runs.
@@ -143,6 +147,8 @@ check_gitleaks_control() {
   pull "$image" || { skip "gitleaks is not available (podman and the network)"; return "$SKIPPED"; }
   repo="$(mktemp -d)"
   git -C "$repo" init -q
+  [ "$(git -C "$repo" rev-parse --absolute-git-dir)" = "$(cd "$repo" && pwd -P)/.git" ] ||
+    { echo "control: git does not work on the temporary repository $repo"; rm -rf "$repo"; return 1; }
   git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m base
   printf '%s\n' 'key = 1' >"$repo/f"
   git -C "$repo" add f && git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q -m clean
