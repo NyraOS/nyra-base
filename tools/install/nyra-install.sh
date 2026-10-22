@@ -5,9 +5,17 @@
 #   tools/install/nyra-install.sh DEVICE VERSION DIGEST
 # VERSION, DIGEST and the commit of the checkout come from the release run on github.com.
 #
+# It runs from one of two trees (tools/install/release-tree.sh): a git checkout of the release commit,
+# or a release tree, the files of the release without any git (the installer ISO), whose file RELEASE
+# names the version, the digest, the commit and the architecture. It reads the policy, the trust roots
+# and the certificate from that tree alone. A RELEASE that disagrees with VERSION, DIGEST or this
+# machine's architecture is refused; its commit must be the revision label of the image, as the commit
+# of a checkout must.
+#
 # What it does, in order:
-#   1. refuses unless the checkout is clean and at a detached commit, the machine has one TPM2 and
-#      Secure Boot on, and DEVICE is a whole disk nothing uses; the owner types DEVICE to confirm;
+#   1. refuses unless the checkout is clean and at a detached commit (a release tree: unless its
+#      RELEASE agrees with the arguments), the machine has one TPM2 and Secure Boot on, and DEVICE is a
+#      whole disk nothing uses; the owner types DEVICE to confirm;
 #   2. pulls the image with tools/install/verified-pull.sh (the shipped policy, the pinned digest and
 #      labels): it prints the image ID, and from there on only that ID is used, never a name;
 #   3. partitions the disk and runs everything else in that image's container, without network and
@@ -24,6 +32,8 @@ die() {
   echo "nyra-install: $*" >&2
   exit 1
 }
+# A tree that is not the release asked for (release-tree.sh): one kind of refusal here.
+refuse() { die "$@"; }
 
 [ $# = 3 ] || die "usage: nyra-install.sh DEVICE VERSION DIGEST"
 device="$1" version="$2" digest="$3"
@@ -56,15 +66,21 @@ in_image_network=none
 # shellcheck disable=SC2034 # used by in_image (lib.sh)
 in_image_timeout=0
 . "$checkout/tools/install/lib.sh"
+. "$checkout/tools/install/release-tree.sh"
 
-# --- the checkout ----------------------------------------------------------------------------------
-# --git-dir (and --work-tree): git refuses to read a checkout owned by another user, unless told.
-git_checkout() { git --git-dir="$checkout/.git" --work-tree="$checkout" "$@"; }
-if git_checkout symbolic-ref -q HEAD > /dev/null; then
-  die "the checkout is on a branch: git checkout --detach <the release commit>"
+# --- the checkout or the release tree --------------------------------------------------------------
+tree_identify "$checkout" "$repo_name" "$version" "$digest"
+if [ "$tree_mode" = git ]; then
+  # --git-dir (and --work-tree): git refuses to read a checkout owned by another user, unless told.
+  git_checkout() { git --git-dir="$checkout/.git" --work-tree="$checkout" "$@"; }
+  if git_checkout symbolic-ref -q HEAD > /dev/null; then
+    die "the checkout is on a branch: git checkout --detach <the release commit>"
+  fi
+  [ -z "$(git_checkout status --porcelain)" ] || die "the checkout has changes: use a fresh clone"
+  echo "nyra-install: the checkout is at the commit $tree_commit"
+else
+  echo "nyra-install: the release tree is $version, $digest, the commit $tree_commit"
 fi
-[ -z "$(git_checkout status --porcelain)" ] || die "the checkout has changes: use a fresh clone"
-echo "nyra-install: the checkout is at the commit $(git_checkout rev-parse HEAD)"
 
 # --- the machine -----------------------------------------------------------------------------------
 tpms=(/dev/tpmrm*)
