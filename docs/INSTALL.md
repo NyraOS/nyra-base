@@ -127,13 +127,45 @@ mokutil --test-key nyra.der; mokutil --import nyra.der
 - `bootc status`: the image is exactly `updates.nyraos.com/nyra-base:<version>` with the digest of
   step 2.
 
+## From a release tree
+
+`nyra-install.sh` and `verified-pull.sh` also run from a **release tree**: the files of one release
+without any git, as the installer ISO ships them. It is the same code and the same refusals; only the
+source of the commit differs. The tree holds what the scripts read (`tools/install/`,
+`files/usr/lib/nyra/` with the policy, the trust roots and `nyra.crt`, and `docs/SIGNING.md`) and a
+file `RELEASE` at its root instead of the `.git`. They read the policy, the trust roots and the
+certificate from the tree alone, and need neither `git` nor a clone.
+
+`RELEASE` is exactly these four lines, in this order:
+
+```
+version=2026.10.N
+digest=sha256:<64 hexadecimal characters>
+commit=<40 hexadecimal characters>
+architecture=amd64
+```
+
+`architecture` is `amd64` for `nyra-base` and `arm64` for `nyra-base-arm64` (the repository is still
+chosen from `uname -m`, never from an argument). The scripts refuse a tree whose `RELEASE`:
+
+- names another version, another digest than the one given, or the other architecture;
+- is not exactly those four lines (a missing, repeated or extra line, a commit that is not 40 lowercase
+  hexadecimal characters), or is not a regular file;
+- is next to a `.git` (a tree is a checkout or a release tree, not both).
+
+The `commit` takes the place of `git rev-parse HEAD`: it must be the `org.opencontainers.image.revision`
+label of the pulled image, as the commit of a clone must, and the digest stays mandatory. A tree that
+is neither (no `RELEASE` and no `.git`) is refused. The tree must be read-only to everything but its
+maker; that is for whatever ships it (the ISO) to see to, the scripts cannot.
+
 ## Notes
 
 - The hypervisor's operator can see the VM's console (where the recovery key is shown) and its vTPM
   state. That cannot be avoided in a VM on someone else's host.
 - The install is not tested in CI on a machine's TPM, MokManager or a Debian live session. CI tests
-  what the script runs: the verified pull and the install by image ID
-  (`tools/install/test-verified-pull.sh`), the LUKS, TPM, record and `esp-sync` steps and the header
+  what the script runs: the verified pull, also from a release tree, and the install by image ID
+  (`tools/install/test-verified-pull.sh`; the rules of `RELEASE` offline in
+  `tools/install/test-release-tree.sh`), the LUKS, TPM, record and `esp-sync` steps and the header
   check (`tools/vm/install-encrypted.sh` and the encryption tests), and that the recovery key is
   shown once and is in no log (`tools/install/test-recovery-key.sh`).
 - On an arm64 VM (UTM on Apple Silicon, or QEMU with AAVMF) there is no SMM and no secure world, so

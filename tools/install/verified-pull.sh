@@ -8,8 +8,9 @@
 # REPOSITORY is one of two names, each the images of one architecture (docs/ARM64.md, "Releases"):
 # nyra-base is linux/amd64 and nyra-base-arm64 is linux/arm64. Anything else is refused, and so is a
 # pulled image whose config says another OS or architecture.
-# Run as root, from a checkout of the release commit. STORAGE is a podman --root directory; bootc
-# finds the image there when it is /var/lib/containers/storage.
+# Run as root, from a checkout of the release commit, or from a release tree: the files of the release
+# with a file RELEASE instead of a .git, and no git needed (tools/install/release-tree.sh). STORAGE is a
+# podman --root directory; bootc finds the image there when it is /var/lib/containers/storage.
 #
 # Why DIGEST is mandatory: the policy's matchRepository binds a signature to the repository, not to
 # the tag. Anyone who can write to the registry can point :VERSION at an older image that is still
@@ -47,8 +48,9 @@ esac
 
 repo=updates.nyraos.com/$name
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# --git-dir: git refuses to read a checkout owned by another user (sudo), unless told which one.
-revision="$(git --git-dir="$root/.git" rev-parse HEAD)" || die "cannot read the checkout's commit"
+. "$root/tools/install/release-tree.sh"
+tree_identify "$root" "$name" "$version" "$digest"
+revision="$tree_commit"
 
 tmp="$(mktemp -d)" || die "cannot create a temporary directory"
 cleanup() {
@@ -94,7 +96,7 @@ label() {
   podman --root "$storage" image inspect --format "{{index .Labels \"org.opencontainers.image.$1\"}}" "$id"
 }
 [ "$(label version)" = "$version" ] || refuse "the image's version label is not $version"
-[ "$(label revision)" = "$revision" ] || refuse "the image's revision label is not $revision, the commit of this checkout"
+[ "$(label revision)" = "$revision" ] || refuse "the image's revision label is not $revision, the commit of this tree"
 
 # The reference machines switch to, accepted by the same policy; refused means the script fails.
 skopeo --policy "$policy" --registries.d "$root/files/usr/lib/nyra/containers/registries.d" \

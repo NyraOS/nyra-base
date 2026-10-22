@@ -12,6 +12,9 @@
 #     image's digest, by the version label; an image with another revision label: refused;
 #   - an unsigned image: refused; nothing is left in the storage after a refusal;
 #   - a name that was never pulled: podman run --pull=never fails;
+#   - the same pull from a release tree (the files of the release, a RELEASE instead of the .git, git
+#     not available): the same image; a RELEASE of another digest or commit, or of the other
+#     architecture, is refused (tools/install/test-release-tree.sh: the rest of the RELEASE's rules);
 #   - bootc install to-disk from the image ID (--pull=never, no network, --target-imgref), the
 #     reference and digest bootc recorded read back from the disk (tools/install/check-recorded.sh);
 #   - boot: bootc status shows exactly that reference and digest; bootc switch to a second signed
@@ -153,6 +156,36 @@ id="$(sudo "$pull" nyra-base "$v1" "$(digest one)" "$storage")"
 sudo podman --root "$storage" image inspect --format '{{json .RepoDigests}}' "$id" \
   | jq -e --arg ref "$repo@$(digest one)" 'index($ref) != null' > /dev/null
 echo "pulled: $id"
+
+# --- the same pull from a release tree: the files of the release, no .git, a RELEASE ------------------
+# A git that fails stands in for a machine without one: the tree must not need it.
+rt="$t/release-tree"
+sudo cp -R "$t/checkout" "$rt"
+sudo rm -rf "$rt/.git"
+mkdir "$t/nogit"
+printf '#!/bin/sh\necho "git was run: $*" >&2\nexit 1\n' > "$t/nogit/git"
+chmod +x "$t/nogit/git"
+release_file() { # release_file VERSION DIGEST COMMIT ARCHITECTURE
+  printf 'version=%s\ndigest=%s\ncommit=%s\narchitecture=%s\n' "$1" "$2" "$3" "$4" | sudo tee "$rt/RELEASE" >/dev/null
+}
+release_file "$v1" "$(digest one)" "$revision" amd64
+rid="$(sudo env PATH="$t/nogit:$PATH" "$rt/tools/install/verified-pull.sh" nyra-base "$v1" "$(digest one)" "$storage")"
+[ "$rid" = "$id" ] || { echo "::error::the release tree pulled $rid, the checkout $id"; exit 1; }
+echo "pulled from a release tree without git: $rid"
+git_pull="$pull"
+pull="$rt/tools/install/verified-pull.sh"
+# A RELEASE of another digest, of another commit (the image's revision label is this checkout's), and of
+# the other architecture, for the repository of each.
+release_file "$v1" "$(digest old)" "$revision" amd64
+refused_in nyra-base "$v1" "$(digest one)" "RELEASE does not name the digest $(digest one)"
+release_file "$v1" "$(digest one)" 0000000000000000000000000000000000000000 amd64
+refused_in nyra-base "$v1" "$(digest one)" "revision label is not 0000000000000000000000000000000000000000"
+release_file "$v1" "$(digest one)" "$revision" arm64
+refused_in nyra-base "$v1" "$(digest one)" "RELEASE is not for amd64, the architecture of nyra-base"
+refused_in nyra-base-arm64 "$v1" "$(digest one)" "is not linux/arm64, the platform of nyra-base-arm64"
+release_file "$v1" "$(digest one)" "$revision" amd64
+refused_in nyra-base-arm64 "$v1" "$(digest one)" "RELEASE is not for arm64, the architecture of nyra-base-arm64"
+pull="$git_pull"
 
 tools/vm/install-disk.sh "$id" "$t" "$repo:$v1"
 loop="" mnt="$t/root"

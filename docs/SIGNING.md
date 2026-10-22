@@ -212,7 +212,8 @@ system's own policy accepts anything. The guarantee is made by the installer its
   config is of the other architecture);
 - the digest the owner took from the release is mandatory and must be the pulled one, and the signed
   labels `org.opencontainers.image.version` and `org.opencontainers.image.revision` must be the
-  version and the commit of the checkout (the policy's `matchRepository` binds a signature to the
+  version and the commit of the checkout, or of the `RELEASE` file of a release tree that has no git
+  (docs/INSTALL.md, "From a release tree") (the policy's `matchRepository` binds a signature to the
   repository, not to the tag: a validly signed older image under the tag would pass it alone);
 - everything that touches the disk runs from that image by its ID, with `--pull=never` and
   `--network none`, so nothing can be pulled again under another policy; `bootc install` is given
@@ -238,6 +239,10 @@ and leave nothing in the storage; a name that was never pulled does not run
 (`podman run --pull=never`). Then `bootc install to-disk --target-imgref` from the image ID, and
 `bootc status` in the booted system shows that reference and digest; `bootc switch` to a second signed
 version works.
+The same job pulls from a release tree (the files of the release without a `.git`, a `RELEASE` file,
+and a `git` that fails): the same image, and a `RELEASE` of another digest, another commit or the other
+architecture is refused; `tools/install/test-release-tree.sh` (offline, in the shellcheck workflow)
+covers the rest of `RELEASE`'s rules, in the installer and the pull.
 
 In the `sign` job, the same script also checks that:
 
