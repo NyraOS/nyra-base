@@ -51,8 +51,11 @@ class Vm:
     """QEMU with the ISO and an empty disk. start() boots it; the console methods read and type."""
 
     def __init__(self, iso, work, log, *, arch="amd64", medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
-                 smp=2, disk=True, decoy=None, extra=()):
+                 smp=2, disk=True, decoy=None, extra=(), deadline=None):
         self.iso, self.work, self.log = iso, work, log
+        # Seconds after QEMU starts by which the test must be over: no wait goes past it, so that a hang
+        # ends as a failure with a message of the test's own, before the job's time limit cancels the job.
+        self.deadline = deadline
         self.arch = ARCHES[arch]
         self.accel = accel or ("kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg")
         self.scale = 1 if self.accel == "kvm" else TCG_SCALE
@@ -192,6 +195,9 @@ class Vm:
         """Waits until the text after SINCE matches PATTERN (a regular expression); returns the match."""
         regex = re.compile(pattern, re.S)
         end = time.monotonic() + timeout * self.scale
+        budget = ""
+        if self.deadline and self.started and self.started + self.deadline < end:
+            end, budget = self.started + self.deadline, f" (the test's time budget of {self.deadline} s from the start of QEMU)"
         while True:
             self.pump()
             m = regex.search(self.text(since))
@@ -204,7 +210,7 @@ class Vm:
                     return m
                 raise Timeout(f"QEMU ended while waiting for {pattern!r}; the console ended with:\n{self.text()[-1500:]}")
             if time.monotonic() > end:
-                raise Timeout(f"no {pattern!r} within {timeout * self.scale} s; the console ended with:\n{self.text()[-1500:]}")
+                raise Timeout(f"no {pattern!r} within {timeout * self.scale} s{budget}; the console ended with:\n{self.text()[-1500:]}")
 
     def send(self, data):
         self.sock.send(data if isinstance(data, bytes) else data.encode())

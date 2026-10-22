@@ -22,7 +22,7 @@ an empty disk) and checks what a person sees and what the session is (docs/ISO.m
     longer, and `check` must see everything but the TPM.
 
     tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--arch amd64|arm64] [--medium cd|usb] [--memory MiB]
-                               [--pull] [--decoy] [--refusal layer|digest]
+                               [--pull] [--decoy] [--refusal layer|digest] [--timeout S] [--deadline S]
 """
 import argparse
 import json
@@ -109,6 +109,8 @@ def main():
     p.add_argument("--refusal", choices=["layer", "digest"], help="the ISO is altered; the pull must be refused")
     p.add_argument("--decoy", action="store_true", help="attach a second medium that looks like an installer, first")
     p.add_argument("--timeout", type=int, default=600, help="seconds to the first screen (times 5 without KVM)")
+    p.add_argument("--deadline", type=int, help="seconds after QEMU starts by which the test must be over (no wait goes past it); "
+                   "set it below the job's time limit, so that a hang fails the test with its own message")
     a = p.parse_args()
     repo = "nyra-base" if a.arch == "amd64" else "nyra-base-arm64"
     serial = isovm.ARCHES[a.arch]["serial"]
@@ -116,7 +118,7 @@ def main():
     decoy = None
     if a.decoy:
         decoy = make_decoy(os.path.join(a.work, "decoy"), a.arch)
-    vm = isovm.Vm(a.iso, a.work, a.log, arch=a.arch, medium=a.medium, memory=a.memory, decoy=decoy)
+    vm = isovm.Vm(a.iso, a.work, a.log, arch=a.arch, medium=a.medium, memory=a.memory, decoy=decoy, deadline=a.deadline)
     rows = []  # (what, result) for the summary
     failed = []
 
