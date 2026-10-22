@@ -122,7 +122,8 @@ cat > "$t/disks.json" << 'EOF2'
 {"blockdevices": [
  {"name":"loop0","path":"/dev/loop0","type":"loop","size":100000,"model":null,"ro":true,"rm":false,"fstype":null,"label":null,"parttype":null,"mountpoints":["/snap/x"]},
  {"name":"sr0","path":"/dev/sr0","type":"rom","size":1000000000,"model":"DVD","ro":false,"rm":true,"fstype":null,"label":null,"parttype":null,"mountpoints":[]},
- {"name":"sda","path":"/dev/sda","type":"disk","size":500107862016,"model":"Samsung SSD 870 EVO","ro":false,"rm":false,"fstype":null,"label":null,"parttype":null,"mountpoints":[],
+ {"name":"zram0","path":"/dev/zram0","type":"disk","size":4000000000,"model":null,"ro":false,"rm":false,"fstype":"swap","label":null,"parttype":null,"mountpoints":["[SWAP]"]},
+ {"name":"sda","path":"/dev/sda","type":"disk","size":500107862016,"model":"Samsung SSD 870 EVO","serial":"S5H2NJ0N","wwn":"0x5002538f","ptuuid":"6f3c1d2e-0000-4000-8000-000000000001","ro":false,"rm":false,"fstype":null,"label":null,"parttype":null,"mountpoints":[],
   "children":[
    {"name":"sda1","path":"/dev/sda1","type":"part","size":272629760,"model":null,"ro":false,"rm":false,"fstype":"vfat","label":null,"parttype":"c12a7328-f81f-11d2-ba4b-00a0c93ec93b","mountpoints":[]},
    {"name":"sda2","path":"/dev/sda2","type":"part","size":16777216,"model":null,"ro":false,"rm":false,"fstype":null,"label":null,"parttype":"e3c9e316-0b5c-4db8-817d-f92df00215ae","mountpoints":[]},
@@ -176,6 +177,8 @@ tree() {
 #!/bin/bash
 echo "verified-pull $*" >> "$CALLS"
 [ -z "${PULL_FAILS:-}" ] || exit 2
+# While the image is pulled, another disk takes the name.
+[ -z "${PULL_SWAPS:-}" ] || sed 's|QEMU HARDDISK|OTHER DISK|; s|64000000000|128000000000|' "$FIXTURE" > "$FIXTURE.new" && mv "$FIXTURE.new" "$FIXTURE"
 # While the image is pulled, something mounts the disk.
 [ -z "${PULL_MOUNTS:-}" ] || sed 's|"mountpoints":\[\]|"mountpoints":["/mnt"]|' "$FIXTURE" > "$FIXTURE.new" && mv "$FIXTURE.new" "$FIXTURE"
 printf 'b%.0s' $(seq 64)
@@ -216,6 +219,11 @@ run() {
   local tree="$1"
   shift
   reset_run
+  if [ -n "${PRELOG:-}" ]; then
+    mkdir -p "$t/log"
+    : > "$t/log/install.log"
+    chmod 0644 "$t/log/install.log"
+  fi
   ANSWER="$key" TIMEOUT=60 python3 -I tools/install/pty-run.py "$t/transcript" \
     bash -c '"$@"; exit $?' _ "$t/$tree/tools/install/nyra-install.sh" "$@" --events-fd 3 --answers-fd 4 \
     3> "$t/events" 4< "$t/answers" && rc=0 || rc=$?
@@ -334,15 +342,16 @@ sde false too_small 32
 sdf false in_use -'
 [ "$summary" = "$want" ] || { printf '%s\n' "$summary"; fail "disks: not the disks that can be chosen and why"; }
 jq -e '
-  .[0] == {name: "sda", path: "/dev/sda", bytes: 500107862016, model: "Samsung SSD 870 EVO", removable: false,
+  .[0] == {name: "sda", path: "/dev/sda", bytes: 500107862016, model: "Samsung SSD 870 EVO",
+           serial: "S5H2NJ0N", wwn: "0x5002538f", ptuuid: "6f3c1d2e-0000-4000-8000-000000000001", removable: false,
            eligible: true, reason: null, parts: [
     {label: "", fs: "vfat", bytes: 272629760, microsoft: false},
     {label: "", fs: "", bytes: 16777216, microsoft: true},
     {label: "Windows (C:)", fs: "ntfs", bytes: 499000000000, microsoft: true}]}
-  and .[1].model == "WD \"Black\" SN850" and .[1].parts == []
+  and .[1].model == "WD \"Black\" SN850" and .[1].parts == [] and .[1].serial == null
   and .[2].removable == true and .[2].parts == [{label: "NYRA-ISO", fs: "iso9660", bytes: 30000000000, microsoft: false}]' \
   <<< "$out" > /dev/null || { printf '%s\n' "$out"; fail "disks: a disk is not as the text installer reads it"; }
-echo "disks: eligible or not and why, the partitions, quotes in a model, no loop device or optical drive"
+echo "disks: eligible or not and why, the partitions, which disk it is, quotes in a model, no loop device, optical drive or zram"
 
 # --- install, the whole way --------------------------------------------------------------------------
 answers /dev/vda /dev/vda tpm
@@ -434,7 +443,13 @@ refused_install "/dev/vda cannot be installed on: in_use"
 called '^verified-pull ' && ! called '^sfdisk' || fail "a disk that was mounted during the pull was written to"
 [ "$(disk_hash)" = "$hash" ] || fail "the disk was written to after being mounted"
 cp "$t/one-disk.good" "$t/one-disk.json"
-echo "install: the disk is looked at again after the pull"
+# Another disk (another model and size) has the name by the time the image is pulled.
+PULL_SWAPS=1 run ok install
+refused_install "/dev/vda is not the disk that was chosen: it changed"
+called '^verified-pull ' && ! called '^sfdisk' || fail "a disk that was swapped during the pull was written to"
+[ "$(disk_hash)" = "$hash" ] || fail "another disk was written to"
+cp "$t/one-disk.good" "$t/one-disk.json"
+echo "install: the disk is looked at again after the pull, and must be the same one"
 # Answers that are not what protocol 1 says. The log says so and holds none of what was sent.
 bad_answers() { # bad_answers NAME JQ_EDIT: the good answers, changed
   answers /dev/vda /dev/vda tpm
@@ -458,6 +473,25 @@ bad_answers "the name root" '.admin_name = "root"'
 bad_answers "an uppercase name" '.admin_name = "Maria"'
 bad_answers "a name with a newline" '.admin_name = "maria\n"'
 bad_answers "a number for a password" '.admin_password = 123456789012'
+# The line as text: what jq alone would take, and the protocol does not.
+raw_answers() { # raw_answers NAME TEXT [MESSAGE]
+  printf '%s\ngo\ngo\n' "$2" > "$t/answers.in"
+  refuse "${3:-the answers are not the answers of protocol 1}"
+  echo "  ($1)"
+}
+answers /dev/vda /dev/vda tpm
+good="$(head -n 1 "$t/answers.in")"
+raw_answers "a value before the object" "1 $good"
+raw_answers "a string before the object" "\"x\" $good"
+raw_answers "the object twice" "$good $good"
+raw_answers "an empty object after" "$good {}"
+raw_answers "garbage after" "${good}x"
+raw_answers "a brace after" "$good}"
+raw_answers "a key twice, the last one right" "{\"device\":\"/dev/nothing\",${good#\{}"
+raw_answers "a key twice, the first one right" "${good%\}},\"confirm\":\"/dev/nothing\"}"
+raw_answers "an array" "[$good]"
+raw_answers "a device that is too long" "${good/\/dev\/vda/\/dev\/$(printf 'v%.0s' $(seq 40))}"
+raw_answers "a line of more than 4096 characters" "${good%\}}$(printf ' %.0s' $(seq 4200))}" "the answers are longer than 4096 characters"
 echo '{"device":' > "$t/answers.in"
 refuse "the answers are not the answers of protocol 1"
 : > "$t/answers.in"
@@ -515,6 +549,36 @@ cp "$t/answers.nogo" "$t/answers.in"
 run ok install
 [ "$rc" = 11 ] && ! called 'recovery-show' || fail "something else than go: status $rc"
 echo "a handoff with something else than go: no key on the terminal"
+
+# --- before the first write: the terminal, the list of names, the log -----------------------------------
+# No terminal to hand the key over to: found before anything is written, not at the handoff.
+answers /dev/vda /dev/vda tpm
+reset_run
+hash="$(disk_hash)"
+setsid -w "$t/ok/tools/install/nyra-install.sh" install --events-fd 3 --answers-fd 4 3> "$t/events" 4< "$t/answers" \
+  > /dev/null 2>&1 < /dev/null && rc=0 || rc=$?
+events="$(cat "$t/events")"
+refused_install "there is no terminal to hand over"
+untouched "$hash"
+echo "install: no terminal is found before the disk is touched"
+# A list of names that cannot be read is not an empty list.
+mkdir "$t/ok/reserved-names"
+sh_ok ok check
+[ "$rc" = 1 ] && [ -z "$out" ] && grep -qF 'reserved-names is not a regular file' <<< "$err" || fail "check with a directory as the list of names: $rc $out $err"
+run ok install
+refused_install "reserved-names is not a regular file"
+rmdir "$t/ok/reserved-names"
+printf 'maria\r\n' > "$t/ok/reserved-names"
+sh_ok ok check
+[ "$(jq -c .reserved <<< "$out")" = '["maria\r"]' ] || fail "check reads the names of the system differently: $out"
+run ok install
+[ "$rc" = 0 ] || fail "install reads the names of the system differently from check ($rc)"
+rm "$t/ok/reserved-names"
+echo "the list of names: unreadable is fatal, and check and install read the lines the same way"
+# A log that was there already is made private.
+PRELOG=1 run ok install
+[ "$rc" = 0 ] && [ "$(stat -c %a "$t/log/install.log")" = 600 ] || fail "an old log is not private ($(stat -c %a "$t/log/install.log"))"
+echo "the log is private even if it was there before"
 
 # --- mok-import --------------------------------------------------------------------------------------
 # No answers: the only line it reads is go.

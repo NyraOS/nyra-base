@@ -36,7 +36,8 @@ docs/SIGNING.md). The facts about the machine are not refusals: the program deci
   fingerprint of `nyra.crt`, the certificate that `install` and `mok-import` ask for as a Machine Owner
   Key; it has been checked against docs/SIGNING.md.
 - `reserved`: the names of the system, which an administrator cannot take, one per line of the file
-  `reserved-names` at the root of the tree (an empty list if the tree has none).
+  `reserved-names` at the root of the tree (an empty list if the tree has no such file; a file that
+  cannot be read, or that is not a regular file, makes `check` fail).
 
 ## `disks`
 
@@ -45,7 +46,8 @@ devices, optical drives and zram are not listed), in the order of `lsblk`.
 
 ```json
 [{"name": "sda", "path": "/dev/sda", "bytes": 500107862016, "model": "Samsung SSD 870 EVO",
-  "removable": false, "eligible": true, "reason": null,
+  "serial": "S5H2NJ0N", "wwn": "0x5002538f", "ptuuid": "6f3c1d2e-...", "removable": false,
+  "eligible": true, "reason": null,
   "parts": [{"label": "Windows (C:)", "fs": "ntfs", "bytes": 499000000000, "microsoft": true}]}]
 ```
 
@@ -58,8 +60,11 @@ devices, optical drives and zram are not listed), in the order of `lsblk`.
 | `read_only` | it is read-only |
 | `too_small` | it is under 32 GB; `min_gb` holds the minimum |
 
-`microsoft` is true for a partition of type "Microsoft reserved" or "Microsoft basic data". `fs`,
-`label` and `model` are text of the disk and are escaped as JSON: they can hold anything.
+`microsoft` is true for a partition of type "Microsoft reserved" or "Microsoft basic data". `serial`,
+`wwn` and `ptuuid` (the GUID of the partition table) are null if the disk has none; with the rest of the
+entry they say which disk it is. `fs`, `label` and `model` are text of the disk and are escaped as
+JSON: they can hold anything, control characters included, which a program must remove before it
+draws them.
 
 ## `install --events-fd N --answers-fd M`
 
@@ -79,7 +84,10 @@ not root) exits 1 with no event. Anything after that is reported as below.
 `confirm` is the path the owner typed (the program puts `/dev/` in front of the name); it must be the
 same as `device`, which must be a disk that `disks` lists as eligible right now. `unlock` is `tpm` or `password`; with `password` there
 is also `disk_password`. Names are `^[a-z][a-z0-9_-]{0,31}$`, not `root` and not in `reserved`.
-Passwords are 12 to 64 printable ASCII characters. Anything else, a field more or less, is refused.
+Passwords are 12 to 64 printable ASCII characters; paths are `/dev/` and 1 to 32 more characters from
+`A-Za-z0-9._-`. The line is at most 4096 characters and exactly one JSON value: a line with several
+values, a key twice, a field more or less, or anything after the object is refused. The script parses
+it once and takes the verdict and the fields from that one reading.
 
 - The line is read into a variable, checked by `jq` through a pipe and dropped. It is never an
   argument, never in the environment, never in the log.
@@ -87,6 +95,12 @@ Passwords are 12 to 64 printable ASCII characters. Anything else, a field more o
   a password must not be installed as a TPM-only disk), and the administrator is checked and not
   created.
 - A wrong `confirm` is refused before anything is written, like a disk that is not eligible.
+- The whole entry of `disks` for the chosen disk is kept, and checked again after the image is pulled,
+  just before the first write: it must be identical (the same model, size, serial, partitions), or
+  the installation stops with `fail` `verify` and exit 10. A different disk that took the name in the
+  meantime is not erased.
+- The terminal is looked at before that, too: if `/dev/tty` cannot be opened, or the process is not in
+  its foreground process group, the installation stops with exit 10 and nothing is written.
 
 **Events.** One JSON object per line on the events descriptor. Nothing of the text a person reads is in
 them: that is in the log.
@@ -134,8 +148,10 @@ failure; the handoff says so.
 terminal with stand-ins for the machine and the steps of the image: the JSON of `check` and `disks`;
 the events of a whole installation in order, and the status, the id and `disk_changed` of a failure at
 each step; the refusal, with the disk's first MiB unchanged, of a wrong confirmation, of a disk that
-is in use, read-only, too small, the one the machine started from, or one that was mounted during
-the pull, of a machine without Secure Boot, a TPM or memory, of answers that are not complete; that
+is in use, read-only, too small or the one the machine started from, of a disk that was mounted
+during the pull or replaced by another one (another model and size) under the same name, of a machine
+without Secure Boot, a TPM or memory, of answers that are incomplete, hold two values or a key twice,
+have trailing text or are too long, and of an installation without a terminal; that
 the recovery key is on the terminal after `go` and in no file, event or log; and that no password is in
 an argument, the environment, `ps` or any file. The real steps are tested as before
 (`tools/install/test-recovery-key.sh`, `tools/install/test-verified-pull.sh`,

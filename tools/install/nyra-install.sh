@@ -64,7 +64,7 @@ in_image_timeout=0
 # changed: the disk was written to and the installation is not finished. touched: it was, at any time
 # (exit status 11, disk_changed in the event fail). own_secrets: $secrets is this run's, to remove.
 # handoff_open: the terminal is not the installer's. fail_id: what the event fail names.
-device="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open="" fail_id=verify
+device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open="" fail_id=verify
 
 # --- cleanup ---------------------------------------------------------------------------------------
 cleanup() {
@@ -182,6 +182,7 @@ if [ -n "$events_fd" ]; then
   chmod 0700 "$log_dir"
   [ "$(findmnt -no FSTYPE -T "$log_dir")" = tmpfs ] || die "$log_dir is not in memory"
   ( umask 077; : >> "$log_dir/install.log" )
+  chmod 0600 "$log_dir/install.log"
   exec 9>> "$log_dir/install.log"
   logfd=9
   exec >&9 2>&9 < /dev/null
@@ -246,9 +247,9 @@ elif [ "$cmd" = install ]; then
   [ "$mem_tenths" -ge $((min_memory_gib * 10)) ] \
     || die "this machine has $((mem_tenths / 10)).$((mem_tenths % 10)) GiB of memory; the installer needs $min_memory_gib GiB"
   fail_id=verify
-  if [ -f "$checkout/reserved-names" ]; then
-    ! grep -qxF -- "$a_admin_name" "$checkout/reserved-names" || die "the administrator name is a name of the system"
-  fi
+  jq -e --arg name "$a_admin_name" 'index($name) == null' <<< "$(reserved_names)" > /dev/null \
+    || die "the administrator name is a name of the system"
+  tty_ready
   chosen_disk
   device="$a_device"
 fi
