@@ -140,4 +140,8 @@ mokutil --test-key nyra.der; mokutil --import nyra.der
   root in the guest can write the firmware's variable store, Secure Boot's `db` and the MOK list
   included: there, Secure Boot variables are not protected against a compromised running system.
   What remains is the TPM's PCR 7 binding: a changed `db` or MOK list makes the disk ask for its
-  recovery key (docs/ARM64.md, "Releases"). arm64 releases are not published yet.
+  recovery key (docs/ARM64.md, "Releases").
+- arm64 releases are published as `nyra-base-arm64` to the `dev` channel only. The installer's arm64
+  path (the verified pull, LUKS, the TPM, the recovery key) is not tested in CI: GitHub's arm64
+  runners have no KVM and QEMU's `virt` machine has no TPM the arm64 kernel drives (docs/ARM64.md). Do
+  not rely on it for data you cannot lose until that is covered.
