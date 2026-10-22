@@ -184,6 +184,7 @@ check image-yml-change "Self-test of the image.yml change check (ci/image-yml-ch
 check release-cache "Release jobs unpack no cache (ci/check-release-cache.py)" "python3 -I ci/check-release-cache.py --self-test && python3 -I ci/check-release-cache.py"
 check check-artifact "Self-test of the artifact check (ci/check-artifact.sh)" "ci/check-artifact.sh --self-test"
 check release-tree "Offline test of the installer's release tree mode (tools/install/test-release-tree.sh)" "tools/install/test-release-tree.sh"
+check machine-interface "Offline test of the installer's interface for programs (tools/install/test-machine-interface.sh)" "tools/install/test-machine-interface.sh"
 check sign-uki "Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)" "tools/signing/test-sign-uki.sh"
 check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_engine_lint
 check sign-jobs "Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"
