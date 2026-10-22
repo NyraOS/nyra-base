@@ -135,6 +135,21 @@ argon2id_memory() {
   echo 0
 }
 
+# slot_kdf ROOT SLOT: the key derivation of key slot SLOT, as "TYPE MEMORY" (memory in KiB), from
+# cryptsetup's own dump of the header (the image has no jq); "none 0" if there is no such slot.
+slot_kdf() {
+  local in="" word1 word2 type=none memory=0
+  while read -r word1 word2 _; do
+    case "$word1" in
+      [0-9]*:) in="${word1%:}" ;;
+      Tokens: | Digests:) in="" ;;
+      PBKDF:) [ "$in" != "$2" ] || type="$word2" ;;
+      Memory:) [ "$in" != "$2" ] || memory="$word2" ;;
+    esac
+  done < <(cryptsetup luksDump "$1")
+  echo "$type $memory"
+}
+
 # password-memory: asks, before anything is written to the disk, whether this machine can derive a
 # key from a password with at least 256 MiB of memory. Exit 3 if not.
 password-memory() {
@@ -147,18 +162,23 @@ password-memory() {
 # password-add DISK KEYFILE PWFILE: the password in PWFILE (exactly its bytes, no newline) as key slot
 # 1, argon2id with cryptsetup's benchmark (about 2 s, up to 1 GiB), authorized by KEYFILE (key slot 0).
 # Exit 4, the disk unchanged: a password that is not 12 to 64 printable ASCII characters (the rules
-# of whatever asks for it; the initrd reads a US keyboard). The password must unlock its slot. That
-# the derivation came out with at least 256 MiB is for check_luks_header_password
-# (tools/install/lib.sh), which the caller runs on the finished header; password-memory said so
-# beforehand, on the same machine.
+# of whatever asks for it; the initrd reads a US keyboard). Exit 3, the new slot removed again: its
+# key derivation is not argon2id with at least 256 MiB. The password must unlock its slot.
+# check_luks_header_password (tools/install/lib.sh) checks the finished header once more.
 password-add() {
-  local root key="$2" pw="$3" size
+  local root key="$2" pw="$3" size type memory
   root="$(part "$1" 2)"
   size="$(wc -c < "$pw")"
   { [ "$size" -ge 12 ] && [ "$size" -le 64 ] && [ "$(LC_ALL=C tr -d ' -~' < "$pw" | wc -c)" = 0 ]; } \
     || { echo "in-image: the password is not 12 to 64 printable ASCII characters" >&2; exit 4; }
   cryptsetup luksAddKey -q --key-file "$key" --key-slot "$password_slot" \
     --pbkdf argon2id --iter-time 2000 --pbkdf-memory 1048576 "$root" "$pw"
+  read -r type memory < <(slot_kdf "$root" "$password_slot")
+  if [ "$type" != argon2id ] || ! [ "$memory" -ge "$password_memory_floor" ] 2> /dev/null; then
+    cryptsetup luksKillSlot -q "$root" "$password_slot"
+    echo "in-image: the password's key slot is $type with $memory KiB, not argon2id with $password_memory_floor or more: removed" >&2
+    exit 3
+  fi
   cryptsetup open --test-passphrase --key-slot "$password_slot" --key-file "$pw" "$root"
 }
 

@@ -37,11 +37,11 @@ fail() {
 step_fails() {
   local want="$1" what="$2" status=0
   shift 2
-  in_image -- "$@" > /dev/null 2>&1 || status=$?
+  in_image -- "$@" > /dev/null 2> "$secrets/err" || status=$?
   if [ "$want" = any ]; then
     [ "$status" != 0 ] || fail "$what: not refused"
   else
-    [ "$status" = "$want" ] || fail "$what: exit $status, not $want"
+    [ "$status" = "$want" ] || fail "$what: exit $status, not $want ($(tail -n 3 "$secrets/err" | tr '\n' ' '))"
   fi
   echo "refused (exit $status): $what"
 }
@@ -57,11 +57,12 @@ on_terminal() {
   [ "$status" != 124 ] || fail "$1 hung on the terminal"
   return "$status"
 }
-# leaked STRING: succeeds if STRING is in the journal or in what podman keeps of the containers.
+# leaked FILE: succeeds if a line of FILE (the strings are never on a command line) is in the journal or
+# in what podman keeps of the containers.
 leaked() {
   sudo journalctl --sync || true
-  sudo journalctl -b --no-pager | grep -qF -- "$1" && return 0
-  sudo grep -rqF -- "$1" /var/lib/containers/storage/overlay-containers && return 0
+  sudo journalctl -b --no-pager | grep -qF -f "$1" && return 0
+  sudo grep -rqF -f "$1" /var/lib/containers/storage/overlay-containers && return 0
   return 1
 }
 # sample FILE: every process's arguments, every 50 ms, into FILE, until the sampler is killed.
@@ -81,6 +82,7 @@ mkdir -m 0700 "$secrets"
 password="$(python3 -I -c 'import secrets; print("".join(secrets.choice("abcXYZ0123 _-.,;:!?@#%&*()+=") for _ in range(24)), end="")')"
 wrong="${password}x"
 printf %s "$password" > "$secrets/password"
+printf '%s\n' "$password" > "$secrets/password-pattern"
 truncate -s 3G "$disk"
 partition_disk "$disk"
 loop="$(sudo losetup -P --show -f "$disk")"
@@ -91,7 +93,8 @@ for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 
 # given on a command line.
 marker="nyra-password-control-$(head -c 16 /dev/urandom | base64 | tr -dc a-z0-9)"
 sudo podman run --name nyra-log-control --pull=never --log-driver=k8s-file "$image" echo "$marker" > /dev/null
-leaked "$marker" || fail "the search for a leaked password does not find a logged string"
+printf '%s\n' "$marker" > "$secrets/marker"
+leaked "$secrets/marker" || fail "the search for a leaked password does not find a logged string"
 sudo podman rm nyra-log-control > /dev/null
 sample "$secrets/control-ps"
 sleep 1
@@ -104,7 +107,8 @@ in_image -- format "$loop" /secrets/install-key
 [ "$(slots)" = '["0"]' ] || fail "a new disk has key slots $(slots), not only 0"
 
 # The memory threshold: this machine's own benchmark passes, and a stand-in cryptsetup, first in the
-# container's PATH, whose benchmark is that of a machine with little memory, is refused.
+# container's PATH, is refused: its benchmark is that of a machine with little memory (password-memory
+# exits 3), and it makes a key slot with 64 MiB (password-add removes the slot again and exits 3).
 in_image -- password-memory
 stub="$secrets/cryptsetup-stand-in"
 cat > "$stub" <<'STUB'
@@ -113,14 +117,27 @@ if [ "$1" = benchmark ]; then
   echo "argon2id      1 iterations, 100000 memory, 2 parallel threads (CPUs) for 256-bit key (requested 2000 ms time)"
   exit 0
 fi
-exec /usr/sbin/cryptsetup "$@"
+args=()
+for a in "$@"; do
+  [ "$a" = 1048576 ] && a=65536
+  args+=("$a")
+done
+# The real one: the next cryptsetup in the PATH, without this directory.
+PATH="${PATH#/nyra-stand-in:}"
+exec cryptsetup "${args[@]}"
 STUB
 chmod 0755 "$stub"
+# Not under /usr/local: in an image that keeps /usr/local elsewhere there is nothing to mount on.
+stand_in=(-v "$stub:/nyra-stand-in/cryptsetup:ro" -e PATH=/nyra-stand-in:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)
 status=0
-in_image -v "$stub:/usr/local/bin/cryptsetup:ro" -e PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  -- password-memory > /dev/null 2>&1 || status=$?
-[ "$status" = 3 ] || fail "password-memory with a benchmark of 100000 KiB: exit $status, not 3"
+in_image "${stand_in[@]}" -- password-memory > /dev/null 2> "$secrets/err" || status=$?
+[ "$status" = 3 ] || fail "password-memory with a benchmark of 100000 KiB: exit $status, not 3 ($(tail -n 3 "$secrets/err" | tr '\n' ' '))"
 echo "refused (exit 3): a machine whose benchmark settles on 100000 KiB"
+status=0
+in_image "${stand_in[@]}" -- password-add "$loop" /secrets/install-key /secrets/password > /dev/null 2> "$secrets/err" || status=$?
+[ "$status" = 3 ] || fail "password-add with a key slot of 64 MiB: exit $status, not 3 ($(tail -n 3 "$secrets/err" | tr '\n' ' '))"
+[ "$(slots)" = '["0"]' ] || fail "password-add left $(slots) after a key slot of 64 MiB"
+echo "refused (exit 3), the key slot removed again: a password slot made with 64 MiB"
 
 # Passwords that are refused leave the disk as it was.
 bad() { # bad DESCRIPTION PRINTF_ARGUMENT...: a password file made by printf
@@ -167,6 +184,9 @@ refused() { # refused DESCRIPTION JQ_FILTER: the header with the filter applied 
   echo "refused by the header check: $1"
 }
 refused "256 MiB less one KiB of memory" '.keyslots["1"].kdf.memory = 262143'
+refused "the memory as a string (jq: greater than any number)" '.keyslots["1"].kdf.memory = "1"'
+refused "the key size as a string" '.keyslots["1"].key_size = "64"'
+refused "the time cost as a string" '.keyslots["1"].kdf.time = "0"'
 refused "no memory in the key derivation" 'del(.keyslots["1"].kdf.memory)'
 refused "pbkdf2 for the password" '.keyslots["1"].kdf = {type: "pbkdf2", hash: "sha256", iterations: 1000, salt: "AAAA"}'
 refused "argon2i for the password" '.keyslots["1"].kdf.type = "argon2i"'
@@ -183,7 +203,7 @@ refused "a key of 256 bits" '.keyslots["1"].key_size = 32'
 printf '%s\n%s\n%s\n' "$password" "$(cat "$secrets/install-key")" "$(cat "$secrets/recovery-key")" > "$secrets/patterns"
 found=""
 if grep -q -a -F -f "$secrets/patterns" "$secrets/ps"; then found+=" the arguments of a process"; fi
-if leaked "$password"; then found+=" the journal or a container's log"; fi
+if leaked "$secrets/password-pattern"; then found+=" the journal or a container's log"; fi
 root_start="$(sfdisk -J "$disk" | jq '.partitiontable.partitions[1].start')"
 # grep -c reads to the end: with -q, head would end on SIGPIPE, which pipefail counts as a failure.
 n="$(head -c $(((root_start + 32768) * 512)) "$disk" | grep -c -a -F -f "$secrets/patterns" || true)"
