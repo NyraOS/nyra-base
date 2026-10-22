@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The text installer on the console %I (tty1, ttyS0): started by nyra-installer-consoles.service for each
+# console the kernel writes to. It takes the place of the login prompt: there is no login and no
+# password on this system, and a shell comes only from the installer's own menu (docs/ISO.md).
+# Leaving the installer without a reboot starts it again, never a prompt.
+[Unit]
+Description=Nyra OS installer on %I
+Wants=nyra-registry.service var-lib-containers.mount
+After=nyra-registry.service var-lib-containers.mount
+Conflicts=getty@%i.service serial-getty@%i.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/bin/nyra-installer
+Restart=always
+RestartSec=1
+Environment=LANG=C.UTF-8
+Environment=TERM=vt220
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/%I
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+# What the installer trusts is in the RAM disk (docs/ISO.md); neither it nor a shell it opens can change it.
+ReadOnlyPaths=/usr/lib/nyra/release

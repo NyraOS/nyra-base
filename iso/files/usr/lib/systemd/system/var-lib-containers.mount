@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Where the verified pull puts the image: in memory, because the disk is not written until the
+# installation begins. The system itself is in memory too, so this is the RAM the installer needs.
+[Unit]
+Description=Container storage in memory
+
+[Mount]
+What=tmpfs
+Where=/var/lib/containers
+Type=tmpfs
+Options=mode=0755,size=75%

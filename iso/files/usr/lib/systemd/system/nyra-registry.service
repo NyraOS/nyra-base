@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The registry that serves the signed image from the ISO, as updates.nyraos.com (/etc/hosts), on 127.0.0.1
+# only: the installer verifies the pull offline with the signature policy of the release tree, so
+# nothing it serves is trusted for being served (tools/install/verified-pull.sh). It reads the ISO and
+# writes nothing.
+[Unit]
+Description=Registry of the image on the installer medium (127.0.0.1)
+Requires=run-iso.mount
+After=run-iso.mount
+
+[Service]
+ExecStart=/usr/bin/docker-registry serve /usr/lib/nyra/iso/registry.yml
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+Restart=on-failure

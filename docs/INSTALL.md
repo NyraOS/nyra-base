@@ -1,5 +1,8 @@
 # Installing Nyra OS from a release
 
+This page installs from a Debian live session with a script. To install from the Nyra installer ISO, which
+needs no terminal and no network, see [docs/ISO.md](ISO.md), "Trying the ISO".
+
 `tools/install/nyra-install.sh` installs a published release (`updates.nyraos.com/nyra-base`, or
 `nyra-base-arm64` on an aarch64 machine: the installer takes the repository from the machine's
 architecture, never from an argument) on the
