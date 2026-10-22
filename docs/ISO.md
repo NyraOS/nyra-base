@@ -279,6 +279,15 @@ virtual machine Secure Boot is not protected against a compromised running syste
 binding of the disk to PCR 7: a changed database makes the disk ask for the recovery key. Do not read more
 security into a virtual machine than that.
 
+**The ISO that passes between the jobs** is the artifact `nyra-installer-iso-arm64-untested-unsigned-<mode>`
+(`<mode>` is `release` or `test`, file `nyra.iso`, one day): it is uploaded before any boot, it is built from
+the inputs of the run (a pull request's too, trusting a key made for the run in test mode) and nobody has
+signed it, and the name says so. The boot and keep jobs take the name from the build job's output. The ISO
+that main keeps for trying (`nyra-installer-iso-arm64-unsigned-<mode>`, 14 days) is the same file, kept only
+after the five boots and the scan (below) passed. The artifacts of the two altered ISOs are
+`nyra-installer-iso-arm64-untested-unsigned-<mode>-layer` and `-digest`, and the bill of materials the scan
+reads is `...-materials`.
+
 **What the tests do not prove.** Real firmware, UTM (a Mac is not a CI runner), MokManager, and the
 installation itself on aarch64 (an installation with a disk password does not need a TPM, but it is not run
 here yet). The AAVMF and UTM firmware have no SMM and no secure world, so in these virtual machines root
@@ -326,6 +335,8 @@ to its measurements.
 Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
 unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
+- **aarch64**: an installation on aarch64 (none is run on that architecture yet). The scan and the altered
+  ISOs below are done for both architectures.
 - **The tests that need an installation**: the recovery key absent from the journal and the installation
   itself (password and TPM), with `mokutil --sb-state` and the staged Machine Owner Key, in the installer
   session. (Done already: the vulnerability scan, the altered layer, another digest in `RELEASE`, the
