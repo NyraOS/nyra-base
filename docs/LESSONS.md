@@ -166,6 +166,23 @@ Each line is something that broke or surprised us once.
   with root locked: no way out but the boot menu (Titanic T8). The "Reset settings" profile was hit too,
   since `/etc/fstab` is read on every boot; it has `fstab=no` now (docs/BOOT.md, "Mounts from
   /etc/fstab").
+- **A test root that binds the host's `/usr` must not be removed by the shell inside its mount
+  namespace.** A bind mount is on the host's device, so `rm -rf --one-file-system` walks into it, and as
+  real root (CI) it would delete the runner's `/usr`. `tools/vm/test-first-admin.sh` makes its
+  directories outside the namespace and removes them there, after the namespace (and its mounts) is
+  gone.
+- **`/usr/bin/awk` is a link through `/etc/alternatives`.** A script that must run with an emptied or
+  missing `/etc` (first boot, Reset settings) uses `sed`, `cut` or `mawk` itself.
+- **`systemd-firstboot` refuses a keymap that is not installed** (`--keymap=us` fails with "Keymap us
+  is not installed") and so does the whole command, and systemd 255 (Ubuntu 24.04) also refuses
+  `--locale=en_US.UTF-8` where that locale is not installed, and writes the time zone link as
+  `/usr/share/zoneinfo/Etc/UTC`, not `UTC`. Each setting goes in a command of its own, and a test
+  compares the file the link leads to, not the link.
+- **The image's `/etc/hostname` is an empty file** (the build container's bind mount leaves one), and its
+  `/etc/localtime` already links to `Etc/UTC`. `systemd-firstboot` leaves a file that exists, so an empty
+  host name stayed empty until the script wrote over it. Test fixtures should be the image's `/etc`, and
+  the image's layers can be unpacked (`podman unshare tar -xzf` of each layer of the OCI archive of the
+  build) to run a script with the image's own tools, without a VM.
 
 ## Shutdown
 - **A console login could hold the shutdown for 90 s** (about one power-off in ten in CI). After

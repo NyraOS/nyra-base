@@ -783,6 +783,18 @@ jobs:
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/vm/reset-settings.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
+      # The first administrator on a disk that starts again (tools/vm/first-admin.sh, docs/BOOT.md, "The
+      # first administrator"): the account made at the first boot before systemd-firstboot, kept by Reset
+      # settings, and a record that is not as the installer leaves it refused.
+      - name: First administrator, Reset settings and a refused record (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          UKI_CERT: ${{ needs.build.outputs.uki_cert }}
+        run: |
+          base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+          tools/vm/first-admin.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
       - name: Boot counting across updates (docs/BOOT.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -1072,6 +1084,15 @@ jobs:
         if: ${{ !cancelled() && steps.load.outcome == 'success' }}
         timeout-minutes: 10
         run: tools/install/test-password.sh localhost/nyra-base:ci "$WORK"
+
+      # The first administrator's record and the list of reserved names (tools/install/test-admin-record.sh,
+      # docs/BOOT.md, "The first administrator"), made with the image's own tools: a yescrypt hash from a
+      # password on the standard input, refusals of the names of the system and of bad passwords, and the
+      # password in no process's arguments, log or journal.
+      - name: First administrator's record and reserved names (docs/BOOT.md)
+        if: ${{ !cancelled() && steps.load.outcome == 'success' }}
+        timeout-minutes: 10
+        run: tools/install/test-admin-record.sh localhost/nyra-base:ci "$WORK"
 
       # Titanic T10, the rotation of the TPM policy key with a PIN (docs/BOOT.md, "Rotating the policy
       # key"; the same script as the rotation in encryption-tpm): test versions signed with policy keys

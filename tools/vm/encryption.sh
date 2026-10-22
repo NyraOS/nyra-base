@@ -17,9 +17,15 @@
 #   - three wrong passwords: asked again (systemd-cryptsetup would give up), and the password unlocks it;
 #   - no root partition (its type changed on a copy): emergency mode after 90 s, through
 #     nyra-root-wait.service, then a reboot;
-#   - neither the password nor the recovery key is anywhere in the serial logs, in the unencrypted
-#     part of the disk (ESP, LUKS2 header) or in the decrypted root file system (the journal of the
-#     first boot included).
+#   - the first administrator, as the installer leaves it (docs/BOOT.md, "The first administrator"): the
+#     record is in the encrypted volume; the first boot makes the account in the group sudo with a
+#     usable password, root stays locked, nobody has an empty password, the record is gone, the host
+#     name is nyra, nyra-first-admin.service and systemd-firstboot succeeded, and the account is still
+#     there after the later boots; the administrator's password opens the account (checked offline,
+#     with the image's own unix_chkpwd on the disk's /etc, so it is never typed on the console);
+#   - none of the three secrets (the password, the recovery key, the administrator's password) is
+#     anywhere in the serial logs, in the unencrypted part of the disk (ESP, LUKS2 header) or in the
+#     decrypted root file system (the journal of the first boot included).
 # The passphrase prompt is answered on the serial console (vm-boot.py). Secrets stay in a 0700
 # directory under WORKDIR and are deleted at the end, with the disk.
 #   tools/vm/encryption.sh IMAGE WORKDIR LOGDIR SUMMARY
@@ -34,10 +40,13 @@ trap 'sudo rm -rf "$secrets" "$work/disk.raw" "$work/header" "$work/header.json"
 # Letters and digits only: the initrd reads the keyboard as US, whatever the user's layout.
 password="$(python3 -I -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20)))')"
 printf %s "$password" > "$secrets/password"
+# The administrator's: printable ASCII with a space and symbols (the installer takes 12 to 64 of them).
+admin_password="$(python3 -I -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits + " _-.,;:!?@#%&*()+=") for _ in range(24)), end="")')"
+printf %s "$admin_password" > "$secrets/admin-password"
 start=$SECONDS
 tools/vm/install-encrypted.sh "$image" "$work" "$secrets"
 key="$(cat "$secrets/recovery-key")"
-printf '%s\n%s\n' "$password" "$key" > "$secrets/patterns"
+printf '%s\n%s\n%s\n' "$password" "$key" "$admin_password" > "$secrets/patterns"
 {
   echo "## Disk encryption without a TPM (Titanic T10)"
   echo
@@ -81,6 +90,9 @@ printf '| Check | Result |\n|---|---|\n| Partitions | ESP, root (Discoverable Pa
 tools/vm/test-console.sh "$image" "$work/disk.raw" "$work"
 ask="Please enter passphrase or recovery key for disk [^\r\n:]*:"
 running='s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; test "$s" = running'
+# chk COMMAND: the command for the guest, traced (set -x in a subshell), so a failure shows what failed.
+chk() { printf '( set -x; %s )' "$1"; }
+defaults='h="$(cat /etc/hostname)"; l="$(cat /etc/locale.conf 2>&1)"; echo "host name: [$h]; /etc/locale.conf: [$l]; /etc/localtime: $(readlink /etc/localtime)"; test "$h" = nyra && echo "$l" | grep -qx LANG=en_US.UTF-8 && cmp /etc/localtime /usr/share/zoneinfo/UTC && echo "the fixed defaults are set"'
 boot() { # boot NAME TITLE ARGS...: vm-boot.py on the encrypted disk
   local name="$1" title="$2"
   shift 2
@@ -93,6 +105,10 @@ boot password "Encrypted disk: the password (first boot)" --persist --poweroff \
   --command "$running" \
   --command 'findmnt -no SOURCE /sysroot && s="$(cryptsetup status root)" && echo "$s" && echo "$s" | grep -Eq "type: +LUKS2" && echo "$s" | grep -Eq "flags: +discards" && test "$(findmnt -no SOURCE /sysroot)" = /dev/mapper/root' \
   --command 'findmnt -n -t vfat /boot' \
+  --command "$(chk 'id maria && id -nG maria | tr " " "\n" | grep -qx sudo && passwd -S maria | grep -q " P " && passwd -S root | grep -q " L " && test "$(stat -c %U /var/home/maria)" = maria && echo "the administrator: an account in sudo with a password and a home; root locked"')" \
+  --command "$(chk '! cut -d: -f2 /etc/shadow | grep -qx "" && test ! -e /var/lib/nyra/first-admin && echo "nobody has an empty password; the record is gone"')" \
+  --command "$(chk "$defaults")" \
+  --command "$(chk 'for u in nyra-first-admin systemd-firstboot; do echo "$u: $(systemctl show -P ActiveState $u.service), $(systemctl show -P Result $u.service)"; test "$(systemctl show -P ActiveState $u.service)" = active && test "$(systemctl show -P Result $u.service)" = success; done; a=$(systemctl show -P ExecMainExitTimestampMonotonic nyra-first-admin.service); b=$(systemctl show -P ExecMainStartTimestampMonotonic systemd-firstboot.service); echo "the account was made at $a us, systemd-firstboot started at $b us"; test "$a" -gt 0 && test "$a" -le "$b"; journalctl -b -u nyra-first-admin.service -o cat --no-pager')" \
   || fail=1
 # Partitions someone adds to the disk while it is off: unencrypted swap, /var/tmp and /srv (their
 # Discoverable Partitions types). The image policy on the sealed command line has the running system
@@ -120,7 +136,8 @@ boot added "Encrypted disk: unencrypted partitions added to the disk are not use
   --command "GEN_ENV=SYSTEMD_PROC_CMDLINE=rw; u=\"\$($gen)\"; echo \"control, without the image policy: \$u\"; echo \"\$u\" | grep -q '\\.swap'" \
   || fail=1
 boot recovery-key "Encrypted disk: the recovery key" \
-  --chat "$ask=>$key" --chat-then-login --command "$running" || fail=1
+  --chat "$ask=>$key" --chat-then-login --command "$running" \
+  --command "$(chk 'id -nG maria | tr " " "\n" | grep -qx sudo && test ! -e /var/lib/nyra/first-admin && echo "the administrator is still there; nothing was made again"')" || fail=1
 boot later "Encrypted disk: a wrong password, then the recovery key 120 s later" \
   --chat "$ask=>wrong-$password" --chat "$ask=>@sleep 120 $key" --chat-then-login --command "$running" || fail=1
 boot three-wrong "Encrypted disk: three wrong passwords, then asked again, without a restart" \
@@ -165,11 +182,41 @@ EOF
 sudo losetup -d "$loop"
 found+="${inside:+ $inside}"
 if [ -n "$found" ]; then
-  echo "::error::The password or the recovery key was found in:$found"
+  echo "::error::The password, the recovery key or the administrator's password was found in:$found"
   printf '| Secrets | **found in:%s** |\n\n' "$found" >> "$summary"
   fail=1
 else
-  echo "encryption: neither the password nor the recovery key in the serial logs, the unencrypted part of the disk or the root file system"
-  printf '| Secrets | neither the password nor the recovery key in the serial logs, the ESP and LUKS2 header, or the decrypted root file system (the journal included) |\n\n' >> "$summary"
+  echo "encryption: none of the three secrets in the serial logs, the unencrypted part of the disk or the root file system"
+  printf '| Secrets | neither the password, nor the recovery key, nor the administrator'"'"'s password in the serial logs, the ESP and LUKS2 header, or the decrypted root file system (the journal included) |\n\n' >> "$summary"
 fi
+
+# The administrator's password opens the account that the first boot made, on the disk's own /etc, with
+# the image's unix_chkpwd (the disk's account files are bound over the container's); a wrong password and
+# an empty one do not.
+loop="$(sudo losetup -P --show -f "$work/disk.raw")"
+for _ in $(seq 50); do [ -b "${loop}p2" ] && break; udevadm settle --timeout=10 || true; sleep 0.2; done
+if admin="$(timeout 600 sudo podman run --rm -i --privileged --network none -e DM_DISABLE_UDEV=1 -v /dev:/dev -v "$secrets:/secrets:ro" "$image" \
+  bash -s "${loop}p2" <<'EOF'
+set -euo pipefail
+cryptsetup open --readonly --key-file /secrets/password "$1" nyra-check-root
+trap 'umount -q /etc/passwd /etc/shadow 2>/dev/null || true; umount -q /target 2>/dev/null || true; cryptsetup close nyra-check-root' EXIT
+mkdir -p /target && mount -o ro,noload /dev/mapper/nyra-check-root /target
+set -- /target/state/deploy/*/etc
+test "$#" = 1
+test ! -e /target/state/os/default/var/lib/nyra/first-admin
+mount --bind "$1/passwd" /etc/passwd && mount --bind "$1/shadow" /etc/shadow
+# unix_chkpwd reads one password, NUL-terminated, from the standard input.
+{ cat /secrets/admin-password; printf '\0'; } | /usr/sbin/unix_chkpwd maria nullok
+! { cat /secrets/admin-password; printf 'x\0'; } | /usr/sbin/unix_chkpwd maria nullok
+! printf '\0' | /usr/sbin/unix_chkpwd maria nullok
+echo "the administrator's password opens the account on the disk; a wrong one and an empty one do not"
+EOF
+)"; then
+  echo "encryption: $admin"
+  printf '| Administrator | %s |\n\n' "$admin" >> "$summary"
+else
+  echo "::error::The administrator's password does not open the account on the disk (or the record is still there)"
+  fail=1
+fi
+sudo losetup -d "$loop"
 exit "$fail"

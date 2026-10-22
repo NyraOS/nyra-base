@@ -122,6 +122,21 @@ check_etc_copy() {
   fi
 }
 
+# The first administrator's test runs the real useradd, chpasswd and systemd-firstboot in a root of its
+# own, in a mount namespace: as root in a user namespace here (podman unshare), as the runner's root in CI.
+check_first_admin() {
+  if [ -n "$IN_CI" ]; then
+    sudo -n tools/vm/test-first-admin.sh
+  elif [ "$(id -u)" = 0 ]; then
+    tools/vm/test-first-admin.sh
+  elif command -v podman >/dev/null; then
+    store unshare tools/vm/test-first-admin.sh
+  else
+    skip "needs a user namespace: install podman (podman unshare)"
+    return "$SKIPPED"
+  fi
+}
+
 check_engine_lint() {
   # The brackets keep this line from matching itself.
   if git grep -nE 'sbsign.*(--engin[e]| -[e]( |=|$)|pkcs1[1])' -- . ':!tools/signing/sign-uki.sh'; then
@@ -191,6 +206,8 @@ check() { IDS+=("$1"); TITLES+=("$2"); CMDS+=("$3"); LOCAL_ONLY+=("${4:-}"); }
 check shellcheck "shellcheck" check_shellcheck
 check security-defaults "Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)" "tools/vm/security-defaults.sh --self-test"
 check etc-copy "The copies of /etc, their restore, and which a run removes (tools/vm/test-etc-copy.sh)" check_etc_copy
+check first-admin "The first administrator: the account, the refusals, the fixed defaults (tools/vm/test-first-admin.sh)" check_first_admin
+check reserved-names "Offline test of the list of reserved names for the release tree (tools/install/test-reserved-names.sh)" "tools/install/test-reserved-names.sh"
 check network-health "Offline test of the network health check (tools/vm/test-network-health.sh)" "tools/vm/test-network-health.sh"
 check vm-boot "Self-test of the console matching (tools/vm/vm-boot.py)" "python3 -I tools/vm/vm-boot.py --self-test"
 check tpm-enroll "Offline test of the disk's TPM2 enrollment script (tools/vm/test-tpm-enroll.sh)" "tools/vm/test-tpm-enroll.sh"

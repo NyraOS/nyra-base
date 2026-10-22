@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The first administrator and the fixed defaults (docs/BOOT.md, "The first administrator"): only when the
+# installer left /var/lib/nyra/first-admin in the encrypted volume, after the system's own accounts
+# exist (sysusers) and before systemd-firstboot asks anything and before anyone can log in
+# (sysinit.target comes first). Not on the reset entry, whose first question is the reset's.
+[Unit]
+Description=Nyra: first administrator and fixed defaults
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/BOOT.md
+DefaultDependencies=no
+ConditionPathExists=/var/lib/nyra/first-admin
+ConditionPathIsReadWrite=/etc
+ConditionKernelCommandLine=!systemd.unit=nyra-reset-settings.target
+After=systemd-remount-fs.service systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=systemd-firstboot.service sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/nyra/first-admin
+StandardInput=null
