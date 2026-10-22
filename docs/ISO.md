@@ -133,8 +133,10 @@ Not tested in CI: MokManager, real firmware, a real stick, UTM, keyboards other 
 
 ## Limits
 
-- The image is held in memory twice: as the registry's files are read from the medium, and as the unpacked
-  image in the tmpfs. The installer needs the memory the `check` command reports as `mem_need_gib`, and the
-  ISO's tests record what the pull actually used in the job summary.
+- Memory: the installer system uses about 0.65 GiB at idle (measured in a VM with a small image); the
+  pull then holds the unpacked image in the tmpfs on `/var/lib/containers` (up to 75% of the memory). The
+  registry's files are read from the medium and are only in the page cache. The installer asks for the memory
+  that `check` reports as `mem_need_gib`; the boot test's summary records what a pull of the real image
+  used.
 - Debian's GRUB, shim and kernel are the pinned snapshot's. When Microsoft's or Debian's keys change (the
   Microsoft UEFI CA 2011 expires), the ISO needs a newer snapshot; nothing on it is signed by Nyra.
