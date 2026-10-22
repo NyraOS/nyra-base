@@ -2268,10 +2268,9 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
-          # The packages of the installer system, and the three of the boot files that reach the ISO (their
-          # dependencies stay in the build tree).
-          jq -s '.[0].packages += [.[1].packages[] | select(.name | IN("shim-signed", "shim-helpers-amd64-signed", "grub-efi-amd64-signed"))] | .[0]' \
-            "$WORK/iso/os/nyra-installer-os.manifest" "$WORK/iso/boot/nyra-installer-boot.manifest" > "$WORK/iso/manifest.json"
+          # The packages of the installer system, and the five of the boot tree whose files reach the ISO
+          # (GRUB and shim are known to the tracker by their source packages: ci/iso-manifest.sh).
+          ci/iso-manifest.sh "$WORK/iso/os/nyra-installer-os.manifest" "$WORK/iso/boot/nyra-installer-boot.manifest" "$WORK/iso/manifest.json"
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso "$WORK/iso/manifest.json" \
             "$WORK/iso/installer/Cargo.lock" "$WORK/iso/nyra-installer-iso.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$WORK/iso/nyra-installer-iso.cdx.json" "$RUNNER_TEMP/"

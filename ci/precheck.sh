@@ -94,20 +94,22 @@ check_actionlint() {
 
 # The test that needs root: in a user namespace (podman unshare), so that a script of the branch never
 # runs as the real root on a developer's machine. On the CI runner, root is the runner's, with sudo.
-# check_machine_interface: the offline test of the installer's interface needs jq (preinstalled on the
-# runner). Without one on this machine, the jq of the pinned image is used, from a temporary directory.
-check_machine_interface() {
+# with_jq COMMAND...: the offline tests that need jq (preinstalled on the runner). Without one on this
+# machine, the jq of the pinned image is used, from a temporary directory.
+with_jq() {
   if ! command -v jq >/dev/null; then
     local bin c rc
     pull "$JQ_IMAGE" || { skip "jq is not installed and its image is not available (apt install jq, or podman and the network)"; return "$SKIPPED"; }
     bin="$(mktemp -d)" || return 1
     c="$(store create "$JQ_IMAGE")" && store cp "$c:/jq" "$bin/jq" >/dev/null && store rm "$c" >/dev/null || { rm -rf "$bin"; return 1; }
-    PATH="$bin:$PATH" tools/install/test-machine-interface.sh && rc=0 || rc=$?
+    PATH="$bin:$PATH" "$@" && rc=0 || rc=$?
     rm -rf "$bin"
     return "$rc"
   fi
-  tools/install/test-machine-interface.sh
+  "$@"
 }
+check_machine_interface() { with_jq tools/install/test-machine-interface.sh; }
+check_iso_manifest() { with_jq ci/iso-manifest.sh --self-test; }
 
 check_etc_copy() {
   if [ -n "$IN_CI" ]; then
@@ -218,6 +220,7 @@ check release-cache "Release jobs unpack no cache (ci/check-release-cache.py)" "
 check check-artifact "Self-test of the artifact check (ci/check-artifact.sh)" "ci/check-artifact.sh --self-test"
 check release-tree "Offline test of the installer's release tree mode (tools/install/test-release-tree.sh)" "tools/install/test-release-tree.sh"
 check machine-interface "Offline test of the installer's interface for programs (tools/install/test-machine-interface.sh)" check_machine_interface
+check iso-manifest "Self-test of the ISO package list (ci/iso-manifest.sh)" check_iso_manifest
 check sign-uki "Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)" "tools/signing/test-sign-uki.sh"
 check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_engine_lint
 check sign-jobs "Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"

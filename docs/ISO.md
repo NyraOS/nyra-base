@@ -176,7 +176,9 @@ an empty disk, with the serial console as a socket: once as a CD and once as a U
   image is left in the storage. The unaltered CD boot with `--pull` is the control.
 
 The job also runs the vulnerability scan of the ISO (`tools/sbom/sbom.py --iso`, `docs/SBOM.md`): the
-installer system's Debian packages and the installer program's crates, with its own file of exceptions,
+installer system's Debian packages, the five packages of the boot tree whose files reach the ISO (the signed ones
+and the unsigned ones that are the sources the tracker knows GRUB and shim by; `ci/iso-manifest.sh` fails unless
+exactly these are found) and the installer program's crates, with its own file of exceptions,
 `tools/sbom/mitigations-iso.toml` (the image's file never applies to the ISO, nor this one to the image).
 The scan refuses an empty scan: every package of `iso/mkosi.conf` is in the manifest, the program has crates,
 and none comes from a git source. The SBOM is the `nyra-installer-iso-sbom` artifact.
