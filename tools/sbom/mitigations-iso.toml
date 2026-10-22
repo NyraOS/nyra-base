@@ -14,16 +14,10 @@
 # expires = 2026-12-31
 
 [[mitigation]]
-id = "CVE-2026-111497"
-package = "brotli"
-reason = "Out-of-bounds write in the brotli decoder, fixed upstream in brotli 1.2.1; Debian has no fixed upload yet. Only libbrotli1 is in the installer system, and only libfreetype links its decoder; no program of the session renders fonts or decodes brotli data. There is no network, and the only inputs are the ISO's own files and the disks the owner chose."
-expires = 2026-10-29
-
-[[mitigation]]
 id = "CVE-2026-107161"
 package = "cyrus-sasl2"
-reason = "Heap overflow in the DIGEST-MD5 plugin. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the installer system; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code. Nothing in the session speaks SASL."
-expires = 2027-01-07
+reason = "Heap overflow in the DIGEST-MD5 plugin, fixed in Debian unstable (2.1.28+dfsg1-12): the entry bridges the time until the snapshot is bumped, which ends it. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the installer system; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code, and nothing in the session speaks SASL."
+expires = 2026-11-05
 
 [[mitigation]]
 id = "CVE-2026-102010"
@@ -58,47 +52,47 @@ expires = 2026-11-08
 [[mitigation]]
 id = "CVE-2013-7445"
 package = "linux"
-reason = "DRM/GEM memory exhaustion by a local user who opens a DRM device. A local attack needs an unprivileged local user: the installer system has none (the installer and the shell it opens are root's, and have root anyway)."
+reason = "DRM/GEM memory exhaustion by a local user who opens a DRM device. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It has no device access, and everything else is root's, which has the machine anyway."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2019-19449"
 package = "linux"
-reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. Nothing in the session mounts a file system it did not make or the ISO's own (iso9660): there is no automounter, no udisks, and the filesystem module loads only when something mounts that type."
+reason = "f2fs out-of-bounds read when mounting a crafted f2fs image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2019-19814"
 package = "linux"
-reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. Nothing in the session mounts a file system it did not make or the ISO's own (iso9660): no automounter, and the module loads only when something mounts that type."
+reason = "f2fs out-of-bounds write when mounting a crafted f2fs image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2021-3847"
 package = "linux"
-reason = "OverlayFS copy-up of file capabilities on setuid files; a local attacker who can mount overlayfs. The session has no unprivileged local user; no upstream fix; Debian tracks it unfixed in every release."
+reason = "OverlayFS copy-up of file capabilities on setuid files; a local attacker who can mount overlayfs. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It cannot create the namespaces that mounting overlayfs needs from an unprivileged process, and no upstream fix exists; Debian tracks it unfixed in every release."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2021-3864"
 package = "linux"
-reason = "The dumpable flag after a setuid program runs its descendants; a local privilege escalation by an unprivileged user. The session has no unprivileged user and no setuid program is run for one."
+reason = "The dumpable flag after a setuid program runs its descendants; a local privilege escalation by an unprivileged user. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It cannot gain privileges (no new privileges), so it runs no setuid program."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2023-37454"
 package = "linux"
-reason = "Use-after-free write on a crafted UDF file system image. Nothing in the session mounts a file system it did not make or the ISO's own: the installer reads disks with lsblk only, and the UDF module loads only when something mounts that type."
+reason = "Use-after-free write on a crafted UDF file system image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make, the installer reads disks with lsblk only, and the UDF module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2024-21803"
 package = "linux"
-reason = "Use-after-free in the Bluetooth modules, local code execution. The session has no Bluetooth user space and no unprivileged user to open a Bluetooth socket; the modules load only with hardware, and the session lasts as long as an installation."
+reason = "Use-after-free in the Bluetooth modules, local code execution. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. Its address families are limited to IPv4 and Unix sockets, so it cannot open a Bluetooth socket; the modules load only with hardware."
 expires = 2027-01-07
 
 [[mitigation]]
 id = "CVE-2026-98869"
 package = "linux"
-reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. The session has no unprivileged user to call it (Debian's kernel also disables unprivileged bpf by default), and no program of it loads bpf programs."
+reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program."
 expires = 2027-01-07

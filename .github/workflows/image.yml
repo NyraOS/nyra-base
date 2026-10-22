@@ -2167,6 +2167,7 @@ jobs:
           name: nyra-installer-iso-materials
           path: |
             ${{ env.WORK }}/iso/os/nyra-installer-os.manifest
+            ${{ env.WORK }}/iso/boot/nyra-installer-boot.manifest
             ${{ env.WORK }}/iso/installer/Cargo.lock
             iso/installer-commit
           retention-days: 14
@@ -2235,6 +2236,7 @@ jobs:
             sudo rm -rf "$t"
             mkdir "$t"
             ln -s "$WORK/iso/os" "$t/os"
+            ln -s "$WORK/iso/boot" "$t/boot"
             sudo cp -a "$WORK/iso/registry" "$t/registry"
             cp "$WORK/iso/registry-digest" "$t/registry-digest"
             if [ -f "$WORK/iso/registry-test.pub" ]; then cp "$WORK/iso/registry-test.pub" "$t/"; fi
@@ -2266,7 +2268,11 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
-          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso "$WORK/iso/os/nyra-installer-os.manifest" \
+          # The packages of the installer system, and the three of the boot files that reach the ISO (their
+          # dependencies stay in the build tree).
+          jq -s '.[0].packages += [.[1].packages[] | select(.name | IN("shim-signed", "shim-helpers-amd64-signed", "grub-efi-amd64-signed"))] | .[0]' \
+            "$WORK/iso/os/nyra-installer-os.manifest" "$WORK/iso/boot/nyra-installer-boot.manifest" > "$WORK/iso/manifest.json"
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso "$WORK/iso/manifest.json" \
             "$WORK/iso/installer/Cargo.lock" "$WORK/iso/nyra-installer-iso.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$WORK/iso/nyra-installer-iso.cdx.json" "$RUNNER_TEMP/"
 

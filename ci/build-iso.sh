@@ -3,7 +3,8 @@
 # Writes the installer ISO (docs/ISO.md) from the pieces the earlier steps made. Run as root, from the
 # checkout of COMMIT (the release commit). Nothing here is signed, and nothing on the ISO is secret.
 #   ci/build-iso.sh WORKDIR ISO VERSION COMMIT release|test IMAGE
-# WORKDIR holds the installer system (ci/build-iso-os.sh: os/nyra-installer-os) and the registry store
+# WORKDIR holds the installer system and the boot files (ci/build-iso-os.sh: os/nyra-installer-os,
+# boot/nyra-installer-boot) and the registry store
 # (ci/iso-registry.sh: registry, registry-digest and, for test, registry-test.pub). IMAGE is the release
 # image in podman's storage, only to list the names of its accounts (tools/install/reserved-names.sh).
 #
@@ -93,8 +94,8 @@ install -m 0644 "${kernels[0]}" "$stage/iso/boot/vmlinuz"
 sed "s/@BUILD_ID@/$build_id/" iso/grub.cfg > "$stage/iso/boot/grub/grub.cfg"
 
 # --- the installer system as the RAM disk -------------------------------------------------------------
-# The whole tree but the boot files, which are on the ISO already, the kernel's initial RAM disk of the
-# package (the installer system is the initial RAM disk), and the files of the boot chain.
+# The whole tree but the boot files, which are on the ISO already, and the kernel's initial RAM disk of
+# the package (the installer system is the initial RAM disk).
 ln -sfn usr/lib/systemd/systemd "$os/init"
 # Same inputs, same bytes: mkosi sets every time in the tree to SOURCE_DATE_EPOCH; what is newer (the link
 # above) is set to it too, and the archive lists the files in a fixed order, as root's.
@@ -102,7 +103,7 @@ find "$os" -newermt "@$SOURCE_DATE_EPOCH" -exec touch -h -d "@$SOURCE_DATE_EPOCH
 find "$extra" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (
   cd "$os"
-  find . \( -path ./boot -o -path ./usr/lib/shim -o -path ./usr/lib/grub -o -path ./initrd.img -o -path ./initrd.img.old \
+  find . \( -path ./boot -o -path ./initrd.img -o -path ./initrd.img.old \
             -o -path ./vmlinuz -o -path ./vmlinuz.old -o -path './var/cache/*' -o -path './var/lib/apt/*' \) -prune -o -print0 \
     | LC_ALL=C sort -z \
     | cpio --null --create --format newc --quiet --reproducible --owner 0:0
@@ -111,9 +112,10 @@ find "$extra" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 ) | zstd -T0 -19 --quiet -o "$stage/iso/boot/initrd.img"
 
 # --- the boot files, and the ESP image ----------------------------------------------------------------
-shim="$os/usr/lib/shim/shimx64.efi.signed"
-mm="$os/usr/lib/shim/mmx64.efi.signed"
-grub="$os/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed"
+boot="$work/boot/nyra-installer-boot"
+shim="$boot/usr/lib/shim/shimx64.efi.signed"
+mm="$boot/usr/lib/shim/mmx64.efi.signed"
+grub="$boot/usr/lib/grub/x86_64-efi-signed/gcdx64.efi.signed"
 for f in "$shim" "$mm" "$grub"; do [ -f "$f" ] || { echo "build-iso.sh: no $f" >&2; exit 1; }; done
 openssl x509 -in files/usr/lib/nyra/secureboot/nyra.crt -outform DER -out "$stage/nyra.cer"
 sed "s/@BUILD_ID@/$build_id/" iso/grub-esp.cfg > "$stage/grub-esp.cfg"
