@@ -944,8 +944,8 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     least booted to the point of shutting down cleanly; once a later version is blessed, the
     fallback moves to it.
   - **Space on the ESP.** One UKI is about 68 MB (kernel and initramfs; an estimate, and the aarch64
-    one is larger: the `display` job of `arm64.yml` prints the real sizes of its UKI, its initramfs
-    and its display drivers in its summary). The display drivers of virtual machines in the initramfs
+    one is larger: the `display` job of `arm64.yml` prints the real sizes of its UKI and its initramfs in its
+    summary). The display drivers of virtual machines in the initramfs
     (Containerfile, `add_drivers`) make the initramfs of both architectures grow by about the same, an
     estimate of well under 1 MB from the size of Debian's modules (about 0.4 MB for the virtio GPU
     alone, about 0.9 MB for all five on x86_64). At most these sit on the ESP at once: bootc's UKIs for

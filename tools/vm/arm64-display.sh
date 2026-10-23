@@ -35,31 +35,26 @@ root_kind="$(sfdisk -J "$d/disk.raw" | jq -r '.partitiontable.partitions[1].type
 echo "the root partition's type: $root_kind"
 [ "${root_kind^^}" = B921B045-1DF0-41C3-AF44-4C6F280D3FAE ] || { echo "::error::The root partition's type is $root_kind, not the aarch64 one"; exit 1; }
 
-# What the UKI and its initramfs weigh, and the display drivers in it (docs/BOOT.md, "Space on the ESP").
+# What the UKI and its initramfs weigh (docs/BOOT.md, "Space on the ESP").
 # Only for the summary: a failure here is a warning, not a failed screen test.
 report_sizes() {
   # shellcheck disable=SC2024 # the file is the caller's, only podman needs root
   sudo podman run --rm --network none "$image" sh -c 'cat /boot/EFI/Linux/*.efi' > "$d/uki.efi"
-  python3 -I - "$d/uki.efi" "$d/initrd.cpio" << 'PY' >> "$summary"
+  python3 -I - "$d/uki.efi" << 'PY' >> "$summary"
 import struct, sys
 f = open(sys.argv[1], "rb").read()
 pe = struct.unpack_from("<I", f, 0x3C)[0]
 count, opt = struct.unpack_from("<H", f, pe + 6)[0], struct.unpack_from("<H", f, pe + 20)[0]
 sizes = {}
 for i in range(count):
-    name, size, _, _, offset = struct.unpack_from("<8sIIII", f, pe + 24 + opt + 40 * i)
+    name, size = struct.unpack_from("<8sI", f, pe + 24 + opt + 40 * i)[:2]
     name = name.rstrip(b"\0").decode()
     sizes.setdefault(name, size)
-    if name == ".initrd":
-        open(sys.argv[2], "wb").write(f[offset:offset + size])
 print(f"## Sizes\n\nThe UKI is {len(f) / 1e6:.1f} MB, its initramfs {sizes['.initrd'] / 1e6:.1f} MB, "
       f"its kernel {sizes['.linux'] / 1e6:.1f} MB.\n")
 PY
-  # The initramfs is compressed with zstd (Containerfile); the sizes below are those of the module files in it.
-  zstd -dc "$d/initrd.cpio" | cpio -itv 2> /dev/null \
-    | awk '/kernel\/drivers\/gpu\// && /\.ko/ { n++; b += $5 } END { printf "Display drivers in the initramfs (drivers/gpu): %d modules, %.2f MB.\n\n", n, b / 1e6 }' >> "$summary"
 }
-report_sizes || echo "::warning::The sizes of the UKI and its display drivers could not be read"
+report_sizes || echo "::warning::The sizes of the UKI and its initramfs could not be read"
 
 rc=0
 python3 -B tools/vm/screen-boot.py --name installed --disk "$d/disk.raw" --vars "$d/vars.fd" \

@@ -109,7 +109,7 @@ the machine restarts. The prompt must be on the screen, which a virtual GPU show
 is loaded: the initrd carries `virtio_gpu`, `bochs`, `qxl`, `vmwgfx` and `hyperv_drm` with their helpers
 (`add_drivers` in the Containerfile), and the build fails if one is missing. They make the initramfs
 of both architectures grow by about the same, estimated at well under 1 MB from the size of Debian's
-modules; the job prints the real sizes of the UKI, its initramfs and its display drivers in its
+modules; the job prints the real sizes of the UKI and its initramfs in its
 summary. The kernel's own `efifb` shows the prompt on a real PC; the firmware's display of a virtio GPU on aarch64 is
 not a framebuffer it can use.
 
