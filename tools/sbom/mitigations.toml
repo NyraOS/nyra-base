@@ -83,6 +83,25 @@ package = "brotli"
 reason = "Out-of-bounds write in the brotli decoder, fixed upstream in brotli 1.2.1; Debian has no fixed upload yet. Only libbrotli1 is in the image. The base image has no program that decodes brotli data from outside on its own: nyra-updated fetches the channel sheet with curl without asking for compressed responses, and no font or image from outside is decoded (see the libheif entry). Flatpak (libostree) does ask its server for compressed responses, but the image configures no remote and nothing pulls from one on its own; a user who adds one is exposed to that server until the fix."
 expires = 2026-10-29
 
+# expat 2.9.0-1: upstream has merged fixes, but there is no libexpat release and no Debian upload
+# yet. libexpat1 is in the image through dbus-daemon, polkitd, fontconfig and python3.14-minimal. The
+# only XML those parse on their own is root-owned configuration and policy files (dbus and polkit
+# policy, fonts.conf); no program of the base image parses XML from outside. The installer ISO does
+# not ship libexpat1 (checked in its SBOM), so tools/sbom/mitigations-iso*.toml need no entry. Short
+# expiry. End: a fixed expat in Debian and a snapshot bump.
+
+[[mitigation]]
+id = "CVE-2026-113351"
+package = "expat"
+reason = "Denial of service when a parser is reset and reused. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
+expires = 2026-10-30
+
+[[mitigation]]
+id = "CVE-2026-115506"
+package = "expat"
+reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
+expires = 2026-10-30
+
 # libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with
 # only the dav1d and libde265 decoder plugins, no encoder plugin) has one user: glycin's HEIF/AVIF
 # loader, pulled in by flatpak through gdk-pixbuf. In the base image that loader is reached only by
