@@ -27,6 +27,8 @@ import isovm
 
 ENTER, DOWN, TAB, BACKSPACE = b"\r", b"\x1b[B", b"\t", b"\x7f"
 KEY = re.compile(r"(?:[cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}")
+# On every error screen of the installer, and on no other.
+FAILED = "Details: d · Log:"
 ADMIN, ADMIN_PASSWORD = "maria", "Maria-test-2026"
 DISK_PASSWORD, ONE_TIME = "Disk-test-2026", "nyra2026"
 
@@ -65,7 +67,7 @@ def main():
         vm.settle()
 
     def screen_title(title, timeout=120):
-        vm.wait_screen(title, timeout)
+        vm.wait_screen(title, timeout, fail_on=(FAILED,), report=180 if timeout > 300 else 0)
         vm.settle()
         print(f"screen: {title}", flush=True)
 
@@ -151,6 +153,11 @@ def main():
     except isovm.Timeout as e:
         print(f"FAIL {e}", flush=True)
         failed.append("timeout")
+        if FAILED in vm.screen.text():
+            # The details of an error screen are the lines of the installer's log.
+            vm.send(b"d")
+            vm.settle()
+            print(f"The details of the error screen:\n{vm.screen.text()}", flush=True)
     finally:
         vm.stop()
 

@@ -218,15 +218,23 @@ class Vm:
             if time.monotonic() > end:
                 raise Timeout(f"no {pattern!r} within {timeout * self.scale} s{budget}; the console ended with:\n{self.text()[-1500:]}")
 
-    def wait_screen(self, text, timeout):
-        """Waits until TEXT is on the screen (the emulated terminal, not the stream); returns the screen."""
+    def wait_screen(self, text, timeout, fail_on=(), report=0):
+        """Waits until TEXT is on the screen (the emulated terminal, not the stream); returns the screen. A
+        screen with any of FAIL_ON on it (the installer's error screens) ends the wait at once as a failure;
+        with REPORT, the screen is printed every REPORT seconds, so that a long wait shows where it is."""
         end = time.monotonic() + timeout * self.scale
         if self.deadline and self.started:
             end = min(end, self.started + self.deadline)
+        next_report = time.monotonic() + report
         while True:
             self.pump()
             if text in self.screen.text():
                 return self.screen.text()
+            if any(f in self.screen.text() for f in fail_on):
+                raise Timeout(f"a failure is on the screen while waiting for {text!r}:\n{self.screen.text()}")
+            if report and time.monotonic() > next_report:
+                next_report = time.monotonic() + report
+                print(f"still waiting for {text!r} after {self.seconds():.0f} s; the screen:\n{self.screen.text()}", flush=True)
             if self.qemu.poll() is not None:
                 raise Timeout(f"QEMU ended while waiting for {text!r} on the screen:\n{self.screen.text()}")
             if time.monotonic() > end:
