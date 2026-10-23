@@ -5,13 +5,26 @@
 
 install_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# root_type: the Discoverable Partitions type of the root partition on this machine's architecture, which
+# systemd-gpt-auto in the initrd looks for (the other architectures' root types are ignored). The installer
+# and the CI scripts run on the machine that the image is for, so uname -m is the image's architecture.
+root_type() {
+  case "$(uname -m)" in
+    x86_64) echo 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 ;;
+    aarch64) echo B921B045-1DF0-41C3-AF44-4C6F280D3FAE ;;
+    *) echo "lib.sh: no root partition type for the architecture $(uname -m)" >&2; return 1 ;;
+  esac
+}
+
 # partition_disk TARGET: the same sizes and types as bootc install to-disk with the composefs backend,
 # without the BIOS boot partition (UEFI only). TARGET is a disk or a file.
 partition_disk() {
-  sfdisk -q --wipe always --wipe-partitions always "$1" <<'EOF'
+  local type
+  type="$(root_type)" || return 1
+  sfdisk -q --wipe always --wipe-partitions always "$1" <<EOF
 label: gpt
 size=1024MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI-SYSTEM"
-type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="root"
+type=$type, name="root"
 EOF
 }
 

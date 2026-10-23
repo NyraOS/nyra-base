@@ -164,7 +164,8 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
 **The disk** (what the installer creates, `tools/install/nyra-install.sh`, docs/INSTALL.md;
 `tools/vm/install-encrypted.sh` does the same in CI, with the same steps, `tools/install/in-image.sh`):
 - GPT with the ESP (1 GiB, FAT) and the root partition, with the Discoverable Partitions root type
-  of the architecture (x86-64: `4f68bce3-e8cd-4db1-96e7-fbcaf984b709`), on the disk of the ESP, so that
+  of the architecture (x86-64: `4f68bce3-e8cd-4db1-96e7-fbcaf984b709`, aarch64:
+  `b921b045-1df0-41c3-af44-4c6f280d3fae`; the initrd ignores the other one), on the disk of the ESP, so that
   `LoaderDevicePartUUID` leads to it;
 - LUKS2 on the root partition: aes-xts-plain64 with a 512-bit key, 4096-byte sectors, discards
   allowed (a flag in the header, so TRIM reaches the SSD; the price is that the disk shows which
@@ -942,7 +943,8 @@ systemd-boot (`\EFI\systemd\`) stays, but nothing starts it.
     and a fallback pointing to a deleted image could not boot at all. The running version has at
     least booted to the point of shutting down cleanly; once a later version is blessed, the
     fallback moves to it.
-  - **Space on the ESP.** One UKI is about 68 MB (kernel and initramfs). At most these sit on the ESP
+  - **Space on the ESP.** One UKI is about 68 MB (kernel and initramfs; about 103 MB on aarch64, five of
+    them 515 MB of the 1 GiB). At most these sit on the ESP
     at once: bootc's UKIs for the booted, the rollback and a staged version, the fallback, and,
     for a moment, a second fallback (the new copy is written before the old one is removed): five
     UKIs, about 340 MB, plus the boot loaders (a few MB). On the 1 GiB ESP that `bootc install`

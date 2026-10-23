@@ -436,6 +436,12 @@ RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev
 # TPM2 enrollment (nyra-tpm-enroll.service) with the tools that runs (docs/BOOT.md, "Disk encryption").
 # The 10 s device timeout of the running system (dev-.device.d) must stay out of it: the root may take
 # longer to appear.
+# The display drivers of virtual machines (add_drivers: virtio GPU, bochs, QXL, VMware, Hyper-V): the
+# password prompt is on the screen (systemd-stub adds console=tty0 when the firmware has a display), and a
+# virtual GPU shows nothing until its driver is loaded; the firmware's display of some of them (virtio
+# GPU on aarch64) is not a framebuffer the kernel can use before that. Real PCs' GPUs show the prompt
+# through the firmware's framebuffer (the kernel's built-in efifb) and load their own drivers from the
+# root file system. The build fails if one of the drivers is not in the initramfs.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
@@ -443,7 +449,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     mkdir -p /usr/lib/systemd/system/initrd.target.wants && \
     ln -s ../nyra-root-wait.service ../nyra-luks-root.service ../nyra-tpm-enroll.service \
       /usr/lib/systemd/system/initrd.target.wants/ && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\n' \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc crypt systemd-cryptsetup tpm2-tss systemd-pcrextend "\nadd_drivers+=" virtio_gpu bochs qxl vmwgfx hyperv_drm "\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
     printf '%s\n' 'install_items+=" /usr/lib/udev/rules.d/61-nyra-gpt-auto-root.rules /usr/lib/nyra/boot/root-wait /usr/lib/systemd/system/nyra-root-wait.service /usr/lib/systemd/system/initrd.target.wants/nyra-root-wait.service /usr/lib/systemd/system/systemd-cryptsetup@root.service.d/10-nyra.conf /usr/lib/systemd/system/dev-gpt\x2dauto\x2droot.device.d/10-nyra.conf /usr/lib/nyra/boot/luks-root /usr/lib/systemd/system/nyra-luks-root.service /usr/lib/systemd/system/initrd.target.wants/nyra-luks-root.service /usr/lib/nyra/boot/tpm-enroll /usr/lib/systemd/system/nyra-tpm-enroll.service /usr/lib/systemd/system/initrd.target.wants/nyra-tpm-enroll.service /usr/bin/systemd-cryptenroll /usr/sbin/cryptsetup /usr/bin/od /usr/bin/keyctl /usr/bin/sha256sum /usr/bin/systemd-ask-password /usr/bin/head /usr/bin/sync "' \
       >> /usr/lib/dracut/dracut.conf.d/30-nyra-container-build.conf && \
@@ -461,7 +467,9 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       usr/bin/systemd-ask-password usr/bin/head usr/bin/sync \
       usr/lib/sysctl.d/90-nyra-console.conf; do \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
-    ! grep -F 'dev-.device.d' /tmp/initrd.txt
+    ! grep -F 'dev-.device.d' /tmp/initrd.txt && \
+    for m in virtio_gpu bochs qxl vmwgfx hyperv_drm; do \
+      grep -Eq " usr/lib/modules/[^ ]+/$m\\.ko" /tmp/initrd.txt || { echo "not in the initramfs: the display driver $m"; exit 1; }; done
 
 # Mounts from /etc/fstab (docs/BOOT.md): one that fails (a disk that is not connected, a wrong line)
 # does not stop the boot in emergency mode, whose root shell is locked anyway. systemd's local-fs.target
