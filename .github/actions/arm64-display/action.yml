@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 display
+description: >-
+  The screen test of the aarch64 image (docs/ARM64.md, "The screen"): the image artifact checked against
+  its job's hash, installed on an encrypted disk with a password as the installer does it, and booted
+  as a virtual machine with a display and a USB keyboard (tools/vm/arm64-display.sh), the way UTM on
+  Apple Silicon runs it. The screen is saved as PNG files and read with tesseract. Emulated (QEMU TCG)
+  on GitHub's arm64 runners, which have no KVM (October 2026).
+  Security: as in image.yml, the boots run images built from pull requests with --privileged and
+  /dev mounted: GitHub-hosted runners only.
+inputs:
+  artifact:
+    description: The name of the artifact holding nyra-base.oci.tar
+    required: true
+  image-sha256:
+    description: Its sha256, as the job that made it reported
+    required: true
+  uki-cert:
+    description: The certificate the UKI is signed with, base64 (enrolled as a MOK)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/arm64-prepare
+
+    - name: Install QEMU, edk2 (AAVMF) and tesseract
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q --no-install-recommends qemu-system-arm qemu-utils qemu-efi-aarch64 ipxe-qemu \
+          python3-virt-firmware tesseract-ocr
+        qemu-system-aarch64 --version | head -1
+        tesseract --version 2>&1 | head -1
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ env.WORK }}/image
+
+    - name: Load the image
+      shell: bash
+      env:
+        IMAGE_SHA256: ${{ inputs.image-sha256 }}
+      run: |
+        ci/check-artifact.sh "$WORK/image/nyra-base.oci.tar" "$IMAGE_SHA256"
+        sudo podman load -i "$WORK/image/nyra-base.oci.tar"
+        rm "$WORK/image/nyra-base.oci.tar"
+
+    - name: Install on an encrypted disk and look at the screen (tools/vm/arm64-display.sh)
+      shell: bash
+      env:
+        UKI_CERT: ${{ inputs.uki-cert }}
+      run: |
+        base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
+        mkdir -p "$RUNNER_TEMP/screen"
+        tools/vm/arm64-display.sh localhost/nyra-base:ci "$RUNNER_TEMP/uki.crt" "$WORK" "$RUNNER_TEMP/screen" "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the screens and the serial logs
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: arm64-screen
+        path: ${{ runner.temp }}/screen
+        if-no-files-found: ignore
+        retention-days: 14

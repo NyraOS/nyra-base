@@ -89,6 +89,21 @@ With KVM, boot counting across real updates also runs (`tools/vm/boot-counting.s
 never gets healthy falls back after three tries, a healthy one is blessed). Emulated, its boots
 would not fit the timeouts made for KVM, so it does not run.
 
+## The screen (`display` job, `tools/vm/arm64-display.sh`)
+
+Every other test reads the serial console. A person's virtual machine (UTM on Apple Silicon) has a
+display and a USB keyboard instead, and its disk password is asked on the screen. The `display` job
+installs the image on an encrypted disk with a password, the way the installer does, and boots it in a
+machine made like UTM's: QEMU's `virt` machine with Secure Boot, a virtio GPU, a USB keyboard on an xHCI
+controller, a virtio console and a serial port, and no test console add-on (the sealed command line as
+it is). `tools/vm/screen-boot.py` saves the screen every 15 s (QMP `screendump`, PNG files in the artifact
+`arm64-screen`), reads it with tesseract, types the password on the keyboard (QMP `send-key`) when the
+prompt is on the screen, and presses the power button until the guest powers itself off, which only a
+system that is up does. It passes when the prompt was on the screen and the password opened the disk.
+It runs twice: on the disk as the installer leaves it, and on a copy whose root partition has the
+Discoverable Partitions type that aarch64 systems look for, to tell a root partition that the initrd
+cannot find from a prompt that cannot be seen.
+
 ## What differs from x86_64
 
 | | x86_64 | aarch64 |

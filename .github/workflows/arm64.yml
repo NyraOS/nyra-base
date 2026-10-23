@@ -22,6 +22,8 @@
 #   boot    whether the runner has KVM; install to a disk, two boots (tools/vm/arm64-boot.sh: without
 #           and with Secure Boot), boot counting across updates (tools/vm/boot-counting.sh) when
 #           there is KVM; the installed disk as a compressed qcow2 for UTM on Apple Silicon
+#   display  the installer's encrypted disk (a password) booted with a display and a USB keyboard, as UTM runs
+#           it; the screen is read as text, the password typed on the keyboard (tools/vm/arm64-display.sh)
 #   iso     the aarch64 installer ISO (docs/ISO.md, "aarch64") built from this run's image, in test mode (the
 #           image signed with a key made for the run), natively on arm64 (the .github/actions/arm64-iso
 #           that image.yml's iso-arm64 runs too); then iso-boot, three emulated boots of it in parallel
@@ -39,6 +41,10 @@ on:
       - .github/workflows/arm64.yml
       - .github/actions/arm64-*/**
       - tools/vm/arm64-boot.sh
+      - tools/vm/arm64-display.sh
+      - tools/vm/screen-boot.py
+      - tools/vm/install-encrypted.sh
+      - tools/install/lib.sh
       - tools/signing/**
       - ci/build-image.sh
       - ci/ukify.sh
@@ -263,6 +269,24 @@ jobs:
           image-sha256: ${{ needs.build.outputs.image_sha256 }}
           uki-cert: ${{ needs.build.outputs.uki_cert }}
           vm-disk: "true"
+
+  # What a person sees (docs/ARM64.md, "The screen"): the installer's encrypted disk with a password, booted
+  # as UTM on Apple Silicon runs it (a display, a USB keyboard), emulated. The screen is read as text and
+  # the password is typed on the keyboard.
+  display:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-display
+        with:
+          artifact: nyra-base-arm64-oci-archive
+          image-sha256: ${{ needs.build.outputs.image_sha256 }}
+          uki-cert: ${{ needs.build.outputs.uki_cert }}
 
   # The installer ISO for aarch64, in test mode: the image of this run, signed for the ISO's registry with a
   # key made here, which the ISO's policy trusts instead of the release signer. image.yml's iso-arm64 does the
