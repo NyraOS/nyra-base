@@ -176,4 +176,4 @@ no password is in an argument, the environment, `ps` or any file, the disk passw
 it to the log is found by the same search); an installation with a password runs on a machine without a TPM, and
 the steps of the password fail as the steps of the TPM do (the disk changed, status 11). The real steps are tested as before
 (`tools/install/test-recovery-key.sh`, `tools/install/test-verified-pull.sh`,
-`tools/vm/install-encrypted.sh`); a whole installation from an ISO is not tested by this change.
+`tools/vm/install-encrypted.sh`); a whole installation from the installer ISO, with the real steps, is tested by the `iso-install` job (docs/ISO.md, "The installation test").

@@ -112,7 +112,8 @@ def main():
         screen_title("6 of 8 · Review")
         review = vm.screen.text()
         check("screen 6: the review names the disk, the unlock, the administrator and the release",
-              "vda" in review and ADMIN in review and ("TPM" if a.unlock == "tpm" else "password") in review, review.replace("\n", " | ")[:300])
+              "vda" in review and ADMIN in review
+              and re.search(r"^\s*Unlock\s+" + ("This computer’s TPM" if a.unlock == "tpm" else "A password you choose") + r"\s*$", review, re.M), review.replace("\n", " | ")[:300])
         type_into("vda")
         vm.press_until("Erase vda and install")
         key(ENTER)

@@ -131,6 +131,8 @@ case "$step" in
   install-system)
     # The record must be there, made before the disk was touched, and named as the last argument.
     [ "${step_args[5]:-}" = /secrets/first-admin ] && [ -s "$host_secrets/first-admin" ] || exit 1
+    # The disk's password file is deleted as soon as password-add is done: not there for the later steps.
+    [ ! -e "$host_secrets/password" ] || exit 1
     cp "$host_secrets/first-admin" "$ADMIN_PLACED"
     ;;
 esac

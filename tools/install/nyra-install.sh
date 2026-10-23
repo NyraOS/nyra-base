@@ -288,12 +288,6 @@ fi
 
 ( umask 077; head -c 32 /dev/urandom | base64 -w0 > "$secrets/install-key" )
 key=/secrets/install-key
-# The disk's password, from the answers to a file only root reads, in memory, for password-add: never an
-# argument, never the environment, never the log. The file is deleted as soon as password-add is done.
-if [ "$unlock" = password ]; then
-  ( umask 077; printf '%s' "$a_disk_password" > "$secrets/password" )
-  a_disk_password=""
-fi
 
 # --- the image ---------------------------------------------------------------------------------------
 # The live root is an overlayfs, which cannot be the upperdir of the overlay driver that the pull
@@ -345,6 +339,11 @@ done
 [ "$(lsblk -nro TYPE "$device" | grep -c '^part$')" = 2 ] || die "no partitions on $device after 10 s"
 in_image -- format "$device" "$key"
 if [ "$unlock" = password ]; then
+  # The disk's password, from the answers to a file only root reads, in memory, for password-add alone: it is
+  # written just before and deleted just after, so that only that container can see it. Never an argument,
+  # never the environment, never the log.
+  ( umask 077; printf '%s' "$a_disk_password" > "$secrets/password" )
+  a_disk_password=""
   in_image -- password-add "$device" "$key" /secrets/password
   rm -f "$secrets/password"
 fi
