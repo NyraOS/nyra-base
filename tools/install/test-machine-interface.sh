@@ -14,6 +14,9 @@
 #   - a wrong confirmation, a disk that is in use, the disk it started from, a read-only or too small one,
 #     a machine without Secure Boot, a TPM or the memory, answers that are not complete: refused, and the
 #     disk is not touched;
+#   - the recovery key is shown and the installer waits for an Enter pressed after it (not one typed
+#     before, not the end of the input), then clears the screen and its scroll-back, in both modes;
+#     nothing is typed back and nothing is checked against the disk;
 #   - the recovery key and the password of mokutil go to the terminal after the line go, and to no event,
 #     log or file; no password is in an argument, in the environment, in ps or anywhere under the work
 #     directory; the terminal mode refuses what it always refused.
@@ -67,6 +70,7 @@ cat > "$t/bin/lsblk" << 'EOF2'
 #!/bin/sh
 case " $* " in
   *" -J "*) cat "$FIXTURE" ;;
+  *" -dnro TYPE "*) echo disk ;;
   *"-nro TYPE"*) printf 'disk\npart\npart\n' ;;
 esac
 EOF2
@@ -105,11 +109,6 @@ fi
 [ "$step" != "$FAIL_STEP" ] || exit 1
 case "$step" in
   recovery-show) echo "RECOVERY-KEY: $(cat "$KEYFILE")" ;;
-  recovery-check)
-    printf 'Enter passphrase for the key slot: '
-    read -r got
-    [ "$got" = "$(cat "$KEYFILE")" ]
-    ;;
   luks-json) cat "$LUKS_JSON" ;;
   password-memory) exit "${PWMEM_RC:-0}" ;;
   password-add)
@@ -130,10 +129,11 @@ case "$step" in
     ;;
   install-system)
     # The record must be there, made before the disk was touched, and named as the last argument.
-    [ "${step_args[5]:-}" = /secrets/first-admin ] && [ -s "$host_secrets/first-admin" ] || exit 1
+    # (The terminal mode makes no administrator: CLI_MODE.)
+    [ -n "${CLI_MODE:-}" ] || { [ "${step_args[5]:-}" = /secrets/first-admin ] && [ -s "$host_secrets/first-admin" ]; } || exit 1
     # The disk's password file is deleted as soon as password-add is done: not there for the later steps.
     [ ! -e "$host_secrets/password" ] || exit 1
-    cp "$host_secrets/first-admin" "$ADMIN_PLACED"
+    [ -n "${CLI_MODE:-}" ] || cp "$host_secrets/first-admin" "$ADMIN_PLACED"
     ;;
 esac
 EOF2
@@ -246,6 +246,10 @@ reset_run() {
   : > "$t/transcript"
   cp "$t/answers.in" "$t/answers"
 }
+# What the terminal is told when it shows the prompt after the recovery key: Enter. replies (a JSON
+# list, see pty-run.py), pretype (newlines typed before anything) and run_timeout (seconds) change
+# a run.
+enter_reply='[["Press Enter when you have written it down: $", ""]]'
 # run TREE SUBCOMMAND: on a terminal, events on descriptor 3 and answers on 4. Sets rc, events, transcript.
 # The shell around the script is the text installer: it keeps the terminal open (the script itself uses it
 # only for the handoffs) and gives the script its status.
@@ -258,10 +262,17 @@ run() {
     : > "$t/log/install.log"
     chmod 0644 "$t/log/install.log"
   fi
-  ANSWER="$key" TIMEOUT=60 python3 -I tools/install/pty-run.py "$t/transcript" \
+  REPLIES="${replies:-$enter_reply}" PRETYPE="${pretype:-0}" TIMEOUT="${run_timeout:-60}" python3 -I tools/install/pty-run.py "$t/transcript" \
     bash -c '"$@"; exit $?' _ "$t/$tree/tools/install/nyra-install.sh" "$@" --events-fd 3 --answers-fd 4 \
     3> "$t/events" 4< "$t/answers" && rc=0 || rc=$?
   events="$(cat "$t/events")"
+}
+# cleared_after_key: the last run's terminal shows the recovery key, and after it the sequence that
+# clears the screen and its scroll-back.
+cleared_after_key() {
+  local text
+  text="$(tr -d '\r' < "$t/transcript")"
+  [[ "$text" == *"$key"* && "${text#*"$key"}" == *$'\033[3J'* ]]
 }
 disk_hash() { head -c 1048576 "$t/disk" | sha256sum; }
 fresh_disk() { dd if=/dev/urandom of="$t/disk" bs=1k count=1 conv=notrunc status=none; }
@@ -406,13 +417,18 @@ run ok install
 [ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to: the test would not see a write"
 called '^verified-pull ' || fail "no pull"
 [ "$(grep -c '^sfdisk' "$CALLS")" = 1 ] || fail "sfdisk did not run exactly once"
-for s in admin-record format install-system recovery-show recovery-check tpm-enroll wipe-install-key esp-sync; do
+for s in admin-record format install-system recovery-show tpm-enroll wipe-install-key esp-sync; do
   called "/nyra-install/in-image.sh $s" || fail "the step $s did not run"
 done
 called '^mokutil --import ' || fail "no import of the key"
 [ ! -e "$t/secrets" ] || fail "the key of the installation is still there"
 tr -d '\r' < "$t/transcript" | grep -qF "RECOVERY-KEY: $key" || fail "the recovery key was not shown on the terminal"
 tr -d '\r' < "$t/transcript" | grep -qF "$fingerprint" || fail "the fingerprint was not shown on the terminal"
+cleared_after_key || fail "the screen and its scroll-back were not cleared after the recovery key"
+grep -E '^podman .*--log-driver=none .*in-image.sh recovery-show ' "$CALLS" > /dev/null \
+  || fail "recovery-show did not run with --log-driver=none: its output would be in a log"
+tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written it down: ' || fail "the terminal did not ask for Enter after the recovery key"
+! called 'in-image.sh recovery-check' && ! called 'in-image.sh recovery-wipe' || fail "the recovery key was checked against the disk"
 echo "install: the events in order, the disk written, the key and the fingerprint on the terminal"
 # What must not hold the recovery key or a password.
 if grep -rlF "$key" "$t" --exclude=transcript --exclude=key.txt --exclude=answers.in --exclude=answers --exclude=test-*.sh 2> /dev/null | grep .; then
@@ -446,6 +462,75 @@ echo "control: a password given to the container as an argument is found by the 
 : > "$PROCLOG"
 answers /dev/vda /dev/vda tpm
 
+# --- the wait for Enter after the recovery key ---------------------------------------------------
+# The key is on the screen until the user presses Enter, and only an Enter pressed after it goes on:
+# nothing later runs and the handoff does not end before. At the end of the input the script stops,
+# with the screen cleared. Enters typed before the prompt are thrown away.
+# waits WHAT: the last run is still at the prompt, killed by the timeout; the key was shown.
+waits() {
+  [ "$rc" = 124 ] || { cat "$t/transcript"; fail "$1: the installer went on (status $rc)"; }
+  tr -d '\r' < "$t/transcript" | grep -qF "$key" || fail "$1: the key was not shown"
+  tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written it down: ' || fail "$1: no prompt"
+  ! grep -qF handoff-end <<< "$events" || fail "$1: the handoff ended"
+  ! called 'in-image.sh tpm-enroll' || fail "$1: the TPM was enrolled before Enter"
+}
+answers /dev/vda /dev/vda tpm
+replies='[]' run_timeout=8 run ok install
+waits "no Enter"
+echo "recovery key: without Enter the installer stays at the prompt, the handoff open, nothing after it"
+answers /dev/vda /dev/vda tpm
+replies='[]' pretype=3 run_timeout=8 run ok install
+waits "Enters typed before the prompt"
+echo "recovery key: Enters typed before the prompt do not skip it"
+answers /dev/vda /dev/vda tpm
+pretype=3 run ok install
+[ "$rc" = 0 ] && [ "$events" = "$install_events" ] || fail "Enters typed before the prompt and one after: status $rc"
+cleared_after_key || fail "Enters typed before the prompt: the screen was not cleared after the key"
+echo "recovery key: an Enter after the prompt goes on, whatever was typed before it"
+answers /dev/vda /dev/vda tpm
+replies='[["Press Enter when you have written it down: $", null]]' run ok install
+[ "$rc" = 11 ] && [ "$(tail -n 1 <<< "$events")" = '{"event":"fail","id":"protect","disk_changed":true}' ] \
+  || fail "the end of the input at the prompt: status $rc, $events"
+! grep -qF handoff-end <<< "$events" && ! called 'in-image.sh tpm-enroll' || fail "the end of the input: the installer went on"
+cleared_after_key || fail "the end of the input: the screen was not cleared"
+echo "recovery key: the end of the input at the prompt is a failure, nothing after it, the screen cleared"
+# The wording is right for a disk with a password too.
+answers /dev/vda /dev/vda password
+LUKS_JSON="$t/luks-password.json" run notpm install
+tr -d '\r' < "$t/transcript" | grep -qF 'only way in if you forget the password.' || fail "the text for a password disk"
+answers /dev/vda /dev/vda tpm
+run ok install
+tr -d '\r' < "$t/transcript" | grep -qF 'only way in if the TPM refuses the disk.' || fail "the text for a TPM disk"
+echo "recovery key: the text says why, for a TPM and for a password"
+# The terminal mode: the same, from the confirmation of the disk to the end.
+tree cli
+set_line "$t/cli/tools/install/nyra-install.sh" '  [ -b "$device" ] || die "$device is not a block device"' '  true'
+cli_run() { # cli_run: the whole terminal mode on a terminal; sets rc and transcript
+  reset_run
+  CLI_MODE=1 REPLIES="${replies:-$cli_replies}" PRETYPE="${pretype:-0}" TIMEOUT="${run_timeout:-60}" python3 -I tools/install/pty-run.py "$t/transcript" \
+    "$t/cli/tools/install/nyra-install.sh" /dev/vda "$version" "$digest" && rc=0 || rc=$?
+}
+cli_replies='[["Type its path to go on: $", "/dev/vda"], ["Press Enter [^\n]*: $", ""]]'
+fresh_disk
+cli_run
+[ "$rc" = 0 ] || { cat "$t/transcript"; fail "the terminal mode failed ($rc)"; }
+called 'in-image.sh tpm-enroll' && called '^mokutil --import ' || fail "the terminal mode did not finish"
+cleared_after_key || fail "the terminal mode: the screen and its scroll-back were not cleared after the recovery key"
+text="$(tr -d '\r' < "$t/transcript")"
+[[ "${text#*"$key"}" != *"$key"* ]] || fail "the terminal mode: the key is shown twice"
+echo "terminal mode: the key is shown, Enter goes on, the screen and its scroll-back are cleared"
+# Three Enters typed with the answer to the confirmation wait for the prompt, as type-ahead does.
+cli_replies='[["Type its path to go on: $", "/dev/vda\n\n\n"]]'
+run_timeout=8 cli_run
+[ "$rc" = 124 ] && ! called 'in-image.sh tpm-enroll' || fail "the terminal mode: went on without an Enter after the key ($rc)"
+echo "terminal mode: Enters typed before the prompt do not skip it"
+cli_replies='[["Type its path to go on: $", "/dev/vda"], ["Press Enter when you have written it down: $", null]]'
+cli_run
+[ "$rc" != 0 ] && ! called 'in-image.sh tpm-enroll' || fail "the terminal mode: the end of the input did not stop it ($rc)"
+cleared_after_key || fail "the terminal mode: after the end of the input the screen was not cleared"
+echo "terminal mode: the end of the input at the prompt stops it with the screen cleared"
+answers /dev/vda /dev/vda tpm
+
 # --- install with a password, on a machine without a TPM ----------------------------------------------
 # The disk opens with the password from the answers: no TPM is needed (this is the notpm tree), Secure Boot is.
 # The steps of the password, not those of the TPM; the password is a file of the secrets that password-add
@@ -458,7 +543,7 @@ LUKS_JSON="$t/luks-password.json" run notpm install
 [ "$rc" = 0 ] || { printf '%s\n' "$events"; cat "$t/transcript" "$t/log/install.log"; fail "install with a password failed ($rc)"; }
 [ "$events" = "$install_events" ] || { printf '%s\n' "$events"; fail "the events of an installation with a password are not those of the text installer"; }
 [ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to"
-for s in admin-record password-memory format password-add install-system recovery-show recovery-check wipe-install-slot esp-sync; do
+for s in admin-record password-memory format password-add install-system recovery-show wipe-install-slot esp-sync; do
   called "/nyra-install/in-image.sh $s" || fail "the step $s did not run (password)"
 done
 ! called 'in-image.sh tpm-enroll' && ! called 'in-image.sh wipe-install-key' || fail "a step of the TPM ran for a disk with a password"
