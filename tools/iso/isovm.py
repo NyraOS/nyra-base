@@ -21,6 +21,8 @@ import subprocess
 import tempfile
 import time
 
+from screen import Screen
+
 # Per architecture: the QEMU command, the firmware (code with Secure Boot, and variables with the Microsoft
 # keys enrolled), the serial console of the guest, and whether a TPM can be given (QEMU's virt machine has
 # only TIS TPMs, which Debian's arm64 kernel has no driver for: docs/ARM64.md).
@@ -51,7 +53,7 @@ class Vm:
     """QEMU with the ISO and an empty disk. start() boots it; the console methods read and type."""
 
     def __init__(self, iso, work, log, *, arch="amd64", medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
-                 smp=2, disk=True, decoy=None, extra=(), deadline=None):
+                 smp=2, disk=True, decoy=None, tpm_dir=None, extra=(), deadline=None):
         self.iso, self.work, self.log = iso, work, log
         # Seconds after QEMU starts by which the test must be over: no wait goes past it, so that a hang
         # ends as a failure with a message of the test's own, before the job's time limit cancels the job.
@@ -65,6 +67,8 @@ class Vm:
         self.medium, self.memory, self.disk_gb, self.smp, self.disk = medium, memory, disk_gb, smp, disk
         self.tpm = tpm and self.arch["tpm"]
         self.extra = list(extra)
+        self.tpm_dir = tpm_dir  # the TPM's state: kept by the caller when a later boot must use it
+        self.screen = Screen()
         self.decoy = decoy  # a second medium, attached before the ISO: a file
         self.qemu = self.swtpm = self.sock = None
         self.raw = b""  # everything the console printed
@@ -123,7 +127,8 @@ class Vm:
             # Where Ubuntu's AppArmor profile of swtpm lets it work, as tools/vm/vm-boot.py has it: the state
             # in the runner's temporary directory, the control socket in /tmp. Not under the job's own
             # directory (/mnt/work), where swtpm gets "Could not open UnixIO socket: Permission denied".
-            tpm_dir = tempfile.mkdtemp(prefix="iso-tpm-", dir=os.environ.get("RUNNER_TEMP") or None)
+            tpm_dir = self.tpm_dir or tempfile.mkdtemp(prefix="iso-tpm-", dir=os.environ.get("RUNNER_TEMP") or None)
+            os.makedirs(tpm_dir, exist_ok=True)
             tpm_sock = os.path.join(tempfile.mkdtemp(), "swtpm.sock")
             self.swtpm = subprocess.Popen(["swtpm", "socket", "--tpm2", "--tpmstate", f"dir={tpm_dir}",
                                            "--ctrl", f"type=unixio,path={tpm_sock}", "--terminate"])
@@ -176,6 +181,7 @@ class Vm:
             except BlockingIOError:
                 data = b""
             self.raw += data
+            self.screen.feed(data)
         # ESC [ 6 n: where is the cursor? The installer put it at the far corner (999;999) first.
         while True:
             i = self.raw.find(b"\x1b[6n", self.answered)
@@ -211,6 +217,54 @@ class Vm:
                 raise Timeout(f"QEMU ended while waiting for {pattern!r}; the console ended with:\n{self.text()[-1500:]}")
             if time.monotonic() > end:
                 raise Timeout(f"no {pattern!r} within {timeout * self.scale} s{budget}; the console ended with:\n{self.text()[-1500:]}")
+
+    def wait_screen(self, text, timeout, fail_on=(), report=0):
+        """Waits until TEXT is on the screen (the emulated terminal, not the stream); returns the screen. A
+        screen with any of FAIL_ON on it (the installer's error screens) ends the wait at once as a failure;
+        with REPORT, the screen is printed every REPORT seconds, so that a long wait shows where it is."""
+        end = time.monotonic() + timeout * self.scale
+        if self.deadline and self.started:
+            end = min(end, self.started + self.deadline)
+        next_report = time.monotonic() + report
+        while True:
+            self.pump()
+            if text in self.screen.text():
+                return self.screen.text()
+            if any(f in self.screen.text() for f in fail_on):
+                raise Timeout(f"a failure is on the screen while waiting for {text!r}:\n{self.screen.text()}")
+            if report and time.monotonic() > next_report:
+                next_report = time.monotonic() + report
+                print(f"still waiting for {text!r} after {self.seconds():.0f} s; the screen:\n{self.screen.text()}", flush=True)
+            if self.qemu.poll() is not None:
+                raise Timeout(f"QEMU ended while waiting for {text!r} on the screen:\n{self.screen.text()}")
+            if time.monotonic() > end:
+                raise Timeout(f"no {text!r} on the screen within {timeout * self.scale} s:\n{self.screen.text()}")
+
+    def settle(self, quiet=0.6, limit=20):
+        """Waits until the console has been silent for QUIET seconds: the installer has drawn what the last key
+        asked for (a frame arrives in pieces, slowly under emulation), and the screen can be read."""
+        limit *= self.scale
+        end = time.monotonic() + limit
+        last = time.monotonic()
+        size = len(self.raw)
+        while time.monotonic() < end:
+            self.pump(0.1)
+            if len(self.raw) != size:
+                size, last = len(self.raw), time.monotonic()
+            elif time.monotonic() - last >= quiet:
+                return
+
+    def press_until(self, label):
+        """Moves the focus (Tab) to the item LABEL of the screen, marked with '>' in front. Each key waits
+        for the console to be quiet before the screen is read and the next key is sent."""
+        item = re.compile(rf"^\s*> {re.escape(label)}", re.M)
+        self.settle()
+        for _ in range(12):
+            if item.search(self.screen.text()):
+                return
+            self.send(b"\t")
+            self.settle()
+        raise Timeout(f"cannot focus {label!r}:\n{self.screen.text()}")
 
     def send(self, data):
         self.sock.send(data if isinstance(data, bytes) else data.encode())

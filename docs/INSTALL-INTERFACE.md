@@ -94,8 +94,15 @@ it once and takes the verdict and the fields from that one reading.
 
 - The line is read into a variable, checked by `jq` through a pipe and dropped. It is never an
   argument, never in the environment, never in the log.
-- `unlock: password` is refused for now (a disk meant to open with a password must not be installed as a
-  TPM-only disk).
+- `unlock: password` makes the disk open with `disk_password` instead of the TPM (no TPM is needed; Secure
+  Boot is). Before anything is written, `password-memory` asks whether this machine can derive the key from a
+  password with at least 256 MiB of memory (otherwise `fail` `verify`, exit 10). The password goes from the
+  variable to a file in `/run/nyra-install` (mode 0600, memory only), the variable is cleared, `password-add`
+  reads the file as key slot 1 (argon2id, at least 256 MiB; the key slots are 0 the key of the installation,
+  1 the password, 2 the recovery key) and the file is deleted at once. It is never an argument, never in the
+  environment, never in the log, never on the terminal. At the end `wipe-install-slot` removes key slot 0
+  only (it checks that the key of the installation unlocks nothing afterwards) and the header must be exactly
+  the recovery key and the one password slot (`check_luks_header_password`).
 - The administrator is made at the first boot of the installed system, not by the installer: the image's
   own tools turn the password into a yescrypt hash before the disk is touched (`admin-record`, which gets
   the password on the standard input of the container, never as an argument or in the environment), and
@@ -165,6 +172,8 @@ the recovery key is on the terminal after `go` and in no file, event or log; tha
 password reaches the image on the standard input of its container (and a copy that puts it on the
 command line is caught), the record is made before the disk is touched and is given to the step that
 installs the system, and a record that fails is a failure of `verify` with the disk as it was; and that
-no password is in an argument, the environment, `ps` or any file. The real steps are tested as before
+no password is in an argument, the environment, `ps` or any file, the disk password included (a copy that writes
+it to the log is found by the same search); an installation with a password runs on a machine without a TPM, and
+the steps of the password fail as the steps of the TPM do (the disk changed, status 11). The real steps are tested as before
 (`tools/install/test-recovery-key.sh`, `tools/install/test-verified-pull.sh`,
-`tools/vm/install-encrypted.sh`); a whole installation from an ISO is not tested by this change.
+`tools/vm/install-encrypted.sh`); a whole installation from the installer ISO, with the real steps, is tested by the `iso-install` job (docs/ISO.md, "The installation test").

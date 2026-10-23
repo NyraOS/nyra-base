@@ -172,13 +172,14 @@ step_end() {
 # one JSON value, an object with exactly the fields of the protocol, none twice (jq itself keeps the
 # last of a repeated key and judges only the last of several values), strings that match their
 # patterns. The passwords are checked too (12 to 64 printable ASCII characters). The result is put in
-# a_device, a_confirm, a_unlock, a_admin_name and a_admin_password: the administrator's password stays
-# in that variable (never exported) until admin_record has given it to the image on its standard input
-# and cleared it. The disk's password is not kept: nothing uses it yet. The line is never an argument,
+# a_device, a_confirm, a_unlock, a_admin_name and a_admin_password, and with unlock password a_disk_password:
+# a password stays in its variable (never exported) until the step that uses it has it (the administrator's:
+# admin_record, on the image's standard input; the disk's: a file of $secrets, for password-add) and the
+# script has cleared the variable. The line is never an argument,
 # never in the environment, never in the log; jq's own errors, which can quote a value, go nowhere. \A
 # and \z: in jq's regular expressions $ also matches before a final newline.
 read_answers() {
-  local line out fields
+  local line out fields want
   IFS= read -r -n 4097 -u "$answers_fd" line || die "no answers"
   [ "${#line}" -le 4096 ] || die "the answers are longer than 4096 characters"
   out="$(printf '%s' "$line" | jq -nr --stream '
@@ -199,14 +200,18 @@ read_answers() {
         and ($a.admin_password | text("\\A[ -~]{12,64}\\z"))
         and $a.admin_password != $a.admin_name
         and (if $a.unlock == "password" then ($a.disk_password | text("\\A[ -~]{12,64}\\z")) else true end)
-      then "ok", $a.device, $a.confirm, $a.unlock, $a.admin_name, $a.admin_password
+      then "ok", $a.device, $a.confirm, $a.unlock, $a.admin_name, $a.admin_password,
+           (if $a.unlock == "password" then $a.disk_password else empty end)
       else "no" end' 2> /dev/null)" || out=no
   line=""
   mapfile -t fields <<< "$out"
   out=""
-  [ "${fields[0]:-}" = ok ] && [ "${#fields[@]}" = 6 ] || die "the answers are not the answers of protocol $protocol"
+  # Seven fields with a disk password, six without.
+  want=6
+  [ "${fields[3]:-}" != password ] || want=7
+  [ "${fields[0]:-}" = ok ] && [ "${#fields[@]}" = "$want" ] || die "the answers are not the answers of protocol $protocol"
   a_device="${fields[1]}" a_confirm="${fields[2]}" a_unlock="${fields[3]}" a_admin_name="${fields[4]}"
-  a_admin_password="${fields[5]}"
+  a_admin_password="${fields[5]}" a_disk_password="${fields[6]:-}"
   fields=()
 }
 

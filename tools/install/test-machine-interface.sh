@@ -111,6 +111,16 @@ case "$step" in
     [ "$got" = "$(cat "$KEYFILE")" ]
     ;;
   luks-json) cat "$LUKS_JSON" ;;
+  password-memory) exit "${PWMEM_RC:-0}" ;;
+  password-add)
+    # The password is a file of the secrets, only its bytes, mode 0600, named as the last argument: the
+    # stand-in keeps its mode and a hash (never the password), and checks that it is the one asked for.
+    [ "${step_args[2]}" = /secrets/password ] || exit 1
+    got="$(sha256sum < "$host_secrets/password" | cut -c1-64)"
+    [ "$got" = "$DISK_PW_SHA" ] || exit 1
+    echo "$(stat -c %a "$host_secrets/password") $got" > "$PW_SEEN"
+    exit "${PWADD_RC:-0}"
+    ;;
   admin-record)
     # The record of the first administrator: the password is on the standard input, the name and the file
     # are arguments. Only a hash of the password is kept, to see that it came through the standard input.
@@ -121,6 +131,8 @@ case "$step" in
   install-system)
     # The record must be there, made before the disk was touched, and named as the last argument.
     [ "${step_args[5]:-}" = /secrets/first-admin ] && [ -s "$host_secrets/first-admin" ] || exit 1
+    # The disk's password file is deleted as soon as password-add is done: not there for the later steps.
+    [ ! -e "$host_secrets/password" ] || exit 1
     cp "$host_secrets/first-admin" "$ADMIN_PLACED"
     ;;
 esac
@@ -129,6 +141,12 @@ chmod +x "$t/bin/"*
 cat > "$t/luks.json" << 'EOF2'
 {"tokens":{"0":{"type":"systemd-recovery","keyslots":["1"]},"1":{"type":"systemd-tpm2","keyslots":["2"],"tpm2-pcrs":[]}},
  "keyslots":{"1":{},"2":{}}}
+EOF2
+# The header of a disk with a password: the recovery key (key slot 2, with its token) and the password
+# (key slot 1, no token, argon2id with 1 GiB).
+cat > "$t/luks-password.json" << 'EOF2'
+{"tokens":{"0":{"type":"systemd-recovery","keyslots":["2"]}},
+ "keyslots":{"1":{"type":"luks2","key_size":64,"kdf":{"type":"argon2id","memory":1048576,"time":4}},"2":{"type":"luks2","key_size":64}}}
 EOF2
 # The disks, as lsblk -J -b prints them.
 cat > "$t/disks.json" << 'EOF2'
@@ -160,7 +178,9 @@ EOF2
 printf '%s' "$key" > "$t/key.txt"
 export CALLS="$t/calls.log" ENVLOG="$t/env.log" PROCLOG="$t/proc.log" DISKFILE="$t/disk" KEYFILE="$t/key.txt"
 export SB_STATE="$t/sb-state" LUKS_JSON="$t/luks.json" FIXTURE="$t/one-disk.json" IMAGE_CERT="$t/image.crt"
-export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed"
+export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed" PW_SEEN="$t/pw-seen"
+DISK_PW_SHA="$(printf '%s' "$disk_pw" | sha256sum | cut -c1-64)"
+export DISK_PW_SHA
 : > "$CALLS"
 : > "$ENVLOG"
 : > "$PROCLOG"
@@ -284,6 +304,10 @@ refused_install() {
   ! grep -q '"disk-changed"' <<< "$events" || fail "disk-changed before a refusal ($1)"
   grep -qF -- "$1" "$t/log/install.log" || { cat "$t/log/install.log"; fail "the log does not say: $1"; }
   echo "refused as expected: $1"
+}
+# no_secrets_anywhere_quiet: succeeds if a password is somewhere it must not be (for the control of the search).
+no_secrets_anywhere_quiet() {
+  grep -rlF -e Sentinel- "$t" --exclude=answers --exclude=answers.in --exclude=test-*.sh > /dev/null 2>&1
 }
 no_secrets_anywhere() {
   # The answers are where the passwords are put by the caller; nowhere else.
@@ -422,6 +446,48 @@ echo "control: a password given to the container as an argument is found by the 
 : > "$PROCLOG"
 answers /dev/vda /dev/vda tpm
 
+# --- install with a password, on a machine without a TPM ----------------------------------------------
+# The disk opens with the password from the answers: no TPM is needed (this is the notpm tree), Secure Boot is.
+# The steps of the password, not those of the TPM; the password is a file of the secrets that password-add
+# reads and the script deletes, and is nowhere else.
+answers /dev/vda /dev/vda password
+fresh_disk
+before="$(disk_hash)"
+rm -f "$PW_SEEN"
+LUKS_JSON="$t/luks-password.json" run notpm install
+[ "$rc" = 0 ] || { printf '%s\n' "$events"; cat "$t/transcript" "$t/log/install.log"; fail "install with a password failed ($rc)"; }
+[ "$events" = "$install_events" ] || { printf '%s\n' "$events"; fail "the events of an installation with a password are not those of the text installer"; }
+[ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to"
+for s in admin-record password-memory format password-add install-system recovery-show recovery-check wipe-install-slot esp-sync; do
+  called "/nyra-install/in-image.sh $s" || fail "the step $s did not run (password)"
+done
+! called 'in-image.sh tpm-enroll' && ! called 'in-image.sh wipe-install-key' || fail "a step of the TPM ran for a disk with a password"
+line() { grep -n -- "$1" "$CALLS" | head -n 1 | cut -d: -f1; }
+[ "$(line 'in-image.sh password-memory')" -lt "$(line '^sfdisk')" ] || fail "the memory of the key derivation was asked after the disk was written to"
+[ "$(line 'in-image.sh format')" -lt "$(line 'in-image.sh password-add')" ] && [ "$(line 'in-image.sh password-add')" -lt "$(line 'in-image.sh install-system')" ] \
+  || fail "password-add is not between format and install-system"
+[ "$(line 'in-image.sh install-system')" -lt "$(line 'in-image.sh wipe-install-slot')" ] || fail "the key of the installation was wiped before the system was installed"
+# install-system gets no "tpm": the empty word between the key and the reference.
+grep -q 'in-image.sh install-system /dev/vda /secrets/install-key  updates.nyraos.com/nyra-base:' "$CALLS" || fail "install-system was told to enroll a TPM for a disk with a password"
+[ "$(cat "$PW_SEEN")" = "600 $DISK_PW_SHA" ] || fail "password-add did not read the password as a 0600 file (got: $(cat "$PW_SEEN" 2> /dev/null))"
+[ ! -e "$t/secrets" ] || fail "the keys of the installation, the password file included, are still there"
+tr -d '\r' < "$t/transcript" | grep -qF "RECOVERY-KEY: $key" || fail "the recovery key was not shown on the terminal (password)"
+! tr -d '\r' < "$t/transcript" | grep -qF -e "$disk_pw" || fail "the disk password was shown on the terminal"
+! grep -F -e "$disk_pw" "$CALLS" "$ENVLOG" "$PROCLOG" "$t/events" "$t/log/install.log" > /dev/null || fail "the disk password is in an argument, the environment, ps, an event or the log"
+no_secrets_anywhere
+echo "install with a password: no TPM needed, the steps of the password in order, the password only as a 0600 file that is deleted, in no argument, environment, ps, event, log or terminal"
+# The control: a copy that writes the password to the log is found by the search.
+tree leaky_pw
+sed -i 's|^  a_disk_password=""$|  echo "$a_disk_password" >\&"$logfd"; a_disk_password=""|' "$t/leaky_pw/tools/install/nyra-install.sh"
+grep -qF 'echo "$a_disk_password" >&"$logfd"' "$t/leaky_pw/tools/install/nyra-install.sh" || fail "the leaky copy for the disk password is not leaky"
+LUKS_JSON="$t/luks-password.json" run leaky_pw install
+grep -qF -e "$disk_pw" "$t/log/install.log" || fail "the control of the search for the disk password: the leak was not there"
+no_secrets_anywhere_quiet || fail "the control of the search for the disk password: a leak was not found"
+echo "control: a disk password written to the log is found by the search"
+: > "$ENVLOG"
+: > "$PROCLOG"
+answers /dev/vda /dev/vda tpm
+
 # --- install, refused: nothing is written ------------------------------------------------------------
 refuse() { # refuse MESSAGE [ID]: with the answers and the machine as set, the installation is refused
   local hash
@@ -450,8 +516,20 @@ done
 answers /dev/sda /dev/nvme0n1 tpm
 refuse "not confirmed"
 export FIXTURE="$t/one-disk.json"
+# A password disk on a machine that cannot derive the key with 256 MiB: refused before anything is written.
 answers /dev/vda /dev/vda password
-refuse "unlocking the disk with a password is not supported yet"
+hash="$(disk_hash)"
+PWMEM_RC=3 run notpm install
+refused_install "this machine cannot derive a disk key from a password with at least 256 MiB of memory"
+untouched_but_podman "$hash"
+! called 'in-image.sh format' || fail "a disk was formatted although the key derivation is too cheap"
+no_secrets_anywhere
+# Secure Boot is needed for a password too, on a machine that has no TPM.
+tree=notpm
+printf '%s\n' 'SecureBoot disabled' > "$t/sb-state"
+refuse "Secure Boot must be on and not in setup mode"
+printf '%s\n' 'SecureBoot enabled' > "$t/sb-state"
+tree=ok
 answers /dev/vda /dev/vda tpm
 echo 'MemTotal:        4194304 kB' > "$t/meminfo"
 refuse "this machine has 4.0 GiB of memory; the installer needs 6 GiB" memory
@@ -505,6 +583,12 @@ bad_answers "an unknown field" '. + {extra: 1}'
 bad_answers "no confirmation" 'del(.confirm)'
 bad_answers "a password for the disk with the TPM" '. + {disk_password: "Another-password-1"}'
 bad_answers "no password for the disk with a password" '.unlock = "password"'
+bad_answers "a short disk password" '.unlock = "password" | .disk_password = "short"'
+bad_answers "an empty disk password" '.unlock = "password" | .disk_password = ""'
+bad_answers "a long disk password" '.unlock = "password" | .disk_password = ("a" * 65)'
+bad_answers "a newline in a disk password" '.unlock = "password" | .disk_password = "Sentinel-disk-pw\n-4711"'
+bad_answers "a disk password that is not ASCII" '.unlock = "password" | .disk_password = "Sentinel-pässword-4711"'
+bad_answers "a number for a disk password" '.unlock = "password" | .disk_password = 123456789012'
 bad_answers "unlock by something else" '.unlock = "pin"'
 bad_answers "a short administrator password" '.admin_password = "short"'
 bad_answers "a long administrator password" '.admin_password = ("a" * 65)'
@@ -576,6 +660,30 @@ failing install-system write
 failing tpm-enroll protect
 failing wipe-install-key protect
 failing esp-sync protect
+# The same for a disk with a password: the steps of the password fail after the disk is changed (a password that
+# password-add refuses, the key of the installation that cannot be wiped, a header that is not the one expected).
+answers /dev/vda /dev/vda password
+failing_password() { # failing_password NAME ID: a step fails with a password disk
+  local hash
+  fresh_disk
+  hash="$(disk_hash)"
+  LUKS_JSON="${LUKS:-$t/luks-password.json}" run notpm install
+  [ "$rc" = 11 ] || { printf '%s\n' "$events"; fail "status $rc, not 11 ($1)"; }
+  [ "$(tail -n 1 <<< "$events")" = "{\"event\":\"fail\",\"id\":\"$2\",\"disk_changed\":true}" ] || { printf '%s\n' "$events"; fail "the event fail of $1 is not $2 with a change"; }
+  [ ! -e "$t/secrets" ] || fail "the keys, the password file included, survived ($1)"
+  called 'close-root' || fail "the volume was not closed ($1)"
+  no_secrets_anywhere
+  echo "a failure of $1 (password) is $2, with a change, status 11"
+}
+PWADD_RC=4 failing_password password-add write
+FAIL_STEP=password-add failing_password "password-add (a stand-in that fails)" write
+FAIL_STEP=wipe-install-slot failing_password wipe-install-slot protect
+LUKS="$t/luks.json" failing_password "a TPM header on a disk with a password" protect
+grep -qF 'the LUKS header is not the recovery key and one password slot' "$t/log/install.log" || fail "the log does not say what is wrong with the header"
+# A second password slot is refused too.
+jq -c '.keyslots["3"] = .keyslots["1"]' "$t/luks-password.json" > "$t/luks-two.json"
+LUKS="$t/luks-two.json" failing_password "a second password slot" protect
+answers /dev/vda /dev/vda tpm
 # The header is not as it must be: a second TPM2 enrollment.
 cp "$t/luks.json" "$t/luks.good"
 jq -c '.tokens["2"] = .tokens["1"] | .keyslots["3"] = {}' "$t/luks.good" > "$t/luks.json"

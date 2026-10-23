@@ -206,8 +206,9 @@ volume is `/dev/mapper/root`. The unlock therefore reads nothing from `/etc`, an
   - `check_luks_header_password` (`tools/install/lib.sh`) on the header: exactly two key slots, the
     recovery key's (one `systemd-recovery` token) and the password's (no token, argon2id with at least 256
     MiB, 512-bit key), no TPM2 token, nothing else;
-- **with a TPM** (and Secure Boot on; `nyra-install.sh` refuses a machine without them, and does not
-  offer the password steps above yet): no
+- **with a TPM** (and Secure Boot on; the terminal mode of `nyra-install.sh` refuses a machine without
+  them, and offers only this; the machine interface of the installer ISO offers the password steps above too,
+  with `unlock: password`, which needs Secure Boot but no TPM): no
   password, the TPM2 enrollment of "TPM2 unlock" below. It is made by the installed system in its
   initrd at its first boot, never by the installer: PCR 7 and 12 must be the installed boot's, after
   the separator. The installer leaves a temporary TPM2 enrollment without any policy, so that the first

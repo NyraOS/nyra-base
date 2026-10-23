@@ -25,7 +25,11 @@
 #      With the machine interface below, the first administrator too: the image's own tools make the
 #      yescrypt hash of the password (admin-record, before the disk is touched), and the name and
 #      the hash go into the new system's /var/lib/nyra/first-admin, which the first boot turns into
-#      the account (docs/BOOT.md, "The first administrator");
+#      the account (docs/BOOT.md, "The first administrator"). And a disk that opens with a password
+#      instead of the TPM (answer unlock password; no TPM is needed): password-memory before anything is
+#      written, the password as key slot 1 (password-add, from a file of $secrets that is deleted at
+#      once), and in the end wipe-install-slot instead of the TPM enrollment (docs/BOOT.md, "Disk
+#      encryption");
 #   4. imports the Nyra certificate as a Machine Owner Key (the owner confirms it in MokManager at
 #      the next boot).
 # After a failure past the point where the disk is changed, the disk must be installed again from the
@@ -68,7 +72,7 @@ in_image_timeout=0
 # changed: the disk was written to and the installation is not finished. touched: it was, at any time
 # (exit status 11, disk_changed in the event fail). own_secrets: $secrets is this run's, to remove.
 # handoff_open: the terminal is not the installer's. fail_id: what the event fail names.
-device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open="" fail_id=verify
+unlock=tpm device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open="" fail_id=verify
 
 # --- cleanup ---------------------------------------------------------------------------------------
 cleanup() {
@@ -240,12 +244,12 @@ if [ "$cmd" = cli ]; then
   require_tpm
   require_secure_boot
 elif [ "$cmd" = install ]; then
-  # What the answers ask for, and that this machine can do it. What the answers cannot be: a password
-  # for the disk (it would be a TPM-only disk), until the disk can be protected by one.
+  # What the answers ask for, and that this machine can do it. A TPM is needed only to unlock with it; Secure
+  # Boot is needed either way.
   read_answers
-  [ "$a_unlock" = tpm ] || die "unlocking the disk with a password is not supported yet"
+  unlock="$a_unlock"
   [ "$uefi" = true ] || die "not booted in UEFI mode"
-  require_tpm
+  if [ "$unlock" = tpm ]; then require_tpm; fi
   require_secure_boot
   fail_id=memory
   [ "$mem_tenths" -ge $((min_memory_gib * 10)) ] \
@@ -305,6 +309,11 @@ if [ "$cmd" = install ]; then
     || die "cannot make the record of the administrator $a_admin_name"
   a_admin_password=""
   admin=/secrets/first-admin
+  # With a password, whether this machine can derive the disk's key from it with at least 256 MiB of
+  # memory, before anything is written (docs/BOOT.md, "Disk encryption").
+  if [ "$unlock" = password ]; then
+    in_image -- password-memory || die "this machine cannot derive a disk key from a password with at least 256 MiB of memory"
+  fi
 fi
 step_end verify
 
@@ -329,23 +338,42 @@ for _ in $(seq 50); do
 done
 [ "$(lsblk -nro TYPE "$device" | grep -c '^part$')" = 2 ] || die "no partitions on $device after 10 s"
 in_image -- format "$device" "$key"
+if [ "$unlock" = password ]; then
+  # The disk's password, from the answers to a file only root reads, in memory, for password-add alone: it is
+  # written just before and deleted just after, so that only that container can see it. Never an argument,
+  # never the environment, never the log.
+  ( umask 077; printf '%s' "$a_disk_password" > "$secrets/password" )
+  a_disk_password=""
+  in_image -- password-add "$device" "$key" /secrets/password
+  rm -f "$secrets/password"
+fi
 step_end prepare
 step install
 # The record bootc made of the reference and the digest is read back inside, before the volume is
 # closed: a machine that records anything else would update from somewhere else.
-in_image -- install-system "$device" "$key" tpm "$imgref" "$digest" ${admin:+"$admin"}
+tpm_arg=""
+[ "$unlock" != tpm ] || tpm_arg=tpm
+in_image -- install-system "$device" "$key" "$tpm_arg" "$imgref" "$digest" ${admin:+"$admin"}
 step_end install
 
 # --- the recovery key --------------------------------------------------------------------------------
 step protect
 if [ "$cmd" = cli ]; then recovery_key; else handoff recovery-key recovery_key; fi
 
-# --- the TPM -------------------------------------------------------------------------------------------
-# No PCR, no policy: the first boot of the installed system replaces this enrollment with the real one.
-in_image -- tpm-enroll "$device" "$key" "$tpm_dev"
-in_image -- wipe-install-key "$device"
-in_image -- luks-json "$device" | check_luks_header \
-  || die "the LUKS header is not the recovery key and one TPM2 enrollment without a policy"
+# --- the TPM, or the password ---------------------------------------------------------------------------
+if [ "$unlock" = tpm ]; then
+  # No PCR, no policy: the first boot of the installed system replaces this enrollment with the real one.
+  in_image -- tpm-enroll "$device" "$key" "$tpm_dev"
+  in_image -- wipe-install-key "$device"
+  in_image -- luks-json "$device" | check_luks_header \
+    || die "the LUKS header is not the recovery key and one TPM2 enrollment without a policy"
+else
+  # The password is key slot 1 already. Only the key of the installation, slot 0, goes (wipe-install-key
+  # would remove every "password" slot, the password included).
+  in_image -- wipe-install-slot "$device" "$key"
+  in_image -- luks-json "$device" | check_luks_header_password \
+    || die "the LUKS header is not the recovery key and one password slot (argon2id, 256 MiB or more)"
+fi
 if [ "$cmd" = cli ]; then printf '\033[H\033[2J\033[3J'; fi
 echo "nyra-install: the recovery key is checked, the key of the installation is gone, the header is as expected."
 
