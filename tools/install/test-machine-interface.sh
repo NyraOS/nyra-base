@@ -14,6 +14,7 @@
 #   - a wrong confirmation, a disk that is in use, the disk it started from, a read-only or too small one,
 #     a machine without Secure Boot, a TPM or the memory, answers that are not complete: refused, and the
 #     disk is not touched;
+#   - the recovery key is shown and the user presses Enter (nothing is typed back, nothing is checked);
 #   - the recovery key and the password of mokutil go to the terminal after the line go, and to no event,
 #     log or file; no password is in an argument, in the environment, in ps or anywhere under the work
 #     directory; the terminal mode refuses what it always refused.
@@ -105,11 +106,6 @@ fi
 [ "$step" != "$FAIL_STEP" ] || exit 1
 case "$step" in
   recovery-show) echo "RECOVERY-KEY: $(cat "$KEYFILE")" ;;
-  recovery-check)
-    printf 'Enter passphrase for the key slot: '
-    read -r got
-    [ "$got" = "$(cat "$KEYFILE")" ]
-    ;;
   luks-json) cat "$LUKS_JSON" ;;
   password-memory) exit "${PWMEM_RC:-0}" ;;
   password-add)
@@ -258,7 +254,7 @@ run() {
     : > "$t/log/install.log"
     chmod 0644 "$t/log/install.log"
   fi
-  ANSWER="$key" TIMEOUT=60 python3 -I tools/install/pty-run.py "$t/transcript" \
+  ENTER='Press Enter when you have written it down: ' TIMEOUT=60 python3 -I tools/install/pty-run.py "$t/transcript" \
     bash -c '"$@"; exit $?' _ "$t/$tree/tools/install/nyra-install.sh" "$@" --events-fd 3 --answers-fd 4 \
     3> "$t/events" 4< "$t/answers" && rc=0 || rc=$?
   events="$(cat "$t/events")"
@@ -406,13 +402,15 @@ run ok install
 [ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to: the test would not see a write"
 called '^verified-pull ' || fail "no pull"
 [ "$(grep -c '^sfdisk' "$CALLS")" = 1 ] || fail "sfdisk did not run exactly once"
-for s in admin-record format install-system recovery-show recovery-check tpm-enroll wipe-install-key esp-sync; do
+for s in admin-record format install-system recovery-show tpm-enroll wipe-install-key esp-sync; do
   called "/nyra-install/in-image.sh $s" || fail "the step $s did not run"
 done
 called '^mokutil --import ' || fail "no import of the key"
 [ ! -e "$t/secrets" ] || fail "the key of the installation is still there"
 tr -d '\r' < "$t/transcript" | grep -qF "RECOVERY-KEY: $key" || fail "the recovery key was not shown on the terminal"
 tr -d '\r' < "$t/transcript" | grep -qF "$fingerprint" || fail "the fingerprint was not shown on the terminal"
+tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written it down: ' || fail "the terminal did not ask for Enter after the recovery key"
+! called 'in-image.sh recovery-check' && ! called 'in-image.sh recovery-wipe' || fail "the recovery key was checked against the disk"
 echo "install: the events in order, the disk written, the key and the fingerprint on the terminal"
 # What must not hold the recovery key or a password.
 if grep -rlF "$key" "$t" --exclude=transcript --exclude=key.txt --exclude=answers.in --exclude=answers --exclude=test-*.sh 2> /dev/null | grep .; then
@@ -458,7 +456,7 @@ LUKS_JSON="$t/luks-password.json" run notpm install
 [ "$rc" = 0 ] || { printf '%s\n' "$events"; cat "$t/transcript" "$t/log/install.log"; fail "install with a password failed ($rc)"; }
 [ "$events" = "$install_events" ] || { printf '%s\n' "$events"; fail "the events of an installation with a password are not those of the text installer"; }
 [ "$(disk_hash)" != "$before" ] || fail "the stand-in disk was not written to"
-for s in admin-record password-memory format password-add install-system recovery-show recovery-check wipe-install-slot esp-sync; do
+for s in admin-record password-memory format password-add install-system recovery-show wipe-install-slot esp-sync; do
   called "/nyra-install/in-image.sh $s" || fail "the step $s did not run (password)"
 done
 ! called 'in-image.sh tpm-enroll' && ! called 'in-image.sh wipe-install-key' || fail "a step of the TPM ran for a disk with a password"

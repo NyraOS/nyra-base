@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: the installer's recovery key (docs/INSTALL.md), made and shown the way
 # tools/install/nyra-install.sh does it: on a terminal, from the image's container with no log
-# (in_image -it --log-driver=none, tools/install/lib.sh), then typed back and checked against the
-# key slot of the recovery key alone.
+# (in_image -it --log-driver=none, tools/install/lib.sh). The installer does not check the key (the user
+# only writes it down); this test checks that what is shown is the recovery key.
 #   - the key is shown once, and after the run it is not in the journal, in a container's log or in
 #     what podman keeps of the containers (a container run with a log shows that this search finds one);
-#   - the key typed back is accepted; a wrong one, and the key of the installation, are refused;
-#   - a key replaced after a wrong answer is another one, and the old one no longer works.
+#   - the key shown opens the key slot of the recovery key; a wrong one, and the key of the
+#     installation, do not.
 #   tools/install/test-recovery-key.sh IMAGE WORKDIR
 set -euo pipefail
 
@@ -16,7 +16,7 @@ as_root=sudo
 secrets="$work/recovery-key-test"
 . tools/install/lib.sh
 export image secrets as_root
-disk="$work/recovery-key-test.raw" loop="" key="" key2="" slot=""
+disk="$work/recovery-key-test.raw" loop="" key="" slot=""
 trap '[ -z "$loop" ] || sudo losetup -d "$loop" || true; sudo podman rm -f nyra-log-control > /dev/null 2>&1 || true; rm -rf "$secrets" "$disk"' EXIT
 
 pattern='([cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}'
@@ -70,23 +70,13 @@ sudo podman run --rm --pull=never --log-driver=journald "$image" echo "$journal_
 leaked "$journal_marker" || fail "the search for a leaked key does not find a string in the journal"
 
 shown key
-ANSWER="$key" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" || fail "the recovery key was refused"
-echo "the recovery key typed back is accepted"
+ANSWER="$key" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" || fail "the recovery key shown was refused"
+echo "the recovery key shown opens the recovery key slot"
 ANSWER="$(rev <<< "$key")" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" \
   && fail "a wrong key was accepted"
 ANSWER="$(cat "$secrets/install-key")" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" \
   && fail "the key of the installation was accepted as the recovery key"
 echo "a wrong key and the key of the installation are refused"
 
-# A key that does not match is replaced, as the installer does it.
-in_image -- recovery-wipe "$loop" /secrets/install-key
-! in_image -- luks-json "$loop" | recovery_slot > /dev/null || fail "recovery-wipe left the recovery key"
-shown key2
-[ "$key2" != "$key" ] || fail "the new recovery key is the old one"
-ANSWER="$key2" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" || fail "the new key was refused"
-ANSWER="$key" on_terminal "$secrets/typed" recovery-check "$loop" "$slot" && fail "the old key still works"
-echo "a replaced recovery key is another one, and the old one no longer works"
-
-leaked "$key" && fail "the first recovery key is in the journal or in a container's log"
-leaked "$key2" && fail "the recovery key is in the journal or in a container's log"
+leaked "$key" && fail "the recovery key is in the journal or in a container's log"
 echo "the recovery key is in no log"

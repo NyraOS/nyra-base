@@ -35,14 +35,10 @@ recovery-show() {
 }
 
 # recovery-check DISK SLOT: asks for a passphrase on the terminal and checks it against the key
-# slot SLOT only.
+# slot SLOT only. The installer does not use it; the CI tests do (tools/install/test-recovery-key.sh,
+# test-password.sh).
 recovery-check() {
   cryptsetup open --test-passphrase --key-slot "$2" "$(part "$1" 2)"
-}
-
-# recovery-wipe DISK KEYFILE: removes the recovery key (one the user could not type back).
-recovery-wipe() {
-  systemd-cryptenroll --unlock-key-file="$2" --wipe-slot=recovery "$(part "$1" 2)"
 }
 
 # recovery-to-file DISK KEYFILE: CI only (it needs the key to boot the disk): the recovery key goes
@@ -240,7 +236,7 @@ esp-sync() {
 }
 
 case "${1:-}" in
-  format | recovery-show | recovery-check | recovery-wipe | recovery-to-file | luks-json \
+  format | recovery-show | recovery-check | recovery-to-file | luks-json \
     | install-system | close-root | tpm-enroll | wipe-install-key | esp-sync \
     | password-memory | password-add | wipe-install-slot | admin-record)
     step="$1"

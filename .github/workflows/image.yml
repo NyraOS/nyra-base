@@ -1069,8 +1069,8 @@ jobs:
         run: tools/vm/encryption.sh localhost/nyra-base:ci "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       # The installer's recovery key (tools/install/test-recovery-key.sh, docs/INSTALL.md): shown once
-      # on a terminal by the image's container with no log, typed back and checked against its key
-      # slot, and in no log afterwards (the journal, the containers' logs).
+      # on a terminal by the image's container with no log, opening only its own key slot, and in
+      # no log afterwards (the journal, the containers' logs).
       - name: Recovery key shown once and in no log (docs/INSTALL.md)
         if: ${{ !cancelled() && steps.load.outcome == 'success' }}
         timeout-minutes: 10

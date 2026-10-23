@@ -20,8 +20,8 @@
 #      labels): it prints the image ID, and from there on only that ID is used, never a name;
 #   3. partitions the disk and runs everything else in that image's container, without network and
 #      without any pull (tools/install/in-image.sh; the same steps CI tests): LUKS2, ext4, bootc
-#      install, the record of what bootc recorded read back, the recovery key shown once and typed
-#      back, the temporary TPM2 enrollment, the removal of the key of the installation, esp-sync.
+#      install, the record of what bootc recorded read back, the recovery key shown once (the user
+#      writes it down and presses Enter), the temporary TPM2 enrollment, the removal of the key of the installation, esp-sync.
 #      With the machine interface below, the first administrator too: the image's own tools make the
 #      yescrypt hash of the password (admin-record, before the disk is touched), and the name and
 #      the hash go into the new system's /var/lib/nyra/first-admin, which the first boot turns into
@@ -126,24 +126,15 @@ mok_enroll() {
 }
 
 # recovery_key: the recovery key is shown on the terminal only (the container has no log:
-# --log-driver=none), written nowhere. The key typed back is checked against the recovery key slot
-# alone. The key of the installation is removed only after that. A key that does not match is replaced
-# by a new one, shown the same way: keeping the old one to show it again would mean holding it in a file
-# or a variable.
+# --log-driver=none), written nowhere. The user writes it down on paper and presses Enter; nothing is
+# typed back and nothing is checked against the disk. The screen is cleared afterwards (the handoff does
+# it in the machine interface, this script at the end in the terminal mode).
 recovery_key() {
-  while :; do
-    in_image -it --log-driver=none -- recovery-show "$device" "$key"
-    echo
-    echo "Write the recovery key down now, on paper: it is the only way in if the TPM refuses the disk."
-    echo "Then type it below to check it."
-    slot="$(in_image -- luks-json "$device" | recovery_slot)" || die "cannot find the recovery key slot"
-    [[ "$slot" =~ ^[0-9]+$ ]] || die "not a key slot: $slot"
-    if in_image -it --log-driver=none -- recovery-check "$device" "$slot"; then
-      break
-    fi
-    echo "That is not the recovery key. The key above no longer works; a new one follows."
-    in_image -- recovery-wipe "$device" "$key"
-  done
+  in_image -it --log-driver=none -- recovery-show "$device" "$key"
+  echo
+  echo "Write the recovery key down now, on paper: it is the only way in if the TPM refuses the disk."
+  echo "It is shown only once, and nothing checks what you wrote."
+  read -r -p "Press Enter when you have written it down: " _
 }
 
 trap cleanup EXIT
@@ -206,7 +197,7 @@ fi
 [ -z "${CONTAINERS_POLICY_JSON:-}" ] || die "CONTAINERS_POLICY_JSON is set"
 [ -z "${NYRA_CI:-}" ] || die "NYRA_CI is set: the recovery key would go to a file"
 if [ "$cmd" = cli ]; then
-  [ -t 0 ] && [ -t 1 ] || die "run it from a terminal: the recovery key is shown there and typed back"
+  [ -t 0 ] && [ -t 1 ] || die "run it from a terminal: the recovery key is shown there"
 fi
 
 # The repository is chosen by this machine's architecture, from a two-value allow-list, and is not an
@@ -375,7 +366,7 @@ else
     || die "the LUKS header is not the recovery key and one password slot (argon2id, 256 MiB or more)"
 fi
 if [ "$cmd" = cli ]; then printf '\033[H\033[2J\033[3J'; fi
-echo "nyra-install: the recovery key is checked, the key of the installation is gone, the header is as expected."
+echo "nyra-install: the key of the installation is gone, the header is as expected."
 
 in_image -- esp-sync "$device"
 changed=""
