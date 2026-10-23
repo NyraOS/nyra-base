@@ -82,7 +82,9 @@ else
   empty="$tpm-empty"
   rm -rf "$empty"
   mkdir -p "$empty"
-  vm --tpm "$empty" --chat "$ask=>$(cat "$secrets/recovery-key")" --chat-then-login --log "$logs/serial-installed-2.log" \
+  # A disk with a TPM and the recovery key only (no password slot) asks for "recovery key", not for "passphrase or
+  # recovery key"; the prompt of the first run showed it ("Please enter recovery key for disk root:").
+  vm --tpm "$empty" --chat "Please enter (passphrase or )?recovery key for disk [^\r\n:]*:=>$(cat "$secrets/recovery-key")" --chat-then-login --log "$logs/serial-installed-2.log" \
     --title "Installed from the ISO, TPM: the recovery key opens the disk" \
     --command "$running" --command "$account"
 fi
