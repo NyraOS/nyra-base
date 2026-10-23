@@ -96,6 +96,23 @@ package = "expat"
 reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
 expires = 2026-10-30
 
+# harfbuzz 12.3.2-2: fixed upstream in HarfBuzz 15.0.0 (released 2026-10-22), no Debian upload yet.
+# The flaw is in the experimental WebAssembly shaper, which Debian does not build: debian/rules
+# configures meson with auto_features=enabled, but the `wasm` option is a feature option with a
+# fixed default of disabled, and it needs libiwasm (WAMR), which is no build dependency and no
+# package in Debian. Checked in the snapshot's libharfbuzz0b 12.3.2-2+b2: no wasm, iwasm or wamr
+# string, no exported wasm symbol, no libiwasm in its NEEDED libraries (2026-10-23). Only
+# libharfbuzz0b is in the image (through pango, used by librsvg2). The installer ISOs do not ship
+# harfbuzz (checked in their SBOMs), so tools/sbom/mitigations-iso*.toml need no entry. Expiry
+# allows for a Debian upload of 15.0.0 or a backported fix. End: a fixed harfbuzz in Debian and a
+# snapshot bump.
+
+[[mitigation]]
+id = "CVE-2026-113679"
+package = "harfbuzz"
+reason = "Out-of-bounds write in HarfBuzz's experimental WebAssembly shaper, fixed upstream in 15.0.0; Debian has no fixed upload yet. Debian's build does not include that shaper: its wasm option stays disabled (it needs libiwasm, which Debian does not package), and libharfbuzz0b 12.3.2-2+b2 contains no wasm code and does not link a wasm runtime. The vulnerable code is therefore not in the image. It would matter only if a rebuilt harfbuzz enabled wasm."
+expires = 2026-11-20
+
 # libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with
 # only the dav1d and libde265 decoder plugins, no encoder plugin) has one user: glycin's HEIF/AVIF
 # loader, pulled in by flatpak through gdk-pixbuf. In the base image that loader is reached only by
