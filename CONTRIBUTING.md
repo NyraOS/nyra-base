@@ -9,11 +9,17 @@ strict but short.
   Every change to the base is reviewed before it is merged (`.github/CODEOWNERS`).
 - **One change per pull request**, small and with a clear reason. Prefer the simplest solution that
   works; no options or abstractions "for later".
-- **Code rules** (for everyone, people and agents alike; reviews check them):
-  - **Rust:** the code must be easy to read, without needless complication. A reader who knows
-    Rust understands a function without jumping through five files; names say what a thing is;
-    generics, traits, macros or `unsafe` only when really needed, with the reason written next to
-    them; plain code instead of an abstraction used once; comments say why, not what.
+- **Code rules** (for everyone, people and agents alike; reviews check them). KISS: code a person
+  can read, top to bottom, without jumping through five files.
+  - Functions about 50 lines at most, files short; each file starts with a short header saying
+    what it does and why it exists; names say what a thing is; comments say why, not what.
+  - **Rust:** plain `match` and loops instead of long iterator chains; no macros; generics, traits,
+    explicit lifetimes, `dyn` or `unsafe` only when really needed, with the reason written next to
+    them; plain code instead of an abstraction used once.
+  - **Shell, Python, container files:** one thing per script, `set -euo pipefail` in shell,
+    shellcheck clean, no clever one-liners.
+  - A dependency that makes the code clearer is fine; do not write your own replacement to avoid
+    one without a reason. No options or layers "for later".
 - **Never weaken or skip a test to make it pass.** A flaky test is a bug: fix it or report it.
 - **No secrets.** No keys, tokens or passwords in the repository, its history or CI logs; gitleaks
   scans every push. Test keys are generated in CI and deleted at the end (`tools/vm/secure-boot.sh`).
