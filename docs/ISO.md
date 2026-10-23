@@ -207,7 +207,8 @@ the ISO, by the keys a person presses, and boots what it installed:
    `bootc status` names `updates.nyraos.com/nyra-base`, the digest and the version of the release. A second
    boot: the recovery key opens the disk (both ways). With the TPM the first boot is opened by the temporary
    enrollment, without a prompt (checked); the real enrollment is made by a boot without the test console, which
-   the encryption tests cover (`tools/vm/encryption-first-boot.sh`).
+   the encryption tests cover (`tools/vm/encryption-first-boot.sh`). The second boot gets a TPM with no state,
+   which cannot unseal that enrollment, so the disk asks for the recovery key.
 
 **The console of the installed system.** The installed image's command line is sealed and has no console,
 so, as in the other tests of the base (`tools/vm/first-admin.sh`), the test puts a signed add-on that turns

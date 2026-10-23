@@ -6,8 +6,8 @@
 #     the TPM (tpm); the first administrator exists, in the group sudo, with a home and a password hash;
 #     root is locked, nobody has an empty password, the record is gone, the fixed defaults are set,
 #     nothing failed; bootc status names the signed reference and the digest of the release;
-#   - a second boot: the recovery key opens the disk (both ways; with the TPM, the first boot's temporary
-#     enrollment is gone and the test console keeps the real one from being made, as in tools/vm/encryption-first-boot.sh).
+#   - a second boot: the recovery key opens the disk (both ways; with the TPM, on a TPM that has no state,
+#     which cannot unseal the temporary enrollment of the first boot).
 # The installed image's sealed command line has no console, so, as in the other tests (tools/vm/first-admin.sh),
 # the disk gets a test console add-on, signed with a key made here and enrolled, with the image's UKI
 # certificate, as a Machine Owner Key in a copy of the firmware variables. That stands in for MokManager,
@@ -67,9 +67,11 @@ if [ "$unlock" = password ]; then
     --title "Installed from the ISO, disk password: the recovery key opens the disk" \
     --command "$running" --command "$account"
 else
-  # The test console add-on changes what PCR 12 measures, so the first boot is unlocked by the temporary
-  # enrollment (no policy) and does not make the real one (that is the encryption tests' business,
-  # tools/vm/encryption-first-boot.sh: a boot without the add-on); the next boot needs the recovery key.
+  # The test console add-on changes what PCR 12 measures, so the first boot is opened by the temporary
+  # enrollment (no policy) and no real one is made (that is the encryption tests' business,
+  # tools/vm/encryption-first-boot.sh: a boot without the add-on); the temporary enrollment stays, so a
+  # second boot with the same TPM opens by itself again. A TPM with no state cannot unseal it: that boot
+  # asks for the disk, and the recovery key opens it.
   vm --tpm "$tpm" --log "$logs/serial-installed-1.log" \
     --title "Installed from the ISO, TPM: the first boot unlocks by itself" \
     --command "$running" --command "$account" --command "$defaults" --command "$booted" --command "$sb"
@@ -77,7 +79,10 @@ else
     echo "::error::the first boot asked for the disk: the TPM should have opened it"
     exit 1
   fi
-  vm --tpm "$tpm" --chat "$ask=>$(cat "$secrets/recovery-key")" --chat-then-login --log "$logs/serial-installed-2.log" \
+  empty="$tpm-empty"
+  rm -rf "$empty"
+  mkdir -p "$empty"
+  vm --tpm "$empty" --chat "$ask=>$(cat "$secrets/recovery-key")" --chat-then-login --log "$logs/serial-installed-2.log" \
     --title "Installed from the ISO, TPM: the recovery key opens the disk" \
     --command "$running" --command "$account"
 fi
