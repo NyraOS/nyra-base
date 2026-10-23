@@ -270,18 +270,22 @@ class Console:
 
     def _read(self):
         while chunk := self.proc.stdout.read(65536):  # unbuffered: one read, whatever is there
-            with self.lock:
-                self.buf += chunk
+            # Only this thread writes buf. What a chunk triggers (a kill, tpm_failed, cut) is done
+            # before the chunk is published: whoever sees the text on the console has also seen
+            # what it caused, and a kill is recorded before it can be noticed.
+            buf = self.buf + chunk
             self.log.write(chunk)
             self.log.flush()
-            if self.cut_at and self.cut is None and on_console(self.cut_at, self.buf):
-                self.proc.kill()
+            if self.cut_at and self.cut is None and on_console(self.cut_at, buf):
                 self.cut = time.monotonic() - self.t0
-            if self.tpm_fail and self.tpm_failed is None and on_console(self.tpm_fail[0], self.buf):
-                self.tpm_fail[1].kill()
+                self.proc.kill()
+            if self.tpm_fail and self.tpm_failed is None and on_console(self.tpm_fail[0], buf):
                 self.tpm_failed = time.monotonic() - self.t0
+                self.tpm_fail[1].kill()
             if self.qmp:
-                self.qmp.check(self.buf)
+                self.qmp.check(buf)
+            with self.lock:
+                self.buf = buf
 
     def wait_for(self, pattern, timeout, start=0, cleaned=False):
         """Wait for `pattern` after offset `start` (in clean(buf[start:]) with `cleaned`, whose offsets
@@ -520,7 +524,10 @@ def self_test():
         or exits. "passed" or the error."""
         a = argparse.Namespace(chat=[], chat_then_login=False, autologin=True, timeout=5, boots=1, command=[])
         vars(a).update(opts)
-        sh = ('printf %s "$1"; shift; for s; do IFS= read -r -d "$(printf "\\r")" _; printf %s "$s"; done'
+        # Not alive: stdin is closed before anything is printed, so typing fails for certain (a process
+        # that is still running when the line is typed would take it, and exit afterwards).
+        sh = (("" if alive else "exec <&-; ")
+              + 'printf %s "$1"; shift; for s; do IFS= read -r -d "$(printf "\\r")" _; printf %s "$s"; done'
               + ("; exec cat >/dev/null" if alive else ""))
         proc = subprocess.Popen(["bash", "-c", sh, "bash", *console], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 bufsize=0)
