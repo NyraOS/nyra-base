@@ -19,12 +19,12 @@ root_type() {
 # partition_disk TARGET: the same sizes and types as bootc install to-disk with the composefs backend,
 # without the BIOS boot partition (UEFI only). TARGET is a disk or a file.
 partition_disk() {
-  local type
-  type="$(root_type)" || return 1
+  local kind
+  kind="$(root_type)" || return 1
   sfdisk -q --wipe always --wipe-partitions always "$1" <<EOF
 label: gpt
 size=1024MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI-SYSTEM"
-type=$type, name="root"
+type=$kind, name="root"
 EOF
 }
 

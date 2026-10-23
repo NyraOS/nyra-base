@@ -441,7 +441,8 @@ RUN { printf '%s' "$NYRA_VERSION" | grep -Eqxz '[0-9]{4}\.[0-9]{1,2}\.[0-9]+|dev
 # virtual GPU shows nothing until its driver is loaded; the firmware's display of some of them (virtio
 # GPU on aarch64) is not a framebuffer the kernel can use before that. Real PCs' GPUs show the prompt
 # through the firmware's framebuffer (the kernel's built-in efifb) and load their own drivers from the
-# root file system. The build fails if one of the drivers is not in the initramfs.
+# root file system. The build fails if one of the drivers is not in the initramfs (file names spell some
+# of them with a hyphen, virtio-gpu.ko, and some with an underscore, hyperv_drm.ko: the check takes both).
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
       > /usr/lib/dracut/dracut.conf.d/30-nyra-bootc-module.conf && \
@@ -469,7 +470,8 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
       grep -qF " $f" /tmp/initrd.txt || { echo "not in the initramfs: $f"; exit 1; }; done && \
     ! grep -F 'dev-.device.d' /tmp/initrd.txt && \
     for m in virtio_gpu bochs qxl vmwgfx hyperv_drm; do \
-      grep -Eq " usr/lib/modules/[^ ]+/$m\\.ko" /tmp/initrd.txt || { echo "not in the initramfs: the display driver $m"; exit 1; }; done
+      f="$(printf %s "$m" | sed 's/_/[-_]/g')" && \
+      grep -Eq " usr/lib/modules/[^ ]+/$f\\.ko" /tmp/initrd.txt || { echo "not in the initramfs: the display driver $m"; exit 1; }; done
 
 # Mounts from /etc/fstab (docs/BOOT.md): one that fails (a disk that is not connected, a wrong line)
 # does not stop the boot in emergency mode, whose root shell is locked anyway. systemd's local-fs.target

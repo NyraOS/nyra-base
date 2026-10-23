@@ -40,6 +40,7 @@ on:
     paths:
       - .github/workflows/arm64.yml
       - .github/actions/arm64-*/**
+      - Containerfile
       - tools/vm/arm64-boot.sh
       - tools/vm/arm64-display.sh
       - tools/vm/screen-boot.py

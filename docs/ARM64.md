@@ -99,13 +99,18 @@ controller, a virtio console and a serial port, and no test console add-on (the 
 it is). `tools/vm/screen-boot.py` saves the screen every 15 s (QMP `screendump`, PNG files in the artifact
 `arm64-screen`), reads it with tesseract, types the password on the keyboard (QMP `send-key`) when the
 prompt is on the screen, and presses the power button until the guest powers itself off, which only a
-system that is up does. It passes when the prompt was on the screen and the password opened the disk.
+system that is up does. It passes when the prompt was on the screen, the password was typed after that,
+a login prompt was read from the screen, and QEMU ended by itself with status 0 after the power button.
+A password typed blind (`--blind-after`, when no prompt was read) only tells a dead screen from a disk that
+does not unlock; it never passes, and its screens are neither kept nor printed.
 The installer's partitioning must give the root partition the aarch64 type (the job checks it): with
 the x86-64 type the initrd never finds the root, `nyra-root-wait.service` ends the wait after 90 s and
 the machine restarts. The prompt must be on the screen, which a virtual GPU shows only once its driver
 is loaded: the initrd carries `virtio_gpu`, `bochs`, `qxl`, `vmwgfx` and `hyperv_drm` with their helpers
-(`add_drivers` in the Containerfile, about 0.4 to 0.9 MB), and the build fails if one is missing. The
-kernel's own `efifb` shows the prompt on a real PC; the firmware's display of a virtio GPU on aarch64 is
+(`add_drivers` in the Containerfile), and the build fails if one is missing. They make the initramfs
+of both architectures grow by about the same, estimated at well under 1 MB from the size of Debian's
+modules; the job prints the real sizes of the UKI, its initramfs and its display drivers in its
+summary. The kernel's own `efifb` shows the prompt on a real PC; the firmware's display of a virtio GPU on aarch64 is
 not a framebuffer it can use.
 
 ## What differs from x86_64
