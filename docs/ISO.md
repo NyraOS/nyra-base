@@ -242,8 +242,11 @@ snapshot bump reviews both files together. The SBOM is the `nyra-installer-iso-a
 
 **Nothing in this section has been run on a Mac.** What CI proves is in "aarch64" above; every step here that
 depends on UTM's own screens or firmware is marked **UNVERIFIED** and is the owner's first test. The ISO is
-unsigned (see the status at the top): take it only from a successful run on `main` (`nyra-installer-iso-arm64-unsigned-<mode>`,
-14 days), and compare its SHA-256 with the one in that run's job summary, read in your own logged-in browser.
+unsigned (see the status at the top): take it only from a successful run on `main`
+(`nyra-installer-iso-arm64-unsigned-<mode>`, 14 days), and compare its SHA-256 with the one in that run's job
+summary, read in your own logged-in browser. That only detects a damaged download, not an altered run: nobody
+has signed the file. Prefer the `-release` artifact; a `-test` one trusts a throwaway key made for its run and
+is not a release.
 
 1. **Create the machine.** In UTM: "Create a New Virtual Machine", "Virtualize", "Linux". Leave "Use Apple
    Virtualization" **off** (UTM's QEMU backend is the one with the Secure Boot firmware and a TPM; the
@@ -281,8 +284,16 @@ unsigned (see the status at the top): take it only from a successful run on `mai
 
 **The limit of Secure Boot in UTM.** UTM's firmware (like AAVMF in CI) has no SMM and no secure world: root in
 the guest can write the UEFI variable store, the Secure Boot databases and the MOK list included. In this
-virtual machine Secure Boot is not protected against a compromised running system. What remains is the TPM's
-binding of the disk to PCR 7: a changed database makes the disk ask for the recovery key. Do not read more
+virtual machine Secure Boot is not protected against a compromised running system.
+
+The protection that is meant to remain is the TPM's binding of the disk to PCR 7, so that a changed database
+makes the disk ask for the recovery key. That has **not been run on aarch64**: an installation with a TPM
+on aarch64 is unverified, so are the stability of PCR 7 and 11 between boots, and CI has no TPM on this path.
+UTM's TPM is a software TPM whose state is a file on the Mac, so the Mac is trusted. For an installation with
+a disk password, Secure Boot in the virtual machine protects nothing against a compromised guest.
+
+The keys that "Preload Secure Boot Keys" loads are only as current as UTM's build: its revocation list may
+not yet revoke a shim or GRUB build that Microsoft revoked recently (**UNVERIFIED**). Do not read more
 security into a virtual machine than that.
 
 **The ISO that passes between the jobs** is the artifact `nyra-installer-iso-arm64-untested-unsigned-<mode>`
@@ -347,7 +358,7 @@ unsigned, and `iso` is not a dependency of `sign` or `publish`.)
   itself (password and TPM), with `mokutil --sb-state` and the staged Machine Owner Key, in the installer
   session. (Done already: the vulnerability scan, the altered layer, another digest in `RELEASE`, the
   artifact kept only after the tests.)
-- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
+- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`, and `tools/sbom/mitigations-iso-arm64.toml` for aarch64) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
 - **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
   decoy scope (the shipped signer under a name no image has) can go.
 - **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in

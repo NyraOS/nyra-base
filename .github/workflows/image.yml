@@ -3099,8 +3099,6 @@ jobs:
           name: ${{ matrix.name }}
           args: ${{ matrix.args }}
 
-  # The ISO the owner can try, kept only when every boot test passed: the one the tests booted (its hash is
-  # checked), under a name that says it is UNSIGNED and which mode it is in (docs/ISO.md). The scan passed too.
   # The vulnerability scan of the ISO's installer system and installer program (docs/SBOM.md), with the
   # exceptions of tools/sbom/mitigations-iso-arm64.toml alone.
   iso-sbom-arm64:
@@ -3119,6 +3117,8 @@ jobs:
         with:
           materials-artifact: ${{ needs.iso-arm64.outputs.iso_artifact }}-materials
 
+  # The ISO the owner can try, kept only when every boot test passed: the one the tests booted (its hash is
+  # checked), under a name that says it is UNSIGNED and which mode it is in (docs/ISO.md). The scan passed too.
   iso-keep-arm64:
     needs: [iso-arm64, iso-boot-arm64, iso-sbom-arm64]
     if: ${{ success() }}
