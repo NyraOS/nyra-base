@@ -130,15 +130,19 @@ them: that is in the log.
 | `{"event":"fail","id":ID,"disk_changed":BOOL}` | the last event of a failure. `ID` is `verify` (before the first write), `memory` (the machine has less than `mem_need_gib`), `write` (`prepare` or `install`), `protect` or `mok` (`final`). `disk_changed` is true if `disk-changed` was ever sent |
 | `{"event":"done"}` | the last event of a success |
 
-**Handoff.** The recovery key must be shown on the terminal (the owner presses Enter once it is written down), and `mokutil` asks for a
+**Handoff.** The recovery key must be shown on the terminal (the owner presses Enter once it is
+written down), and `mokutil` asks for a
 one-time password: neither goes through the program, a pipe or the log. The script emits `handoff`,
 and **waits for a line `go` on the answers descriptor** (anything else is a failure). The program then
 leaves the terminal in its normal mode and writes `go`; the script runs the step on `/dev/tty`, clears
 the screen and its scroll-back, and emits `handoff-end`. The process must be in the foreground process
 group of that terminal while this lasts, as a shell's job is. A failure during a handoff clears the
-screen too. The recovery key is shown once and written nowhere; nothing is typed back and nothing is checked
-against the disk, as in the terminal mode. `handoff-end` means the owner pressed Enter, so the program
-waits for it and needs no result about the key.
+screen too. The recovery key is shown once and written nowhere; nothing is typed back and nothing
+is checked against the disk, as in the terminal mode. Enters typed before the prompt are thrown
+away, so that only an Enter pressed after the key is shown goes on; at the end of the input the
+script stops (a failure). The screen and its scroll-back are cleared as soon as Enter is pressed.
+`handoff-end` means the owner pressed Enter, so the program waits for it and needs no result
+about the key.
 
 **Exit status.** 0 success. **10: failed before the first write, the disk is as it was.** **11: failed
 after it; the disk must be installed again from the start.** 1 is a usage error. A script that dies

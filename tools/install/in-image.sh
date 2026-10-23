@@ -35,8 +35,8 @@ recovery-show() {
 }
 
 # recovery-check DISK SLOT: asks for a passphrase on the terminal and checks it against the key
-# slot SLOT only. The installer does not use it; the CI tests do (tools/install/test-recovery-key.sh,
-# test-password.sh).
+# slot SLOT only. The installer does not use it; the CI tests do
+# (tools/install/test-recovery-key.sh, test-password.sh).
 recovery-check() {
   cryptsetup open --test-passphrase --key-slot "$2" "$(part "$1" 2)"
 }

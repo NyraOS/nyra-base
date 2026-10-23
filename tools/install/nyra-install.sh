@@ -21,7 +21,8 @@
 #   3. partitions the disk and runs everything else in that image's container, without network and
 #      without any pull (tools/install/in-image.sh; the same steps CI tests): LUKS2, ext4, bootc
 #      install, the record of what bootc recorded read back, the recovery key shown once (the user
-#      writes it down and presses Enter), the temporary TPM2 enrollment, the removal of the key of the installation, esp-sync.
+#      writes it down and presses Enter), the temporary TPM2 enrollment, the removal of the key of
+#      the installation, esp-sync.
 #      With the machine interface below, the first administrator too: the image's own tools make the
 #      yescrypt hash of the password (admin-record, before the disk is touched), and the name and
 #      the hash go into the new system's /var/lib/nyra/first-admin, which the first boot turns into
@@ -71,8 +72,10 @@ in_image_timeout=0
 
 # changed: the disk was written to and the installation is not finished. touched: it was, at any time
 # (exit status 11, disk_changed in the event fail). own_secrets: $secrets is this run's, to remove.
-# handoff_open: the terminal is not the installer's. fail_id: what the event fail names.
-unlock=tpm device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open="" fail_id=verify
+# handoff_open: the terminal is not the installer's. key_on_screen: the recovery key may be on the
+# terminal of the terminal mode. fail_id: what the event fail names.
+unlock=tpm device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open=""
+key_on_screen="" fail_id=verify
 
 # --- cleanup ---------------------------------------------------------------------------------------
 cleanup() {
@@ -84,7 +87,7 @@ cleanup() {
   fi
   [ -z "$own_secrets" ] || rm -rf "$secrets"
   # A failure while the terminal was handed over: what it showed does not stay.
-  [ -z "$handoff_open" ] || printf '\033[H\033[2J\033[3J' > /dev/tty 2> /dev/null || true
+  [ -z "$handoff_open$key_on_screen" ] || printf '\033[H\033[2J\033[3J' > /dev/tty 2> /dev/null || true
   if [ "$rc" != 0 ] && [ -n "$changed" ]; then
     echo "nyra-install: failed after $device was changed. It must be installed again from the start," \
       "with this script: nothing on it is to be used as it is." >&"$logfd"
@@ -126,15 +129,25 @@ mok_enroll() {
 }
 
 # recovery_key: the recovery key is shown on the terminal only (the container has no log:
-# --log-driver=none), written nowhere. The user writes it down on paper and presses Enter; nothing is
-# typed back and nothing is checked against the disk. The screen is cleared afterwards (the handoff does
-# it in the machine interface, this script at the end in the terminal mode).
+# --log-driver=none), written nowhere. The user writes it down on paper and presses Enter; nothing
+# is typed back and nothing is checked against the disk. Enters typed before the prompt (a key held
+# down, type-ahead during the installation) are thrown away first, so that only an Enter pressed
+# after the key is on the screen goes on; at the end of the input (Ctrl-D, a closed terminal) the
+# read fails and the script stops. The screen and its scroll-back are cleared as soon as Enter is
+# pressed, and by cleanup if the script stops before: key_on_screen is set while the key may be on
+# the screen.
 recovery_key() {
+  local why="the TPM refuses the disk"
+  [ "$unlock" != password ] || why="you forget the password"
+  key_on_screen=1
   in_image -it --log-driver=none -- recovery-show "$device" "$key"
   echo
-  echo "Write the recovery key down now, on paper: it is the only way in if the TPM refuses the disk."
+  echo "Write the recovery key down now, on paper: it is the only way in if $why."
   echo "It is shown only once, and nothing checks what you wrote."
+  while IFS= read -r -s -t 0.3 -n 4096 _ < /dev/tty 2> /dev/null; do :; done
   read -r -p "Press Enter when you have written it down: " _
+  printf '\033[H\033[2J\033[3J'
+  key_on_screen=""
 }
 
 trap cleanup EXIT
@@ -365,7 +378,6 @@ else
   in_image -- luks-json "$device" | check_luks_header_password \
     || die "the LUKS header is not the recovery key and one password slot (argon2id, 256 MiB or more)"
 fi
-if [ "$cmd" = cli ]; then printf '\033[H\033[2J\033[3J'; fi
 echo "nyra-install: the key of the installation is gone, the header is as expected."
 
 in_image -- esp-sync "$device"

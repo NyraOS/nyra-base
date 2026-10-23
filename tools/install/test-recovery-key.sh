@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI only: the installer's recovery key (docs/INSTALL.md), made and shown the way
 # tools/install/nyra-install.sh does it: on a terminal, from the image's container with no log
-# (in_image -it --log-driver=none, tools/install/lib.sh). The installer does not check the key (the user
-# only writes it down); this test checks that what is shown is the recovery key.
+# (in_image -it --log-driver=none, tools/install/lib.sh). The installer does not check the key (the
+# user only writes it down); this test checks that what is shown is the recovery key.
 #   - the key is shown once, and after the run it is not in the journal, in a container's log or in
 #     what podman keeps of the containers (a container run with a log shows that this search finds one);
 #   - the key shown opens the key slot of the recovery key; a wrong one, and the key of the

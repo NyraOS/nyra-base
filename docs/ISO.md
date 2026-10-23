@@ -203,7 +203,8 @@ the ISO, by the keys a person presses, and boots what it installed:
 2. It goes through: the menu, "1 of 8 This computer" (UEFI, Secure Boot, TPM, memory all ok), the release, the
    disk (`vda`), the encryption (password: typed twice), the administrator (name and password twice), the
    review (the disk name typed to confirm), the installation, and then the two handoffs: the recovery key,
-   read from the console, with Enter pressed at the prompt (nothing is typed back), and the one-time password of the Secure Boot key,
+   read from the console, with Enter pressed at the prompt (nothing is typed back), and the
+   one-time password of the Secure Boot key,
    typed twice at `mokutil`'s prompts. It ends on "8 of 8 Done".
 3. It checks that the recovery key was on the console once, that no password was echoed, and that the
    Machine Owner Key was **requested**: the firmware variable `MokNew` holds the Nyra certificate.

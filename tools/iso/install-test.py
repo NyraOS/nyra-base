@@ -8,7 +8,8 @@ It goes through the eight screens, with the disk unlocked by the TPM or by a pas
 administrator, writes the recovery key down from the screen where the installer hands the terminal over
 (the key is in the text next to the QR code that systemd-cryptenroll draws: the serial console shows
 both), presses Enter to say it is written down (nothing is typed back), and chooses the one-time
-password of the Secure Boot key. Then it checks that the Machine Owner Key was requested (MokNew in the firmware variables, with the Nyra certificate) and that the
+password of the Secure Boot key. Then it checks that the Machine Owner Key was requested (MokNew in
+the firmware variables, with the Nyra certificate) and that the
 recovery key was on the console once. The disk (WORKDIR/disk.raw), the TPM's state (--tpm-dir) and the
 secrets (WORKDIR/secrets, mode 0700: the disk password and the recovery key of a throwaway disk) stay for
 tools/iso/installed-test.sh, which boots the installed system.
@@ -132,7 +133,7 @@ def main():
         check("the recovery key is on the console, in text next to the QR code", True)
         vm.expect(r"Press Enter when you have written it down: ", 30, since=mark)
         time.sleep(1)
-        vm.send("\r")                                 # "I have written it down": nothing is typed back
+        vm.send("\r")                                 # "written it down"; nothing typed back
         screen_title("8 of 8 · Secure Boot key", 300)
         mark = vm.mark()
         key(ENTER)                                    # Choose the one-time password
