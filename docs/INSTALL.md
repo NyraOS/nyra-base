@@ -96,8 +96,10 @@ It asks for confirmation (type the device path), then:
 - installs, and reads back what bootc recorded: the reference `updates.nyraos.com/nyra-base:<version>`
   and the digest;
 - **shows the recovery key once** on the console, with a QR code. Write it down on paper. It is shown
-  nowhere else: not in a file, not in a log. Type it back at the prompt; it is checked against the
-  recovery key slot. If it does not match, a new key is made and shown (the old one stops working);
+  nowhere else: not in a file, not in a log. Then press Enter to say you have
+  written it down. Nothing is typed back and nothing is checked, so a key written down wrongly is
+  not found at this point: read it twice. Enters pressed earlier are ignored, and the screen and its
+  scroll-back are cleared as soon as you press Enter;
 - enrolls the TPM, removes the key of the installation, checks the LUKS header (the recovery key and
   one TPM2 enrollment, no other key slot), clears the screen;
 - shows the full fingerprint of the certificate it takes from the image, and checks that it is the one
