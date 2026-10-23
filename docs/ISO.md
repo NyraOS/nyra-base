@@ -108,6 +108,12 @@ in the CI tools image. It runs from memory.
   menu ("Open a shell"), which says that it is a temporary system in memory.
 - There is **no network**: no network manager is enabled, no SSH server is installed, only the loopback
   interface exists. The tests check it.
+- **Nothing starts podman by itself.** The units of the podman package (`podman.socket`, `podman.service`,
+  `podman-restart`, `podman-clean-transient`, `podman-auto-update` and its timer) are masked: a podman that
+  ran at boot made the container storage with a driver of its own, chosen by what the system could do that
+  early, and the pull of the image then found two ("several valid graphdrivers: vfs, overlay"). The session
+  runs podman only when the install script or the tests do, and the boot test checks that the storage is
+  empty before the pull.
 - `/usr/lib/nyra/release` is in the RAM disk and is read-only for the installer and the shell it opens
   (`ReadOnlyPaths=`). `/run/iso` is the medium of this build (`run-iso.mount`, whose `What=` is the label with
   the build identifier, set by a drop-in in the RAM disk). `/var/lib/containers` is a tmpfs, where the
