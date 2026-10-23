@@ -26,7 +26,8 @@
 #           image signed with a key made for the run), natively on arm64 (the .github/actions/arm64-iso
 #           that image.yml's iso-arm64 runs too); then iso-boot, three emulated boots of it in parallel
 #           (QEMU TCG, AAVMF with Secure Boot, no TPM): as a CD, as a USB stick with a decoy medium, and as
-#           a CD with the verified pull of the image on it
+#           a CD with the verified pull of the image on it, and two altered ISOs whose pull must be
+#           refused; iso-sbom: the vulnerability scan of its installer system
 # Security: as in image.yml, the boot job runs images built from pull requests with --privileged and
 # /dev mounted: GitHub-hosted runners only.
 name: arm64
@@ -49,6 +50,9 @@ on:
       - ci/build-iso-os.sh
       - ci/iso-*.sh
       - tools/iso/**
+      - tools/sbom/sbom.py
+      - tools/sbom/mitigations-iso-arm64.toml
+      - tools/sbom/requirements.txt
   workflow_dispatch:
 permissions:
   contents: read
@@ -269,6 +273,8 @@ jobs:
     timeout-minutes: 60
     outputs:
       iso_sha256: ${{ steps.iso.outputs.iso_sha256 }}
+      layer_sha256: ${{ steps.iso.outputs.layer_sha256 }}
+      digest_sha256: ${{ steps.iso.outputs.digest_sha256 }}
       iso_artifact: ${{ steps.iso.outputs.iso_artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -282,9 +288,9 @@ jobs:
           image-artifact: nyra-base-arm64-oci-archive
           image-sha256: ${{ needs.build.outputs.image_sha256 }}
 
-  # The boots of that ISO (tools/iso/boot-test.py --arch arm64), emulated: each in a job of its own, so that
-  # each stays within its time. The medium, the decoy medium and the verified pull as on x86_64
-  # (image.yml's iso job).
+  # The boots of that ISO and of two altered ones (tools/iso/boot-test.py --arch arm64), emulated: each in a
+  # job of its own, so that each stays within its time. The medium, the decoy medium, the verified pull and
+  # the refusals as on x86_64 (image.yml's iso job).
   iso-boot:
     needs: iso
     runs-on: ubuntu-24.04-arm
@@ -302,6 +308,15 @@ jobs:
           - name: cd-pull
             args: "--pull --deadline 2100"
             minutes: 45
+          # The altered ISOs (arm64-iso): the pull from each must be refused.
+          - name: layer
+            args: "--refusal layer --deadline 1200"
+            suffix: -layer
+            minutes: 30
+          - name: digest
+            args: "--refusal digest --deadline 1200"
+            suffix: -digest
+            minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -309,7 +324,23 @@ jobs:
 
       - uses: ./.github/actions/arm64-iso-boot
         with:
-          iso-artifact: ${{ needs.iso.outputs.iso_artifact }}
-          iso-sha256: ${{ needs.iso.outputs.iso_sha256 }}
+          iso-artifact: ${{ needs.iso.outputs.iso_artifact }}${{ matrix.suffix }}
+          # A sha256 that is missing is no sha256: ci/check-artifact.sh refuses the artifact.
+          iso-sha256: ${{ matrix.suffix == '-layer' && needs.iso.outputs.layer_sha256 || matrix.suffix == '-digest' && needs.iso.outputs.digest_sha256 || needs.iso.outputs.iso_sha256 }}
           name: ${{ matrix.name }}
           args: ${{ matrix.args }}
+
+  # The vulnerability scan of the ISO's installer system and installer program (docs/SBOM.md), with the
+  # exceptions of tools/sbom/mitigations-iso-arm64.toml alone.
+  iso-sbom:
+    needs: iso
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/arm64-iso-sbom
+        with:
+          materials-artifact: ${{ needs.iso.outputs.iso_artifact }}-materials

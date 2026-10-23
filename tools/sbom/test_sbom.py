@@ -52,8 +52,14 @@ OSV = {
 }
 
 
+URLS = []
+
+
 def fake_fetch(url, data=None):
-    if url.endswith("/Packages.xz"):
+    URLS.append(url)
+    if url.endswith("/binary-arm64/Packages.xz"):
+        return lzma.compress(PACKAGES.replace("amd64", "arm64").encode())
+    if url.endswith("/binary-amd64/Packages.xz"):
         return lzma.compress(PACKAGES.encode())
     if url == sbom.TRACKER:
         return json.dumps(TRACKER).encode()
@@ -85,6 +91,7 @@ class Gate(unittest.TestCase):
             f.write("2" * 40 + "\n")
         self.patches = {"fetch": fake_fetch, "INSTALLER_COMMIT": self.path("installer-commit"), "ISO_MKOSI_CONF": self.path("iso-mkosi.conf"), "MKOSI_CONF": self.path("mkosi.conf"),
                         "MITIGATIONS": self.path("mitigations.toml"), "MITIGATIONS_ISO": self.path("mitigations-iso.toml"),
+                        "MITIGATIONS_ISO_ARM64": self.path("mitigations-iso-arm64.toml"),
                         "PAM_TOTP_COMMIT": self.path("commit")}
         self.saved = {k: getattr(sbom, k) for k in self.patches}
         for k, v in self.patches.items():
@@ -96,15 +103,16 @@ class Gate(unittest.TestCase):
             setattr(sbom, k, v)
         shutil.rmtree(self.dir)
 
-    def run_gate(self, *entries, extra_locks=(), iso=False, iso_entries=()):
+    def run_gate(self, *entries, extra_locks=(), iso=False, iso_entries=(), arm64_entries=(), arch=None):
         """Runs main() with these (id, package, days until expiry); returns (exit code, report)."""
         today = datetime.datetime.now(datetime.UTC).date()
-        for name, listed in (("mitigations.toml", entries), ("mitigations-iso.toml", iso_entries)):
+        for name, listed in (("mitigations.toml", entries), ("mitigations-iso.toml", iso_entries),
+                             ("mitigations-iso-arm64.toml", arm64_entries)):
             with open(self.path(name), "w") as f:
                 for vid, package, days in listed:
                     f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
                             f"expires = {today + datetime.timedelta(days=days)}\n")
-        sys.argv = ["sbom.py", *(["--iso"] if iso else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
+        sys.argv = ["sbom.py", *(["--iso"] if iso else []), *(["--arch", arch] if arch else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
         out = io.StringIO()
         code = 0
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -282,6 +290,96 @@ class Gate(unittest.TestCase):
         code, _ = self.run_gate(("CVE-2026-0001", "foo", 91))
         self.assertIn("expires more than 90 days ahead", str(code))
         self.assertTrue(os.path.exists(self.path("sbom.json")))
+
+
+    # --- the aarch64 ISO: the same scan on the arm64 index, with exceptions of its own ------------------
+    def arm64_manifest(self, architecture="arm64", package_arch="arm64"):
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": architecture},
+                       "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": package_arch},
+                                    {"name": "bar", "version": "2.0-1", "architecture": package_arch}]}, f)
+
+    def run_arm64(self, **kw):
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            return self.run_gate(iso=True, arch="arm64", **kw)
+        finally:
+            os.environ.update(saved)
+
+    def test_arm64_iso_reads_the_arm64_index(self):
+        self.arm64_manifest()
+        del URLS[:]
+        code, report = self.run_arm64()
+        self.assertEqual(code, 1)
+        self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
+        self.assertTrue([u for u in URLS if u.endswith("/binary-arm64/Packages.xz")])
+        self.assertFalse([u for u in URLS if "binary-amd64" in u])
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso-arm64.toml`) | 0 |", report)
+        with open(self.path("sbom.json")) as f:
+            bom = json.load(f)
+        self.assertEqual(bom["metadata"]["component"]["name"], "nyra-installer-iso-arm64")
+        self.assertIn("aarch64", bom["metadata"]["component"]["description"])
+        self.assertTrue([c for c in bom["components"] if "arch=arm64" in c.get("purl", "")])
+
+    def test_arm64_iso_wants_the_arm64_kernel(self):
+        # iso/mkosi.conf names the x86_64 kernel; for arm64 the manifest must hold linux-image-arm64.
+        self.arm64_manifest()
+        with open(self.path("iso-mkosi.conf"), "w") as f:
+            f.write("[Content]\nPackages=\n        libfoo1\n        linux-image-amd64\n")
+        self.assertIn("linux-image-arm64", str(self.run_arm64()[0]))
+        with open(self.path("manifest.json")) as f:
+            manifest = json.load(f)
+        manifest["packages"][1]["name"] = "linux-image-arm64"
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        # Not in the fake index: refused for that, not for the missing package.
+        self.assertIn("is not in the snapshot", str(self.run_arm64()[0]))
+
+    def test_arm64_iso_refuses_an_x86_manifest_and_the_reverse(self):
+        self.arm64_manifest("x86-64", "amd64")
+        self.assertIn("only Debian unstable arm64", str(self.run_arm64()[0]))
+        self.arm64_manifest()
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            self.assertIn("only Debian unstable x86-64", str(self.run_gate(iso=True)[0]))
+        finally:
+            os.environ.update(saved)
+
+    def test_arm64_iso_has_exceptions_of_its_own(self):
+        everything = (("CVE-2026-0001", "foo", 10), ("CVE-2026-0003", "bar", 10), ("RUSTSEC-2026-0001", "baz", 10))
+        self.arm64_manifest()
+        # The image's and the x86_64 ISO's files do not apply to it, and it is not told to remove them.
+        code, report = self.run_gate_arm64_with(everything, everything, ())
+        self.assertEqual(code, 1)
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso-arm64.toml`) | 0 |", report)
+        self.assertNotIn("remove it", report)
+        code, report = self.run_arm64(arm64_entries=everything)
+        self.assertEqual(code, 0)
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso-arm64.toml`) | 4 |", report)
+        # And its entries do not apply to the x86_64 ISO or to the image.
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
+                       "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": "amd64"},
+                                    {"name": "bar", "version": "2.0-1", "architecture": "amd64"}]}, f)
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            code, report = self.run_gate(iso=True, arm64_entries=everything)
+        finally:
+            os.environ.update(saved)
+        self.assertEqual(code, 1)
+        self.assertIn("| Accepted (`tools/sbom/mitigations-iso.toml`) | 0 |", report)
+        code, report = self.run_gate(arm64_entries=everything)
+        self.assertEqual(code, 1)
+
+    def run_gate_arm64_with(self, image_entries, iso_entries, arm64_entries):
+        saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
+        try:
+            return self.run_gate(*image_entries, iso=True, arch="arm64", iso_entries=iso_entries, arm64_entries=arm64_entries)
+        finally:
+            os.environ.update(saved)
+
+    def test_arch_goes_with_the_iso_only(self):
+        self.assertIn("--arch", str(self.run_gate(arch="arm64")[0]))
 
 
 if __name__ == "__main__":

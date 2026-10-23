@@ -169,7 +169,16 @@ def main():
         status, out = sh("systemctl list-units --type=service --state=active --no-legend 'getty*' 'serial-getty*' 'console-getty*' 'sshd*' 'ssh*' | wc -l")
         check("no getty and no ssh server is running", out == "0", out)
         status, out = sh("systemctl --failed --no-legend --plain | cut -d' ' -f1")
-        check("no failed unit", out == "", out.replace("\n", " "))
+        detail = out.replace("\n", " ")
+        if out:
+            # Say why, in the log of the job: the journal of what failed.
+            sh("journalctl -b --no-pager -o cat " + " ".join("-u " + unit for unit in out.split()) + " | tail -n 40")
+        check("no failed unit", out == "", detail)
+        # Nothing in the session starts podman by itself: a podman that ran at boot makes the container storage
+        # (a driver of its own, decided by what the system could do that early), and the pull of the image then
+        # finds two ("several valid graphdrivers"). The units that would are masked.
+        status, out = sh("ls -A /var/lib/containers; systemctl is-enabled podman.socket podman.service podman-restart.service podman-clean-transient.service podman-auto-update.service podman-auto-update.timer; true")
+        check("podman has not run before the pull: the container storage is empty and its units are masked", out.split() == ["masked"] * 6, out.replace("\n", " "))
         # Secure Boot locks the kernel down (no unsigned modules, no /dev/mem or kexec of unsigned code, ...).
         status, out = sh("cat /sys/kernel/security/lockdown")
         check("the kernel is locked down because of Secure Boot", re.search(r"\[(integrity|confidentiality)\]", out) is not None, out)
