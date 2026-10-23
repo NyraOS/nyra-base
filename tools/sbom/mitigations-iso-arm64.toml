@@ -12,7 +12,7 @@
 # x86_64 ISO's, judged again for aarch64, where the facts the reasons rest on are checked by the same boot
 # test (tools/iso/boot-test.py --arch arm64): the registry is the only process that is not root's and runs
 # under a system-call filter, no PAM file loads pam_namespace, unprivileged bpf() is off. The kernel is
-# Debian's arm64 build of the same source, with the same f2fs, UDF, overlayfs, Bluetooth and DRM code.
+# Debian's arm64 build of the same source, with the same f2fs, overlayfs, Bluetooth and DRM code.
 # The expiry dates are those of the x86_64 file, so that a snapshot bump reviews both together.
 #
 # [[mitigation]]
@@ -20,12 +20,6 @@
 # package = "example"
 # reason = "Only reachable through X, which the installer system does not run."
 # expires = 2026-12-31
-
-[[mitigation]]
-id = "CVE-2026-107161"
-package = "cyrus-sasl2"
-reason = "Heap overflow in the DIGEST-MD5 plugin, fixed in Debian unstable (2.1.28+dfsg1-12): the entry bridges the time until the snapshot is bumped, which ends it. The plugin (libdigestmd5.so) is in libsasl2-modules, which is not in the installer system; libsasl2-2 and libsasl2-modules-db ship no DIGEST-MD5 code, and nothing in the session speaks SASL."
-expires = 2026-11-05
 
 [[mitigation]]
 id = "CVE-2026-102010"
@@ -85,12 +79,6 @@ expires = 2027-01-07
 id = "CVE-2021-3864"
 package = "linux"
 reason = "The dumpable flag after a setuid program runs its descendants; a local privilege escalation by an unprivileged user. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. It cannot gain privileges (no new privileges), so it runs no setuid program."
-expires = 2027-01-07
-
-[[mitigation]]
-id = "CVE-2023-37454"
-package = "linux"
-reason = "Use-after-free write on a crafted UDF file system image. The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make, the installer reads disks with lsblk only, and the UDF module loads only when something mounts that type. Whoever can put a crafted medium in front of the session can already replace the whole RAM disk, which Secure Boot does not cover (docs/ISO.md)."
 expires = 2027-01-07
 
 [[mitigation]]
