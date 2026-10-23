@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CI only: a QEMU virtual machine that boots the installer ISO (UEFI, Secure Boot with the Microsoft
-keys, a TPM 2.0 from swtpm), and its serial console as the installer's own terminal: the text that
-the installer or a shell prints, and the keys a person would press.
+keys, a TPM 2.0 from swtpm on x86_64, none on aarch64), and its serial console as the installer's own
+terminal: the text that the installer or a shell prints, and the keys a person would press.
+
+x86_64 is the q35 machine with OVMF; aarch64 is QEMU's virt machine with edk2 (AAVMF), whose serial
+port is the PL011 one, ttyAMA0 (docs/ISO.md). Without KVM (GitHub's arm64 runners have none) the guest is
+emulated (TCG) and every wait is `scale` times longer.
 
 The console is a socket of QEMU's (every byte is also in the log file, which the job uploads). A
 program that draws on a terminal first asks it how big it is, with the escape sequence ESC [ 6 n
@@ -19,8 +23,19 @@ import time
 
 from screen import Screen
 
-OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
-OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+# Per architecture: the QEMU command, the firmware (code with Secure Boot, and variables with the Microsoft
+# keys enrolled), the serial console of the guest, and whether a TPM can be given (QEMU's virt machine has
+# only TIS TPMs, which Debian's arm64 kernel has no driver for: docs/ARM64.md).
+ARCHES = {
+    "amd64": {"qemu": "qemu-system-x86_64", "code": "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",
+              "vars": "/usr/share/OVMF/OVMF_VARS_4M.ms.fd", "serial": "ttyS0", "tpm": True, "bootindex": ""},
+    "arm64": {"qemu": "qemu-system-aarch64", "code": "/usr/share/AAVMF/AAVMF_CODE.secboot.fd",
+              "vars": "/usr/share/AAVMF/AAVMF_VARS.ms.fd", "serial": "ttyAMA0", "tpm": False,
+              # The firmware boots the ISO, not whatever else it finds first.
+              "bootindex": ",bootindex=0"},
+}
+# How much longer every wait is without KVM.
+TCG_SCALE = 5
 # Control sequences (CSI, OSC, two-character ones) and the bytes that only move the cursor.
 ESCAPES = re.compile(rb"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78cDEHMNOZ]|\x00")
 
@@ -37,11 +52,20 @@ def plain(data: bytes) -> str:
 class Vm:
     """QEMU with the ISO and an empty disk. start() boots it; the console methods read and type."""
 
-    def __init__(self, iso, work, log, *, medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
-                 smp=2, disk=True, decoy=None, tpm_dir=None, extra=()):
+    def __init__(self, iso, work, log, *, arch="amd64", medium="cd", memory=8192, disk_gb=64, accel=None, tpm=True,
+                 smp=2, disk=True, decoy=None, tpm_dir=None, extra=(), deadline=None):
         self.iso, self.work, self.log = iso, work, log
+        # Seconds after QEMU starts by which the test must be over: no wait goes past it, so that a hang
+        # ends as a failure with a message of the test's own, before the job's time limit cancels the job.
+        self.deadline = deadline
+        self.arch = ARCHES[arch]
         self.accel = accel or ("kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg")
-        self.medium, self.memory, self.disk_gb, self.tpm, self.smp, self.disk = medium, memory, disk_gb, tpm, smp, disk
+        self.scale = 1 if self.accel == "kvm" else TCG_SCALE
+        # The emulated guest of an arm64 runner is slow: its four cores all run the guest.
+        if arch == "arm64" and self.accel == "tcg" and smp == 2:
+            smp = os.cpu_count() or 2
+        self.medium, self.memory, self.disk_gb, self.smp, self.disk = medium, memory, disk_gb, smp, disk
+        self.tpm = tpm and self.arch["tpm"]
         self.extra = list(extra)
         self.tpm_dir = tpm_dir  # the TPM's state: kept by the caller when a later boot must use it
         self.screen = Screen()
@@ -55,17 +79,24 @@ class Vm:
     def start(self):
         os.makedirs(self.work, exist_ok=True)
         vars_fd = os.path.join(self.work, "vars.fd")
-        shutil.copyfile(OVMF_VARS, vars_fd)
+        shutil.copyfile(self.arch["vars"], vars_fd)
         self.vars_fd = vars_fd
         sock = os.path.join(self.work, "console.sock")
         for path in (sock,):
             if os.path.exists(path):
                 os.unlink(path)
         cpu = "host" if self.accel == "kvm" else "max"
-        cmd = ["qemu-system-x86_64", "-machine", f"q35,smm=on,accel={self.accel}", "-cpu", cpu,
-               "-global", "driver=cfi.pflash01,property=secure,value=on",
+        if self.arch["qemu"] == "qemu-system-x86_64":
+            # The Secure Boot variables are kept in SMM, out of reach of the guest.
+            machine = ["-machine", f"q35,smm=on,accel={self.accel}", "-cpu", cpu,
+                       "-global", "driver=cfi.pflash01,property=secure,value=on"]
+        else:
+            # ARM has no SMM: the guest can write the variable store (docs/ARM64.md, a limit of the machine).
+            machine = ["-machine", f"virt,gic-version=max,accel={self.accel}",
+                       "-cpu", "host" if self.accel == "kvm" else "max,pauth-impdef=on"]
+        cmd = [self.arch["qemu"], *machine,
                "-smp", str(self.smp), "-m", str(self.memory), "-nodefaults", "-display", "none",
-               "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+               "-drive", f"if=pflash,format=raw,readonly=on,file={self.arch['code']}",
                "-drive", f"if=pflash,format=raw,file={vars_fd}",
                "-chardev", f"socket,id=console,path={sock},server=on,wait=off,logfile={self.log}",
                "-serial", "chardev:console", "-device", "virtio-rng-pci", "-nic", "none",
@@ -79,10 +110,14 @@ class Vm:
         if self.medium == "usb":
             # The ISO as a USB stick (a disk, not a CD): the hybrid image boots from its own EFI partition.
             cmd += ["-drive", f"if=none,id=iso,format=raw,readonly=on,file={self.iso}",
-                    "-device", "usb-storage,drive=iso,bus=xhci.0,removable=on"]
-        else:
+                    "-device", "usb-storage,drive=iso,bus=xhci.0,removable=on" + self.arch["bootindex"]]
+        elif self.arch["qemu"] == "qemu-system-x86_64":
             cmd += ["-drive", f"if=none,id=iso,format=raw,media=cdrom,readonly=on,file={self.iso}",
                     "-device", "ich9-ahci,id=ahci", "-device", "ide-cd,drive=iso,bus=ahci.0"]
+        else:
+            # A SCSI CD-ROM on virtio-scsi (the virt machine has no IDE); the firmware boots it first.
+            cmd += ["-drive", f"if=none,id=iso,format=raw,media=cdrom,readonly=on,file={self.iso}",
+                    "-device", "virtio-scsi-pci,id=scsi0", "-device", "scsi-cd,drive=iso,bus=scsi0.0" + self.arch["bootindex"]]
         if self.disk:
             self.disk_path = os.path.join(self.work, "disk.raw")
             with open(self.disk_path, "wb") as f:
@@ -165,7 +200,10 @@ class Vm:
     def expect(self, pattern, timeout, since=0):
         """Waits until the text after SINCE matches PATTERN (a regular expression); returns the match."""
         regex = re.compile(pattern, re.S)
-        end = time.monotonic() + timeout
+        end = time.monotonic() + timeout * self.scale
+        budget = ""
+        if self.deadline and self.started and self.started + self.deadline < end:
+            end, budget = self.started + self.deadline, f" (the test's time budget of {self.deadline} s from the start of QEMU)"
         while True:
             self.pump()
             m = regex.search(self.text(since))
@@ -178,11 +216,13 @@ class Vm:
                     return m
                 raise Timeout(f"QEMU ended while waiting for {pattern!r}; the console ended with:\n{self.text()[-1500:]}")
             if time.monotonic() > end:
-                raise Timeout(f"no {pattern!r} within {timeout} s; the console ended with:\n{self.text()[-1500:]}")
+                raise Timeout(f"no {pattern!r} within {timeout * self.scale} s{budget}; the console ended with:\n{self.text()[-1500:]}")
 
     def wait_screen(self, text, timeout):
         """Waits until TEXT is on the screen (the emulated terminal, not the stream); returns the screen."""
-        end = time.monotonic() + timeout
+        end = time.monotonic() + timeout * self.scale
+        if self.deadline and self.started:
+            end = min(end, self.started + self.deadline)
         while True:
             self.pump()
             if text in self.screen.text():
@@ -190,11 +230,12 @@ class Vm:
             if self.qemu.poll() is not None:
                 raise Timeout(f"QEMU ended while waiting for {text!r} on the screen:\n{self.screen.text()}")
             if time.monotonic() > end:
-                raise Timeout(f"no {text!r} on the screen within {timeout} s:\n{self.screen.text()}")
+                raise Timeout(f"no {text!r} on the screen within {timeout * self.scale} s:\n{self.screen.text()}")
 
     def settle(self, quiet=0.6, limit=20):
         """Waits until the console has been silent for QUIET seconds: the installer has drawn what the last key
         asked for (a frame arrives in pieces, slowly under emulation), and the screen can be read."""
+        limit *= self.scale
         end = time.monotonic() + limit
         last = time.monotonic()
         size = len(self.raw)

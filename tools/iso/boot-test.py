@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""CI only: boots the installer ISO in QEMU (UEFI, Secure Boot with the Microsoft keys, a TPM, an empty
-disk) and checks what a person sees and what the session is (docs/ISO.md):
+"""CI only: boots the installer ISO in QEMU (UEFI, Secure Boot with the Microsoft keys, a TPM on x86_64,
+an empty disk) and checks what a person sees and what the session is (docs/ISO.md):
 
   - the installer's first screen appears on the serial console, and no login prompt does;
   - from its menu, "Open a shell" gives a shell as root; in it: Secure Boot is on, only the loopback
@@ -17,8 +17,12 @@ disk) and checks what a person sees and what the session is (docs/ISO.md):
   - leaving the shell goes back to the installer's menu, not to a prompt;
   - the memory the session uses, and the time to the first screen, go to the summary.
 
-    tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--medium cd|usb] [--memory MiB] [--pull] [--decoy]
-                               [--refusal layer|digest]
+  - on aarch64 (--arch arm64) the machine has no TPM (QEMU's virt machine has only TIS TPMs, which Debian's
+    arm64 kernel has no driver for) and no KVM on GitHub's runners: the guest is emulated, every wait is
+    longer, and `check` must see everything but the TPM.
+
+    tools/iso/boot-test.py ISO WORKDIR LOG SUMMARY [--arch amd64|arm64] [--medium cd|usb] [--memory MiB]
+                               [--pull] [--decoy] [--refusal layer|digest] [--timeout S] [--deadline S]
 """
 import argparse
 import json
@@ -48,20 +52,20 @@ class Done(Exception):
     pass
 
 
-def refusal(sh, check, kind):
+def refusal(sh, check, kind, repo):
     """The pull of the image on an altered ISO is refused for the reason that was made, and nothing is left
     in the storage. A registry or a tool that fails is not a refusal: the messages of verified-pull.sh tell
     the cases apart."""
     status, out = sh("cat /usr/lib/nyra/release/RELEASE")
     release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     storage = "/var/lib/containers/storage"
-    status, out = sh(f"r=$(/usr/lib/nyra/release/tools/install/verified-pull.sh nyra-base {release['version']} {release['digest']} {storage} 2>&1); "
+    status, out = sh(f"r=$(/usr/lib/nyra/release/tools/install/verified-pull.sh {repo} {release['version']} {release['digest']} {storage} 2>&1); "
                      'rc=$?; echo "$r" | tail -n 6; echo "pull-status=$rc"', 900)
     m = re.search(r"pull-status=(\d+)", out)
     code = m.group(1) if m else None
     if kind == "digest":
         # verified-pull.sh: the pull worked and the image is not the release's (exit 2).
-        ok = code == "2" and re.search(r"nyra-base:[0-9.]+ is sha256:[0-9a-f]{64}, not sha256:f{64}", out) is not None
+        ok = code == "2" and re.search(re.escape(repo) + r":[0-9.]+ is sha256:[0-9a-f]{64}, not sha256:f{64}", out) is not None
         what = "another digest in RELEASE: refused as not the release (exit 2, the tag's digest is not the one asked)"
     else:
         # The layer's bytes are not the ones its digest names: skopeo stops the copy (exit 1, "cannot pull")
@@ -77,7 +81,7 @@ def refusal(sh, check, kind):
     check("podman answers and no image is left in the storage", out == "podman=0 images=0 errors=0", out)
 
 
-def make_decoy(directory):
+def make_decoy(directory, arch):
     """An ISO image that a naive installer could take for the ISO it booted from: the label NYRA-ISO, a
     /boot/vmlinuz and a release tree that names another release."""
     os.makedirs(os.path.join(directory, "boot"), exist_ok=True)
@@ -85,7 +89,7 @@ def make_decoy(directory):
     with open(os.path.join(directory, "boot", "vmlinuz"), "wb") as f:
         f.write(b"not a kernel\n")
     with open(os.path.join(directory, "release", "RELEASE"), "w") as f:
-        f.write("version=1999.1.1\ndigest=sha256:" + "0" * 64 + "\ncommit=" + "0" * 40 + "\narchitecture=amd64\n")
+        f.write("version=1999.1.1\ndigest=sha256:" + "0" * 64 + "\ncommit=" + "0" * 40 + "\narchitecture=" + arch + "\n")
     image = directory + ".iso"
     subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-r", "-V", "NYRA-ISO", "-o", image, directory], check=True,
                    stderr=subprocess.DEVNULL)
@@ -98,18 +102,23 @@ def main():
     p.add_argument("work")
     p.add_argument("log")
     p.add_argument("summary")
+    p.add_argument("--arch", choices=["amd64", "arm64"], default="amd64", help="the ISO's architecture")
     p.add_argument("--medium", choices=["cd", "usb"], default="cd")
     p.add_argument("--memory", type=int, default=8192, help="MiB")
     p.add_argument("--pull", action="store_true", help="also run the verified pull of the image on the ISO")
     p.add_argument("--refusal", choices=["layer", "digest"], help="the ISO is altered; the pull must be refused")
     p.add_argument("--decoy", action="store_true", help="attach a second medium that looks like an installer, first")
-    p.add_argument("--timeout", type=int, default=600, help="seconds to the first screen")
+    p.add_argument("--timeout", type=int, default=600, help="seconds to the first screen (times 5 without KVM)")
+    p.add_argument("--deadline", type=int, help="seconds after QEMU starts by which the test must be over (no wait goes past it); "
+                   "set it below the job's time limit, so that a hang fails the test with its own message")
     a = p.parse_args()
+    repo = "nyra-base" if a.arch == "amd64" else "nyra-base-arm64"
+    serial = isovm.ARCHES[a.arch]["serial"]
 
     decoy = None
     if a.decoy:
-        decoy = make_decoy(os.path.join(a.work, "decoy"))
-    vm = isovm.Vm(a.iso, a.work, a.log, medium=a.medium, memory=a.memory, decoy=decoy)
+        decoy = make_decoy(os.path.join(a.work, "decoy"), a.arch)
+    vm = isovm.Vm(a.iso, a.work, a.log, arch=a.arch, medium=a.medium, memory=a.memory, decoy=decoy, deadline=a.deadline)
     rows = []  # (what, result) for the summary
     failed = []
 
@@ -148,7 +157,7 @@ def main():
         sh("stty cols 400 rows 50; PS1=''; echo shell")
 
         if a.refusal:
-            refusal(sh, check, a.refusal)
+            refusal(sh, check, a.refusal, repo)
             raise Done
 
         status, out = sh("id -u; mokutil --sb-state")
@@ -161,14 +170,19 @@ def main():
         check("no getty and no ssh server is running", out == "0", out)
         status, out = sh("systemctl --failed --no-legend --plain | cut -d' ' -f1")
         check("no failed unit", out == "", out.replace("\n", " "))
+        # Secure Boot locks the kernel down (no unsigned modules, no /dev/mem or kexec of unsigned code, ...).
+        status, out = sh("cat /sys/kernel/security/lockdown")
+        check("the kernel is locked down because of Secure Boot", re.search(r"\[(integrity|confidentiality)\]", out) is not None, out)
         status, out = sh("sysctl -n kernel.unprivileged_bpf_disabled")
         check("unprivileged bpf() is off", out in ("1", "2"), out)
         status, out = sh("ps -eo uid=,comm= | awk '$1 != 0 {print $2}' | sort -u")
         check("only the registry runs as a user other than root", out == "docker-registry", out.replace("\n", " "))
         status, out = sh("grep -rl pam_namespace /etc/pam.d /usr/lib/pam.d 2> /dev/null | wc -l")
         check("no PAM configuration names pam_namespace", out == "0", out)
-        status, out = sh("systemctl is-enabled getty@tty1.service autovt@tty2.service serial-getty@ttyS0.service console-getty.service emergency.service rescue.service; true")
+        status, out = sh(f"systemctl is-enabled getty@tty1.service autovt@tty2.service serial-getty@{serial}.service console-getty.service emergency.service rescue.service; true")
         check("the login prompts and the emergency and rescue shells are masked", out.split() == ["masked"] * 6, out.replace("\n", " "))
+        status, out = sh("cat /sys/class/tty/console/active")
+        check(f"the kernel writes to the screen and to the serial port {serial}", sorted(out.split()) == sorted(["tty0", serial]), out)
         status, out = sh("getent shadow root | cut -d: -f2; getent passwd root | cut -d: -f2")
         check("root has no password", all(line in ("*", "!", "x") for line in out.split()), out.replace("\n", " "))
 
@@ -179,14 +193,20 @@ def main():
         check("the medium mounted is the one of this build, by its own label", re.fullmatch(r"NYRA-ISO-[0-9a-f]{16}", label) is not None and out == label, f"{out}, the ISO's is {label}")
         status, out = sh("cat /usr/lib/nyra/release/RELEASE")
         release = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-        check("RELEASE names the version, digest, commit and architecture", set(release) == {"version", "digest", "commit", "architecture"}, out.replace("\n", " "))
+        check("RELEASE names the version, digest, commit and architecture", set(release) == {"version", "digest", "commit", "architecture"}
+              and release.get("architecture") == a.arch, out.replace("\n", " "))
         status, out = sh("exec 3<>/dev/tcp/127.0.0.1/80; printf 'GET /v2/ HTTP/1.0\\r\\n\\r\\n' >&3; head -n 1 <&3")
         check("the registry answers on 127.0.0.1", " 200 " in out, out)
 
         # --- the facts and the disks, as the installer reads them ------------------------------------
         status, out = sh("/usr/lib/nyra/release/tools/install/nyra-install.sh check", 120)
         facts = json.loads(out) if status == 0 else {}
-        check("check: UEFI, Secure Boot, shim validation and the TPM are seen", all(facts.get(k) is True for k in ("uefi", "secure_boot", "shim_checks", "tpm")), out.replace("\n", " ")[:300])
+        if a.arch == "amd64":
+            check("check: UEFI, Secure Boot, shim validation and the TPM are seen", all(facts.get(k) is True for k in ("uefi", "secure_boot", "shim_checks", "tpm")), out.replace("\n", " ")[:300])
+        else:
+            # No TPM on the aarch64 test machine; one in UTM (docs/ISO.md).
+            check("check: UEFI, Secure Boot and shim validation are seen, and no TPM", all(facts.get(k) is True for k in ("uefi", "secure_boot", "shim_checks"))
+                  and facts.get("tpm") is False and facts.get("arch") == "aarch64", out.replace("\n", " ")[:300])
         check("check: the release is the one on the ISO", facts.get("release", {}).get("digest") == release.get("digest"))
         if a.decoy:
             status, out = sh("blkid -L NYRA-ISO; head -n 3 /usr/lib/nyra/release/RELEASE; cat /proc/cmdline")
@@ -213,7 +233,7 @@ def main():
         mem_pull = ""
         if a.pull:
             t = time.monotonic()
-            cmd = (f"/usr/lib/nyra/release/tools/install/verified-pull.sh nyra-base {release['version']} {release['digest']} "
+            cmd = (f"/usr/lib/nyra/release/tools/install/verified-pull.sh {repo} {release['version']} {release['digest']} "
                    "/var/lib/containers/storage 2>&1 | tail -n 3")
             status, out = sh(cmd, 1800)
             seconds = time.monotonic() - t
@@ -229,7 +249,7 @@ def main():
             check("leaving the shell goes back to the installer's menu", False, vm.text(n)[-300:])
         medium = "USB stick" if a.medium == "usb" else "CD"
         with open(a.summary, "a") as f:
-            f.write(f"## Installer ISO boot ({medium}, {a.memory} MiB, {vm.accel})\n\n| | |\n|---|---|\n")
+            f.write(f"## Installer ISO boot ({a.arch}, {medium}, {a.memory} MiB, {vm.accel})\n\n| | |\n|---|---|\n")
             f.write(f"| ISO | {os.path.getsize(a.iso) / 2**20:.0f} MiB |\n")
             f.write(f"| First screen | {t_screen:.0f} s after QEMU started (GRUB at {t_grub:.0f} s) |\n")
             f.write(f"| Memory, idle | {mem_idle} |\n")
@@ -249,7 +269,7 @@ def main():
         vm.stop()
     if a.refusal:
         with open(a.summary, "a") as f:
-            f.write(f"## Installer ISO, altered ({a.refusal})\n\n| Check | Result |\n|---|---|\n")
+            f.write(f"## Installer ISO, altered ({a.arch}, {a.refusal})\n\n| Check | Result |\n|---|---|\n")
             for what, result, detail in rows:
                 f.write(f"| {what} | {result} |\n")
             f.write("\n")
