@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CycloneDX SBOM and vulnerability gate for nyra-base (docs/SBOM.md).
 
-usage: sbom.py [--iso] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
+usage: sbom.py [--iso [--arch amd64|arm64]] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
   MANIFEST    mkosi JSON manifest (exact Debian package versions)
   CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc); after SBOM_OUT, the
               Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
@@ -12,6 +12,10 @@ usage: sbom.py [--iso] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
 system, CARGO_LOCK the Cargo.lock of nyra-installer, whose commit is iso/installer-commit; no bootc or
 pam-totp. The same scan, with its own exceptions, tools/sbom/mitigations-iso.toml: an exception of the
 image never applies to the ISO, nor one of the ISO to the image.
+--iso --arch arm64: the aarch64 installer ISO. MANIFEST is the manifest of its installer system (Debian
+unstable, arm64, from the arm64 Packages index), the packages iso/mkosi.conf lists with the architecture's
+name for the kernel (linux-image-arm64), and its own exceptions, tools/sbom/mitigations-iso-arm64.toml: the
+file of the x86_64 ISO never applies to it, nor this one to the x86_64 ISO or the image.
 Environment (not with --iso): BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
 commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
 
@@ -41,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MKOSI_CONF = os.path.join(HERE, "..", "..", "mkosi", "mkosi.conf")
 MITIGATIONS = os.path.join(HERE, "mitigations.toml")
 MITIGATIONS_ISO = os.path.join(HERE, "mitigations-iso.toml")
+MITIGATIONS_ISO_ARM64 = os.path.join(HERE, "mitigations-iso-arm64.toml")
 PAM_TOTP_COMMIT = os.path.join(HERE, "..", "..", "pam-totp", "commit")
 INSTALLER_COMMIT = os.path.join(HERE, "..", "..", "iso", "installer-commit")
 ISO_MKOSI_CONF = os.path.join(HERE, "..", "..", "iso", "mkosi.conf")
@@ -127,18 +132,22 @@ def mkosi_setting(key):
     return re.search(rf"^{key}=(.*)$", open(MKOSI_CONF).read(), re.M).group(1).strip()
 
 
-def debian_sources(manifest, snapshot):
+# The architectures: Debian's name (the Packages index, the package list) and mkosi's.
+ARCHES = {"amd64": "x86-64", "arm64": "arm64"}
+
+
+def debian_sources(manifest, snapshot, arch="amd64"):
     """Map each binary package to its source package and source version (Packages index)."""
     cfg = manifest["config"]
-    if (cfg["distribution"], cfg["release"], cfg["architecture"]) != ("debian", "unstable", "x86-64"):
-        sys.exit(f"sbom.py: only Debian unstable x86-64 is supported, not {cfg}")
+    if (cfg["distribution"], cfg["release"], cfg["architecture"]) != ("debian", "unstable", ARCHES[arch]):
+        sys.exit(f"sbom.py: only Debian unstable {ARCHES[arch]} is supported here, not {cfg}")
     # The scan matches Debian packages from this list, never from the image's os-release (which names
     # Nyra OS): an empty list would scan nothing and pass.
     if not manifest["packages"]:
         sys.exit("sbom.py: the manifest lists no Debian packages")
     index = {}
     for component in mkosi_setting("Repositories").split(","):
-        url = f"https://snapshot.debian.org/archive/debian/{snapshot}/dists/unstable/{component}/binary-amd64/Packages.xz"
+        url = f"https://snapshot.debian.org/archive/debian/{snapshot}/dists/unstable/{component}/binary-{arch}/Packages.xz"
         for para in lzma.decompress(fetch(url)).decode().split("\n\n"):
             f = dict(re.findall(r"^(Package|Version|Architecture|Source): (.*)$", para, re.M))
             if f:
@@ -247,6 +256,11 @@ def load_mitigations(today, path):
 def main():
     iso = sys.argv[1:2] == ["--iso"]
     args = sys.argv[2:] if iso else sys.argv[1:]
+    arch = "amd64"
+    if args[:1] == ["--arch"]:
+        if not iso or args[1:2] not in (["amd64"], ["arm64"]):
+            sys.exit("sbom.py: --arch amd64|arm64 goes after --iso (the image is x86_64)")
+        arch, args = args[1], args[2:]
     manifest_path, lock_path, sbom_path = args[:3]
     snapshot = mkosi_setting("Snapshot")
     today = datetime.datetime.now(datetime.UTC).date()
@@ -257,7 +271,7 @@ def main():
             if "source" in p:
                 crates.setdefault((p["name"], p["version"], p["source"]), p)
     crates = list(crates.values())
-    debs = debian_sources(manifest, snapshot)
+    debs = debian_sources(manifest, snapshot, arch)
     def commit_of(path):
         commit = open(path).read().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -269,6 +283,8 @@ def main():
         # installer program has crates, all from the registry (a git source is not pinned by a checksum).
         block = re.search(r"^Packages=\s*\n((?:[ \t]+\S+\n)+)", open(ISO_MKOSI_CONF).read(), re.M)
         wanted = set(block.group(1).split()) if block else set()
+        # iso/mkosi.conf is the x86_64 one: the kernel is named after the architecture (ci/build-iso-os.sh).
+        wanted = {w.replace("linux-image-amd64", f"linux-image-{arch}") for w in wanted}
         missing = sorted(wanted - {p["name"] for p in manifest["packages"]})
         if not wanted or missing:
             sys.exit(f"sbom.py: iso/mkosi.conf lists {len(wanted)} packages, not in the manifest: {missing}")
@@ -279,7 +295,8 @@ def main():
             sys.exit(f"sbom.py: --iso: crates from a git source are not accepted: {git}")
         commit = commit_of(INSTALLER_COMMIT)
         applications = [("nyra-installer", commit, f"pkg:github/NyraOS/installer@{commit}")]
-        name, description = "nyra-installer-iso", "Nyra OS installer ISO (x86_64): Debian unstable snapshot {snapshot}"
+        name = "nyra-installer-iso" if arch == "amd64" else "nyra-installer-iso-arm64"
+        description = "Nyra OS installer ISO (" + ("x86_64" if arch == "amd64" else "aarch64") + "): Debian unstable snapshot {snapshot}"
         what = "nyra-installer"
     else:
         pam_totp_commit = commit_of(PAM_TOTP_COMMIT)
@@ -288,7 +305,8 @@ def main():
         name, description = "nyra-base", "Nyra OS base image (desktop): Debian unstable snapshot {snapshot}, x86_64"
         what = "bootc, pam-totp"
     count = write_sbom(sbom_path, snapshot, debs, crates, applications, name, description)
-    mitigations = load_mitigations(today, MITIGATIONS_ISO if iso else MITIGATIONS)  # after the SBOM: an invalid file still blocks, but the SBOM is there
+    exceptions = (MITIGATIONS_ISO_ARM64 if arch == "arm64" else MITIGATIONS_ISO) if iso else MITIGATIONS
+    mitigations = load_mitigations(today, exceptions)  # after the SBOM: an invalid file still blocks, but the SBOM is there
 
     findings, unimportant = debian_findings(debs)
     findings += crate_findings(crates)
@@ -334,7 +352,7 @@ def main():
           f"Debian snapshot `{snapshot}`.\n")
     print("| | |\n|---|---|")
     print(f"| **Blocking** (critical, high or unknown severity) | **{len(blocking)}** |")
-    print(f"| Accepted (`tools/sbom/{os.path.basename(MITIGATIONS_ISO if iso else MITIGATIONS)}`) | {len(accepted)} |")
+    print(f"| Accepted (`tools/sbom/{os.path.basename(exceptions)}`) | {len(accepted)} |")
     print(f"| Not blocking (medium, low, Rust informational) | {len(other)} |")
     print(f"| Marked unimportant by Debian | {unimportant} |\n")
     if blocking:

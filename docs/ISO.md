@@ -108,6 +108,12 @@ in the CI tools image. It runs from memory.
   menu ("Open a shell"), which says that it is a temporary system in memory.
 - There is **no network**: no network manager is enabled, no SSH server is installed, only the loopback
   interface exists. The tests check it.
+- **Nothing starts podman by itself.** The units of the podman package (`podman.socket`, `podman.service`,
+  `podman-restart`, `podman-clean-transient`, `podman-auto-update` and its timer) are masked: a podman that
+  ran at boot made the container storage with a driver of its own, chosen by what the system could do that
+  early, and the pull of the image then found two ("several valid graphdrivers: vfs, overlay"). The session
+  runs podman only when the install script or the tests do, and the boot test checks that the storage is
+  empty before the pull.
 - `/usr/lib/nyra/release` is in the RAM disk and is read-only for the installer and the shell it opens
   (`ReadOnlyPaths=`). `/run/iso` is the medium of this build (`run-iso.mount`, whose `What=` is the label with
   the build identifier, set by a drop-in in the RAM disk). `/var/lib/containers` is a tmpfs, where the
@@ -258,18 +264,87 @@ only. `nyra-installer-consoles.service` starts the installer on `tty1` and on ev
 `virt` machine has only TIS TPMs and Debian's arm64 kernel has no driver for them, so `check` must see UEFI,
 Secure Boot and shim validation, and must report no TPM. The guest is emulated: GitHub's arm64 runners have no
 `/dev/kvm` (each job's summary records what its runner has, and uses KVM if it ever appears), and every wait is
-five times the x86_64 one. The three boots run in jobs of their own: as a CD, as a USB stick with the decoy
-medium, and as a CD with the verified pull of the image on it. On a pull request the ISO is built by the
-`iso` job of `arm64.yml` from the image of that run, in test mode.
+five times the x86_64 one. The boots run in jobs of their own: as a CD, as a USB stick with the decoy
+medium, as a CD with the verified pull of the image on it, and the two altered ISOs (an image layer replaced
+in the registry store, a `RELEASE` that names another digest; made like the real one from a copy of its
+inputs, by the build job, which uploads them), in which the pull must be refused for the reason that was
+made. On a pull request the ISO is built by the `iso` job of `arm64.yml` from the image of that run, in test
+mode.
+
+**The scan.** The installer system's packages, the five of the boot tree (`ci/iso-manifest.sh`) and the
+installer program's crates are scanned like the x86_64 ISO's (`tools/sbom/sbom.py --iso --arch arm64`, run
+on an x86_64 runner against the arm64 package index, `docs/SBOM.md`), with an exceptions file of its own,
+`tools/sbom/mitigations-iso-arm64.toml`. The vulnerabilities are those of the Debian source packages and
+the packages are the same, so its entries are the x86_64 ISO's, judged again for aarch64: the facts they
+rest on are checked by the same boot test on this architecture, and the expiry dates are the same, so that a
+snapshot bump reviews both files together. The SBOM is the `nyra-installer-iso-arm64-sbom` artifact.
+
+## Trying the aarch64 ISO in UTM (Mac with Apple Silicon)
+
+**Nothing in this section has been run on a Mac.** What CI proves is in "aarch64" above; every step here that
+depends on UTM's own screens or firmware is marked **UNVERIFIED** and is the owner's first test. The ISO is
+unsigned (see the status at the top): take it only from a successful run on `main`
+(`nyra-installer-iso-arm64-unsigned-<mode>`, 14 days), and compare its SHA-256 with the one in that run's job
+summary, read in your own logged-in browser. That only detects a damaged download, not an altered run: nobody
+has signed the file. Prefer the `-release` artifact; a `-test` one trusts a throwaway key made for its run and
+is not a release.
+
+1. **Create the machine.** In UTM: "Create a New Virtual Machine", "Virtualize", "Linux". Leave "Use Apple
+   Virtualization" **off** (UTM's QEMU backend is the one with the Secure Boot firmware and a TPM; the
+   installer is not tested on Apple's). "Boot ISO Image": the ISO. Memory **8192 MiB** or more (6 GiB is the
+   minimum the install script accepts), 4 CPU cores, a disk of **at least 32 GB**. On "Summary", tick "Open VM
+   Settings".
+2. **Secure Boot and the TPM.** The installer needs Secure Boot on. In the VM's settings, "QEMU": "UEFI Boot"
+   on, **"TPM 2.0 Device" on, and "Preload Secure Boot Keys" on** (Maintenance). **UNVERIFIED**: these are the
+   names from `docs/ARM64.md` and may differ in your UTM version; switching the TPM on is believed to tick
+   "Preload Secure Boot Keys" and "Reset UEFI Variables" by itself. Untick "Reset UEFI Variables" after the
+   first start: it erases the firmware's variables, the Machine Owner Key of Nyra included. With the keys
+   preloaded, the installer's `check` sees Secure Boot on; without them it refuses to install. The installation
+   with a TPM is not tested on aarch64 anywhere (CI has no TPM there): **UNVERIFIED**, and the first thing the
+   owner's run shows. An installation with a disk password does not use the TPM.
+3. **The ISO as a drive.** "Drives": the ISO as a "CD/DVD" drive. **UNVERIFIED**: UTM's default interface for it
+   (USB, as far as is known); CI boots the ISO as a SCSI CD and as a USB stick, not as UTM's USB CD-ROM.
+   If the machine does not start from the ISO, press Esc at the first screen for the firmware's boot menu.
+4. **Start it.** The installer appears in the window (about a minute or more). With a "Serial" device added in
+   the VM's settings, it appears there too (`ttyAMA0`, `docs/ISO.md` "aarch64"); one installation runs at a
+   time. The keyboard is US. Click the window so that it gets the keys. There is no login.
+5. **Install.** Follow the screens (`docs/INSTALL.md`). It ends by asking for a one-time password for the
+   Machine Owner Key and telling you to restart.
+6. **Remove the ISO.** In UTM, the CD/DVD drive's menu, "Eject" (**UNVERIFIED** label; or "Clear" in the drive
+   settings with the machine off). Restart the VM.
+7. **The blue screen (MokManager).** It appears right after the restart and waits only 10 seconds: "Press any
+   key", "Enroll MOK", "View key 0" (compare the name and the full fingerprint with the ones the installer
+   showed and with your notes), "Continue", "Yes", the one-time password, "Reboot". **UNVERIFIED**: the labels
+   are those of shim 15 as documented, not seen in UTM; whether the screen is usable in UTM's window (a US
+   keyboard); and whether the fingerprint shown is the full SHA-256. Never choose "Change Secure Boot state"
+   or "Delete MOK". If you miss the 10 seconds, shim starts without the key and Nyra OS does not start: start
+   the ISO again and register the key again.
+8. **Afterwards**, in the running system, `mokutil --sb-state` says "SecureBoot enabled". Whether the MOK
+   and the TPM's state survive a restart of the VM, and whether PCR 7 and 11 stay the same between boots (so
+   that the TPM unlocks the disk), are **UNVERIFIED** too.
+
+**The limit of Secure Boot in UTM.** UTM's firmware (like AAVMF in CI) has no SMM and no secure world: root in
+the guest can write the UEFI variable store, the Secure Boot databases and the MOK list included. In this
+virtual machine Secure Boot is not protected against a compromised running system.
+
+The protection that is meant to remain is the TPM's binding of the disk to PCR 7, so that a changed database
+makes the disk ask for the recovery key. That has **not been run on aarch64**: an installation with a TPM
+on aarch64 is unverified, so are the stability of PCR 7 and 11 between boots, and CI has no TPM on this path.
+UTM's TPM is a software TPM whose state is a file on the Mac, so the Mac is trusted. For an installation with
+a disk password, Secure Boot in the virtual machine protects nothing against a compromised guest.
+
+The keys that "Preload Secure Boot Keys" loads are only as current as UTM's build: its revocation list may
+not yet revoke a shim or GRUB build that Microsoft revoked recently (**UNVERIFIED**). Do not read more
+security into a virtual machine than that.
 
 **The ISO that passes between the jobs** is the artifact `nyra-installer-iso-arm64-untested-unsigned-<mode>`
 (`<mode>` is `release` or `test`, file `nyra.iso`, one day): it is uploaded before any boot, it is built from
 the inputs of the run (a pull request's too, trusting a key made for the run in test mode) and nobody has
 signed it, and the name says so. The boot and keep jobs take the name from the build job's output. The ISO
 that main keeps for trying (`nyra-installer-iso-arm64-unsigned-<mode>`, 14 days) is the same file, kept only
-after the boots passed. **It has not been scanned for vulnerabilities**: the arm64 bill of materials is
-uploaded (`nyra-installer-iso-arm64-untested-unsigned-<mode>-materials`) but nothing reads it yet, and the
-boots with an altered ISO do not run on arm64 yet.
+after the five boots and the scan (below) passed. The artifacts of the two altered ISOs are
+`nyra-installer-iso-arm64-untested-unsigned-<mode>-layer` and `-digest`, and the bill of materials the scan
+reads is `...-materials`.
 
 **What the tests do not prove.** Real firmware, UTM (a Mac is not a CI runner), MokManager, and the
 installation itself on aarch64 (an installation with a disk password does not need a TPM, but it is not run
@@ -318,12 +393,11 @@ to its measurements.
 Not done yet; the ISO must not be signed, published or recommended before each of these is. (The ISO is
 unsigned, and `iso` is not a dependency of `sign` or `publish`.)
 
-- **aarch64**: the vulnerability scan of the arm64 installer system (with its exceptions file), the boots with
-  an altered ISO, and an installation on aarch64 (none is run on that architecture yet). Until each is, the
-  items below that say "done" are done for x86_64 only.
+- **aarch64**: an installation on aarch64 (none is run on that architecture yet). The scan and the altered
+  ISOs below are done for both architectures.
 - **The recovery key and the session's journal**: checked for the steps themselves (`tools/install/test-recovery-key.sh`),
   not in the installer session, which the install test cannot enter once the installation has begun.
-- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
+- **The exceptions of the scan** (`tools/sbom/mitigations-iso.toml`, and `tools/sbom/mitigations-iso-arm64.toml` for aarch64) rest on facts the boot test checks (the registry is the only unprivileged process and runs under `RestrictNamespaces=` and a system-call filter, no PAM file loads `pam_namespace`, unprivileged bpf is off) and on the medium being mounted as `iso9660` only; they expire in at most 90 days (14 for a vulnerability with a fix in Debian), and every bump of the snapshot is a review of the file.
 - **`check` names the signer from the `updates.nyraos.com` scope of the policy**, so that the test ISO's
   decoy scope (the shipped signer under a name no image has) can go.
 - **The installer program pinned also by the SHA-256 of its git archive**, next to the commit in

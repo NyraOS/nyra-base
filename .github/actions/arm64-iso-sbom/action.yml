@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: arm64 installer ISO scan
+description: >-
+  The SBOM and the vulnerability scan of the aarch64 installer ISO (docs/SBOM.md), on an x86_64 runner: the
+  packages of the installer system and the five of the boot tree whose files reach the ISO (GRUB and shim are
+  known to the tracker by their source packages: ci/iso-manifest.sh fails unless exactly these are found,
+  for arm64), and the crates of the installer program, read by tools/sbom/sbom.py --iso --arch arm64 against
+  the arm64 package index, with the exceptions of tools/sbom/mitigations-iso-arm64.toml only. A critical or
+  high finding without a documented exception fails the job. The package lists are the ones arm64-iso
+  uploaded as <iso-artifact>-materials. No secret; the files are read as data.
+inputs:
+  materials-artifact:
+    description: The name of the artifact with the manifests and Cargo.lock (arm64-iso's materials)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.materials-artifact }}
+        path: ${{ runner.temp }}/materials
+
+    - name: SBOM and vulnerability scan of the aarch64 ISO (tools/sbom/sbom.py --iso --arch arm64)
+      shell: bash
+      run: |
+        m="$RUNNER_TEMP/materials"
+        [ "$(find "$m" -type f | wc -l)" = 3 ] || { echo "::error::the materials artifact must hold exactly three files"; exit 1; }
+        python3 -m venv "$RUNNER_TEMP/sbom-venv"
+        "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+        ISO_ARCH=arm64 ci/iso-manifest.sh "$m/nyra-installer-os.manifest" "$m/nyra-installer-boot.manifest" "$m/manifest.json"
+        "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso --arch arm64 "$m/manifest.json" \
+          "$m/Cargo.lock" "$RUNNER_TEMP/nyra-installer-iso-arm64.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload the SBOM of the aarch64 ISO
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: nyra-installer-iso-arm64-sbom
+        path: ${{ runner.temp }}/nyra-installer-iso-arm64.cdx.json
+        if-no-files-found: ignore
+        retention-days: 14
