@@ -50,6 +50,13 @@ units='s="$(systemctl list-units --type=service,timer,socket --state=running,wai
 # (an error from systemctl, "active" or "failed" all count against it).
 blocked='b="$(grep -l "no purpose in the base" /usr/lib/systemd/system/*.d/10-nyra.conf | sed "s|.*/\([^/]*\)\.d/10-nyra.conf|\1|")"; echo $b; a=; for u in $b; do st="$(systemctl is-active "$u")"; test "$st" = inactive || { echo "$u: ${st:-error}"; a=1; }; done; test "$(echo "$b" | wc -l)" -ge 33 && test -z "$a"'
 
+# Polkit (docs/DEFAULTS.md, "Passwords through polkit"): the helper's socket is on, so an
+# administrator's password must not approve auth_admin actions. 49-nyra.rules has one administrator
+# rule, which returns root only (root has no password), and no other rule file with an administrator
+# rule sorts before it (the first file that answers wins). One user holds at most 4 connections to
+# the socket. This reads the files and the unit; it does not ask polkitd for an answer.
+polkit_admin='r=/usr/share/polkit-1/rules.d/49-nyra.rules && test "$(grep -c addAdminRule $r)" = 1 && a="$(sed -n "/addAdminRule/,/^});/p" $r | grep return | grep -o "\[.*\]")" && echo "administrators: $a" && test "$a" = "[\"unix-user:0\"]" && f="$(grep -l addAdminRule /usr/share/polkit-1/rules.d/* /etc/polkit-1/rules.d/* 2>/dev/null | xargs -r -n1 basename | sort | head -1)" && echo "first file with an administrator rule: $f" && test "$f" = 49-nyra.rules && test "$(systemctl show -P MaxConnectionsPerSource polkit-agent-helper.socket)" = 4'
+
 # Kernel messages on the console (docs/DEFAULTS.md): the guest prints @@CONSOLE-QUIET@@, restarts
 # systemd-timedated (a unit start and BPF program loads, each an audit record), prints
 # @@CONSOLE-LOUD@@, raises the console threshold for the control, restarts it again and prints
@@ -71,6 +78,7 @@ if [ "${1:-}" = --self-test ]; then
     printf '%s\n' 'udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=1,fd=1))' ${EXTRA:+"$EXTRA"}; }
   systemctl() { [ -z "${FAIL:-}" ] || return 1
     case "$1" in
+      show) echo "${MAXCONN:-4}" ;;
       is-active) for u; do :; done # the last argument; like systemctl: prints unless --quiet, 3 if not active
         if [ "$u" = "${ACTIVE:-}" ]; then [ "$2" = --quiet ] || echo active
         else [ "$2" = --quiet ] || echo inactive; return 3; fi ;;
@@ -80,7 +88,10 @@ if [ "${1:-}" = --self-test ]; then
   check() { # check WANT NAME COMMAND [VAR=value ...]
     local want="$1" name="$2" cmd="$3" got=0
     shift 3
-    env "$@" bash -c "$(declare -f ss systemctl); ${cmd//\/usr\/lib\/systemd\/system/$t}" >/dev/null 2>&1 || got=$?
+    cmd="${cmd//\/usr\/lib\/systemd\/system/$t}"
+    cmd="${cmd//\/usr\/share\/polkit-1\/rules.d/$t/polkit-usr}"
+    cmd="${cmd//\/etc\/polkit-1\/rules.d/$t/polkit-etc}"
+    env "$@" bash -c "$(declare -f ss systemctl); $cmd" >/dev/null 2>&1 || got=$?
     if [ "$got" = "$want" ]; then echo "ok: $name"; else echo "FAILED: $name (exit $got, want $want)"; fail=1; fi
   }
   check 0 "listening: declared only" "$listening"
@@ -97,6 +108,23 @@ if [ "${1:-}" = --self-test ]; then
   check 1 "blocked: systemctl fails" "$blocked" FAIL=1
   rm -r "$t/u33.service.d"
   check 1 "blocked: only 32 units blocked" "$blocked"
+  # Polkit: the real 49-nyra.rules, then changed copies and other files in the two directories.
+  mkdir -p "$t/polkit-usr" "$t/polkit-etc"
+  cp files/usr/share/polkit-1/rules.d/49-nyra.rules "$t/polkit-usr/"
+  check 0 "polkit: root is the only administrator" "$polkit_admin"
+  check 1 "polkit: connections per source not 4" "$polkit_admin" MAXCONN=64
+  echo '// 50' > "$t/polkit-usr/50-default.rules"
+  echo 'polkit.addAdminRule(function(a, s) { return ["unix-group:sudo"]; });' >> "$t/polkit-usr/50-default.rules"
+  check 0 "polkit: Debian's rule after ours is shadowed" "$polkit_admin"
+  echo 'polkit.addAdminRule(function(a, s) { return ["unix-user:1000"]; });' > "$t/polkit-etc/10-local.rules"
+  check 1 "polkit: a rule in /etc before ours" "$polkit_admin"
+  rm "$t/polkit-etc/10-local.rules"
+  sed -i 's/unix-user:0/unix-group:sudo/' "$t/polkit-usr/49-nyra.rules"
+  check 1 "polkit: the group sudo as administrators" "$polkit_admin"
+  sed -i 's/unix-group:sudo/unix-user:0", "unix-group:sudo/' "$t/polkit-usr/49-nyra.rules"
+  check 1 "polkit: root and the group sudo" "$polkit_admin"
+  rm "$t/polkit-usr/49-nyra.rules"
+  check 1 "polkit: our file missing" "$polkit_admin"
   # The console of a run: the typed command line and the journal lines the guest prints are not
   # kernel lines on the console.
   typed='root@localhost:~# echo @@CONSOLE'"''"'-QUIET@@ && ... grep -m1 "audit: type=" && echo @@CONSOLE'"''"'-LOUD@@'
@@ -163,6 +191,7 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --command "$listening" \
   --command "$units" \
   --command "$blocked" \
+  --command "$polkit_admin" \
   --command "$firewall_probe" \
   "${ports[@]}" \
   --command 'p="$(readlink -f /etc/containers/policy.json)"; echo "$p"; test "$p" = /usr/lib/nyra/containers/policy.json && stat -c "%U:%G %a" "$p" && test "$(stat -c "%U:%G" "$p")" = root:root && test "$(( 0$(stat -c %a "$p") & 022 ))" = 0 && grep -q sigstoreSigned "$p"' \

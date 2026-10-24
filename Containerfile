@@ -267,10 +267,14 @@ RUN for p in ntpd-rs nyra-updated nyra-zlib pam-totp; do \
 # have the fix for CVE-2026-85498 (stack buffer underflow in read_cookie(), fixed in polkit 128,
 # upstream commit eea1729; the Debian tracker still lists 128-1 as vulnerable, tools/sbom/mitigations.toml)
 # and must not be setuid: it runs as root only when systemd starts it for a connection to the socket.
+# The version is not checked here (mkosi removes the dpkg database): tools/sbom/sbom.py fails the
+# build on a manifest with polkitd older than 128-1. Systemd's empower.rules says yes to everything for
+# a group "empower": no such group may exist. The drop-in limits one user to 4 connections to the socket.
 RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
     test "$(systemctl is-enabled udisks2.service)" = disabled && \
     test "$(systemctl is-enabled polkit-agent-helper.socket)" = enabled && \
-    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' polkitd)" ge 128-1 && \
+    grep -qx 'MaxConnectionsPerSource=4' /usr/lib/systemd/system/polkit-agent-helper.socket.d/10-nyra.conf && \
+    ! getent group empower && \
     test "$(stat -c '%a %U:%G' /usr/lib/polkit-1/polkit-agent-helper-1)" = '755 root:root' && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \

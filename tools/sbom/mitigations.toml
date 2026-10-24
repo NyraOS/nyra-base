@@ -22,7 +22,7 @@ expires = 2027-01-07
 [[mitigation]]
 id = "CVE-2026-85498"
 package = "policykit-1"
-reason = "Fixed in the image, still listed by the Debian tracker. The stack buffer underflow is in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd); the tracker lists policykit-1 128-1 as unfixed, but polkit 128 contains the fix (upstream commit eea1729, in the 128 release notes), the source of 128-1 from the snapshot has it, and so has the helper binary. The Containerfile fails the build if polkitd is older than 128-1 or the helper is setuid (the socket polkit-agent-helper.socket is enabled, docs/DEFAULTS.md). Ends when the tracker marks 128-1 as fixed."
+reason = "Fixed in the image, still listed by the Debian tracker. The stack buffer underflow is in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd); the tracker lists policykit-1 128-1 as unfixed, but polkit 128 contains the fix (upstream commit eea1729, in the 128 release notes), the source of 128-1 from the snapshot has it, and so has the helper binary. sbom.py fails the build if the manifest lists polkitd older than 128-1, and the Containerfile if the helper is setuid (the socket polkit-agent-helper.socket is enabled, docs/DEFAULTS.md). Ends when the tracker marks 128-1 as fixed."
 expires = 2026-12-20
 
 [[mitigation]]
