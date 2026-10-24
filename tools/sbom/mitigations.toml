@@ -113,6 +113,35 @@ package = "harfbuzz"
 reason = "Out-of-bounds write in HarfBuzz's experimental WebAssembly shaper, fixed upstream in 15.0.0; Debian has no fixed upload yet. Debian's build does not include that shaper: its wasm option stays disabled (it needs libiwasm, which Debian does not package), and libharfbuzz0b 12.3.2-2+b2 contains no wasm code and does not link a wasm runtime. The vulnerable code is therefore not in the image. It would matter only if a rebuilt harfbuzz enabled wasm."
 expires = 2026-11-20
 
+# wget 1.25.0-3: fixed upstream (commits 37a40fc, c2640fe, dd692d9), no Debian upload yet. wget is in
+# the base image only for users who start it; nothing in the image runs it (no unit, timer or script).
+# Checked in the snapshot's source and its amd64 and arm64 binaries (2026-10-24). Metalink is not
+# built: the package does not build-depend on libmetalink and wget enables it only when found; the
+# binaries list "-metalink" in their features, link no libmetalink and have no metalink option. A
+# plain `wget URL` (HTTP or HTTPS) does not reach the other two flaws; the one in html_quote_string()
+# is reached by `wget ftp://host/dir/`, which the image turns off (htmlify = off in /etc/wgetrc,
+# docs/DEFAULTS.md; a user can turn it back on). The installer ISOs do not ship wget (checked in
+# their package lists), so tools/sbom/mitigations-iso*.toml need no entry. Expiry allows for a
+# Debian upload. End: a fixed wget in Debian and a snapshot bump.
+
+[[mitigation]]
+id = "CVE-2026-58469"
+package = "wget"
+reason = "Heap buffer underread in clean_metalink_string(), fixed upstream in commit 37a40fc; Debian has no fixed upload yet. The function is part of wget's Metalink support, which Debian's wget 1.25.0-3 is built without: libmetalink is no build dependency, and the amd64 and arm64 binaries contain no Metalink code, link no libmetalink and have no Metalink option. The vulnerable code is therefore not in the image. It would matter only if a rebuilt wget enabled Metalink."
+expires = 2026-11-20
+
+[[mitigation]]
+id = "CVE-2026-58471"
+package = "wget"
+reason = "Heap overflow in convert_fname() when the iconv output buffer for a file name is too small, fixed upstream in commit c2640fe; Debian has no fixed upload yet. The function runs for every file wget saves, but the faulty step needs a conversion that makes the name more than twice as long. By default wget converts UTF-8 to the locale's charset, which never does that (checked over the locale charsets of glibc: at most twice). It takes an expanding --remote-encoding or --local-encoding pair (or the same in a wgetrc) that the image does not set; a user who chooses one and downloads from a hostile server is exposed until the fix."
+expires = 2026-11-20
+
+[[mitigation]]
+id = "CVE-2026-58472"
+package = "wget"
+reason = "Integer overflow and heap overflow in html_quote_string(), fixed upstream in commit dd692d9; Debian has no fixed upload yet. The size counter is a signed int, so one string of about 358 MB that needs quoting is required. wget calls the function in two places: for link conversion (--convert-links, -k, --convert-file-only), and to build the HTML index of an FTP directory (`wget ftp://host/dir/`, with the server's file names). A plain HTTP or HTTPS `wget URL` reaches neither. The image sets htmlify = off in /etc/wgetrc (docs/DEFAULTS.md), which closes the FTP index. A user who runs -k on content from a hostile server, or turns htmlify back on (--htmlify, ~/.wgetrc) for an FTP server, is exposed until the fix."
+expires = 2026-11-20
+
 # libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with
 # only the dav1d and libde265 decoder plugins, no encoder plugin) has one user: glycin's HEIF/AVIF
 # loader, pulled in by flatpak through gdk-pixbuf. In the base image that loader is reached only by
