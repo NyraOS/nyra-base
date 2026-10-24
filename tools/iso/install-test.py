@@ -4,7 +4,7 @@
 presses (docs/ISO.md): QEMU with UEFI, Secure Boot with the Microsoft keys and a TPM, the serial console
 as the installer's terminal, and an emulated screen (screen.py) to see which screen is shown.
 
-It goes through the eight screens, with the disk unlocked by the TPM or by a password, makes the first
+It goes through the seven screens, with the disk unlocked by the TPM or by a password, makes the first
 administrator, writes the recovery key down from the screen where the installer hands the terminal over
 (the key is in the text next to the QR code that systemd-cryptenroll draws: the serial console shows
 both), presses Enter to say it is written down (nothing is typed back), and does the same for the
@@ -82,19 +82,17 @@ def main():
         vm.wait_screen("Welcome to Nyra OS.", 600)
         t0 = time.monotonic()
         key(ENTER)                                    # Install Nyra OS
-        screen_title("1 of 8 · This computer")
+        screen_title("1 of 7 · Version")
         vm.wait_screen("This computer is ready.", 120)
         check("screen 1: this computer is ready (UEFI, Secure Boot, TPM, memory)", True)
-        key(ENTER)                                    # Continue
-        screen_title("2 of 8 · This release")
         key(ENTER)                                    # They match. Continue
-        screen_title("3 of 8 · Disk")
+        screen_title("2 of 7 · Disk")
         vm.wait_screen("vda", 30)
         key(ENTER)
-        screen_title("4 of 8 · Disk encryption")
+        screen_title("3 of 7 · Disk encryption")
         if a.unlock == "password":
             key(DOWN, ENTER)
-            screen_title("4 of 8 · Disk password")
+            screen_title("3 of 7 · Disk password")
             type_into(DISK_PASSWORD)
             key(TAB)
             type_into(DISK_PASSWORD)
@@ -105,7 +103,7 @@ def main():
             key(ENTER)
         else:
             key(ENTER)
-        screen_title("5 of 8 · Administrator")
+        screen_title("4 of 7 · Administrator")
         vm.send(BACKSPACE * 40)
         vm.settle()
         type_into(ADMIN)
@@ -115,9 +113,9 @@ def main():
         type_into(ADMIN_PASSWORD)
         vm.press_until("Continue")
         key(ENTER)
-        screen_title("6 of 8 · Review")
+        screen_title("5 of 7 · Review")
         review = vm.screen.text()
-        check("screen 6: the review names the disk, the unlock, the administrator and the release",
+        check("screen 5: the review names the disk, the unlock, the administrator and the release",
               "vda" in review and ADMIN in review
               and re.search(r"^\s*Unlock\s+" + ("This computer’s TPM" if a.unlock == "tpm" else "A password you choose") + r"\s*$", review, re.M), review.replace("\n", " | ")[:300])
         type_into("vda")
@@ -125,7 +123,7 @@ def main():
         key(ENTER)
 
         # --- the installation, then the recovery key on the terminal the installer hands over -------
-        screen_title("7 of 8 · Recovery key", a.timeout)
+        screen_title("6 of 7 · Recovery key", a.timeout)
         timings["install"] = time.monotonic() - t0
         mark = vm.mark()
         key(ENTER)                                    # Show the recovery key
@@ -139,7 +137,7 @@ def main():
         vm.expect(r"Press Enter when you have written it down: ", 30, since=mark)
         time.sleep(1)
         vm.send("\r")                                 # "written it down"; nothing typed back
-        screen_title("8 of 8 · Secure Boot key", 300)
+        screen_title("7 of 7 · Secure Boot key", 300)
         mark = vm.mark()
         key(ENTER)                                    # Show the one-time password
         m = vm.expect(ONE_TIME, 60, since=mark)
@@ -148,7 +146,7 @@ def main():
         vm.expect(r"Press Enter when you have written the password down: ", 30, since=mark)
         time.sleep(1)
         vm.send("\r")                                 # "written it down"; nothing typed
-        screen_title("8 of 8 · Done", 120)
+        screen_title("7 of 7 · Done", 120)
         timings["total"] = time.monotonic() - t0
         check("the installer ends on its Done screen", True, f"installation {timings['install']:.0f} s")
         time.sleep(2)
