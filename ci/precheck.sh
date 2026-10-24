@@ -220,6 +220,7 @@ check release-cache "Release jobs unpack no cache (ci/check-release-cache.py)" "
 check check-artifact "Self-test of the artifact check (ci/check-artifact.sh)" "ci/check-artifact.sh --self-test"
 check release-tree "Offline test of the installer's release tree mode (tools/install/test-release-tree.sh)" "tools/install/test-release-tree.sh"
 check machine-interface "Offline test of the installer's interface for programs (tools/install/test-machine-interface.sh)" check_machine_interface
+check mokauth "Self-test of the check that the Secure Boot request is for the password shown (tools/iso/mokauth.py)" "python3 -I tools/iso/mokauth.py --self-test"
 check iso-manifest "Self-test of the ISO package list (ci/iso-manifest.sh)" check_iso_manifest
 check sign-uki "Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)" "tools/signing/test-sign-uki.sh"
 check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_engine_lint

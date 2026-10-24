@@ -11,7 +11,7 @@ both), presses Enter to say it is written down (nothing is typed back), and does
 one-time password that the installer makes for the Secure Boot key (read from the console, checked
 against the alphabet, never written to a file; nothing stands in for MokManager's typing). Then it
 checks that the Machine Owner Key was requested (MokNew in the firmware variables, with the Nyra
-certificate) and that the recovery key and the one-time password were on the console once. The disk
+certificate) for the password shown (MokAuth holds its hash: mokauth.py) and that the recovery key and the one-time password were on the console once. The disk
 (WORKDIR/disk.raw), the TPM's state (--tpm-dir) and the secrets (WORKDIR/secrets, mode 0700: the disk
 password and the recovery key of a throwaway disk) stay for tools/iso/installed-test.sh, which boots the
 installed system.
@@ -27,6 +27,7 @@ import sys
 import time
 
 import isovm
+import mokauth
 
 ENTER, DOWN, TAB, BACKSPACE = b"\r", b"\x1b[B", b"\t", b"\x7f"
 KEY = re.compile(r"(?:[cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}")
@@ -175,6 +176,10 @@ def main():
         cert = subprocess.run(["openssl", "x509", "-outform", "DER", "-in", "files/usr/lib/nyra/secureboot/nyra.crt"], capture_output=True, check=True).stdout
         check("the Machine Owner Key is requested (MokNew), with the Nyra certificate",
               len(mok) == 1 and cert.hex() in mok[0]["data"].lower(), f"{len(mok)} variable(s)")
+        # The blue screen compares what is typed with MokAuth: it must be the hash of the password the installer showed.
+        auth = [v for v in variables if v["name"] == "MokAuth"]
+        check("the request asks for the password that was shown (MokAuth is its hash, without the dash)",
+              len(auth) == 1 and mokauth.matches(auth[0]["data"], one_time.replace("-", "")), f"{len(auth)} variable(s)")
     with open(a.summary, "a") as f:
         f.write(f"## Installation from the ISO ({a.unlock}, {a.memory} MiB, {vm.accel})\n\n")
         if timings:

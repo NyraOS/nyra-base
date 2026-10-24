@@ -208,7 +208,8 @@ the ISO, by the keys a person presses, and boots what it installed:
    checked (10 characters of the alphabet, shown once) and Enter is pressed at the prompt; nothing is
    typed. It ends on "7 of 7 Done".
 3. It checks that the recovery key was on the console once, that no password was echoed, and that the
-   Machine Owner Key was **requested**: the firmware variable `MokNew` holds the Nyra certificate.
+   Machine Owner Key was **requested**: the firmware variable `MokNew` holds the Nyra certificate, and `MokAuth`
+   holds the hash of the one-time password that was shown.
 4. `tools/iso/installed-test.sh` boots the installed disk with Secure Boot on: the disk unlocks (the password
    typed at the prompt, or the TPM), the first administrator exists in `sudo` with a home and a yescrypt
    hash, root is locked, no empty password, the record is gone, the fixed defaults are set, nothing failed,
@@ -224,9 +225,11 @@ credential import on on the disk's EFI partition, and `vm-boot.py` passes the co
 credentials. The add-on is signed with a key made for the run; that key and the image's certificate are
 enrolled as Machine Owner Keys in a copy of the firmware variables, which stands in for MokManager. That
 step is not the installer's: the screen of MokManager, and the installer's request, are checked as far as
-CI can (`MokNew`). The one-time password is shown by the installer and typed nowhere in CI: that the hash
-given to `mokutil` is the one of the password shown is checked offline (`tools/install/test-machine-interface.sh`),
-not in the VM.
+CI can (`MokNew`). The one-time password is shown by the installer and typed nowhere in CI, but the request
+is checked against it: `MokAuth`, the variable MokManager compares the typed password with, must hold the hash of
+the password read from the console (`tools/iso/mokauth.py`, which also has an offline self-test with a request made
+by mokutil's own code and the mutations: another password, the dash, a changed hash). That the script gives
+`mokutil` that hash, and never the password, is also checked offline (`tools/install/test-machine-interface.sh`).
 
 **The recovery key and the QR code.** `systemd-cryptenroll --recovery-key` draws a QR code with block
 characters and prints the key as text next to it: on the Linux console and on a serial console the text is
