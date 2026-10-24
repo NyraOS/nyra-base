@@ -123,11 +123,10 @@ session_of() { # session_of USER: USER logged in on virtual console 5 (an autolo
 	# of seat0 as at a machine's screen; sets pid to their shell. polkit counts a session as local only with
 	# a seat (docs/LESSONS.md), so only such a session is a local and active one for the rules.
 	h="$(getent passwd "$1" | cut -d: -f6)"
-	rm -f "/var/tmp/pid-$1" "/var/tmp/run-$1" "/var/tmp/out-$1" "/var/tmp/rc-$1"
-	# The shell waits for commands that root hands over with in_session, so that they run in the session.
-	# shellcheck disable=SC2016 # the quoted script is the user's, $$ and $? are its shell's
-	printf 'echo $$ >/var/tmp/pid-%s\nwhile :; do\n\tif [ -f /var/tmp/run-%s ]; then\n\t\tsh /var/tmp/run-%s >/var/tmp/out-%s 2>&1 </dev/null\n\t\techo $? >/var/tmp/rc-%s\n\t\trm -f /var/tmp/run-%s\n\tfi\n\tsleep 1\ndone\n' \
-		"$1" "$1" "$1" "$1" "$1" "$1" >"$h/.profile"
+	rm -f "/var/tmp/pid-$1"
+	# The shell only keeps the session open; in_session puts commands into the session's scope.
+	# shellcheck disable=SC2016 # the quoted script is the user's, $$ is its shell
+	printf 'echo $$ >/var/tmp/pid-%s\nwhile :; do\n\tsleep 1\ndone\n' "$1" >"$h/.profile"
 	mkdir -p /run/systemd/system/getty@tty5.service.d
 	# shellcheck disable=SC2016 # $TERM is for systemd
 	printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear - $TERM\n' "$1" \
@@ -157,21 +156,16 @@ session_end() { # the login on virtual console 5 ends, and its session with it
 	return 1
 }
 
-in_session() { # in_session USER COMMAND: COMMAND runs in the shell of USER's session (session_of USER), as a
-	# child of the login on seat0 and not of the root console; prints its output, returns its exit status
-	rm -f "/var/tmp/out-$1" "/var/tmp/rc-$1"
-	printf '%s\n' "$2" >"/var/tmp/run-$1.tmp" && chmod 644 "/var/tmp/run-$1.tmp" &&
-		mv "/var/tmp/run-$1.tmp" "/var/tmp/run-$1" || return 1
-	for _ in $(seq 120); do
-		[ -s "/var/tmp/rc-$1" ] && break
-		sleep 1
-	done
-	cat "/var/tmp/out-$1"
-	[ -s "/var/tmp/rc-$1" ] || {
-		echo "the session of $1 did not run the command"
+in_session() { # in_session USER COMMAND: COMMAND runs as USER inside the scope of the session that session_of
+	# started (the process moves itself into the scope, as a login's processes are in it, so logind and polkit
+	# count it as part of the session on seat0, not of the root console); prints its output, returns its exit
+	# status. It does not wait for anything: a session that is gone fails at once.
+	scope="$(sed -n 's|^0::||p' "/proc/$pid/cgroup")"
+	case "$scope" in *session-*.scope) [ -w "/sys/fs/cgroup$scope/cgroup.procs" ] ;; *) false ;; esac || {
+		echo "the session of $1 has no scope: '$scope'"
 		return 1
 	}
-	return "$(cat "/var/tmp/rc-$1")"
+	sh -c 'echo $$ >"/sys/fs/cgroup$1/cgroup.procs" && exec runuser -u "$2" -- sh -c "$3"' sh "$scope" "$1" "$2" </dev/null
 }
 
 polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the process $pid, asked with
