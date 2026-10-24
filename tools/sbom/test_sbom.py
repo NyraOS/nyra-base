@@ -29,6 +29,10 @@ Source: foo
 Package: bar
 Version: 2.0-1
 Architecture: amd64
+
+Package: polkitd
+Version: 128-1
+Architecture: amd64
 """
 TRACKER = {
     "foo": {
@@ -81,7 +85,8 @@ class Gate(unittest.TestCase):
         with open(self.path("manifest.json"), "w") as f:
             json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
                        "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": "amd64"},
-                                    {"name": "bar", "version": "2.0-1", "architecture": "amd64"}]}, f)
+                                    {"name": "bar", "version": "2.0-1", "architecture": "amd64"},
+                                    {"name": "polkitd", "version": "128-1", "architecture": "amd64"}]}, f)
         with open(self.path("Cargo.lock"), "w") as f:
             f.write('[[package]]\nname = "baz"\nversion = "0.1.0"\n'
                     'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
@@ -161,7 +166,7 @@ class Gate(unittest.TestCase):
         self.assertIn("is listed twice", str(code))
         with open(self.path("sbom.json")) as f:
             components = json.load(f)["components"]
-        self.assertEqual(len(components), 5)  # bootc, pam-totp, 2 Debian packages, 1 crate
+        self.assertEqual(len(components), 6)  # bootc, pam-totp, 3 Debian packages, 1 crate
         self.assertIn("pkg:github/NyraOS/pam-totp@" + "1" * 40, [c["purl"] for c in components])
 
     def test_more_cargo_locks(self):
@@ -174,7 +179,7 @@ class Gate(unittest.TestCase):
                     '[[package]]\nname = "local"\nversion = "0.0.0"\n')
         code, report = self.run_gate(extra_locks=[self.path("other.lock")])
         self.assertEqual(code, 1)
-        self.assertIn("(2 Debian packages, 2 Rust crates, bootc, pam-totp)", report)
+        self.assertIn("(3 Debian packages, 2 Rust crates, bootc, pam-totp)", report)
         self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
         with open(self.path("sbom.json")) as f:
             purls = [c.get("purl") for c in json.load(f)["components"]]
@@ -277,6 +282,39 @@ class Gate(unittest.TestCase):
             os.environ.update(saved)
         self.assertIn("is not a commit", str(code))
 
+    def set_polkitd(self, version):
+        """Writes the manifest without polkitd (version None) or with this version."""
+        with open(self.path("manifest.json")) as f:
+            manifest = json.load(f)
+        manifest["packages"] = [p for p in manifest["packages"] if p["name"] != "polkitd"]
+        if version:
+            manifest["packages"].append({"name": "polkitd", "version": version, "architecture": "amd64"})
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+    def test_polkitd_needs_128_1(self):
+        # Newer versions, a binNMU among them, pass; older, a pre-release or a missing package fail.
+        def check(version):
+            packages = [{"name": "polkitd", "version": version}] if version else []
+            try:
+                sbom.check_minimum_versions({"packages": packages})
+            except SystemExit as e:
+                return str(e)
+        for version in ("128-1", "128-1+b1", "128-2", "129-1"):
+            self.assertIsNone(check(version), version)
+        for version in ("127-2", "128~rc1-1"):
+            self.assertIn("is older than 128-1", check(version), version)
+        self.assertIn("is not in the manifest", check(None))
+        # main() refuses the image's manifest without polkitd.
+        self.set_polkitd(None)
+        code, _ = self.run_gate()
+        self.assertIn("polkitd is not in the manifest", str(code))
+
+    def test_iso_does_not_check_polkitd(self):
+        self.set_polkitd(None)
+        code, _ = self.run_gate(iso=True)
+        self.assertNotIn("polkitd", str(code))
+
     def test_no_debian_packages_refused(self):
         with open(self.path("manifest.json")) as f:
             manifest = json.load(f)
@@ -360,7 +398,8 @@ class Gate(unittest.TestCase):
         with open(self.path("manifest.json"), "w") as f:
             json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
                        "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": "amd64"},
-                                    {"name": "bar", "version": "2.0-1", "architecture": "amd64"}]}, f)
+                                    {"name": "bar", "version": "2.0-1", "architecture": "amd64"},
+                                    {"name": "polkitd", "version": "128-1", "architecture": "amd64"}]}, f)
         saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
         try:
             code, report = self.run_gate(iso=True, arm64_entries=everything)

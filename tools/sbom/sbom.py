@@ -31,6 +31,7 @@ import json
 import lzma
 import os
 import re
+import subprocess
 import sys
 import time
 import tomllib
@@ -53,6 +54,10 @@ TRACKER = "https://security-tracker.debian.org/tracker/data/json"
 OSV = "https://api.osv.dev/v1"
 BLOCKING = ("critical", "high", "unknown")
 MAX_DAYS = 90
+# The image has no dpkg database (docs/LESSONS.md), so the build cannot ask dpkg for a version: the
+# manifest is where versions are checked. Image only. polkitd 128-1 has the fix for CVE-2026-85498 in the
+# password helper, whose socket is on (docs/DEFAULTS.md, "Passwords through polkit").
+MINIMUM_VERSIONS = {"polkitd": "128-1"}
 
 
 def fetch(url, data=None):
@@ -160,6 +165,16 @@ def debian_sources(manifest, snapshot, arch="amd64"):
         name, _, version = source.partition(" ")
         out.append((p, name, version.strip("()") or p["version"]))
     return out
+
+
+def check_minimum_versions(manifest):
+    """Exit if a package of MINIMUM_VERSIONS is missing from the manifest or older than its minimum."""
+    versions = {p["name"]: p["version"] for p in manifest["packages"]}
+    for name, minimum in MINIMUM_VERSIONS.items():
+        if name not in versions:
+            sys.exit(f"sbom.py: {name} is not in the manifest (it must be {minimum} or newer)")
+        if subprocess.run(["dpkg", "--compare-versions", versions[name], "ge", minimum]).returncode != 0:
+            sys.exit(f"sbom.py: {name} {versions[name]} is older than {minimum}")
 
 
 def write_sbom(path, snapshot, debs, crates, applications, name, description):
@@ -272,6 +287,8 @@ def main():
                 crates.setdefault((p["name"], p["version"], p["source"]), p)
     crates = list(crates.values())
     debs = debian_sources(manifest, snapshot, arch)
+    if not iso:
+        check_minimum_versions(manifest)
     def commit_of(path):
         commit = open(path).read().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
