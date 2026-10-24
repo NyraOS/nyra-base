@@ -348,7 +348,7 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   --command "$lib; running && systemctl is-active boot-complete.target && systemctl is-active nyra-health-system.service && systemctl is-active nyra-updated.timer" \
   --command 'systemd-analyze security --no-pager nyra-updated.service | tail -1; /usr/libexec/nyra-updated check-config' \
   --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version'" \
-  --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_start vmadmin nyra-updated-install@2026.10.600.service 1 && no_root_command vmadmin nyra-updated-install@2026.10.601.service && polkit_start vmuser nyra-updated-install@2026.10.600.service 1 && polkit_start vmadmin nyra-updated-install@evil.service 1 && polkit_start vmadmin ssh.service 1 && polkit_start root ssh.service 0" \
+  --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_cases && no_root_command vmadmin nyra-updated-install@2026.10.601.service" \
   --command 'bootc status --format json' \
   --command "$lib; run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \
