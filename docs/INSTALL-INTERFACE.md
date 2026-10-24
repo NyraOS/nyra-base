@@ -152,8 +152,11 @@ alphabet and the length are defined once, at the top of `tools/install/machine.s
 once), not the password, and shows the password only after `mokutil` took the import, in two groups
 with a dash (`abcde-fghij`) that is not part of it. The owner writes it down, presses Enter (the same
 wait as for the recovery key), and types it once, without the dash, in MokManager. A failed import shows
-no password. Nothing else holds it: it is in no argument, environment variable, event, log or file, and
-a key that is already enrolled has no password at all.
+no password. Nothing else holds it: it is in no argument, environment variable, event, log or file.
+A request that is still queued from an earlier run (the run may have stopped before the password was
+written down) is revoked with `mokutil --revoke-import` and made again with a new password, and the
+screen says so; only a key that is enrolled already (`mokutil --test-key` still says so after the
+revoke) has no password.
 
 **Exit status.** 0 success. **10: failed before the first write, the disk is as it was.** **11: failed
 after it; the disk must be installed again from the start.** 1 is a usage error. A script that dies
@@ -172,7 +175,7 @@ Requests the import of `nyra.crt` as a Machine Owner Key (for an owner who misse
 the first boot). The certificate is the tree's, not an installed disk's, and has been checked against
 docs/SIGNING.md. It reads no answers but `go`. Events: `handoff` (`mok-password`), `handoff-end`, `done`;
 or `fail` with `id` `mok` and `disk_changed` false (exit 10). A key that is already enrolled is not a
-failure; the handoff says so. Each run makes a new one-time password.
+failure; the handoff says so. Each run that requests the key makes a new one-time password.
 
 ## What is tested
 

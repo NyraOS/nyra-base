@@ -16,8 +16,9 @@ tpm_dev=/dev/tpmrm0
 log_dir=/run/nyra-installer
 # The one-time password of the Secure Boot key (mok_password): mok_length characters of mok_alphabet. The
 # alphabet has 32 characters (lowercase letters and digits, none that looks like another: no 0 o 1 l),
-# typed on a US layout without Shift, so 10 characters are 50 bits. MokManager takes 16 at most. It is
-# shown in groups of mok_group, with a dash between them that is not part of the password.
+# typed on a US layout without Shift, so 10 characters are 50 bits (MokManager takes more for an enrollment,
+# and 16 at most for its other password prompt: 10 fits both). It is shown in groups of mok_group, with a
+# dash between them that is not part of the password.
 mok_alphabet=abcdefghijkmnpqrstuvwxyz23456789
 mok_length=10
 mok_group=5
@@ -100,6 +101,7 @@ reserved_names() {
 # of the alphabet and drops the others, so every character is equally likely (no bias from a modulo). 512
 # bytes hold 64 of them on average; fewer than mok_length is not going to happen, and is fatal if it does.
 mok_password() {
+  [[ $- != *x* ]] || die "not with xtrace on: the password would go to the log"
   mok_pw="$(head -c 512 /dev/urandom | LC_ALL=C tr -dc "$mok_alphabet")"
   [ "${#mok_pw}" -ge "$mok_length" ] || die "not enough random characters for the Secure Boot password"
   mok_pw="${mok_pw:0:mok_length}"

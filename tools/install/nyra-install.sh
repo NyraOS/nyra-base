@@ -72,8 +72,8 @@ in_image_timeout=0
 
 # changed: the disk was written to and the installation is not finished. touched: it was, at any time
 # (exit status 11, disk_changed in the event fail). own_secrets: $secrets is this run's, to remove.
-# handoff_open: the terminal is not the installer's. key_on_screen: the recovery key may be on the
-# terminal of the terminal mode. fail_id: what the event fail names.
+# handoff_open: the terminal is not the installer's. key_on_screen: the recovery key or the one-time
+# password may be on the terminal. fail_id: what the event fail names.
 unlock=tpm device="" disk_entry="" events_fd="" answers_fd="" changed="" touched="" own_secrets="" handoff_open=""
 key_on_screen="" fail_id=verify
 
@@ -108,17 +108,26 @@ cleanup() {
 # mok_enroll: shows the fingerprint (mok_fingerprint has checked it) and requests the import of the
 # certificate in $cert as a Machine Owner Key: DER in $der. The terminal mode asks to be sure first; the
 # machine interface has had the owner's yes on the screen of the installer. The one-time password is
-# made here and shown once, after mokutil has taken it (mok_show).
+# made here and shown once, after mokutil has taken it (mok_show). A request that is still queued from an
+# earlier run (its password may be lost: the run stopped before it was written down) is revoked and made
+# again with a new password; only a key that is enrolled already is left alone.
 mok_enroll() {
-  local rc=0 hash="$secrets/mok-password-hash"
+  local rc=0 replaced="" hash="$secrets/mok-password-hash"
   echo "The Nyra certificate, SHA-256 fingerprint:"
   echo "  $fingerprint"
   echo "It is the one of docs/SIGNING.md. Compare it with your own notes (docs/INSTALL.md) before going on."
   [ "$cmd" != cli ] || read -r -p "Press Enter to import it as a Machine Owner Key (Ctrl-C to stop): " _
   openssl x509 -in "$cert" -outform DER -out "$der"
-  # mokutil --test-key: 0 = not enrolled, 1 = already enrolled or already requested. CI cannot reach
-  # this line (no live session with Secure Boot and a MOK database).
+  # mokutil --test-key: 0 = not enrolled, 1 = already enrolled or already requested. --revoke-import
+  # deletes only the request (MokNew and MokAuth), so what is still 1 after it is enrolled; its own
+  # failure (nothing queued) does not matter.
   mokutil --test-key "$der" > /dev/null || rc=$?
+  if [ "$rc" = 1 ]; then
+    mokutil --revoke-import > /dev/null 2>&1 || true
+    rc=0
+    mokutil --test-key "$der" > /dev/null || rc=$?
+    [ "$rc" != 0 ] || replaced=1
+  fi
   case "$rc" in
     0)
       # mokutil gets the hash of the password in a file of $secrets (memory, only root): never the
@@ -127,6 +136,7 @@ mok_enroll() {
       ( umask 077; printf '%s\n' "$mok_pw" | openssl passwd -6 -stdin > "$hash" ) || die "cannot make the hash of the one-time password"
       mokutil --import "$der" --hash-file "$hash" || die "mokutil --import failed. The disk is installed: run it again (docs/INSTALL.md)"
       rm -f "$hash"
+      [ -z "$replaced" ] || echo "An earlier request to register this key was replaced: only the password below works now."
       mok_show
       ;;
     1) echo "The key is already enrolled or its enrollment is already requested." ;;
@@ -155,7 +165,7 @@ mok_show() {
   echo "    $(mok_grouped)"
   echo
   echo "Write it down now, on paper. It is shown only once."
-  echo "Type it on the blue screen without the dash: $mok_length lowercase letters and digits."
+  echo "Type it on the blue screen without the dash, with Caps Lock off: $mok_length lowercase letters and digits."
   mok_pw=""
   press_enter "Press Enter when you have written the password down: "
   key_on_screen=""

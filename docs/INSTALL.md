@@ -105,8 +105,8 @@ It asks for confirmation (type the device path), then:
 - shows the full fingerprint of the certificate it takes from the image, and checks that it is the one
   of docs/SIGNING.md. **Compare it with your notes.** Then it runs `mokutil --import` with a
   one-time password that it makes (10 lowercase letters and digits), shows once in two groups
-  (`abcde-fghij`) and waits for Enter. Write it down; you type it once, without the dash, in
-  MokManager, which uses a US keyboard layout. It is in no file and no log, and the screen and its
+  (`abcde-fghij`) and waits for Enter. Write it down; you type it once, without the dash and with Caps
+  Lock off, in MokManager, which uses a US keyboard layout. It is in no file and no log, and the screen and its
   scroll-back are cleared when you press Enter.
 
 If it fails after it began to write to the disk, the disk must be installed again from the start;
