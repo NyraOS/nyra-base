@@ -9,13 +9,17 @@
 //!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key;
 //! - `set-channel NAME` (root, by hand until Settings offers it): this machine follows channel
-//!   NAME from the next check on, whatever the image says (rule 14).
+//!   NAME from the next check on, whatever the image says (rule 14);
+//! - `install VERSION` (`nyra-updated-install@VERSION.service`, started by an administrator through
+//!   polkit): stages that release, never reboots, see the `install` module.
 
+use nyra_updated::install::{check_version, install, PolicyFiles};
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
     System, NOT_CONFIGURED,
 };
+use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +33,18 @@ const NOTICE: &str = "/usr/lib/nyra/health/notice";
 
 fn config() -> Result<Option<Config>, Error> {
     Config::load(Path::new(CONFIG), Path::new(KEYS))
+}
+
+/// One `install`: the argument first, then the signature policy, then the lock.
+fn install_once(version: &str) -> Result<String, Error> {
+    check_version(version)?;
+    PolicyFiles::system().check()?;
+    let _lock = Lock::acquire(Path::new(LOCK))?;
+    let conf = fs::read_to_string(CONFIG).map_err(|e| Error::Io(format!("{CONFIG}: {e}")))?;
+    let store = Store {
+        dir: STATE_DIR.into(),
+    };
+    install(&mut Real::default(), &store, &conf, version)
 }
 
 /// One update check, with the lock held (`run`).
@@ -128,8 +144,10 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
             set_channel(&store, channel)?;
             Ok((6, true, format!("this machine follows channel {channel}")))
         }
+        ("install", Some(version)) => install_once(version).map(|m| (6, true, m)),
         _ => Err(Error::Config(
-            "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME".into(),
+            "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME|install VERSION"
+                .into(),
         )),
     }
 }

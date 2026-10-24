@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# `systemctl start nyra-updated-install@VERSION.service`: stages release VERSION from a terminal. Only
+# members of the group sudo may start it, with their own password
+# (/usr/share/polkit-1/rules.d/49-nyra.rules); the program checks the version, the signature policy
+# and that the version is newer than the running one (docs/UPDATES.md, "Updating from a terminal as an
+# administrator"). It stages and never reboots. The instance reaches the program as one argument, escaped
+# (a name that is not a version is refused).
+[Unit]
+Description=Nyra: stage system version %i (started by an administrator)
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+# Only with the ESP mounted at /boot, as for a check (nyra-updated.service).
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated install %i
+# nyra-updated stops a pull after 2 h itself (bootc and its helpers); this is only a backstop.
+TimeoutStartSec=2h30min
+StateDirectory=nyra-updated
+StateDirectoryMode=0700
+UMask=0077
+# Sandboxing, as for a check (nyra-updated.service): bootc runs as root in its own mount namespace,
+# pulls over the network and writes /sysroot and /var. No RestrictSUIDSGID= (openat2, bootc).
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=tmpfs
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

@@ -95,6 +95,20 @@ refused_switch() { # refused_switch IMAGE PATTERN: bootc switch fails with an er
 	[ $rc != 0 ] && printf '%s' "$out" | grep -q -- "$2"
 }
 
+install_refused() { # install_refused VERSION PATTERN: nyra-updated install fails with a message matching PATTERN
+	out="$(/usr/libexec/nyra-updated install "$1" 2>&1)"
+	rc=$?
+	echo "$out"
+	[ $rc != 0 ] && printf '%s' "$out" | grep -q -- "$2"
+}
+
+polkit_start() { # polkit_start USER UNIT ANSWER: what polkit answers USER who starts UNIT (pkcheck: 0 yes, 1 no, 2 a password would be asked)
+	runuser -u "$1" -- sh -c 'pkcheck --action-id org.freedesktop.systemd1.manage-units --detail unit "$1" --detail verb start --process "$$"' sh "$2"
+	rc=$?
+	echo "polkit: $1 starts $2: $rc"
+	[ $rc = "$3" ]
+}
+
 untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoofed server)
 	select_sheet "$1" || return 1
 	mv /usr/local/share/ca-certificates/nyra-test.crt /var/lib/nyra-test/

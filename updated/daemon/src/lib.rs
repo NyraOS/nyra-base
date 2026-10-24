@@ -107,6 +107,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod install;
 pub mod system;
 
 /// The public key of the `seed1` test fixture (private key = 32 bytes of 1, known to anyone).

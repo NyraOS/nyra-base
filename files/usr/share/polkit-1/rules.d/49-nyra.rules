@@ -22,3 +22,30 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.AUTH_ADMIN;
     }
 });
+
+// Updating from a terminal (docs/UPDATES.md): a member of sudo starts nyra-updated-install@VERSION.service
+// with `systemctl start`, and polkit asks for the administrator's password. Nothing else of systemd's
+// manager is open to a user. systemd's own policy lets an administrator, with a password, run any
+// command as root (`systemd-run`), start or stop any unit, link unit files and set the manager's
+// environment: that would be the root shell the base does not have. root is not asked (polkit allows
+// root everything). The unit name has the shape the program accepts (nyra-updated, install.rs), which
+// it checks again.
+var nyraInstallUnit = /^nyra-updated-install@[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,6}\.service$/;
+var nyraManagerActions = [
+    "org.freedesktop.systemd1.manage-units",
+    "org.freedesktop.systemd1.manage-unit-files",
+    "org.freedesktop.systemd1.reload-daemon",
+    "org.freedesktop.systemd1.set-environment"
+];
+polkit.addRule(function(action, subject) {
+    if (nyraManagerActions.indexOf(action.id) < 0) {
+        return;
+    }
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") == "start" &&
+        nyraInstallUnit.test(action.lookup("unit")) &&
+        subject.isInGroup("sudo")) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+    return polkit.Result.NO;
+});
