@@ -121,7 +121,8 @@ The flow does not change; only who signs in step 3 of `ci/build-image.sh`, and w
   `release-image` builds the image the tests boot from it.
 - **Enrollment:** the installer runs `mokutil --import` with that certificate, taken from the
   verified image and checked against docs/SIGNING.md (docs/INSTALL.md); on the next boot the user
-  confirms it once in MokManager (with the one-time password typed at mokutil's prompt). A machine whose
+  confirms it once in MokManager (with the one-time password that the installer made and showed once; `mokutil`
+  gets only its hash, in a file in memory). A machine whose
   owner prefers it can put the certificate in `db` instead (setup mode); shim checks `db` too.
 - **Add-ons:** the Nyra key never signs a generic command-line add-on. A signed add-on applies to
   any Nyra UKI (the control add-on in the test proves that), so one such file would undo the fixed

@@ -7,12 +7,14 @@ as the installer's terminal, and an emulated screen (screen.py) to see which scr
 It goes through the eight screens, with the disk unlocked by the TPM or by a password, makes the first
 administrator, writes the recovery key down from the screen where the installer hands the terminal over
 (the key is in the text next to the QR code that systemd-cryptenroll draws: the serial console shows
-both), presses Enter to say it is written down (nothing is typed back), and chooses the one-time
-password of the Secure Boot key. Then it checks that the Machine Owner Key was requested (MokNew in
-the firmware variables, with the Nyra certificate) and that the
-recovery key was on the console once. The disk (WORKDIR/disk.raw), the TPM's state (--tpm-dir) and the
-secrets (WORKDIR/secrets, mode 0700: the disk password and the recovery key of a throwaway disk) stay for
-tools/iso/installed-test.sh, which boots the installed system.
+both), presses Enter to say it is written down (nothing is typed back), and does the same for the
+one-time password that the installer makes for the Secure Boot key (read from the console, checked
+against the alphabet, never written to a file; nothing stands in for MokManager's typing). Then it
+checks that the Machine Owner Key was requested (MokNew in the firmware variables, with the Nyra
+certificate) and that the recovery key and the one-time password were on the console once. The disk
+(WORKDIR/disk.raw), the TPM's state (--tpm-dir) and the secrets (WORKDIR/secrets, mode 0700: the disk
+password and the recovery key of a throwaway disk) stay for tools/iso/installed-test.sh, which boots the
+installed system.
 
     tools/iso/install-test.py ISO WORKDIR LOG SUMMARY --unlock password|tpm --tpm-dir DIR [--memory MiB]
 """
@@ -31,7 +33,10 @@ KEY = re.compile(r"(?:[cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}")
 # On every error screen of the installer, and on no other.
 FAILED = "Details: d · Log:"
 ADMIN, ADMIN_PASSWORD = "maria", "Maria-test-2026"
-DISK_PASSWORD, ONE_TIME = "Disk-test-2026", "nyra2026"
+DISK_PASSWORD = "Disk-test-2026"
+# The one-time password of the Secure Boot key: 10 of the 32 characters of tools/install/machine.sh, shown in
+# two groups of 5 with a dash.
+ONE_TIME = r"\b([a-km-np-z2-9]{5}-[a-km-np-z2-9]{5})\b"
 
 
 def main():
@@ -136,13 +141,13 @@ def main():
         vm.send("\r")                                 # "written it down"; nothing typed back
         screen_title("8 of 8 · Secure Boot key", 300)
         mark = vm.mark()
-        key(ENTER)                                    # Choose the one-time password
-        vm.expect(r"input password:", 60, since=mark)
-        time.sleep(0.5)
-        vm.send(ONE_TIME + "\r")
-        vm.expect(r"input password again:", 30, since=mark)
-        time.sleep(0.5)
-        vm.send(ONE_TIME + "\r")
+        key(ENTER)                                    # Show the one-time password
+        m = vm.expect(ONE_TIME, 60, since=mark)
+        one_time = m.group(1)                         # kept in memory only: no file, no log
+        check("the one-time password is on the console, in two groups, made by the installer", True)
+        vm.expect(r"Press Enter when you have written the password down: ", 30, since=mark)
+        time.sleep(1)
+        vm.send("\r")                                 # "written it down"; nothing typed
         screen_title("8 of 8 · Done", 120)
         timings["total"] = time.monotonic() - t0
         check("the installer ends on its Done screen", True, f"installation {timings['install']:.0f} s")
@@ -150,7 +155,9 @@ def main():
         vm.pump(1)
         console = vm.text()
         check("the recovery key was on the console once", console.count(recovery) == 1, f"{console.count(recovery)} times")
-        check("no password was echoed to the console", all(p not in console for p in (DISK_PASSWORD, ADMIN_PASSWORD, ONE_TIME)))
+        check("the one-time password was on the console once", console.count(one_time) == 1 and one_time.replace("-", "") not in console,
+              f"{console.count(one_time)} times")
+        check("no password was echoed to the console", all(p not in console for p in (DISK_PASSWORD, ADMIN_PASSWORD)))
     except isovm.Timeout as e:
         print(f"FAIL {e}", flush=True)
         failed.append("timeout")

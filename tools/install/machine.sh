@@ -14,6 +14,14 @@ meminfo=/proc/meminfo
 tpm_glob='/dev/tpmrm*'
 tpm_dev=/dev/tpmrm0
 log_dir=/run/nyra-installer
+# The one-time password of the Secure Boot key (mok_password): mok_length characters of mok_alphabet. The
+# alphabet has 32 characters (lowercase letters and digits, none that looks like another: no 0 o 1 l),
+# typed on a US layout without Shift, so 10 characters are 50 bits (MokManager takes more for an enrollment,
+# and 16 at most for its other password prompt: 10 fits both). It is shown in groups of mok_group, with a
+# dash between them that is not part of the password.
+mok_alphabet=abcdefghijkmnpqrstuvwxyz23456789
+mok_length=10
+mok_group=5
 # The certificate and the fingerprint of the people who make the releases, from the tree.
 cert_file="files/usr/lib/nyra/secureboot/nyra.crt"
 
@@ -85,6 +93,28 @@ reserved_names() {
   [ -e "$file" ] || [ -L "$file" ] || { echo '[]'; return 0; }
   [ -f "$file" ] && [ ! -L "$file" ] || die "reserved-names is not a regular file"
   jq -Rn '[inputs | select(length > 0)]' < "$file" || die "cannot read reserved-names"
+}
+
+# --- the one-time password of the Secure Boot key -----------------------------------------------------
+
+# mok_password: sets mok_pw to a new one-time password from the system's random numbers. tr keeps the bytes
+# of the alphabet and drops the others, so every character is equally likely (no bias from a modulo). 512
+# bytes hold 64 of them on average; fewer than mok_length is not going to happen, and is fatal if it does.
+mok_password() {
+  [[ $- != *x* ]] || die "not with xtrace on: the password would go to the log"
+  mok_pw="$(head -c 512 /dev/urandom | LC_ALL=C tr -dc "$mok_alphabet")"
+  [ "${#mok_pw}" -ge "$mok_length" ] || die "not enough random characters for the Secure Boot password"
+  mok_pw="${mok_pw:0:mok_length}"
+}
+
+# mok_grouped: mok_pw in groups of mok_group characters with a dash between them, as it is shown.
+mok_grouped() {
+  local rest="$mok_pw" out=""
+  while [ -n "$rest" ]; do
+    out="${out:+$out-}${rest:0:mok_group}"
+    rest="${rest:mok_group}"
+  done
+  echo "$out"
 }
 
 # --- the JSON of check and disks -----------------------------------------------------------------
@@ -248,7 +278,7 @@ tty_ready() {
 # --- the terminal --------------------------------------------------------------------------------
 
 # handoff ID COMMAND...: runs COMMAND on the terminal, which the installer lets go of for the time of
-# it, and nowhere else. The recovery key is shown and the one-time password of mokutil is typed there:
+# it, and nowhere else. The recovery key and the one-time password of the Secure Boot key are shown there:
 # neither passes through a pipe of this script or through its log. Waits for the line go.
 handoff() {
   local id="$1" line

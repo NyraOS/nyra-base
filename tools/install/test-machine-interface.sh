@@ -17,9 +17,11 @@
 #   - the recovery key is shown and the installer waits for an Enter pressed after it (not one typed
 #     before, not the end of the input), then clears the screen and its scroll-back, in both modes;
 #     nothing is typed back and nothing is checked against the disk;
-#   - the recovery key and the password of mokutil go to the terminal after the line go, and to no event,
-#     log or file; no password is in an argument, in the environment, in ps or anywhere under the work
-#     directory; the terminal mode refuses what it always refused.
+#   - the recovery key and the one-time password of the Secure Boot key (made by the script, from the
+#     alphabet of machine.sh, and given to mokutil as a hash in a file) go to the terminal after the line
+#     go, and to no event, log or file; the password is shown only after mokutil took the import, and the
+#     installer waits for Enter after it; no password is in an argument, in the environment, in ps or
+#     anywhere under the work directory; the terminal mode refuses what it always refused.
 #   tools/install/test-machine-interface.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -79,8 +81,32 @@ cat > "$t/bin/mokutil" << 'EOF2'
 echo "mokutil $*" >> "$CALLS"
 case "$1" in
   --sb-state) cat "$SB_STATE"; [ -s "$SB_STATE" ] ;;
-  --test-key) exit "${TESTKEY_RC:-0}" ;;
-  --import) exit "${IMPORT_RC:-0}" ;;
+  --test-key)
+    # As the firmware's variables: a key that is queued (MokNew) answers 1 like one that is enrolled;
+    # TESTKEY_RC=1 is an enrolled one, which a revoke does not change.
+    [ -z "${TESTKEY_RC:-}" ] || exit "$TESTKEY_RC"
+    [ ! -e "$MOK_QUEUED" ] || exit 1
+    exit 0
+    ;;
+  --revoke-import) rm -f "$MOK_QUEUED" ;;
+  --import)
+    # The script gives the hash of the one-time password in a file (--hash-file): never a prompt, which
+    # needs a terminal and a typed password. What is kept: the mode and the line of the file (a hash, not
+    # the password), and what the process and its surroundings hold, to look for the password.
+    hash_file=""
+    while [ $# -gt 0 ]; do
+      [ "$1" != --hash-file ] || hash_file="$2"
+      shift
+    done
+    [ -f "$hash_file" ] || exit 2
+    echo "$(stat -c %a "$hash_file") $(cat "$hash_file")" > "$MOK_SEEN"
+    env >> "$ENVLOG"
+    ps -eww -o args= >> "$PROCLOG"
+    # A request that is queued already is refused, as mokutil does.
+    [ ! -e "$MOK_QUEUED" ] || exit 1
+    [ "${IMPORT_RC:-0}" != 0 ] || : > "$MOK_QUEUED"
+    exit "${IMPORT_RC:-0}"
+    ;;
 esac
 EOF2
 # Writes to the disk: its first KiB. What the process that called it holds is recorded, to look for passwords.
@@ -137,6 +163,15 @@ case "$step" in
     ;;
 esac
 EOF2
+# openssl makes the hash of the one-time password: what it is given (arguments, environment, the processes
+# around it) is recorded like the others', then the real one runs.
+cat > "$t/bin/openssl" << EOF2
+#!/bin/sh
+echo "openssl \$*" >> "\$CALLS"
+env >> "\$ENVLOG"
+ps -eww -o args= >> "\$PROCLOG"
+exec $(command -v openssl) "\$@"
+EOF2
 chmod +x "$t/bin/"*
 cat > "$t/luks.json" << 'EOF2'
 {"tokens":{"0":{"type":"systemd-recovery","keyslots":["1"]},"1":{"type":"systemd-tpm2","keyslots":["2"],"tpm2-pcrs":[]}},
@@ -178,7 +213,7 @@ EOF2
 printf '%s' "$key" > "$t/key.txt"
 export CALLS="$t/calls.log" ENVLOG="$t/env.log" PROCLOG="$t/proc.log" DISKFILE="$t/disk" KEYFILE="$t/key.txt"
 export SB_STATE="$t/sb-state" LUKS_JSON="$t/luks.json" FIXTURE="$t/one-disk.json" IMAGE_CERT="$t/image.crt"
-export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed" PW_SEEN="$t/pw-seen"
+export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed" PW_SEEN="$t/pw-seen" MOK_SEEN="$t/mok-seen" MOK_QUEUED="$t/mok-queued"
 DISK_PW_SHA="$(printf '%s' "$disk_pw" | sha256sum | cut -c1-64)"
 export DISK_PW_SHA
 : > "$CALLS"
@@ -241,15 +276,19 @@ answers() {
 }
 reset_run() {
   rm -rf "$t/log" "$t/secrets" "$t/containers"
+  # The firmware's request for the key stays between two runs only if the test says so.
+  [ -n "${keep_queue:-}" ] || rm -f "$MOK_QUEUED"
   : > "$t/events"
   : > "$CALLS"
   : > "$t/transcript"
   cp "$t/answers.in" "$t/answers"
 }
-# What the terminal is told when it shows the prompt after the recovery key: Enter. replies (a JSON
-# list, see pty-run.py), pretype (newlines typed before anything) and run_timeout (seconds) change
-# a run.
-enter_reply='[["Press Enter when you have written it down: $", ""]]'
+# What the terminal is told when it shows the prompt after the recovery key and the one after the
+# one-time password: Enter. replies (a JSON list, see pty-run.py), pretype (newlines typed before
+# anything) and run_timeout (seconds) change a run.
+key_prompt='Press Enter when you have written it down: $'
+mok_prompt='Press Enter when you have written the password down: $'
+enter_reply="[[\"$key_prompt\", \"\"], [\"$mok_prompt\", \"\"]]"
 # run TREE SUBCOMMAND: on a terminal, events on descriptor 3 and answers on 4. Sets rc, events, transcript.
 # The shell around the script is the text installer: it keeps the terminal open (the script itself uses it
 # only for the handoffs) and gives the script its status.
@@ -269,10 +308,22 @@ run() {
 }
 # cleared_after_key: the last run's terminal shows the recovery key, and after it the sequence that
 # clears the screen and its scroll-back.
-cleared_after_key() {
+cleared_after_key() { cleared_after "$key"; }
+# cleared_after TEXT: the same for any text.
+cleared_after() {
   local text
   text="$(tr -d '\r' < "$t/transcript")"
-  [[ "$text" == *"$key"* && "${text#*"$key"}" == *$'\033[3J'* ]]
+  [[ "$text" == *"$1"* && "${text#*"$1"}" == *$'\033[3J'* ]]
+}
+# mok_shown: the one-time passwords the last run showed on the terminal, as they are typed (without the
+# dash), one per line. The script shows it on a line of its own.
+mok_shown() {
+  tr -d '\r' < "$t/transcript" | sed -n 's/^    \([a-z2-9]\{5\}\)-\([a-z2-9]\{5\}\)$/\1\2/p'
+}
+# mok_leaks PASSWORD: the files under $t that hold the password, with or without its dash, other than the
+# terminal's transcript (where it is shown, by design).
+mok_leaks() {
+  grep -rlF -e "$1" -e "${1:0:5}-${1:5}" "$t" --exclude=transcript --exclude=test-*.sh 2> /dev/null || true
 }
 disk_hash() { head -c 1048576 "$t/disk" | sha256sum; }
 fresh_disk() { dd if=/dev/urandom of="$t/disk" bs=1k count=1 conv=notrunc status=none; }
@@ -408,6 +459,24 @@ jq -e '
   <<< "$out" > /dev/null || { printf '%s\n' "$out"; fail "disks: a disk is not as the text installer reads it"; }
 echo "disks: eligible or not and why, the partitions, which disk it is, quotes in a model, no loop device, optical drive or zram"
 
+# --- the one-time password of the Secure Boot key: alphabet, length, groups ----------------------------
+# 400 passwords from the script's own function: 10 characters of the 32 of the alphabet (50 bits), none that
+# looks like another, none repeated, every character of the alphabet seen.
+passwords="$(bash -c 'set -euo pipefail; die() { echo "$*" >&2; exit 1; }; . tools/install/machine.sh
+  for _ in $(seq 400); do mok_password; echo "$mok_pw"; done')"
+[ "$(wc -l <<< "$passwords")" = 400 ] || fail "mok_password: not 400 passwords"
+[ "$(grep -cE '^[a-km-np-z2-9]{10}$' <<< "$passwords")" = 400 ] || fail "mok_password: a password is not 10 characters of the alphabet"
+[ "$(sort -u <<< "$passwords" | wc -l)" = 400 ] || fail "mok_password: a password came twice"
+[ "$(fold -w1 <<< "$passwords" | sort -u | wc -l)" = 32 ] || fail "mok_password: not every character of the 32 was seen"
+! grep -q '[01loO]' <<< "$passwords" || fail "mok_password: a character that looks like another"
+[ "$(bash -c 'set -euo pipefail; . tools/install/machine.sh; mok_pw=abcdefghjk; mok_grouped')" = abcde-fghjk ] || fail "mok_grouped: not groups of 5"
+if bash -xc 'die() { echo "$*" >&2; exit 1; }; . tools/install/machine.sh; mok_password; echo "$mok_pw"' > "$t/xtrace.out" 2> "$t/xtrace.err"; then
+  fail "mok_password ran with xtrace on"
+fi
+! grep -qE '^[a-km-np-z2-9]{10}$' "$t/xtrace.out" || fail "mok_password gave a password with xtrace on"
+echo "mok_password: refuses to run with xtrace on"
+echo "mok_password: 10 characters of 32 (50 bits), lowercase letters and digits, none that looks like another; mok_grouped: abcde-fghjk"
+
 # --- install, the whole way --------------------------------------------------------------------------
 answers /dev/vda /dev/vda tpm
 before="$(disk_hash)"
@@ -430,6 +499,42 @@ grep -E '^podman .*--log-driver=none .*in-image.sh recovery-show ' "$CALLS" > /d
 tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written it down: ' || fail "the terminal did not ask for Enter after the recovery key"
 ! called 'in-image.sh recovery-check' && ! called 'in-image.sh recovery-wipe' || fail "the recovery key was checked against the disk"
 echo "install: the events in order, the disk written, the key and the fingerprint on the terminal"
+# The one-time password of the Secure Boot key: made by the script, shown once on the terminal (after the
+# import was taken, with the words that say how to type it) and cleared after Enter; mokutil got its hash
+# in a 0600 file, which is the hash of that password; the password is nowhere else.
+[ "$(mok_shown | wc -l)" = 1 ] || fail "the one-time password was not shown exactly once"
+mokpw="$(mok_shown)"
+tr -d '\r' < "$t/transcript" | grep -qF 'Type it on the blue screen without the dash, with Caps Lock off: 10 lowercase letters and digits.' \
+  || fail "the terminal does not say how to type the one-time password"
+tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written the password down: ' || fail "the terminal did not ask for Enter after the one-time password"
+cleared_after "${mokpw:0:5}-${mokpw:5}" || fail "the screen and its scroll-back were not cleared after the one-time password"
+read -r mode hash < "$MOK_SEEN"
+salt="$(cut -d'$' -f3 <<< "$hash")"
+[ "$mode" = 600 ] || fail "mokutil got its hash file with the mode $mode, not 600"
+[ "$(printf '%s\n' "$mokpw" | openssl passwd -6 -stdin -salt "$salt")" = "$hash" ] \
+  || fail "the hash file is not the SHA-512 crypt hash of the password that was shown (without the dash)"
+called '^mokutil --import .* --hash-file ' || fail "mokutil --import was not given a hash file"
+[ -z "$(mok_leaks "$mokpw")" ] || { mok_leaks "$mokpw"; fail "the one-time password is in a file, an event or the log (the files above)"; }
+! grep -qF -e "$mokpw" -e "${mokpw:0:5}-${mokpw:5}" "$CALLS" "$ENVLOG" "$PROCLOG" || fail "the one-time password is in an argument, the environment or ps"
+grep -q '^openssl passwd -6 -stdin$' "$CALLS" || fail "the hash was not made by openssl with the password on its standard input (the wrapper did not see the call)"
+[ ! -e "$t/secrets" ] || fail "the hash file of the one-time password is still there"
+echo "install: the one-time password is made by the script, shown once after the import, cleared after Enter; mokutil got its hash in a 0600 file, never the password"
+# The control: a copy that writes the one-time password to the log is found by the search.
+tree leaky_mok
+sed -i 's|^  mok_pw=""$|  echo "$mok_pw" >\&"$logfd"; mok_pw=""|' "$t/leaky_mok/tools/install/nyra-install.sh"
+grep -qF 'echo "$mok_pw" >&"$logfd"' "$t/leaky_mok/tools/install/nyra-install.sh" || fail "the leaky copy for the one-time password is not leaky"
+run leaky_mok install
+[ -n "$(mok_leaks "$(mok_shown)")" ] || fail "the control of the search for the one-time password: the leak was not found"
+echo "control: a one-time password written to the log is found by the search"
+# The same for the hash step: a copy that gives openssl the password as an argument is found, through the
+# openssl wrapper (the mokutil stand-in sees only the file, after openssl has exited).
+tree leaky_openssl
+sed -i 's#printf .%s\\n. "$mok_pw" | openssl passwd -6 -stdin > "$hash"#openssl passwd -6 "$mok_pw" > "$hash"#' "$t/leaky_openssl/tools/install/nyra-install.sh"
+grep -qF 'openssl passwd -6 "$mok_pw" > "$hash"' "$t/leaky_openssl/tools/install/nyra-install.sh" || fail "the leaky copy for openssl is not leaky"
+run leaky_openssl install
+grep -qF -e "$(mok_shown)" "$CALLS" || fail "the control of the search for the one-time password in openssl's arguments: the leak was not found"
+echo "control: a one-time password given to openssl as an argument is found by the search"
+answers /dev/vda /dev/vda tpm
 # The root partition has the type of the machine's architecture: systemd-gpt-auto in the initrd ignores
 # the other architectures' root types and the machine would never find its root. An architecture without
 # a type is refused before sfdisk runs.
@@ -517,6 +622,28 @@ answers /dev/vda /dev/vda tpm
 run ok install
 tr -d '\r' < "$t/transcript" | grep -qF 'only way in if the TPM refuses the disk.' || fail "the text for a TPM disk"
 echo "recovery key: the text says why, for a TPM and for a password"
+# The same wait for Enter after the one-time password: it stays on the screen until Enter, only an Enter
+# pressed after it goes on (not Enters typed at the recovery key's prompt), and the end of the input is a
+# failure of the Secure Boot step with the screen cleared.
+key_reply="[\"$key_prompt\", \"\"]"
+answers /dev/vda /dev/vda tpm
+replies="[$key_reply]" run_timeout=8 run ok install
+[ "$rc" = 124 ] && [ "$(mok_shown | wc -l)" = 1 ] && called '^mokutil --import ' || { cat "$t/transcript"; fail "no Enter after the one-time password: status $rc"; }
+[ "$(tail -n 1 <<< "$events")" = '{"event":"handoff","id":"mok-password"}' ] || fail "no Enter after the one-time password: the handoff ended"
+echo "one-time password: without Enter the installer stays at the prompt, the handoff open"
+answers /dev/vda /dev/vda tpm
+replies="[[\"$key_prompt\", \"\\n\\n\\n\"]]" run_timeout=8 run ok install
+[ "$rc" = 124 ] && [ "$(mok_shown | wc -l)" = 1 ] && called 'in-image.sh esp-sync' || { cat "$t/transcript"; fail "Enters typed before the one-time password skipped its prompt: status $rc"; }
+! grep -qxF '{"event":"done"}' <<< "$events" || fail "Enters typed before the one-time password: the installer went on"
+echo "one-time password: Enters typed before the prompt do not skip it"
+answers /dev/vda /dev/vda tpm
+replies="[$key_reply, [\"$mok_prompt\", null]]" run ok install
+[ "$rc" = 11 ] && [ "$(tail -n 1 <<< "$events")" = '{"event":"fail","id":"mok","disk_changed":true}' ] || fail "the end of the input at the one-time password: status $rc, $events"
+mokpw="$(mok_shown)"
+cleared_after "${mokpw:0:5}-${mokpw:5}" || fail "the end of the input: the screen was not cleared after the one-time password"
+[ -z "$(mok_leaks "$mokpw")" ] || fail "the one-time password is in a file after a stop at its prompt"
+echo "one-time password: the end of the input at the prompt is a failure of the Secure Boot step, the screen cleared"
+answers /dev/vda /dev/vda tpm
 # The terminal mode: the same, from the confirmation of the disk to the end.
 tree cli
 set_line "$t/cli/tools/install/nyra-install.sh" '  [ -b "$device" ] || die "$device is not a block device"' '  true'
@@ -534,6 +661,8 @@ cleared_after_key || fail "the terminal mode: the screen and its scroll-back wer
 text="$(tr -d '\r' < "$t/transcript")"
 [[ "${text#*"$key"}" != *"$key"* ]] || fail "the terminal mode: the key is shown twice"
 echo "terminal mode: the key is shown, Enter goes on, the screen and its scroll-back are cleared"
+[ "$(mok_shown | wc -l)" = 1 ] && cleared_after "$(mok_shown | sed 's/^\(.....\)/\1-/')" || fail "the terminal mode: the one-time password was not shown once and cleared"
+echo "terminal mode: the one-time password is shown once and cleared after Enter"
 # Three Enters typed with the answer to the confirmation wait for the prompt, as type-ahead does.
 cli_replies='[["Type its path to go on: $", "/dev/vda\n\n\n"]]'
 run_timeout=8 cli_run
@@ -790,6 +919,7 @@ jq -c '.tokens["2"] = .tokens["1"] | .keyslots["3"] = {}' "$t/luks.good" > "$t/l
 failing none protect
 cp "$t/luks.good" "$t/luks.json"
 IMPORT_RC=1 failing none mok
+[ -z "$(mok_shown)" ] || fail "a one-time password was shown although mokutil failed to import"
 # The key of the image is not the tree's.
 echo "not a certificate" > "$t/image.crt"
 failing none mok
@@ -851,10 +981,41 @@ run ok mok-import
 called '^mokutil --import ' && ! called '^podman' && ! called '^verified-pull' && ! called '^sfdisk' || fail "mok-import did more or less than the import"
 tr -d '\r' < "$t/transcript" | grep -qF "$fingerprint" || fail "mok-import: the fingerprint was not shown"
 echo "mok-import: the handoff, the import, nothing else"
+# A new password every time, shown once, with its hash given to mokutil and nowhere else.
+[ "$(mok_shown | wc -l)" = 1 ] || fail "mok-import: the one-time password was not shown exactly once"
+mokpw="$(mok_shown)"
+read -r _ hash < "$MOK_SEEN"
+[ "$(printf '%s\n' "$mokpw" | openssl passwd -6 -stdin -salt "$(cut -d'$' -f3 <<< "$hash")")" = "$hash" ] || fail "mok-import: the hash is not the one of the password that was shown"
+[ -z "$(mok_leaks "$mokpw")" ] || fail "mok-import: the one-time password is in a file, an event or the log"
+run ok mok-import
+[ "$rc" = 0 ] && [ "$(mok_shown | wc -l)" = 1 ] && [ "$(mok_shown)" != "$mokpw" ] || fail "mok-import run again: the password is not new"
+echo "mok-import: the one-time password is new each time, shown once, its hash given to mokutil, nowhere else"
+# A run that stopped before the password was written down leaves the request queued with a password
+# nobody knows. Trying again must revoke it and queue the key again with a new password, say so, and show
+# it: not "already requested" with nothing to type in MokManager.
+answers /dev/vda /dev/vda tpm
+replies="[$key_reply, [\"$mok_prompt\", null]]" run ok install
+[ "$rc" = 11 ] && [ -e "$MOK_QUEUED" ] || fail "the stop at the one-time password's prompt left no queued request: status $rc"
+lost="$(mok_shown)"
+printf 'go\n' > "$t/answers.in"
+keep_queue=1 run ok mok-import
+[ "$rc" = 0 ] || { cat "$t/transcript"; fail "mok-import after a lost password failed ($rc)"; }
+called '^mokutil --revoke-import' && called '^mokutil --import ' || fail "mok-import after a lost password did not revoke and queue the key again"
+[ "$(line '^mokutil --revoke-import')" -lt "$(line '^mokutil --import ')" ] || fail "the import came before the revoke"
+[ "$(mok_shown | wc -l)" = 1 ] && [ "$(mok_shown)" != "$lost" ] && [[ "$(mok_shown)" =~ ^[a-km-np-z2-9]{10}$ ]] || fail "no new one-time password after a lost one"
+mokpw="$(mok_shown)"
+tr -d '\r' < "$t/transcript" | grep -qF 'An earlier request to register this key was replaced: only the password below works now.' || fail "the screen does not say that the earlier request was replaced"
+read -r _ hash < "$MOK_SEEN"
+[ "$(printf '%s\n' "$mokpw" | openssl passwd -6 -stdin -salt "$(cut -d'$' -f3 <<< "$hash")")" = "$hash" ] || fail "after a lost password: the hash is not the one of the new password"
+[ -e "$MOK_QUEUED" ] || fail "the key is not queued again"
+[ -z "$(mok_leaks "$lost")" ] && [ -z "$(mok_leaks "$mokpw")" ] || fail "a one-time password is in a file after a retry"
+echo "mok-import: a request left by a run that stopped is revoked and made again with a new password, which is shown, and the screen says so"
 TESTKEY_RC=1 run ok mok-import
-[ "$rc" = 0 ] && ! called '^mokutil --import ' || fail "mok-import of a key already enrolled: $rc"
+[ "$rc" = 0 ] && ! called '^mokutil --import ' && [ -z "$(mok_shown)" ] || fail "mok-import of a key already enrolled: $rc"
+tr -d '\r' < "$t/transcript" | grep -qF 'already enrolled' || fail "mok-import of a key already enrolled: the screen does not say so"
 IMPORT_RC=1 run ok mok-import
 [ "$rc" = 10 ] && [ "$(tail -n 1 <<< "$events")" = '{"event":"fail","id":"mok","disk_changed":false}' ] || fail "mok-import that fails: $rc $events"
+[ -z "$(mok_shown)" ] || fail "mok-import that fails showed a one-time password"
 TESTKEY_RC=2 run ok mok-import
 [ "$rc" = 10 ] && [ "$(tail -n 1 <<< "$events")" = '{"event":"fail","id":"mok","disk_changed":false}' ] || fail "mok-import, mokutil --test-key fails: $rc $events"
 run badfp mok-import

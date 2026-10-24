@@ -131,8 +131,8 @@ them: that is in the log.
 | `{"event":"done"}` | the last event of a success |
 
 **Handoff.** The recovery key must be shown on the terminal (the owner presses Enter once it is
-written down), and `mokutil` asks for a
-one-time password: neither goes through the program, a pipe or the log. The script emits `handoff`,
+written down), and so must the one-time password of the Secure Boot key, which the script makes itself
+(below): neither goes through the program, a pipe or the log. The script emits `handoff`,
 and **waits for a line `go` on the answers descriptor** (anything else is a failure). The program then
 leaves the terminal in its normal mode and writes `go`; the script runs the step on `/dev/tty`, clears
 the screen and its scroll-back, and emits `handoff-end`. The process must be in the foreground process
@@ -144,6 +144,20 @@ script stops (a failure). The screen and its scroll-back are cleared as soon as 
 `handoff-end` means the owner pressed Enter, so the program waits for it and needs no result
 about the key.
 
+**The one-time password of the Secure Boot key.** The owner does not choose it and the program never
+asks for it. In the `mok-password` handoff the script makes it from the system's random numbers: 10
+characters of a 32-character alphabet (lowercase letters and digits without `0 o 1 l`: 50 bits; the
+alphabet and the length are defined once, at the top of `tools/install/machine.sh`). It gives `mokutil
+--import` the SHA-512 crypt hash of it in a file of the secrets directory (memory, mode 0600, removed at
+once), not the password, and shows the password only after `mokutil` took the import, in two groups
+with a dash (`abcde-fghij`) that is not part of it. The owner writes it down, presses Enter (the same
+wait as for the recovery key), and types it once, without the dash, in MokManager. A failed import shows
+no password. Nothing else holds it: it is in no argument, environment variable, event, log or file.
+A request that is still queued from an earlier run (the run may have stopped before the password was
+written down) is revoked with `mokutil --revoke-import` and made again with a new password, and the
+screen says so; only a key that is enrolled already (`mokutil --test-key` still says so after the
+revoke) has no password.
+
 **Exit status.** 0 success. **10: failed before the first write, the disk is as it was.** **11: failed
 after it; the disk must be installed again from the start.** 1 is a usage error. A script that dies
 without sending `fail` (killed) leaves it to the program to assume the worse: 11. `SIGTERM` and `SIGINT`
@@ -152,8 +166,8 @@ before `disk-changed` that is exit 10.
 
 **Log.** `/run/nyra-installer/install.log` (memory, mode 0600, appended to). It holds the script's
 output and its reasons for refusing. It holds no secret: none is an argument or in the environment, the
-recovery key and the password of `mokutil` are on the terminal, and `podman` runs the steps that show
-them with `--log-driver=none`.
+recovery key and the one-time password of the Secure Boot key are on the terminal, and `podman` runs the
+steps that show them with `--log-driver=none`.
 
 ## `mok-import --events-fd N --answers-fd M`
 
@@ -161,7 +175,7 @@ Requests the import of `nyra.crt` as a Machine Owner Key (for an owner who misse
 the first boot). The certificate is the tree's, not an installed disk's, and has been checked against
 docs/SIGNING.md. It reads no answers but `go`. Events: `handoff` (`mok-password`), `handoff-end`, `done`;
 or `fail` with `id` `mok` and `disk_changed` false (exit 10). A key that is already enrolled is not a
-failure; the handoff says so.
+failure; the handoff says so. Each run that requests the key makes a new one-time password.
 
 ## What is tested
 
