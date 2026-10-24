@@ -117,10 +117,16 @@ expires = 2026-11-20
 # the base image only for users who start it; nothing in the image runs it (no unit, timer or script).
 # Checked in the snapshot's source and its amd64 and arm64 binaries (2026-10-24). Metalink is not
 # built: the package does not build-depend on libmetalink and wget enables it only when found; the
-# binaries list "-metalink" in their features, link no libmetalink and have no metalink option. A
-# plain `wget URL` (HTTP or HTTPS) does not reach the other two flaws; the one in html_quote_string()
-# is reached by `wget ftp://host/dir/`, which the image turns off (htmlify = off in /etc/wgetrc,
-# docs/DEFAULTS.md; a user can turn it back on). The installer ISOs do not ship wget (checked in
+# binaries list "-metalink" in their features, link no libmetalink and have no metalink option.
+# convert_fname() (58471) runs for every file wget saves, but only an expanding --remote-encoding /
+# --local-encoding pair triggers the bug. html_quote_string() (58472) is reached by the HTML index of
+# an FTP directory and, through convert.c, by -k / --convert-links / --convert-file-only. A plain
+# download reaches the index only through a server redirect to an ftp:// directory URL (wget follows
+# redirects across schemes), and that path is closed only while htmlify is off. The image sets
+# htmlify = off in /etc/wgetrc (docs/DEFAULTS.md). Still exposed: a user who switches htmlify back
+# on (--htmlify, ~/.wgetrc, -e, --config), who skips the system rc (--no-config skips the system
+# wgetrc entirely, SYSTEM_WGETRC points wget elsewhere) or replaces /etc/wgetrc, and anyone who runs
+# -k on content from a hostile server. The installer ISOs do not ship wget (checked in
 # their package lists), so tools/sbom/mitigations-iso*.toml need no entry. Expiry allows for a
 # Debian upload. End: a fixed wget in Debian and a snapshot bump.
 
@@ -139,7 +145,7 @@ expires = 2026-11-20
 [[mitigation]]
 id = "CVE-2026-58472"
 package = "wget"
-reason = "Integer overflow and heap overflow in html_quote_string(), fixed upstream in commit dd692d9; Debian has no fixed upload yet. The size counter is a signed int, so one string of about 358 MB that needs quoting is required. wget calls the function in two places: for link conversion (--convert-links, -k, --convert-file-only), and to build the HTML index of an FTP directory (`wget ftp://host/dir/`, with the server's file names). A plain HTTP or HTTPS `wget URL` reaches neither. The image sets htmlify = off in /etc/wgetrc (docs/DEFAULTS.md), which closes the FTP index. A user who runs -k on content from a hostile server, or turns htmlify back on (--htmlify, ~/.wgetrc) for an FTP server, is exposed until the fix."
+reason = "Integer overflow and heap overflow in html_quote_string(), fixed upstream in commit dd692d9; Debian has no fixed upload yet. The size counter is a signed int, so one string that needs quoting and is hundreds of megabytes long is required. wget calls the function in two places: for link conversion (--convert-links, also -k, and --convert-file-only), and to build the HTML index of an FTP directory (`wget ftp://host/dir/`, with the server's file names). A plain HTTP or HTTPS `wget URL` reaches the FTP index only if the server redirects it to an ftp:// directory URL, which wget follows, and that path is closed only while htmlify is off. While /etc/wgetrc is the image's link, the image sets htmlify = off (docs/DEFAULTS.md). A user who runs -k on content from a hostile server, turns htmlify back on (--htmlify, ~/.wgetrc, -e, --config), skips the system rc (--no-config, SYSTEM_WGETRC) or replaces /etc/wgetrc is exposed until the fix."
 expires = 2026-11-20
 
 # libheif 1.23.6-1: the one advisory of 2026-10-05 that has no fix yet. In the image libheif (with

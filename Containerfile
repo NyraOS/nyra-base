@@ -283,10 +283,11 @@ RUN mkdir -p /etc/containers/registries.d && \
 # wget (docs/DEFAULTS.md): its settings are /usr/lib/nyra/wgetrc, linked from /etc/wgetrc, the
 # only system file wget reads. Debian's file is only comments plus passive_ftp; ours adds htmlify = off,
 # so that a directory URL on an FTP server is not turned into an HTML index. The build fails unless
-# the wget binary reads /etc/wgetrc and the last htmlify line in effect is off.
-RUN grep -aqF /etc/wgetrc /usr/bin/wget && \
+# the wget binary reads /etc/wgetrc, the file is readable with mode 644 (wget silently ignores an
+# unreadable system rc), wget has no metalink and the last htmlify line in effect is off.
+RUN grep -aqF /etc/wgetrc /usr/bin/wget && wget --version | grep -q -- -metalink && \
     ln -sfn /usr/lib/nyra/wgetrc /etc/wgetrc && \
-    test "$(readlink /etc/wgetrc)" = /usr/lib/nyra/wgetrc && test -f /usr/lib/nyra/wgetrc && \
+    test "$(readlink /etc/wgetrc)" = /usr/lib/nyra/wgetrc && test -f /usr/lib/nyra/wgetrc && test -r /etc/wgetrc && test "$(stat -L -c %a /etc/wgetrc)" = 644 && \
     test "$(grep -E '^[[:space:]]*htmlify[[:space:]]*=' /etc/wgetrc | tail -n 1 | tr -d '[:space:]')" = htmlify=off && \
     test "$(grep -Ev '^(#|[[:space:]]*$)' /etc/wgetrc | tr -d ' ' | paste -sd,)" = passive_ftp=on,htmlify=off
 
