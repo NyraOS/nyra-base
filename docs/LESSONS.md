@@ -793,6 +793,12 @@ Each line is something that broke or surprised us once.
   for cookie" (helper log) and "AUTHENTICATION FAILED". The VM test therefore starts `pkttyagent
   --process PID` as that user and lets root's `pkcheck` (needed for the details) use it. Debian's
   libpam logs "/usr/lib/pam.d is not supported" for polkit-1 and still uses that file.
+- systemd asks polkit for `manage-units` with `unit` and `verb=start` both for StartUnit and for
+  StartTransientUnit (`systemd-run`, `run0`), so a rule that matches the unit name and the verb gives
+  AUTH_SELF to `systemd-run --unit=THAT-NAME any-command`: a root command for a password. Only
+  `polkit.message` differs ("Authentication is required to start transient unit '$(unit)'."), so the rule
+  matches the plain start's text exactly (a changed text refuses the install, which the typed-password
+  VM case sees). A refusal that is `Interactive authentication required` is a challenge, not a refusal.
 - polkit counts a session as local only when it has a seat: a logind session without one
   (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
   `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual

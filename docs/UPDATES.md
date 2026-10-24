@@ -441,8 +441,11 @@ change of Secure Boot key or of the disk's TPM policy needs the steps below.
 Only `systemctl start` of exactly these unit names, by a member of `sudo` in a local, active
 session (at the machine, not over SSH), asks for a password, the administrator's own
 (`49-nyra.rules`); anyone else is refused, and so is every other start, stop or transient unit
-(`systemd-run`, `run0`) of systemd's manager, for everyone but root. A wrong password is polkit's
-usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md, "Passwords through
+(`systemd-run`, `run0`) of systemd's manager, for everyone but root. A transient unit is refused even
+when it is named `nyra-updated-install@VERSION.service`: systemd asks polkit about it with the same
+action, unit and verb as for the real unit and only the message differs, so the rule accepts the exact
+message of `systemctl start` and nothing else (a transient unit runs any command as root). A wrong
+password is polkit's usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md, "Passwords through
 polkit"), and this is the one action there that a password approves; polkit's administrator is root
 alone, so this explicit rule, not the group `sudo`, is what lets the member of `sudo` through.
 

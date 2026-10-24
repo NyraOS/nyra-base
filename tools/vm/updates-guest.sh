@@ -168,10 +168,17 @@ in_session() { # in_session USER COMMAND: COMMAND runs as USER inside the scope 
 	sh -c 'echo $$ >"/sys/fs/cgroup$1/cgroup.procs" && exec runuser -u "$2" -- sh -c "$3"' sh "$scope" "$1" "$2" </dev/null
 }
 
-polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the process $pid, asked with
-	# pkcheck as root, since only root may pass details (UNIT, VERB) to polkit: 0 yes, 1 no, 2 a
+# What systemd sends polkit as "polkit.message" for StartUnit (a unit that exists) and for StartTransientUnit
+# (systemd-run, run0), which asks with the same unit and verb (49-nyra.rules).
+start_message="Authentication is required to start '\$(unit)'."
+transient_message="Authentication is required to start transient unit '\$(unit)'."
+
+polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB [MESSAGE]]: what polkit answers for the process $pid, asked with
+	# pkcheck as root, since only root may pass details (UNIT, VERB, MESSAGE) to polkit: 0 yes, 1 no, 2 a
 	# password would be asked (nobody can answer here)
-	if [ -n "$3" ]; then
+	if [ -n "$5" ]; then
+		pkcheck --process "$pid" --action-id "$2" --detail unit "$3" --detail verb "$4" --detail polkit.message "$5"
+	elif [ -n "$3" ]; then
 		pkcheck --process "$pid" --action-id "$2" --detail unit "$3" --detail verb "$4"
 	else
 		pkcheck --process "$pid" --action-id "$2"
@@ -191,7 +198,7 @@ polkit_typed() { # polkit_typed PASSWORD: for the process $pid (of vmadmin), pkc
 	# root for the process of another user, the two differ and polkitd answers "No session for cookie" to a
 	# right password. A user's own agent (systemctl's, a desktop's) is the case that matters.
 	python3 -I -c 'import os, pty, pwd, select, subprocess, sys, time
-user, password, pid = sys.argv[1:4]
+user, password, pid, message = sys.argv[1:5]
 r, w = os.pipe()
 os.set_inheritable(w, True)
 agent, fd = pty.fork()
@@ -206,7 +213,8 @@ os.close(w)
 select.select([r], [], [], 30)  # the agent closes it once it is registered
 check = subprocess.Popen(["pkcheck", "--process", pid, "--action-id", "org.freedesktop.systemd1.manage-units",
                           "--detail", "unit", "nyra-updated-install@2026.10.600.service",
-                          "--detail", "verb", "start", "--allow-user-interaction"])
+                          "--detail", "verb", "start", "--detail", "polkit.message", message,
+                          "--allow-user-interaction"])
 end = time.time() + 60
 prompt = b""
 while True:
@@ -232,7 +240,7 @@ while True:
         prompt = b""
 os.kill(agent, 15)
 os.waitpid(agent, 0)
-sys.exit(124 if time.time() > end else check.returncode)' vmadmin "$1" "$pid"
+sys.exit(124 if time.time() > end else check.returncode)' vmadmin "$1" "$pid" "$start_message"
 	rc=$?
 	echo "polkit with a typed password: $rc"
 }
@@ -244,17 +252,23 @@ polkit_diagnose() { # what the password helper, polkitd and the PAM stack say, f
 }
 
 polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to starting the install unit
-	# and no to all else of systemd's manager (without the rule these would ask for a password)
+	# (with the message of a plain start) and no to all else of systemd's manager (without the rule these
+	# would ask for a password)
 	m=org.freedesktop.systemd1
-	polkit_ask "$1" $m.manage-units nyra-updated-install@2026.10.600.service start || return 1
+	i=nyra-updated-install@2026.10.600.service
+	polkit_ask "$1" $m.manage-units $i start "$start_message" || return 1
+	# the same unit and verb, as systemd-run and run0 ask for a new unit of that name that runs any command
+	# (the one difference is the message), or without a message: no
+	polkit_ask 1 $m.manage-units $i start "$transient_message" || return 1
+	polkit_ask 1 $m.manage-units $i start || return 1
 	for verb in stop restart try-restart reload kill; do
-		polkit_ask 1 $m.manage-units nyra-updated-install@2026.10.600.service $verb || return 1
+		polkit_ask 1 $m.manage-units $i $verb "$start_message" || return 1
 	done
 	# systemd-run asks for manage-units with the verb and unit it will start; without them the answer is
 	# still no (the rule needs both)
 	polkit_ask 1 $m.manage-units &&
-		polkit_ask 1 $m.manage-units nyra-updated-install@evil.service start &&
-		polkit_ask 1 $m.manage-units ssh.service start &&
+		polkit_ask 1 $m.manage-units nyra-updated-install@evil.service start "$start_message" &&
+		polkit_ask 1 $m.manage-units ssh.service start "$start_message" &&
 		polkit_ask 1 $m.manage-unit-files &&
 		polkit_ask 1 $m.reload-daemon &&
 		polkit_ask 1 $m.set-environment
@@ -269,7 +283,7 @@ polkit_cases() { # 49-nyra.rules: a member of sudo in a local and active session
 		session_of vmuser && polkit_user 1 && session_end &&
 		session_of vmadmin && polkit_user 2 && polkit_own_password "$pw" &&
 		no_root_command vmadmin nyra-updated-install@2026.10.601.service && session_end &&
-		pid=$$ && polkit_ask 0 org.freedesktop.systemd1.manage-units ssh.service start
+		pid=$$ && polkit_ask 0 org.freedesktop.systemd1.manage-units ssh.service start "$transient_message"
 }
 
 polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmin the install unit needs vmadmin's
@@ -350,15 +364,24 @@ not_synced() { # ntpd-rs tried for 30 s and did not set the clock
 }
 
 no_root_command() { # no_root_command USER UNIT: USER, in their session (session_of USER), can not run a command
-	# as root with systemd-run (named UNIT) or run0: polkit refuses, and nothing ran
-	in_session "$1" "timeout 60 systemd-run --unit=$2 --wait /bin/true" >/var/tmp/no-root-command 2>&1
+	# as root with systemd-run (named UNIT, a name that the rule gives a password prompt for as a unit that
+	# exists) or run0: polkit refuses at once ("Access denied", not a request for a password), and the
+	# command did not run
+	rm -f /var/tmp/ran-systemd-run /var/tmp/ran-run0
+	in_session "$1" "timeout 60 systemd-run --unit=$2 --wait /usr/bin/touch /var/tmp/ran-systemd-run" >/var/tmp/no-root-command 2>&1
 	rc=$?
 	echo "systemd-run: $rc: $(cat /var/tmp/no-root-command)"
-	[ $rc != 0 ] && grep -qiE 'denied|not authorized|authentication' /var/tmp/no-root-command || return 1
-	! systemctl is-active --quiet "$2" || return 1
+	denied_without_running /var/tmp/no-root-command /var/tmp/ran-systemd-run "$2" || return 1
 	command -v run0 >/dev/null || { echo "no run0 in the image"; return 0; }
-	in_session "$1" "timeout 60 run0 /bin/true" >/var/tmp/no-root-command 2>&1
+	in_session "$1" "timeout 60 run0 /usr/bin/touch /var/tmp/ran-run0" >/var/tmp/no-root-command 2>&1
 	rc=$?
 	echo "run0: $rc: $(cat /var/tmp/no-root-command)"
-	[ $rc != 0 ] && grep -qiE 'denied|not authorized|authentication' /var/tmp/no-root-command
+	denied_without_running /var/tmp/no-root-command /var/tmp/ran-run0
+}
+
+denied_without_running() { # denied_without_running OUTPUT MARKER [UNIT]: the last command (status rc) failed with a denial, never asked for a
+	# password, did not create MARKER, and left no unit UNIT
+	[ "$rc" != 0 ] && grep -qiE 'access denied|not authorized' "$1" &&
+		! grep -qiE 'authentication|password' "$1" && [ ! -e "$2" ] &&
+		{ [ -z "$3" ] || ! systemctl is-active --quiet "$3"; }
 }
