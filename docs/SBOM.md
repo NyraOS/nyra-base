@@ -137,6 +137,13 @@ pushing a change to `tools/sbom/`, to `mitigations.toml`, to the package list or
 whenever a pull request failed the gate, to see if a new advisory or the change is the cause. It
 needs `gh` (logged in), `podman` and the network.
 
+The `sbom` job runs only for a change confined to `tools/sbom/`. If the last image built on main used
+another `Snapshot=` than the checkout (a pull request that moved it has merged, and its build on main has
+not succeeded yet), that package list is outdated: the job runs the offline tests, skips the scan and says
+so in the job summary, because the old list would fail on advisories the new snapshot has fixed. The
+build of the change that moved `Snapshot=` scans the new package list, and so does every build on main.
+Run the local scan above against the build of that pull request instead.
+
 ```bash
 set -o pipefail         # the exit status of the scan, not of tee
 D=/var/tmp/sbom-main     # main's SBOM inputs, downloaded once and refreshed when main moves

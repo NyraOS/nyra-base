@@ -24,8 +24,8 @@
 # encryption tests (Titanic T10); encryption is the check that both passed.
 # CI runs only what a change needs (docs/LESSONS.md): the changes job runs build, install-boot and
 # encryption only when a file that can affect the image or its tests changed; a change only in
-# tools/sbom/ runs the scan against the last image built on main instead (sbom job). Skipped jobs
-# count as passed.
+# tools/sbom/ runs the scan against the last image built on main instead (sbom job; skipped when that
+# image used another Snapshot=, docs/SBOM.md). Skipped jobs count as passed.
 name: image
 on:
   push:
@@ -526,7 +526,10 @@ jobs:
 
   # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
   # branch's scanner and mitigations against the package list and Cargo.lock of the last image built
-  # on main (its nyra-base-sbom artifact), so the result is the one the next build would give.
+  # on main (its nyra-base-sbom artifact), so the result is the one the next build would give. When
+  # that image used another Snapshot= than this checkout, its package list is outdated and would
+  # fail on advisories a newer snapshot has already fixed, while the main build that would give a
+  # fresh one is waiting for this very change: the scan is then skipped (the build scans it).
   sbom:
     needs: changes
     if: needs.changes.outputs.sbom == 'true' && needs.changes.outputs.image != 'true'
@@ -547,12 +550,12 @@ jobs:
           # The SBOM artifact of the newest successful push run on main that built (never a fork's
           # branch named main); runs that skipped the build have none.
           id=""
-          for run in $(gh run list -R "$GITHUB_REPOSITORY" --workflow image.yml --branch main --event push \
-                         --status success -L 30 --json databaseId --jq '.[].databaseId'); do
+          while read -r run sha; do
             id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=nyra-base-sbom" \
               --jq '[.artifacts[] | select(.expired == false)][0].id // empty')"
             [ -z "$id" ] || break
-          done
+          done < <(gh run list -R "$GITHUB_REPOSITORY" --workflow image.yml --branch main --event push \
+                     --status success -L 30 --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
           [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::No SBOM artifact from a successful build on main"; exit 1; }
           mkdir -p dist
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/sbom.zip"
@@ -560,6 +563,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
+          # A failed fetch stops the job (no pipe): an error must not skip the scan.
+          conf="$(gh api -H "Accept: application/vnd.github.raw" "repos/$GITHUB_REPOSITORY/contents/mkosi/mkosi.conf?ref=$sha")"
+          old="$(sed -n 's/^Snapshot=//p' <<<"$conf")"
+          if [ "$old" != "$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)" ]; then
+            echo "Scan skipped: the last image built on main used Snapshot=$old, not the one of this checkout, so its package list is outdated. The offline tests passed; the build that moved Snapshot= scans the new one." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # zlib/, ntpd-rs/ and pam-totp/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock \
