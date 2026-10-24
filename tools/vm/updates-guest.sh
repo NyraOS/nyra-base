@@ -187,49 +187,66 @@ polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the
 	[ "$rc" = "$1" ]
 }
 
-polkit_typed() { # polkit_typed PASSWORD: for the process $pid, pkcheck as root asks polkit to start the install
-	# unit and allows an authentication agent (its own, on a terminal that this function makes). The agent
-	# asks for a password; PASSWORD is typed at every prompt. Prints what the agent says; sets rc to pkcheck's
-	# exit status: 0 only when polkit took the password as the proof asked for (the user's own, since root has
-	# none), never when it is wrong; 124: no end within a minute
-	python3 -I -c 'import os, pty, select, sys, time
-password, pid = sys.argv[1:3]
-argv = ["pkcheck", "--process", pid, "--action-id", "org.freedesktop.systemd1.manage-units",
-        "--detail", "unit", "nyra-updated-install@2026.10.600.service", "--detail", "verb", "start",
-        "--allow-user-interaction", "--enable-internal-agent"]
-child, fd = pty.fork()
-if child == 0:
-    os.execvp(argv[0], argv)
+polkit_typed() { # polkit_typed PASSWORD: for the process $pid (of vmadmin), pkcheck as root asks polkit to start
+	# the install unit and vmadmin's own authentication agent (pkttyagent, on a terminal that this function
+	# makes) asks for a password; PASSWORD is typed at every prompt. Prints what the agent says; sets rc to
+	# pkcheck's exit status: 0 only when polkit took the password as the proof asked for (the user's own,
+	# since root has none), never when it is wrong; 124: no end within a minute.
+	# The agent must run as the user: polkitd takes the user of the agent's subject as the one who made it,
+	# and the password helper reports the user of its caller (the agent); with pkcheck's own agent, run as
+	# root for the process of another user, the two differ and polkitd answers "No session for cookie" to a
+	# right password. A user's own agent (systemctl's, a desktop's) is the case that matters.
+	python3 -I -c 'import os, pty, pwd, select, subprocess, sys, time
+user, password, pid = sys.argv[1:4]
+r, w = os.pipe()
+os.set_inheritable(w, True)
+agent, fd = pty.fork()
+if agent == 0:
+    pw = pwd.getpwnam(user)
+    os.initgroups(user, pw.pw_gid)
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.close(r)
+    os.execvp("pkttyagent", ["pkttyagent", "--process", pid, "--notify-fd", str(w)])
+os.close(w)
+select.select([r], [], [], 30)  # the agent closes it once it is registered
+check = subprocess.Popen(["pkcheck", "--process", pid, "--action-id", "org.freedesktop.systemd1.manage-units",
+                          "--detail", "unit", "nyra-updated-install@2026.10.600.service",
+                          "--detail", "verb", "start", "--allow-user-interaction"])
 end = time.time() + 60
 prompt = b""
-while time.time() < end:
-    if not select.select([fd], [], [], 1)[0]:
+while True:
+    done = check.poll() is not None
+    if not done and time.time() > end:
+        check.kill()
+        check.wait()
+        break
+    if not select.select([fd], [], [], 0 if done else 0.2)[0]:
+        if done:
+            break
         continue
     try:
         data = os.read(fd, 4096)
     except OSError:
         break
-    if not data:
-        break
     sys.stdout.buffer.write(data)
     sys.stdout.flush()
     prompt += data
     if b"Password:" in prompt:
+        time.sleep(0.3)  # the agent clears the terminal input right after it shows the prompt
         os.write(fd, password.encode() + b"\n")
         prompt = b""
-status = 124
-for _ in range(100):
-    done, raw = os.waitpid(child, os.WNOHANG)
-    if done:
-        status = os.waitstatus_to_exitcode(raw)
-        break
-    time.sleep(0.1)
-else:
-    os.kill(child, 9)
-    os.waitpid(child, 0)
-sys.exit(status)' "$1" "$pid"
+os.kill(agent, 15)
+os.waitpid(agent, 0)
+sys.exit(124 if time.time() > end else check.returncode)' vmadmin "$1" "$pid"
 	rc=$?
 	echo "polkit with a typed password: $rc"
+}
+
+polkit_diagnose() { # what the password helper, polkitd and the PAM stack say, for a typed password that fails
+	journalctl -b --no-pager -o cat -u 'polkit-agent-helper@*' -u polkit.service -t polkit-agent-helper-1 | tail -n 40
+	systemctl status polkit-agent-helper.socket --no-pager
+	cat /etc/pam.d/polkit-1 /usr/lib/pam.d/polkit-1 2>&1
 }
 
 polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to starting the install unit
@@ -265,9 +282,15 @@ polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmi
 	# own password (AUTH_SELF): typing it gives yes. Root has no password, so a rule that asked for an
 	# administrator's (AUTH_ADMIN) could never give yes this way. A wrong one does not.
 	polkit_typed "$1"
-	[ "$rc" = 0 ] || return 1
+	[ "$rc" = 0 ] || {
+		polkit_diagnose
+		return 1
+	}
 	polkit_typed wrong-password
-	[ "$rc" = 1 ] || [ "$rc" = 3 ]
+	[ "$rc" = 1 ] || [ "$rc" = 3 ] || {
+		polkit_diagnose
+		return 1
+	}
 }
 
 untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoofed server)
