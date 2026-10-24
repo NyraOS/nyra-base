@@ -366,7 +366,15 @@ not_synced() { # ntpd-rs tried for 30 s and did not set the clock
 no_root_command() { # no_root_command USER UNIT: USER, in their session (session_of USER), can not run a command
 	# as root with systemd-run (named UNIT, a name that the rule gives a password prompt for as a unit that
 	# exists) or run0: polkit refuses at once ("Access denied", not a request for a password), and the
-	# command did not run
+	# command did not run. First the control: the real `systemctl start` of that unit name (another version)
+	# is answered with a request for authentication (no password is given: --no-ask-password), so the
+	# polkit rule gives it a password prompt, which a changed message of systemd would break, and the
+	# denial below comes from the rule and not from something else.
+	in_session "$1" "timeout 60 systemctl start --no-ask-password nyra-updated-install@2026.10.602.service" >/var/tmp/no-root-command 2>&1
+	rc=$?
+	echo "systemctl start: $rc: $(cat /var/tmp/no-root-command)"
+	[ "$rc" != 0 ] && grep -qi 'requires interactive authentication' /var/tmp/no-root-command &&
+		! systemctl is-active --quiet "nyra-updated-install@2026.10.602.service" || return 1
 	rm -f /var/tmp/ran-systemd-run /var/tmp/ran-run0
 	in_session "$1" "timeout 60 systemd-run --unit=$2 --wait /usr/bin/touch /var/tmp/ran-systemd-run" >/var/tmp/no-root-command 2>&1
 	rc=$?
