@@ -17,7 +17,7 @@ use nyra_updated::install::{check_version, install, PolicyFiles};
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
-    System, NOT_CONFIGURED,
+    System, NOT_CONFIGURED, STAGE_TIMEOUT,
 };
 use std::fs;
 use std::path::Path;
@@ -36,7 +36,7 @@ fn config() -> Result<Option<Config>, Error> {
 }
 
 /// One `install`: the argument first, then the signature policy, then the lock.
-fn install_once(version: &str) -> Result<String, Error> {
+fn install_once(version: &str, now: u64) -> Result<String, Error> {
     check_version(version)?;
     PolicyFiles::system().check()?;
     let _lock = Lock::acquire(Path::new(LOCK))?;
@@ -44,7 +44,12 @@ fn install_once(version: &str) -> Result<String, Error> {
     let store = Store {
         dir: STATE_DIR.into(),
     };
-    install(&mut Real::default(), &store, &conf, version)
+    // None: no sheet key in the image yet; install says so and goes on (docs/UPDATES.md).
+    let cfg = config()?;
+    let mut sys = Real {
+        stage_limit: cfg.as_ref().map_or(STAGE_TIMEOUT, |c| c.stage_timeout),
+    };
+    install(&mut sys, &store, &conf, cfg.as_ref(), now, version)
 }
 
 /// One update check, with the lock held (`run`).
@@ -144,7 +149,7 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
             set_channel(&store, channel)?;
             Ok((6, true, format!("this machine follows channel {channel}")))
         }
-        ("install", Some(version)) => install_once(version).map(|m| (6, true, m)),
+        ("install", Some(version)) => install_once(version, now).map(|m| (6, true, m)),
         _ => Err(Error::Config(
             "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME|install VERSION"
                 .into(),

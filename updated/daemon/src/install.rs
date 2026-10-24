@@ -8,10 +8,17 @@
 //! The guarantee is the signature policy, as for a manual `bootc switch` (`docs/UPDATES.md`,
 //! "Moving a machine to updates.nyraos.com"): [`PolicyFiles::check`] refuses to start the pull
 //! unless the policy is the shipped one. The version must be newer than the booted one (no
-//! downgrade), and what bootc staged must be that version and not retracted or failed. Staging
-//! and the copy of `/etc` are [`System::stage`], as in a check. Nothing reboots.
+//! downgrade), and what bootc staged must be that version and not retracted or failed. When the
+//! image has a sheet key, the channel sheet is fetched and verified first, as a check does, and a
+//! version it retracts is refused; without a key, updates are not configured and the sheet is not
+//! consulted. Staging and the copy of `/etc` are [`System::stage`], as in a check. Nothing
+//! reboots.
 
-use crate::{compare_versions, io, is_repository, Error, Status, Store, System, HOST};
+use crate::{
+    compare_versions, io, is_repository, payload_sha256, Accepted, Config, Deployment, Error,
+    State, Status, Store, System, HOST, NOT_CONFIGURED,
+};
+use nyra_channel_sheet::verify;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::fs;
@@ -188,26 +195,10 @@ fn check_newer(status: &Status, version: &str, floor: &str) -> Result<(), Error>
     Ok(())
 }
 
-/// Stages `version` of the image's repository. `conf` is `updated.conf`. The caller has checked
-/// the signature policy ([`PolicyFiles::check`]) and holds the update lock.
-pub fn install(
-    sys: &mut impl System,
-    store: &Store,
-    conf: &str,
-    version: &str,
-) -> Result<String, Error> {
-    check_version(version)?;
-    let (repository, floor) = image_conf(conf)?;
-    check_newer(&sys.status()?, version, &floor)?;
-    let mut state = store.load()?;
-    sys.stage(&image_ref(&repository, version))?;
-    let staged = sys
-        .status()?
-        .staged
-        .ok_or_else(|| Error::Config("bootc staged nothing".into()))?;
-    // The tag decides what bootc pulled: what it says must be what was asked for, and not a
-    // version this machine knows to be bad (rules 3-5). Otherwise it never boots (rule 7).
-    let refusal = if state.retracted.contains(&staged.digest) {
+/// What bootc staged must be the version asked for (the tag decides what it pulled), and not a
+/// version this machine knows to be bad (rules 3-5). Otherwise it never boots (rule 7).
+fn staged_refusal(staged: &Deployment, state: &State, version: &str) -> Option<Error> {
+    if state.retracted.contains(&staged.digest) {
         Some(Error::Retracted(staged.digest.clone()))
     } else if state.failed.contains(&staged.digest) {
         Some(Error::Failed(staged.digest.clone()))
@@ -218,8 +209,84 @@ pub fn install(
         )))
     } else {
         None
+    }
+}
+
+/// Rule 2, as a check does it: fetch the channel sheet this machine follows, verify it, and keep
+/// its sequence and retractions before anything acts on it. A sheet that cannot be fetched or
+/// verified is a refusal: the retractions would be unknown. The sheet names retractions by digest,
+/// which the tag only reveals once pulled: a retracted one is discarded when staged
+/// ([`staged_refusal`]). (`verify` already refuses a sheet that serves a retracted version.)
+fn check_sheet(
+    sys: &mut impl System,
+    state: &mut State,
+    cfg: &Config,
+    now: u64,
+) -> Result<(), Error> {
+    let channel = state.channel.clone().unwrap_or_else(|| cfg.channel.clone());
+    let cfg = Config {
+        channel,
+        ..cfg.clone()
     };
-    if let Some(e) = refusal {
+    let envelope = sys.fetch_sheet(&cfg.sheet_url())?;
+    let key = cfg.sheet_key();
+    let last = state.sheets.get(&key).cloned();
+    let sheet = verify(
+        &envelope,
+        &cfg.keys,
+        &cfg.repository,
+        &cfg.channel,
+        now,
+        last.as_ref().map(|a| a.sequence),
+    )?;
+    let hash = payload_sha256(&envelope)?;
+    if let Some(a) = &last {
+        if a.sequence == sheet.sequence && a.payload_sha256 != hash {
+            return Err(Error::SameSequenceDifferentSheet(sheet.sequence));
+        }
+    }
+    state.sheets.insert(
+        key,
+        Accepted {
+            sequence: sheet.sequence,
+            payload_sha256: hash,
+        },
+    );
+    state.retracted.extend(sheet.retracted.iter().cloned());
+    Ok(())
+}
+
+/// Stages `version` of the image's repository. `conf` is `updated.conf`. `cfg`: the same file with
+/// the sheet keys, or `None` while the image has no key yet (updates are not configured): the
+/// sheet is not consulted then, and the signature policy is the only guarantee. The caller has
+/// checked the signature policy ([`PolicyFiles::check`]) and holds the update lock.
+pub fn install(
+    sys: &mut impl System,
+    store: &Store,
+    conf: &str,
+    cfg: Option<&Config>,
+    now: u64,
+    version: &str,
+) -> Result<String, Error> {
+    check_version(version)?;
+    let (repository, floor) = image_conf(conf)?;
+    check_newer(&sys.status()?, version, &floor)?;
+    let mut state = store.load()?;
+    match cfg {
+        Some(cfg) => {
+            // The retractions are kept even when this refuses (rule 2).
+            let checked = check_sheet(sys, &mut state, cfg, now);
+            store.save(&state)?;
+            checked?;
+        }
+        None => eprintln!("<4>nyra-updated: {NOT_CONFIGURED}; the channel sheet is not consulted"),
+    }
+    sys.stage(&image_ref(&repository, version))?;
+    let staged = sys
+        .status()?
+        .staged
+        .ok_or_else(|| Error::Config("bootc staged nothing".into()))?;
+    if let Some(e) = staged_refusal(&staged, &state, version) {
         sys.discard_staged(&staged.digest)?;
         return Err(e);
     }

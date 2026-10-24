@@ -102,7 +102,7 @@ install_refused() { # install_refused VERSION PATTERN: nyra-updated install fail
 	[ $rc != 0 ] && printf '%s' "$out" | grep -q -- "$2"
 }
 
-polkit_start() { # polkit_start USER UNIT ANSWER: what polkit answers USER who starts UNIT (pkcheck: 0 yes, 1 no, 2 a password would be asked)
+polkit_start() { # polkit_start USER UNIT ANSWER: what polkit answers a process of USER that starts UNIT (pkcheck: 0 yes, 1 no, 2 a password would be asked)
 	runuser -u "$1" -- sh -c 'pkcheck --action-id org.freedesktop.systemd1.manage-units --detail unit "$1" --detail verb start --process "$$"' sh "$2"
 	rc=$?
 	echo "polkit: $1 starts $2: $rc"
@@ -169,4 +169,17 @@ not_synced() { # ntpd-rs tried for 30 s and did not set the clock
 	ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status
 	journalctl -b -u ntpd-rs -o short-monotonic --no-pager | tail -20
 	systemctl is-active ntpd-rs.service && ! journalctl -b -u ntpd-rs -o cat --no-pager | grep -F 'Jumped offset'
+}
+
+no_root_command() { # no_root_command USER UNIT: USER can not run a command as root with systemd-run (named UNIT) or run0
+	out="$(timeout 60 runuser -u "$1" -- systemd-run --unit="$2" --wait /bin/true 2>&1)"
+	rc=$?
+	echo "systemd-run: $rc: $out"
+	[ $rc != 0 ] || return 1
+	! systemctl is-active --quiet "$2" || return 1
+	command -v run0 >/dev/null || { echo "no run0 in the image"; return 0; }
+	out="$(timeout 60 runuser -u "$1" -- run0 /bin/true 2>&1)"
+	rc=$?
+	echo "run0: $rc: $out"
+	[ $rc != 0 ]
 }

@@ -2604,7 +2604,11 @@ mod install_tests {
     }
 
     fn installed(fake: &mut Fake, dir: &TempDir, conf: &str, v: &str) -> Result<String, Error> {
-        install(fake, &dir.store(), conf, v)
+        install(fake, &dir.store(), conf, None, NOW, v)
+    }
+
+    fn installed_with_sheet(fake: &mut Fake, dir: &TempDir, v: &str) -> Result<String, Error> {
+        install(fake, &dir.store(), CONF, Some(&config()), NOW, v)
     }
 
     #[test]
@@ -2709,6 +2713,49 @@ mod install_tests {
             }
             assert_eq!(fake.discarded.as_deref(), Some(B));
         }
+    }
+
+    #[test]
+    fn with_a_sheet_key_the_sheet_decides_and_without_one_the_policy_alone() {
+        // A key, and a good sheet that retracts nothing that matters: staged, the fetch first.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        fake.stage_digest = Some(B.into());
+        installed_with_sheet(&mut fake, &dir, "2026.10.2").unwrap();
+        assert_eq!(fake.calls.len(), 2, "{:?}", fake.calls);
+        assert_eq!(fake.calls[0], format!("fetch {SHEET_URL}"));
+        assert_eq!(dir.store().load().unwrap().sheets.len(), 1);
+
+        // A key, and no sheet (the server down, the network away), or one signed by another key:
+        // refused before anything is pulled.
+        for broken in [true, false] {
+            let dir = TempDir::new();
+            let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+            if broken {
+                fake.fetch_error = Some(Error::Command("curl failed".into()));
+            } else {
+                fake.sheet = b"not a sheet".to_vec();
+            }
+            assert!(installed_with_sheet(&mut fake, &dir, "2026.10.2").is_err());
+            assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
+        }
+
+        // A key, and the sheet retracts the digest the tag turns out to have: pulled, discarded,
+        // and the retraction is remembered.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, C, &[B]));
+        fake.stage_digest = Some(B.into());
+        let e = installed_with_sheet(&mut fake, &dir, "2026.10.2").unwrap_err();
+        assert_eq!(e, Error::Retracted(B.into()));
+        assert_eq!(fake.discarded.as_deref(), Some(B));
+        assert!(dir.store().load().unwrap().retracted.contains(B));
+
+        // No key in the image (updates not configured): no sheet is fetched, the version is staged.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[B]));
+        fake.stage_digest = Some(B.into());
+        installed(&mut fake, &dir, CONF, "2026.10.2").unwrap();
+        assert_eq!(fake.calls, ["stage updates.nyraos.com/nyra-base:2026.10.2"]);
     }
 
     /// A tree like an installed system's: the shipped file and the link to it in `etc`.

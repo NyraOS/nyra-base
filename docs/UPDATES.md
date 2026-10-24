@@ -418,7 +418,12 @@ reboot stays the user's choice.
   the policy must name one real signer for `updates.nyraos.com` (not the placeholder of an image built
   before the address was committed), and no per-user policy or `CONTAINERS_POLICY_JSON` may exist;
 - a version that is not newer than the running one (numbers compared one by one), or below the
-  image's version floor.
+  image's version floor;
+- a channel sheet that cannot be fetched or verified, when the image has a sheet key (the fetch and
+  the verification of a check; its sequence and retractions are kept as a check keeps them). The
+  sheet retracts by digest, which a tag only shows once pulled: a retracted version is discarded as
+  soon as it is staged. Without a sheet key in the image (updates not configured) the sheet is not
+  consulted and a warning is logged; the signature policy is then the only guarantee.
 
 It pulls `updates.nyraos.com/<repository>:<version>` and nothing else (the image's repository from
 `updated.conf`: `nyra-base`, or `nyra-base-arm64`), under the update lock, with a copy of `/etc`
@@ -428,10 +433,11 @@ discarded. Like a staged version of a check, it is remembered, so that a fallbac
 The signature policy is the guarantee, as for the manual switch below; a tag carries no digest
 to compare. A change of Secure Boot key or of the disk's TPM policy needs the steps below.
 
-Only `systemctl start` of exactly these unit names, by a member of `sudo`, asks for a password
+Only `systemctl start` of exactly these unit names, by a member of `sudo` in a local, active
+session (at the machine, not over SSH), asks for a password, the administrator's own
 (`49-nyra.rules`); anyone else is refused, and so is every other start, stop or transient unit
-(`systemd-run`) of systemd's manager, for everyone but root. A wrong password is polkit's usual
-denial. polkit's password helper is off in the image for now (docs/DEFAULTS.md, "Passwords through
+(`systemd-run`, `run0`) of systemd's manager, for everyone but root. A wrong password is polkit's
+usual denial. polkit's password helper is off in the image for now (docs/DEFAULTS.md, "Passwords through
 polkit"), so until it is turned on the question is refused and the command works only for root.
 
 ## Moving a machine to updates.nyraos.com

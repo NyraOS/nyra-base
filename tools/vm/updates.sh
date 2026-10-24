@@ -17,8 +17,8 @@
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
 #   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; `nyra-updated install` refuses a bad argument and the
-#      stand-in policy, and polkit's answers for the install unit (a sudo member: password; anyone else, another
-#      unit: no); switch to v0 from another registry
+#      stand-in policy, and polkit's answers for the install unit (outside a local active session, even a
+#      sudo member gets no; another unit, systemd-run and run0: no); switch to v0 from another registry
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
 #   3  v1: a sheet signed with another key refused; power cut while v2 downloads (throttled link)
 #   4  v1: v2 staged again; power cut before the staged version is finalized
@@ -348,7 +348,7 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   --command "$lib; running && systemctl is-active boot-complete.target && systemctl is-active nyra-health-system.service && systemctl is-active nyra-updated.timer" \
   --command 'systemd-analyze security --no-pager nyra-updated.service | tail -1; /usr/libexec/nyra-updated check-config' \
   --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version'" \
-  --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_start vmadmin nyra-updated-install@2026.10.600.service 2 && polkit_start vmuser nyra-updated-install@2026.10.600.service 1 && polkit_start vmadmin nyra-updated-install@evil.service 1 && polkit_start vmadmin ssh.service 1 && polkit_start root ssh.service 0" \
+  --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_start vmadmin nyra-updated-install@2026.10.600.service 1 && no_root_command vmadmin nyra-updated-install@2026.10.601.service && polkit_start vmuser nyra-updated-install@2026.10.600.service 1 && polkit_start vmadmin nyra-updated-install@evil.service 1 && polkit_start vmadmin ssh.service 1 && polkit_start root ssh.service 0" \
   --command 'bootc status --format json' \
   --command "$lib; run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \
