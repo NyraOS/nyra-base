@@ -33,6 +33,8 @@ set -euo pipefail
 
 image="$1" work="$2/encryption" logs="$3" summary="$4"
 mkdir -p "$work"
+# x86_64 only (image.yml): the root partition type asserted below is the x86-64 one; tools/install/lib.sh
+# (root_type) gives aarch64 disks theirs, which tools/vm/arm64-display.sh checks.
 secrets="$work/secrets"
 mkdir -m 0700 "$secrets"
 trap 'sudo rm -rf "$secrets" "$work/disk.raw" "$work/header" "$work/header.json" "$work/disk-noroot.raw"' EXIT

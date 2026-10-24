@@ -87,7 +87,7 @@ EOF2
 cat > "$t/bin/sfdisk" << 'EOF2'
 #!/bin/sh
 echo "sfdisk $*" >> "$CALLS"
-cat > /dev/null
+cat > "$DISKFILE.sfdisk"
 { tr '\0' ' ' < "/proc/$PPID/cmdline"; echo; tr '\0' '\n' < "/proc/$PPID/environ"; ps -eww -o args=; } >> "$PROCLOG"
 dd if=/dev/zero of="$DISKFILE" bs=1k count=1 conv=notrunc status=none
 EOF2
@@ -430,6 +430,21 @@ grep -E '^podman .*--log-driver=none .*in-image.sh recovery-show ' "$CALLS" > /d
 tr -d '\r' < "$t/transcript" | grep -qF 'Press Enter when you have written it down: ' || fail "the terminal did not ask for Enter after the recovery key"
 ! called 'in-image.sh recovery-check' && ! called 'in-image.sh recovery-wipe' || fail "the recovery key was checked against the disk"
 echo "install: the events in order, the disk written, the key and the fingerprint on the terminal"
+# The root partition has the type of the machine's architecture: systemd-gpt-auto in the initrd ignores
+# the other architectures' root types and the machine would never find its root. An architecture without
+# a type is refused before sfdisk runs.
+x86_root=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+arm_root=B921B045-1DF0-41C3-AF44-4C6F280D3FAE
+grep -qF "type=$x86_root" "$DISKFILE.sfdisk" && ! grep -qF "$arm_root" "$DISKFILE.sfdisk" || fail "the installation on x86_64 did not partition with the x86-64 root type"
+partitions() { # partitions ARCH: what partition_disk gives sfdisk on that architecture
+  rm -f "$DISKFILE.sfdisk"
+  (PATH="$t/bin:$PATH" FAKE_ARCH="$1" CALLS=/dev/null bash -c '. tools/install/lib.sh; partition_disk "$1"' _ "$DISKFILE")
+}
+partitions aarch64 || fail "partition_disk failed on aarch64"
+grep -qF "type=$arm_root" "$DISKFILE.sfdisk" && ! grep -qF "$x86_root" "$DISKFILE.sfdisk" || fail "on aarch64 the root partition does not have the aarch64 type"
+if partitions riscv64 2> "$t/riscv.err"; then fail "partition_disk took an architecture without a root type"; fi
+[ ! -e "$DISKFILE.sfdisk" ] && grep -qF 'riscv64' "$t/riscv.err" || fail "an unknown architecture reached sfdisk or was refused without saying which"
+echo "partition_disk: the root partition has the x86-64 or the aarch64 type by architecture, any other is refused before the disk is touched"
 # What must not hold the recovery key or a password.
 if grep -rlF "$key" "$t" --exclude=transcript --exclude=key.txt --exclude=answers.in --exclude=answers --exclude=test-*.sh 2> /dev/null | grep .; then
   fail "the recovery key is in a file, event or log (the files above)"

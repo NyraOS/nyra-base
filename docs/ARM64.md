@@ -89,6 +89,30 @@ With KVM, boot counting across real updates also runs (`tools/vm/boot-counting.s
 never gets healthy falls back after three tries, a healthy one is blessed). Emulated, its boots
 would not fit the timeouts made for KVM, so it does not run.
 
+## The screen (`display` job, `tools/vm/arm64-display.sh`)
+
+Every other test reads the serial console. A person's virtual machine (UTM on Apple Silicon) has a
+display and a USB keyboard instead, and its disk password is asked on the screen. The `display` job
+installs the image on an encrypted disk with a password, the way the installer does, and boots it in a
+machine made like UTM's: QEMU's `virt` machine with Secure Boot, a virtio GPU, a USB keyboard on an xHCI
+controller, a virtio console and a serial port, and no test console add-on (the sealed command line as
+it is). `tools/vm/screen-boot.py` saves the screen every 15 s (QMP `screendump`, PNG files in the artifact
+`arm64-screen`), reads it with tesseract, types the password on the keyboard (QMP `send-key`) when the
+prompt is on the screen, and presses the power button until the guest powers itself off, which only a
+system that is up does. It passes when the prompt was on the screen, the password was typed after that,
+a login prompt was read from the screen, and QEMU ended by itself with status 0 after the power button.
+A password typed blind (`--blind-after`, when no prompt was read) only tells a dead screen from a disk that
+does not unlock; it never passes, and its screens are neither kept nor printed.
+The installer's partitioning must give the root partition the aarch64 type (the job checks it): with
+the x86-64 type the initrd never finds the root, `nyra-root-wait.service` ends the wait after 90 s and
+the machine restarts. The prompt must be on the screen, which a virtual GPU shows only once its driver
+is loaded: the initrd carries `virtio_gpu`, `bochs`, `qxl`, `vmwgfx` and `hyperv_drm` with their helpers
+(`add_drivers` in the Containerfile), and the build fails if one is missing. They make the initramfs
+of both architectures grow by about the same, estimated at well under 1 MB from the size of Debian's
+modules; the job prints the real sizes of the UKI and its initramfs in its
+summary. The kernel's own `efifb` shows the prompt on a real PC; the firmware's display of a virtio GPU on aarch64 is
+not a framebuffer it can use.
+
 ## What differs from x86_64
 
 | | x86_64 | aarch64 |
@@ -100,7 +124,7 @@ would not fit the timeouts made for KVM, so it does not run.
 | Test firmware | OVMF, Secure Boot variables protected by SMM | AAVMF; ARM has no SMM, so in a VM the guest can write the variable store (a limit of the test machine, not of the image) |
 | Serial console in the tests | `ttyS0`, no kernel messages without `console=` | `ttyAMA0`; the kernel finds it by itself (ACPI SPCR), so its messages show up on it |
 | TPM in the tests | `tpm-crb` | none: QEMU's `virt` machine has only TIS TPMs (`tpm-tis-device`, `tpm-tis-i2c`), and Debian's arm64 kernel has neither driver (its only built-in TPM driver is CRB) |
-| Root partition type | `4f68bce3-e8cd-4db1-96e7-fbcaf984b709` | `b921b045-1df0-41c3-af44-4c6f280d3fae` (bootc and systemd pick the right one) |
+| Root partition type | `4f68bce3-e8cd-4db1-96e7-fbcaf984b709` | `b921b045-1df0-41c3-af44-4c6f280d3fae` (bootc and systemd pick the right one; the installer's `root_type` in `tools/install/lib.sh` by `uname -m`: the initrd ignores the other architecture's type and never finds the root) |
 
 `tools/vm/vm-boot.py`, `tools/vm/test-addon.sh` and `ci/pinned-images.sh` choose by the runner's
 architecture; the x86_64 path is unchanged.
