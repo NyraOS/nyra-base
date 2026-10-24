@@ -103,8 +103,11 @@ It asks for confirmation (type the device path), then:
 - enrolls the TPM, removes the key of the installation, checks the LUKS header (the recovery key and
   one TPM2 enrollment, no other key slot), clears the screen;
 - shows the full fingerprint of the certificate it takes from the image, and checks that it is the one
-  of docs/SIGNING.md. **Compare it with your notes.** Then it runs `mokutil --import`: type a
-  one-time password at mokutil's prompt (MokManager uses a US keyboard layout).
+  of docs/SIGNING.md. **Compare it with your notes.** Then it runs `mokutil --import` with a
+  one-time password that it makes (10 lowercase letters and digits), shows once in two groups
+  (`abcde-fghij`) and waits for Enter. Write it down; you type it once, without the dash, in
+  MokManager, which uses a US keyboard layout. It is in no file and no log, and the screen and its
+  scroll-back are cleared when you press Enter.
 
 If it fails after it began to write to the disk, the disk must be installed again from the start;
 there is no way to continue.
@@ -112,7 +115,7 @@ there is no way to continue.
 **6. Go straight to the first boot.** Until the first Nyra boot, the TPM enrollment has no policy and
 opens the disk from any system booted in that VM; the disk holds no user data yet, but keep that window
 short. Detach the ISO and reboot. MokManager (a blue screen) comes first: *Enroll MOK*, *View key*
-(compare the certificate with your notes), *Continue*, *Yes*, the one-time password, reboot. The next
+(compare the certificate with your notes), *Continue*, *Yes*, the one-time password (without the dash), reboot. The next
 boot is the first boot: it unlocks the disk with the temporary enrollment and replaces it with the
 real one. Never turn Secure Boot off: the TPM unlock depends on it.
 
@@ -165,7 +168,7 @@ maker; that is for whatever ships it (the ISO) to see to, the scripts cannot.
 
 A program can drive `nyra-install.sh` from a release tree instead of a person: `check`, `disks`,
 `install` and `mok-import` take the version and the digest from `RELEASE`, answer in JSON and hand the
-terminal over for the recovery key and the password of `mokutil` (docs/INSTALL-INTERFACE.md). It is
+terminal over for the recovery key and the one-time password of the Secure Boot key (docs/INSTALL-INTERFACE.md). It is
 the same steps and the same refusals. It also leaves the first administrator for the first boot, with
 the fixed defaults (docs/BOOT.md, "The first administrator and the fixed defaults"); the terminal mode
 makes no account, and leaves no way to log in but recovery.

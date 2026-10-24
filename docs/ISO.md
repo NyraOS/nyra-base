@@ -204,8 +204,9 @@ the ISO, by the keys a person presses, and boots what it installed:
    disk (`vda`), the encryption (password: typed twice), the administrator (name and password twice), the
    review (the disk name typed to confirm), the installation, and then the two handoffs: the recovery key,
    read from the console, with Enter pressed at the prompt (nothing is typed back), and the
-   one-time password of the Secure Boot key,
-   typed twice at `mokutil`'s prompts. It ends on "8 of 8 Done".
+   one-time password of the Secure Boot key, which the script makes: it is read from the console,
+   checked (10 characters of the alphabet, shown once) and Enter is pressed at the prompt; nothing is
+   typed. It ends on "8 of 8 Done".
 3. It checks that the recovery key was on the console once, that no password was echoed, and that the
    Machine Owner Key was **requested**: the firmware variable `MokNew` holds the Nyra certificate.
 4. `tools/iso/installed-test.sh` boots the installed disk with Secure Boot on: the disk unlocks (the password
@@ -223,7 +224,9 @@ credential import on on the disk's EFI partition, and `vm-boot.py` passes the co
 credentials. The add-on is signed with a key made for the run; that key and the image's certificate are
 enrolled as Machine Owner Keys in a copy of the firmware variables, which stands in for MokManager. That
 step is not the installer's: the screen of MokManager, and the installer's request, are checked as far as
-CI can (`MokNew`).
+CI can (`MokNew`). The one-time password is shown by the installer and typed nowhere in CI: that the hash
+given to `mokutil` is the one of the password shown is checked offline (`tools/install/test-machine-interface.sh`),
+not in the VM.
 
 **The recovery key and the QR code.** `systemd-cryptenroll --recovery-key` draws a QR code with block
 characters and prints the key as text next to it: on the Linux console and on a serial console the text is
@@ -309,7 +312,7 @@ is not a release.
 4. **Start it.** The installer appears in the window (about a minute or more). With a "Serial" device added in
    the VM's settings, it appears there too (`ttyAMA0`, `docs/ISO.md` "aarch64"); one installation runs at a
    time. The keyboard is US. Click the window so that it gets the keys. There is no login.
-5. **Install.** Follow the screens (`docs/INSTALL.md`). It ends by asking for a one-time password for the
+5. **Install.** Follow the screens (`docs/INSTALL.md`). It ends by showing a one-time password for the
    Machine Owner Key and telling you to restart.
 6. **Remove the ISO.** In UTM, the CD/DVD drive's menu, "Eject" (**UNVERIFIED** label; or "Clear" in the drive
    settings with the machine off). Restart the VM.

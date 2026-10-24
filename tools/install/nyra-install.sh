@@ -31,8 +31,8 @@
 #      written, the password as key slot 1 (password-add, from a file of $secrets that is deleted at
 #      once), and in the end wipe-install-slot instead of the TPM enrollment (docs/BOOT.md, "Disk
 #      encryption");
-#   4. imports the Nyra certificate as a Machine Owner Key (the owner confirms it in MokManager at
-#      the next boot).
+#   4. imports the Nyra certificate as a Machine Owner Key, with a one-time password that this script
+#      makes and shows once (the owner types it in MokManager at the next boot).
 # After a failure past the point where the disk is changed, the disk must be installed again from the
 # start: there is no way to continue.
 #
@@ -42,7 +42,7 @@
 #   nyra-install.sh install --events-fd N --answers-fd M             events and answers as JSON lines
 #   nyra-install.sh mok-import --events-fd N --answers-fd M          the same, for the Secure Boot key
 # The steps are the same; what differs is where the questions are answered and where the recovery key
-# and the one-time password of mokutil go (docs/INSTALL-INTERFACE.md).
+# and the one-time password of the Secure Boot key go (docs/INSTALL-INTERFACE.md).
 set -euo pipefail
 
 # Where die writes: stderr, or the log once the machine interface has one.
@@ -107,9 +107,10 @@ cleanup() {
 
 # mok_enroll: shows the fingerprint (mok_fingerprint has checked it) and requests the import of the
 # certificate in $cert as a Machine Owner Key: DER in $der. The terminal mode asks to be sure first; the
-# machine interface has had the owner's yes on the screen of the installer.
+# machine interface has had the owner's yes on the screen of the installer. The one-time password is
+# made here and shown once, after mokutil has taken it (mok_show).
 mok_enroll() {
-  local rc=0
+  local rc=0 hash="$secrets/mok-password-hash"
   echo "The Nyra certificate, SHA-256 fingerprint:"
   echo "  $fingerprint"
   echo "It is the one of docs/SIGNING.md. Compare it with your own notes (docs/INSTALL.md) before going on."
@@ -120,12 +121,44 @@ mok_enroll() {
   mokutil --test-key "$der" > /dev/null || rc=$?
   case "$rc" in
     0)
-      # mokutil asks for the one-time password itself: never as an argument.
-      mokutil --import "$der" || die "mokutil --import failed. The disk is installed: run it again (docs/INSTALL.md)"
+      # mokutil gets the hash of the password in a file of $secrets (memory, only root): never the
+      # password, and never as an argument. The hash is what the firmware keeps until the first boot.
+      mok_password
+      ( umask 077; printf '%s\n' "$mok_pw" | openssl passwd -6 -stdin > "$hash" ) || die "cannot make the hash of the one-time password"
+      mokutil --import "$der" --hash-file "$hash" || die "mokutil --import failed. The disk is installed: run it again (docs/INSTALL.md)"
+      rm -f "$hash"
+      mok_show
       ;;
     1) echo "The key is already enrolled or its enrollment is already requested." ;;
     *) die "mokutil --test-key failed (exit $rc). The disk is installed: run it again (docs/INSTALL.md)" ;;
   esac
+}
+
+# press_enter PROMPT: waits for an Enter pressed after the prompt. Enters typed before it (a key held
+# down, type-ahead) are thrown away first, so that only an Enter pressed after what is on the screen goes
+# on; at the end of the input (Ctrl-D, a closed terminal) the read fails and the script stops. The screen
+# and its scroll-back are cleared as soon as Enter is pressed.
+press_enter() {
+  while IFS= read -r -s -t 0.3 -n 4096 _ < /dev/tty 2> /dev/null; do :; done
+  read -r -p "$1" _
+  printf '\033[H\033[2J\033[3J'
+}
+
+# mok_show: the one-time password of the Secure Boot key is shown on the terminal only, written nowhere,
+# like the recovery key (key_on_screen is set while it may be on the screen). The owner writes it down and
+# types it once, on the blue screen of the next boot, without the dash.
+mok_show() {
+  key_on_screen=1
+  echo
+  echo "The one-time password for the blue screen after the restart:"
+  echo
+  echo "    $(mok_grouped)"
+  echo
+  echo "Write it down now, on paper. It is shown only once."
+  echo "Type it on the blue screen without the dash: $mok_length lowercase letters and digits."
+  mok_pw=""
+  press_enter "Press Enter when you have written the password down: "
+  key_on_screen=""
 }
 
 # recovery_key: the recovery key is shown on the terminal only (the container has no log:
@@ -144,9 +177,7 @@ recovery_key() {
   echo
   echo "Write the recovery key down now, on paper: it is the only way in if $why."
   echo "It is shown only once, and nothing checks what you wrote."
-  while IFS= read -r -s -t 0.3 -n 4096 _ < /dev/tty 2> /dev/null; do :; done
-  read -r -p "Press Enter when you have written it down: " _
-  printf '\033[H\033[2J\033[3J'
+  press_enter "Press Enter when you have written it down: "
   key_on_screen=""
 }
 
