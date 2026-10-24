@@ -2325,7 +2325,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The installer ISO, used: the keys of the installer's eight screens on an empty virtual disk (QEMU, UEFI,
+  # The installer ISO, used: the keys of the installer's seven screens on an empty virtual disk (QEMU, UEFI,
   # Secure Boot, swtpm), the disk unlocked by a password or by the TPM, then the installed system booted
   # (tools/iso/install-test.py, tools/iso/installed-test.sh, docs/ISO.md). No secret, no id-token. It uses
   # the ISO of the iso job (an artifact checked against the hash that job reported) and, to build the test
