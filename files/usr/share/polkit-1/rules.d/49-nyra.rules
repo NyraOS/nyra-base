@@ -4,13 +4,18 @@
 // rule that answers wins: this file comes before Debian's 50-default.rules, and an administrator's
 // file with a lower number in /etc comes before it.
 
-// The administrators whose password an "admin" prompt asks for: the group sudo, as Debian's
-// 50-default.rules says, named here so that Nyra decides it.
+// The administrators whose password an "admin" prompt asks for: root only. Root has no password, so
+// no action that polkit answers with auth_admin can be approved by a password: an administrator's
+// password is not root. polkit-agent-helper.socket is on (docs/DEFAULTS.md, "Passwords through
+// polkit"), and with the group sudo here every auth_admin action of the image (udisks2 reading
+// secrets or opening devices, systemd-cryptenroll, decrypting credentials, ...) would be root for
+// any member of it. What an administrator may do comes later as explicit rules, one action each.
 polkit.addAdminRule(function(action, subject) {
-    return ["unix-group:sudo"];
+    return ["unix-user:0"];
 });
 
-// Only with an administrator's password, although udisks2 allows them to any active local session:
+// Only for an administrator, although udisks2 allows them to any active local session. The
+// administrator is root (above), so for now nobody approves them with a password:
 // - loop-setup: attaching a file as a loop device makes the kernel read a file system that the
 //   user built;
 // - modify-device: changing a removable disk (its label, formatting, partitions). libblockdev passes

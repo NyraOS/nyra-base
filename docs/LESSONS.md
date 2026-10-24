@@ -766,7 +766,7 @@ Each line is something that broke or surprised us once.
   link to a writable place (`/run/media`).
 - Debian's packages enable `udisks2.service` in `graphical.target` and polkit's
   `polkit-agent-helper.socket` (polkit 127 and later: the password helper is socket-activated, no
-  longer setuid). Both work through D-Bus or the socket on request; a preset keeps them off at boot.
+  longer setuid). Both work through D-Bus or the socket on request; a preset keeps udisks2 off at boot, and the socket on (it is only a listening socket).
 - udisks2 2.11 with polkitd 128 adds 29 packages, about 15 MB installed (a snapshot of October
   2026); the largest is NSS (5 MB), which its crypto plugin needs through `libvolume-key1`.
   polkitd depends on `logind`, which `libpam-systemd` provides: its postinst puts `pam_systemd` into

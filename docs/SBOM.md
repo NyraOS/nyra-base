@@ -23,6 +23,8 @@ The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, ny
 
 Once images are published, releases will attach the SBOM next to the image.
 
+The image scan also refuses a manifest whose polkitd is older than 128-1 (`MINIMUM_VERSIONS` in `sbom.py`; the image has no dpkg database, so the manifest is the only place for versions): that is the first version with the fix for CVE-2026-85498 in the password helper, whose socket is on (docs/DEFAULTS.md, "Passwords through polkit").
+
 The installer ISO has its own SBOM and the same scan (`tools/sbom/sbom.py --iso`, run by the `iso` job, docs/ISO.md): the packages of the installer system (mkosi's manifest) and the crates of `nyra-installer` (its `Cargo.lock`, at the commit in `iso/installer-commit`), with its own exceptions, `tools/sbom/mitigations-iso.toml` (an exception of the image never applies to the ISO, nor one of the ISO to the image; the same format and rules). The scan refuses an empty scan: every package of `iso/mkosi.conf` must be in the manifest, the program must have crates, and none may come from a git source. The artifact is `nyra-installer-iso-sbom`. The aarch64 ISO has its own scan (`sbom.py --iso --arch arm64`, the arm64 package index, run by the `iso-sbom` and `iso-sbom-arm64` jobs from the package lists of the build) and its own exceptions, `tools/sbom/mitigations-iso-arm64.toml` (the same rules; the x86_64 ISO's file never applies to it, nor this one to another). Its artifact is `nyra-installer-iso-arm64-sbom`.
 
 ## The SBOM
@@ -136,6 +138,13 @@ of the last image built on main (the same inputs as the `sbom` job of `image.yml
 pushing a change to `tools/sbom/`, to `mitigations.toml`, to the package list or to a Cargo.lock, and
 whenever a pull request failed the gate, to see if a new advisory or the change is the cause. It
 needs `gh` (logged in), `podman` and the network.
+
+The `sbom` job runs only for a change confined to `tools/sbom/`. If the last image built on main used
+another `Snapshot=` than the checkout (a pull request that moved it has merged, and its build on main has
+not succeeded yet), that package list is outdated: the job runs the offline tests, skips the scan and says
+so in the job summary, because the old list would fail on advisories the new snapshot has fixed. The
+build of the change that moved `Snapshot=` scans the new package list, and so does every build on main.
+Run the local scan above against the build of that pull request instead.
 
 ```bash
 set -o pipefail         # the exit status of the scan, not of tee

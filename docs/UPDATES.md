@@ -437,8 +437,9 @@ Only `systemctl start` of exactly these unit names, by a member of `sudo` in a l
 session (at the machine, not over SSH), asks for a password, the administrator's own
 (`49-nyra.rules`); anyone else is refused, and so is every other start, stop or transient unit
 (`systemd-run`, `run0`) of systemd's manager, for everyone but root. A wrong password is polkit's
-usual denial. polkit's password helper is off in the image for now (docs/DEFAULTS.md, "Passwords through
-polkit"), so until it is turned on the question is refused and the command works only for root.
+usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md, "Passwords through
+polkit"), and this is the one action there that a password approves; polkit's administrator is root
+alone, so this explicit rule, not the group `sudo`, is what lets the member of `sudo` through.
 
 ## Moving a machine to updates.nyraos.com
 
