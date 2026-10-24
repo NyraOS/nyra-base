@@ -32,10 +32,13 @@ listening='s="$(ss -Htulnp)" && test -n "$s" && l="$(echo "$s" | awk '"'"'{p=$7;
 # hostnamed are started through them on demand (user lookups at login, hostname queries). getty and
 # user@ come from the console login. ntpd-rs keeps the clock right (NTS, outbound only).
 # nyra-etc-copy.timer makes the daily copy of /etc (docs/BOOT.md, "Restore earlier settings").
+# polkit-agent-helper.socket waits for connections of the password helper (docs/DEFAULTS.md,
+# "Passwords through polkit"); the helper itself runs only while a connection is open.
 # Anything new needs a reason and a line here, or a block in the Containerfile.
 read -r -d '' units_allowed <<'EOF' || true
 dbus\.(service|socket)
 ntpd-rs\.service
+polkit-agent-helper\.socket
 systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed)\.service
 systemd-[a-z0-9-]+\.socket
 (serial-)?getty@[a-zA-Z0-9]+\.service
@@ -85,6 +88,7 @@ if [ "${1:-}" = --self-test ]; then
   check 1 "listening: ss fails" "$listening" FAIL=1
   check 0 "units: declared only" "$units"
   check 1 "units: undeclared podman.socket" "$units" EXTRA='podman.socket loaded active listening x'
+  check 0 "units: polkit-agent-helper.socket declared" "$units" EXTRA='polkit-agent-helper.socket loaded active listening x'
   check 1 "units: systemctl fails" "$units" FAIL=1
   check 0 "blocked: all inactive" "$blocked"
   check 1 "blocked: the first one active" "$blocked" ACTIVE=u01.service

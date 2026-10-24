@@ -263,9 +263,15 @@ RUN for p in ntpd-rs nyra-updated nyra-zlib pam-totp; do \
 
 # Removable media (docs/DEFAULTS.md): udisks2 mounts what a user asks for with Nyra's options
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
+# Passwords through polkit (docs/DEFAULTS.md): polkit-agent-helper.socket is on, so the helper must
+# have the fix for CVE-2026-85498 (stack buffer underflow in read_cookie(), fixed in polkit 128,
+# upstream commit eea1729; the Debian tracker still lists 128-1 as vulnerable, tools/sbom/mitigations.toml)
+# and must not be setuid: it runs as root only when systemd starts it for a connection to the socket.
 RUN systemctl preset udisks2.service polkit-agent-helper.socket && \
     test "$(systemctl is-enabled udisks2.service)" = disabled && \
-    test "$(systemctl is-enabled polkit-agent-helper.socket)" = disabled && \
+    test "$(systemctl is-enabled polkit-agent-helper.socket)" = enabled && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' polkitd)" ge 128-1 && \
+    test "$(stat -c '%a %U:%G' /usr/lib/polkit-1/polkit-agent-helper-1)" = '755 root:root' && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service && \
     test -f /usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service && \
     test -x /usr/lib/nyra/media/trusted && test -f /usr/lib/udev/rules.d/90-nyra-udisks.rules && \
