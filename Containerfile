@@ -290,6 +290,17 @@ RUN mkdir -p /etc/containers/registries.d && \
     ln -sfn /usr/lib/nyra/containers/policy.json /etc/containers/policy.json && \
     ln -sfn /usr/lib/nyra/containers/registries.d/nyra.yaml /etc/containers/registries.d/nyra.yaml
 
+# wget (docs/DEFAULTS.md): its settings are /usr/lib/nyra/wgetrc, linked from /etc/wgetrc, the
+# only system file wget reads. Debian's file is only comments plus passive_ftp; ours adds htmlify = off,
+# so that a directory URL on an FTP server is not turned into an HTML index. The build fails unless
+# the wget binary reads /etc/wgetrc, the file is readable with mode 644 (wget silently ignores an
+# unreadable system rc), wget has no metalink and the last htmlify line in effect is off.
+RUN grep -aqF /etc/wgetrc /usr/bin/wget && wget --version | grep -q -- -metalink && \
+    ln -sfn /usr/lib/nyra/wgetrc /etc/wgetrc && \
+    test "$(readlink /etc/wgetrc)" = /usr/lib/nyra/wgetrc && test -f /usr/lib/nyra/wgetrc && test -r /etc/wgetrc && test "$(stat -L -c %a /etc/wgetrc)" = 644 && \
+    test "$(grep -E '^[[:space:]]*htmlify[[:space:]]*=' /etc/wgetrc | tail -n 1 | tr -d '[:space:]')" = htmlify=off && \
+    test "$(grep -Ev '^(#|[[:space:]]*$)' /etc/wgetrc | tr -d ' ' | paste -sd,)" = passive_ftp=on,htmlify=off
+
 # Boot (docs/BOOT.md), on the ESP, where bootc does neither: at every boot the boot files (shim,
 # systemd-boot, MokManager; named and fallback copies), loader.conf (no command line editor) and the
 # "Nyra OS" firmware entry first in BootOrder; three boot tries for every newly staged version.
