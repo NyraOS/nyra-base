@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Tests for nyra-updated and the channel sheet library (updated/, docs/UPDATES.md): format, lints,
-# unit tests and known vulnerabilities in the locked dependencies. A unit test reads the time limit of
-# nyra-updated-health-failed.service.
+# unit tests and known vulnerabilities in the locked dependencies. Unit tests read the time limits of
+# nyra-updated-health-failed.service and nyra-updated-install@.service.
 name: updated
 on:
   push:
@@ -10,11 +10,13 @@ on:
       - "updated/**"
       - ".github/workflows/updated.yml"
       - "files/usr/lib/systemd/system/nyra-updated-health-failed.service"
+      - "files/usr/lib/systemd/system/nyra-updated-install@.service"
   pull_request:
     paths:
       - "updated/**"
       - ".github/workflows/updated.yml"
       - "files/usr/lib/systemd/system/nyra-updated-health-failed.service"
+      - "files/usr/lib/systemd/system/nyra-updated-install@.service"
   schedule:
     - cron: "37 5 * * 1" # weekly cargo audit, so new advisories show up without a code change
 permissions:

@@ -95,6 +95,99 @@ refused_switch() { # refused_switch IMAGE PATTERN: bootc switch fails with an er
 	[ $rc != 0 ] && printf '%s' "$out" | grep -q -- "$2"
 }
 
+install_refused() { # install_refused VERSION PATTERN: nyra-updated install fails with a message matching PATTERN
+	out="$(/usr/libexec/nyra-updated install "$1" 2>&1)"
+	rc=$?
+	echo "$out"
+	[ $rc != 0 ] && printf '%s' "$out" | grep -q -- "$2"
+}
+
+wait_pidfile() { # wait_pidfile USER: the shell of USER has written its PID to /var/tmp/pid-USER; sets pid
+	for _ in $(seq 30); do
+		[ -s "/var/tmp/pid-$1" ] && pid="$(cat "/var/tmp/pid-$1")" && return 0
+		sleep 1
+	done
+	echo "no process of $1"
+	return 1
+}
+
+process_of() { # process_of USER: sets pid to a process of USER started from the root console: it has no
+	# session of its own (it stays in root's, on the serial port, which has no seat)
+	rm -f "/var/tmp/pid-$1"
+	# shellcheck disable=SC2016 # the quoted script is the user's, $$ is its shell
+	(runuser -u "$1" -- sh -c 'echo $$ >"/var/tmp/pid-$1"; exec sleep 60' sh "$1" >/dev/null 2>&1 </dev/null &)
+	wait_pidfile "$1"
+}
+
+session_of() { # session_of USER: USER logged in on virtual console 5 (an autologin getty), which is a session
+	# of seat0 as at a machine's screen; sets pid to their shell. polkit counts a session as local only with
+	# a seat (docs/LESSONS.md), so only such a session is a local and active one for the rules.
+	h="$(getent passwd "$1" | cut -d: -f6)"
+	rm -f "/var/tmp/pid-$1"
+	printf 'echo $$ >/var/tmp/pid-%s\nexec sleep 300\n' "$1" >"$h/.profile"
+	mkdir -p /run/systemd/system/getty@tty5.service.d
+	# shellcheck disable=SC2016 # $TERM is for systemd
+	printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear - $TERM\n' "$1" \
+		>/run/systemd/system/getty@tty5.service.d/autologin.conf
+	systemctl daemon-reload && systemctl start getty@tty5.service && wait_pidfile "$1" || return 1
+	sid="$(sed -n 's|.*/session-\(.*\)\.scope$|\1|p' "/proc/$pid/cgroup")"
+	loginctl activate "$sid" # may return before logind reports it
+	for _ in $(seq 30); do
+		[ "$(loginctl show-session "$sid" -p Active --value)" = yes ] && break
+		sleep 1
+	done
+	v="$(loginctl show-session "$sid" -p Seat -p Active -p Remote -p TTY)"
+	echo "session $sid of $1, shell $pid: $v"
+	echo "$v" | grep -qx Seat=seat0 && echo "$v" | grep -qx Active=yes && echo "$v" | grep -qx Remote=no
+}
+
+session_end() { # the login on virtual console 5 ends, and its session with it
+	systemctl stop getty@tty5.service
+	kill "$pid"
+	rm -rf /run/systemd/system/getty@tty5.service.d
+	systemctl daemon-reload
+	for _ in $(seq 30); do
+		loginctl show-session "$sid" >/dev/null 2>&1 || return 0
+		sleep 1
+	done
+	echo "session $sid is still there"
+	return 1
+}
+
+polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the process $pid, asked with
+	# pkcheck as root, since only root may pass details (UNIT, VERB) to polkit: 0 yes, 1 no, 2 a
+	# password would be asked (nobody can answer here)
+	if [ -n "$3" ]; then
+		pkcheck --process "$pid" --action-id "$2" --detail unit "$3" --detail verb "$4"
+	else
+		pkcheck --process "$pid" --action-id "$2"
+	fi
+	rc=$?
+	echo "polkit: $2 $3 $4: $rc, wanted $1"
+	[ "$rc" = "$1" ]
+}
+
+polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to starting the install unit
+	# and no to all else of systemd's manager (without the rule these would ask for a password)
+	m=org.freedesktop.systemd1
+	polkit_ask "$1" $m.manage-units nyra-updated-install@2026.10.600.service start &&
+		polkit_ask 1 $m.manage-units nyra-updated-install@2026.10.600.service stop &&
+		polkit_ask 1 $m.manage-units nyra-updated-install@evil.service start &&
+		polkit_ask 1 $m.manage-units ssh.service start &&
+		polkit_ask 1 $m.manage-unit-files &&
+		polkit_ask 1 $m.reload-daemon &&
+		polkit_ask 1 $m.set-environment
+}
+
+polkit_cases() { # 49-nyra.rules: a member of sudo in a local and active session is asked for their own
+	# password (2) to start the install unit; no seat, or not in sudo: no (1); root: yes (0)
+	process_of vmadmin && polkit_user 1 &&
+		process_of vmuser && polkit_user 1 &&
+		session_of vmuser && polkit_user 1 && session_end &&
+		session_of vmadmin && polkit_user 2 && session_end &&
+		pid=$$ && polkit_ask 0 org.freedesktop.systemd1.manage-units ssh.service start
+}
+
 untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoofed server)
 	select_sheet "$1" || return 1
 	mv /usr/local/share/ca-certificates/nyra-test.crt /var/lib/nyra-test/
@@ -155,4 +248,17 @@ not_synced() { # ntpd-rs tried for 30 s and did not set the clock
 	ntp-ctl -c /usr/lib/nyra/ntpd-rs/ntp.toml status
 	journalctl -b -u ntpd-rs -o short-monotonic --no-pager | tail -20
 	systemctl is-active ntpd-rs.service && ! journalctl -b -u ntpd-rs -o cat --no-pager | grep -F 'Jumped offset'
+}
+
+no_root_command() { # no_root_command USER UNIT: USER can not run a command as root with systemd-run (named UNIT) or run0
+	out="$(timeout 60 runuser -u "$1" -- systemd-run --unit="$2" --wait /bin/true 2>&1)"
+	rc=$?
+	echo "systemd-run: $rc: $out"
+	[ $rc != 0 ] || return 1
+	! systemctl is-active --quiet "$2" || return 1
+	command -v run0 >/dev/null || { echo "no run0 in the image"; return 0; }
+	out="$(timeout 60 runuser -u "$1" -- run0 /bin/true 2>&1)"
+	rc=$?
+	echo "run0: $rc: $out"
+	[ $rc != 0 ]
 }

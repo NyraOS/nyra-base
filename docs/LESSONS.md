@@ -784,6 +784,9 @@ Each line is something that broke or surprised us once.
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
   needed and nobody can answer it), which tells a policy apart without an agent.
+- Only root may pass details (`--detail unit X`) to polkit: `pkcheck` run as another user fails with "Only
+  trusted callers (e.g. uid 0 or an action owner) can use CheckAuthorization() and pass details" (exit 127).
+  A test runs it as root and names the user's process with `--process`.
 - polkit counts a session as local only when it has a seat: a logind session without one
   (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
   `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual
