@@ -208,6 +208,7 @@ by hand is discarded with it.
 | `nyra-health-network.service` | a health check, on a version on trial: the links that had a routable address at the last update check get one again (below, "The network"); `/usr/lib/nyra/health/network`, which also writes that list (`/var/lib/nyra-updated/network-links`, before every check of `nyra-updated.service`) |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
+| `nyra-updated-install@.service` | `nyra-updated install %i`: stages the release named by the instance, started by an administrator with `systemctl start` after polkit asks for the password (above, "Updating from a terminal as an administrator"; the rule is in `49-nyra.rules`). Hardened like `nyra-updated.service` (same sandbox, `TimeoutStartSec=2h30min`, above the 2-hour pull); listed in the image build's `systemd-analyze verify` |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
 
@@ -394,7 +395,65 @@ an error, the prudent side, until the detection covers it. A link lost while boo
 sigstore signature may be reported as an error too, not as no network: the image proxy's message then
 names the signature, which counts as a refusal (the prudent side as well).
 
+## Updating from a terminal as an administrator
+
+On an installed system root has no password and there is no root shell (docs/DEFAULTS.md, "su"), so
+nobody can run `bootc switch` by hand. An administrator (the user the installer made, a member of
+the group `sudo`) stages a release with one command, naming the version:
+
+```sh
+systemctl start nyra-updated-install@2026.10.600.service
+```
+
+polkit asks for that administrator's own password in the terminal. The command waits until the
+version is staged (a pull can take long; interrupting `systemctl` only stops the waiting, and
+`journalctl -u nyra-updated-install@2026.10.600.service` shows the result). It never reboots: the
+reboot stays the user's choice.
+
+`nyra-updated install VERSION` runs as root in that unit and refuses, before it pulls anything:
+
+- an argument that is not a release version (`YEAR.MONTH.BUILD`, digits only);
+- a signature policy that is not the shipped one: `/etc/containers/policy.json` and
+  `/etc/containers/registries.d/nyra.yaml` must resolve to the files under `/usr/lib/nyra/containers/`,
+  the policy must name one real signer for `updates.nyraos.com` (not the placeholder of an image built
+  before the address was committed), and no per-user policy or `CONTAINERS_POLICY_JSON` may exist;
+- a version that is not newer than the running one (numbers compared one by one), or below the
+  image's version floor;
+- an image without a sheet key (updates not configured): the channel sheet is mandatory, as for a
+  check, so nothing is installed ("updates are not configured: no channel sheet key ...");
+- a channel sheet that cannot be fetched or verified (the fetch and the verification of a check; its
+  sequence and retractions are kept as a check keeps them);
+- a version that the verified sheet does not name: only the sheet's `current` and `previous` versions
+  are installed, and nothing at all while the sheet says the channel is halted;
+- a version whose digest in the sheet was retracted, or that this machine fell back from.
+
+Before it fetches the sheet it settles what became of the version staged last time, as a check does
+at its start (a version the machine fell back from is marked failed), instead of refusing while one
+is unsettled. It then pulls `updates.nyraos.com/<repository>@<digest>`, the digest the sheet gives for
+that version, and nothing else (the image's repository from `updated.conf`: `nyra-base`, or
+`nyra-base-arm64`), under the update lock, with a copy of `/etc` first and `sync` after, exactly as a
+check stages a version. The staged image must be that digest, otherwise it is discarded and nothing
+is left to boot. Like a staged version of a check, it is remembered, so that a fallback marks it
+failed. The signature policy and the sheet are the two guarantees: an installed machine without a
+sheet key (none is in the image yet) can not use this command, as it can not check for updates. A
+change of Secure Boot key or of the disk's TPM policy needs the steps below.
+
+Only `systemctl start` of exactly these unit names, by a member of `sudo` in a local, active
+session (at the machine, not over SSH), asks for a password, the administrator's own
+(`49-nyra.rules`); anyone else is refused, and so is every other start, stop or transient unit
+(`systemd-run`, `run0`) of systemd's manager, for everyone but root. A transient unit is refused even
+when it is named `nyra-updated-install@VERSION.service`: systemd asks polkit about it with the same
+action, unit and verb as for the real unit and only the message differs, so the rule accepts the exact
+message of `systemctl start` and nothing else (a transient unit runs any command as root). A wrong
+password is polkit's usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md, "Passwords through
+polkit"), and this is the one action there that a password approves; polkit's administrator is root
+alone, so this explicit rule, not the group `sudo`, is what lets the member of `sudo` through.
+
 ## Moving a machine to updates.nyraos.com
+
+**The steps below are for the CI test VM**, which has a root shell. On an installed system root
+has no password and `su -` does not exist as a way in; there the command above is used. It runs the
+checks of step 1 and the switch of step 5 itself, not the digest, MOK and TPM steps.
 
 A new VM is installed from a release with the installer (docs/INSTALL.md), which does the pull,
 the digest check (step 2) and the MOK import (step 3) itself. This section is for an owner who moves
@@ -410,8 +469,8 @@ reference is exactly that name, which is what the checks below prove. Nothing el
 guarantee (`--enforce-container-sigpolicy` has no effect on Nyra's composefs backend; the guarantee
 is the policy alone).
 
-**1. Checks on the running system.** All of them are required. Nyra has no `sudo`: open one root
-shell with `su -` and run every command of this section in it.
+**1. Checks on the running system.** All of them are required. In the CI test VM, run every
+command of this section in one root shell.
 
 ```sh
 readlink -f /etc/containers/policy.json                # /usr/lib/nyra/containers/policy.json

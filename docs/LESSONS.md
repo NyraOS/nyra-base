@@ -784,6 +784,21 @@ Each line is something that broke or surprised us once.
   signature and goes on to the next driver when the type is unknown.
 - polkit's `pkcheck --process PID` answers 0 (allowed), 1 (no) or 2 (an authentication would be
   needed and nobody can answer it), which tells a policy apart without an agent.
+- Only root may pass details (`--detail unit X`) to polkit: `pkcheck` run as another user fails with "Only
+  trusted callers (e.g. uid 0 or an action owner) can use CheckAuthorization() and pass details" (exit 127).
+  A test runs it as root and names the user's process with `--process`.
+- polkitd takes the user of an agent's subject as the user who made the agent, and the socket-activated
+  password helper reports the user of the agent that called it. `pkcheck --enable-internal-agent` run
+  as root for the process of another user makes both differ, so a right password ends in "No session
+  for cookie" (helper log) and "AUTHENTICATION FAILED". The VM test therefore starts `pkttyagent
+  --process PID` as that user and lets root's `pkcheck` (needed for the details) use it. Debian's
+  libpam logs "/usr/lib/pam.d is not supported" for polkit-1 and still uses that file.
+- systemd asks polkit for `manage-units` with `unit` and `verb=start` both for StartUnit and for
+  StartTransientUnit (`systemd-run`, `run0`), so a rule that matches the unit name and the verb gives
+  AUTH_SELF to `systemd-run --unit=THAT-NAME any-command`: a root command for a password. Only
+  `polkit.message` differs ("Authentication is required to start transient unit '$(unit)'."), so the rule
+  matches the plain start's text exactly (a changed text refuses the install, which the typed-password
+  VM case sees). A refusal that is `Interactive authentication required` is a challenge, not a refusal.
 - polkit counts a session as local only when it has a seat: a logind session without one
   (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
   `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual

@@ -27,3 +27,39 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.AUTH_ADMIN;
     }
 });
+
+// Updating from a terminal (docs/UPDATES.md): a member of sudo, in a local and active session (not over
+// SSH), starts nyra-updated-install@VERSION.service with `systemctl start`, and polkit asks for their
+// OWN password (AUTH_SELF: it does not depend on who the polkit administrators are). Nothing else of
+// systemd's manager is open to a user: with an administrator's password systemd's own policy lets
+// them run any command as root (`systemd-run`, `run0`), start or stop any unit, link unit files and
+// set the manager's environment, which would be the root shell the base does not have. root is not
+// asked (polkit allows root everything). The unit name has the shape the program accepts
+// (nyra-updated, install.rs), which it checks again.
+// systemd asks manage-units with the same unit and verb ("start") for StartUnit (a unit that exists) and
+// for StartTransientUnit (`systemd-run`, `run0`: a new unit that runs any command, under any name). Only
+// the message that systemd sends with it tells them apart ("polkit.message", systemd 262:
+// bus_unit_method_start_generic and method_start_transient_unit), so the rule asks for the exact text of
+// the first and nothing else gets a yes: a changed text refuses the install too, which the VM test sees.
+var nyraStartMessage = "Authentication is required to start '$(unit)'.";
+var nyraInstallUnit = /^nyra-updated-install@[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,6}\.service$/;
+var nyraManagerActions = [
+    "org.freedesktop.systemd1.manage-units",
+    "org.freedesktop.systemd1.manage-unit-files",
+    "org.freedesktop.systemd1.reload-daemon",
+    "org.freedesktop.systemd1.set-environment"
+];
+polkit.addRule(function(action, subject) {
+    if (nyraManagerActions.indexOf(action.id) < 0) {
+        return;
+    }
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") == "start" &&
+        action.lookup("polkit.message") == nyraStartMessage &&
+        nyraInstallUnit.test(action.lookup("unit")) &&
+        subject.isInGroup("sudo") &&
+        subject.local && subject.active) {
+        return polkit.Result.AUTH_SELF;
+    }
+    return polkit.Result.NO;
+});

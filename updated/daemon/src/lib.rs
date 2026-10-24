@@ -107,6 +107,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod install;
 pub mod system;
 
 /// The public key of the `seed1` test fixture (private key = 32 bytes of 1, known to anyone).
@@ -814,6 +815,18 @@ fn settle_pending(
     state.pending = None;
 }
 
+/// [`settle_pending`] with the network-fallback marker of the state directory, saved when it
+/// changed: the start of every check and of `install`.
+fn settle_state(store: &Store, state: &mut State, status: &Status, now: u64) -> Result<(), Error> {
+    let before = state.clone();
+    let network_fallback = store.take_network_fallback()?;
+    settle_pending(state, status, network_fallback, &store.network_links(), now);
+    if *state != before {
+        store.save(state)?;
+    }
+    Ok(())
+}
+
 /// Rules 3-5 on the version a sheet picked.
 pub fn check_target(target: &Image, state: &State, floor: &str) -> Result<(), Error> {
     if state.retracted.contains(&target.digest) {
@@ -906,13 +919,7 @@ pub fn check(
     }
 
     let first_boot_of_pending = state.pending.as_deref() == Some(booted.digest.as_str());
-    let before = state.clone();
-    let network_fallback = store.take_network_fallback()?;
-    let links = store.network_links();
-    settle_pending(&mut state, &status, network_fallback, &links, now);
-    if state != before {
-        store.save(&state)?;
-    }
+    settle_state(store, &mut state, &status, now)?;
     if first_boot_of_pending {
         // Rule 9. Reported once: the pending version is settled above.
         let info = sys.boot_info()?;
@@ -1044,7 +1051,9 @@ pub fn check(
     let running_retracted = state.retracted.contains(&booted.digest);
     // Rule 15: the second try of a version failed only by the network health check.
     if let Some(retry) = state.network_retry.as_mut() {
-        if retry.due(&target.digest, now, &links) && state.failed.remove(&target.digest) {
+        if retry.due(&target.digest, now, &store.network_links())
+            && state.failed.remove(&target.digest)
+        {
             retry.retried = true;
             store.save(&state)?;
         }
