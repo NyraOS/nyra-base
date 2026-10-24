@@ -419,19 +419,24 @@ reboot stays the user's choice.
   before the address was committed), and no per-user policy or `CONTAINERS_POLICY_JSON` may exist;
 - a version that is not newer than the running one (numbers compared one by one), or below the
   image's version floor;
-- a channel sheet that cannot be fetched or verified, when the image has a sheet key (the fetch and
-  the verification of a check; its sequence and retractions are kept as a check keeps them). The
-  sheet retracts by digest, which a tag only shows once pulled: a retracted version is discarded as
-  soon as it is staged. Without a sheet key in the image (updates not configured) the sheet is not
-  consulted and a warning is logged; the signature policy is then the only guarantee.
+- an image without a sheet key (updates not configured): the channel sheet is mandatory, as for a
+  check, so nothing is installed ("updates are not configured: no channel sheet key ...");
+- a channel sheet that cannot be fetched or verified (the fetch and the verification of a check; its
+  sequence and retractions are kept as a check keeps them);
+- a version that the verified sheet does not name: only the sheet's `current` and `previous` versions
+  are installed, and nothing at all while the sheet says the channel is halted;
+- a version whose digest in the sheet was retracted, or that this machine fell back from.
 
-It pulls `updates.nyraos.com/<repository>:<version>` and nothing else (the image's repository from
-`updated.conf`: `nyra-base`, or `nyra-base-arm64`), under the update lock, with a copy of `/etc`
-first and `sync` after, exactly as a check stages a version. The staged image must then be the
-version asked for and neither retracted nor one the machine fell back from; otherwise it is
-discarded. Like a staged version of a check, it is remembered, so that a fallback marks it failed.
-The signature policy is the guarantee, as for the manual switch below; a tag carries no digest
-to compare. A change of Secure Boot key or of the disk's TPM policy needs the steps below.
+Before it fetches the sheet it settles what became of the version staged last time, as a check does
+at its start (a version the machine fell back from is marked failed), instead of refusing while one
+is unsettled. It then pulls `updates.nyraos.com/<repository>@<digest>`, the digest the sheet gives for
+that version, and nothing else (the image's repository from `updated.conf`: `nyra-base`, or
+`nyra-base-arm64`), under the update lock, with a copy of `/etc` first and `sync` after, exactly as a
+check stages a version. The staged image must be that digest, otherwise it is discarded and nothing
+is left to boot. Like a staged version of a check, it is remembered, so that a fallback marks it
+failed. The signature policy and the sheet are the two guarantees: an installed machine without a
+sheet key (none is in the image yet) can not use this command, as it can not check for updates. A
+change of Secure Boot key or of the disk's TPM policy needs the steps below.
 
 Only `systemctl start` of exactly these unit names, by a member of `sudo` in a local, active
 session (at the machine, not over SSH), asks for a password, the administrator's own

@@ -123,8 +123,11 @@ session_of() { # session_of USER: USER logged in on virtual console 5 (an autolo
 	# of seat0 as at a machine's screen; sets pid to their shell. polkit counts a session as local only with
 	# a seat (docs/LESSONS.md), so only such a session is a local and active one for the rules.
 	h="$(getent passwd "$1" | cut -d: -f6)"
-	rm -f "/var/tmp/pid-$1"
-	printf 'echo $$ >/var/tmp/pid-%s\nexec sleep 300\n' "$1" >"$h/.profile"
+	rm -f "/var/tmp/pid-$1" "/var/tmp/run-$1" "/var/tmp/out-$1" "/var/tmp/rc-$1"
+	# The shell waits for commands that root hands over with in_session, so that they run in the session.
+	# shellcheck disable=SC2016 # the quoted script is the user's, $$ and $? are its shell's
+	printf 'echo $$ >/var/tmp/pid-%s\nwhile :; do\n\tif [ -f /var/tmp/run-%s ]; then\n\t\tsh /var/tmp/run-%s >/var/tmp/out-%s 2>&1 </dev/null\n\t\techo $? >/var/tmp/rc-%s\n\t\trm -f /var/tmp/run-%s\n\tfi\n\tsleep 1\ndone\n' \
+		"$1" "$1" "$1" "$1" "$1" "$1" >"$h/.profile"
 	mkdir -p /run/systemd/system/getty@tty5.service.d
 	# shellcheck disable=SC2016 # $TERM is for systemd
 	printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear - $TERM\n' "$1" \
@@ -154,6 +157,23 @@ session_end() { # the login on virtual console 5 ends, and its session with it
 	return 1
 }
 
+in_session() { # in_session USER COMMAND: COMMAND runs in the shell of USER's session (session_of USER), as a
+	# child of the login on seat0 and not of the root console; prints its output, returns its exit status
+	rm -f "/var/tmp/out-$1" "/var/tmp/rc-$1"
+	printf '%s\n' "$2" >"/var/tmp/run-$1.tmp" && chmod 644 "/var/tmp/run-$1.tmp" &&
+		mv "/var/tmp/run-$1.tmp" "/var/tmp/run-$1" || return 1
+	for _ in $(seq 120); do
+		[ -s "/var/tmp/rc-$1" ] && break
+		sleep 1
+	done
+	cat "/var/tmp/out-$1"
+	[ -s "/var/tmp/rc-$1" ] || {
+		echo "the session of $1 did not run the command"
+		return 1
+	}
+	return "$(cat "/var/tmp/rc-$1")"
+}
+
 polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the process $pid, asked with
 	# pkcheck as root, since only root may pass details (UNIT, VERB) to polkit: 0 yes, 1 no, 2 a
 	# password would be asked (nobody can answer here)
@@ -167,11 +187,61 @@ polkit_ask() { # polkit_ask WANT ACTION [UNIT VERB]: what polkit answers for the
 	[ "$rc" = "$1" ]
 }
 
+polkit_typed() { # polkit_typed PASSWORD: for the process $pid, pkcheck as root asks polkit to start the install
+	# unit and allows an authentication agent (its own, on a terminal that this function makes). The agent
+	# asks for a password; PASSWORD is typed at every prompt. Prints what the agent says; sets rc to pkcheck's
+	# exit status: 0 only when polkit took the password as the proof asked for (the user's own, since root has
+	# none), never when it is wrong; 124: no end within a minute
+	python3 -I -c 'import os, pty, select, sys, time
+password, pid = sys.argv[1:3]
+argv = ["pkcheck", "--process", pid, "--action-id", "org.freedesktop.systemd1.manage-units",
+        "--detail", "unit", "nyra-updated-install@2026.10.600.service", "--detail", "verb", "start",
+        "--allow-user-interaction", "--enable-internal-agent"]
+child, fd = pty.fork()
+if child == 0:
+    os.execvp(argv[0], argv)
+end = time.time() + 60
+prompt = b""
+while time.time() < end:
+    if not select.select([fd], [], [], 1)[0]:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.flush()
+    prompt += data
+    if b"Password:" in prompt:
+        os.write(fd, password.encode() + b"\n")
+        prompt = b""
+status = 124
+for _ in range(100):
+    done, raw = os.waitpid(child, os.WNOHANG)
+    if done:
+        status = os.waitstatus_to_exitcode(raw)
+        break
+    time.sleep(0.1)
+else:
+    os.kill(child, 9)
+    os.waitpid(child, 0)
+sys.exit(status)' "$1" "$pid"
+	rc=$?
+	echo "polkit with a typed password: $rc"
+}
+
 polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to starting the install unit
 	# and no to all else of systemd's manager (without the rule these would ask for a password)
 	m=org.freedesktop.systemd1
-	polkit_ask "$1" $m.manage-units nyra-updated-install@2026.10.600.service start &&
-		polkit_ask 1 $m.manage-units nyra-updated-install@2026.10.600.service stop &&
+	polkit_ask "$1" $m.manage-units nyra-updated-install@2026.10.600.service start || return 1
+	for verb in stop restart try-restart reload kill; do
+		polkit_ask 1 $m.manage-units nyra-updated-install@2026.10.600.service $verb || return 1
+	done
+	# systemd-run asks for manage-units with the verb and unit it will start; without them the answer is
+	# still no (the rule needs both)
+	polkit_ask 1 $m.manage-units &&
 		polkit_ask 1 $m.manage-units nyra-updated-install@evil.service start &&
 		polkit_ask 1 $m.manage-units ssh.service start &&
 		polkit_ask 1 $m.manage-unit-files &&
@@ -180,12 +250,24 @@ polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to
 }
 
 polkit_cases() { # 49-nyra.rules: a member of sudo in a local and active session is asked for their own
-	# password (2) to start the install unit; no seat, or not in sudo: no (1); root: yes (0)
+	# password to start the install unit; no seat, or not in sudo: no (1); root: yes (0)
+	pw=correct-test-password-1
+	echo "vmadmin:$pw" | chpasswd || return 1
 	process_of vmadmin && polkit_user 1 &&
 		process_of vmuser && polkit_user 1 &&
 		session_of vmuser && polkit_user 1 && session_end &&
-		session_of vmadmin && polkit_user 2 && session_end &&
+		session_of vmadmin && polkit_user 2 && polkit_own_password "$pw" &&
+		no_root_command vmadmin nyra-updated-install@2026.10.601.service && session_end &&
 		pid=$$ && polkit_ask 0 org.freedesktop.systemd1.manage-units ssh.service start
+}
+
+polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmin the install unit needs vmadmin's
+	# own password (AUTH_SELF): typing it gives yes. Root has no password, so a rule that asked for an
+	# administrator's (AUTH_ADMIN) could never give yes this way. A wrong one does not.
+	polkit_typed "$1"
+	[ "$rc" = 0 ] || return 1
+	polkit_typed wrong-password
+	[ "$rc" = 1 ] || [ "$rc" = 3 ]
 }
 
 untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoofed server)
@@ -250,15 +332,16 @@ not_synced() { # ntpd-rs tried for 30 s and did not set the clock
 	systemctl is-active ntpd-rs.service && ! journalctl -b -u ntpd-rs -o cat --no-pager | grep -F 'Jumped offset'
 }
 
-no_root_command() { # no_root_command USER UNIT: USER can not run a command as root with systemd-run (named UNIT) or run0
-	out="$(timeout 60 runuser -u "$1" -- systemd-run --unit="$2" --wait /bin/true 2>&1)"
+no_root_command() { # no_root_command USER UNIT: USER, in their session (session_of USER), can not run a command
+	# as root with systemd-run (named UNIT) or run0: polkit refuses, and nothing ran
+	in_session "$1" "timeout 60 systemd-run --unit=$2 --wait /bin/true" >/var/tmp/no-root-command 2>&1
 	rc=$?
-	echo "systemd-run: $rc: $out"
-	[ $rc != 0 ] || return 1
+	echo "systemd-run: $rc: $(cat /var/tmp/no-root-command)"
+	[ $rc != 0 ] && grep -qiE 'denied|not authorized|authentication' /var/tmp/no-root-command || return 1
 	! systemctl is-active --quiet "$2" || return 1
 	command -v run0 >/dev/null || { echo "no run0 in the image"; return 0; }
-	out="$(timeout 60 runuser -u "$1" -- run0 /bin/true 2>&1)"
+	in_session "$1" "timeout 60 run0 /bin/true" >/var/tmp/no-root-command 2>&1
 	rc=$?
-	echo "run0: $rc: $out"
-	[ $rc != 0 ]
+	echo "run0: $rc: $(cat /var/tmp/no-root-command)"
+	[ $rc != 0 ] && grep -qiE 'denied|not authorized|authentication' /var/tmp/no-root-command
 }

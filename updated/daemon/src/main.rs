@@ -17,9 +17,8 @@ use nyra_updated::install::{check_version, install, PolicyFiles};
 use nyra_updated::system::{run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
-    System, NOT_CONFIGURED, STAGE_TIMEOUT,
+    System, NOT_CONFIGURED,
 };
-use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,21 +34,20 @@ fn config() -> Result<Option<Config>, Error> {
     Config::load(Path::new(CONFIG), Path::new(KEYS))
 }
 
-/// One `install`: the argument first, then the signature policy, then the lock.
+/// One `install`: the argument first, then the configuration, the signature policy and the lock.
+/// Updates must be configured, as for a check: without a sheet key nothing is installed.
 fn install_once(version: &str, now: u64) -> Result<String, Error> {
     check_version(version)?;
+    let cfg = config()?.ok_or_else(|| Error::Config(NOT_CONFIGURED.into()))?;
     PolicyFiles::system().check()?;
     let _lock = Lock::acquire(Path::new(LOCK))?;
-    let conf = fs::read_to_string(CONFIG).map_err(|e| Error::Io(format!("{CONFIG}: {e}")))?;
     let store = Store {
         dir: STATE_DIR.into(),
     };
-    // None: no sheet key in the image yet; install says so and goes on (docs/UPDATES.md).
-    let cfg = config()?;
     let mut sys = Real {
-        stage_limit: cfg.as_ref().map_or(STAGE_TIMEOUT, |c| c.stage_timeout),
+        stage_limit: cfg.stage_timeout,
     };
-    install(&mut sys, &store, &conf, cfg.as_ref(), now, version)
+    install(&mut sys, &store, &cfg, now, version)
 }
 
 /// One update check, with the lock held (`run`).

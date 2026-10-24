@@ -2552,10 +2552,9 @@ fn the_network_checks_word_counts_for_the_next_check_only() {
 
 mod install_tests {
     use super::*;
-    use crate::install::{check_version, image_ref, install, is_version, PolicyFiles};
+    use crate::install::{check_version, install, is_version, PolicyFiles};
     use std::os::unix::fs::symlink;
 
-    const CONF: &str = "repository = nyra-base\nchannel = stable\nversion_floor = 2026.10.1\n";
     const SIGNER: &str = "signer@project.iam.gserviceaccount.com";
 
     #[test]
@@ -2591,45 +2590,35 @@ mod install_tests {
         assert!(!e.contains("reboot"), "{e}");
     }
 
-    #[test]
-    fn the_reference_is_our_registry_the_repository_and_the_version() {
-        assert_eq!(
-            image_ref("nyra-base", "2026.10.600"),
-            "updates.nyraos.com/nyra-base:2026.10.600"
-        );
-        assert_eq!(
-            image_ref("nyra-base-arm64", "2026.10.600"),
-            "updates.nyraos.com/nyra-base-arm64:2026.10.600"
-        );
+    fn installed(fake: &mut Fake, dir: &TempDir, v: &str) -> Result<String, Error> {
+        install(fake, &dir.store(), &config(), NOW, v)
     }
 
-    fn installed(fake: &mut Fake, dir: &TempDir, conf: &str, v: &str) -> Result<String, Error> {
-        install(fake, &dir.store(), conf, None, NOW, v)
-    }
-
-    fn installed_with_sheet(fake: &mut Fake, dir: &TempDir, v: &str) -> Result<String, Error> {
-        install(fake, &dir.store(), CONF, Some(&config()), NOW, v)
+    /// A sheet for everybody that offers `current` and `previous`; `halted`: nobody gets `current`.
+    fn two_versions(current: &str, previous: &str, halted: bool, retracted: &[&str]) -> Vec<u8> {
+        let mut p = payload(100, current, retracted);
+        p["previous"] = json!({"digest": previous, "version": version(previous)});
+        p["halted"] = json!(halted);
+        sign(&p)
     }
 
     #[test]
-    fn a_newer_version_is_staged_by_tag_and_remembered() {
+    fn a_newer_version_is_staged_by_the_digest_of_the_sheet_and_remembered() {
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, Vec::new());
-        fake.stage_digest = Some(B.into());
-        installed(&mut fake, &dir, CONF, "2026.10.2").unwrap();
-        // One pull, no reboot, nothing discarded.
-        assert_eq!(fake.calls, ["stage updates.nyraos.com/nyra-base:2026.10.2"]);
-        // The next check learns from `pending` whether it booted or the machine fell back.
-        assert_eq!(dir.store().load().unwrap().pending.as_deref(), Some(B));
-        // The repository of an arm64 image is its own.
-        let arm = CONF.replace("nyra-base", "nyra-base-arm64");
-        let mut fake = Fake::new(&dir, A, Vec::new());
-        fake.stage_digest = Some(B.into());
-        installed(&mut fake, &dir, &arm, "2026.10.2").unwrap();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        installed(&mut fake, &dir, "2026.10.2").unwrap();
+        // The sheet first, then one pull by digest, no reboot, nothing discarded.
         assert_eq!(
             fake.calls,
-            ["stage updates.nyraos.com/nyra-base-arm64:2026.10.2"]
+            [
+                format!("fetch {SHEET_URL}"),
+                format!("stage updates.nyraos.com/nyra@{B}")
+            ]
         );
+        // The next check learns from `pending` whether it booted or the machine fell back.
+        let state = dir.store().load().unwrap();
+        assert_eq!(state.pending.as_deref(), Some(B));
+        assert_eq!(state.sheets.len(), 1);
     }
 
     #[test]
@@ -2638,62 +2627,59 @@ mod install_tests {
         // B runs (2026.10.2): the same version, older ones, and a lower number that sorts higher
         // as text.
         for refused in ["2026.10.2", "2026.10.1", "2026.9.999", "2025.12.5"] {
-            let mut fake = Fake::new(&dir, B, Vec::new());
-            let e = installed(&mut fake, &dir, CONF, refused).unwrap_err();
+            let mut fake = Fake::new(&dir, B, two_versions(C, B, false, &[]));
+            let e = installed(&mut fake, &dir, refused).unwrap_err();
             assert!(e.to_string().contains("not newer"), "{refused}: {e}");
             assert!(fake.calls.is_empty(), "{refused}: {:?}", fake.calls);
         }
-        // Numbers, not text: 2026.10.9 runs, so 2026.10.10 is newer and 2026.10.8 is not.
-        let mut fake = Fake::new(&dir, B, Vec::new());
+        // Numbers, not text: 2026.10.9 runs, so 2026.10.8 is not newer.
+        let mut fake = Fake::new(&dir, B, two_versions(C, B, false, &[]));
         fake.status.booted.as_mut().unwrap().version = Some("2026.10.9".into());
-        let e = installed(&mut fake, &dir, CONF, "2026.10.8").unwrap_err();
+        let e = installed(&mut fake, &dir, "2026.10.8").unwrap_err();
         assert!(e.to_string().contains("not newer"), "{e}");
         assert!(fake.calls.is_empty(), "{:?}", fake.calls);
-        fake.stage_digest = Some(C.into());
-        let e = installed(&mut fake, &dir, CONF, "2026.10.10").unwrap_err();
-        // It was pulled (the fake's tag points at C, 2026.10.3), and discarded as the wrong one.
-        assert!(e.to_string().contains("not 2026.10.10"), "{e}");
-        assert_eq!(fake.calls.len(), 2, "{:?}", fake.calls);
     }
 
     #[test]
     fn an_unknown_running_version_or_a_floor_above_the_target_stages_nothing() {
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, Vec::new());
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
         fake.status.booted.as_mut().unwrap().version = None;
-        assert!(installed(&mut fake, &dir, CONF, "2026.10.2").is_err());
-        let mut fake = Fake::new(&dir, A, Vec::new());
-        let floor = CONF.replace("2026.10.1\n", "2026.10.5\n");
+        assert!(installed(&mut fake, &dir, "2026.10.2").is_err());
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        let floor = Config {
+            version_floor: "2026.10.5".into(),
+            ..config()
+        };
         assert_eq!(
-            installed(&mut fake, &dir, &floor, "2026.10.2"),
+            install(&mut fake, &dir.store(), &floor, NOW, "2026.10.2"),
             Err(Error::BelowFloor {
                 version: "2026.10.2".into(),
                 floor: "2026.10.5".into()
             })
         );
-        for conf in [
-            "",
-            "repository = nyra-base\n",
-            "repository = a:b\nversion_floor = 2026.10.1",
-        ] {
-            assert!(
-                installed(&mut fake, &dir, conf, "2026.10.2").is_err(),
-                "{conf:?}"
-            );
-        }
         assert!(fake.calls.is_empty(), "{:?}", fake.calls);
     }
 
     #[test]
-    fn what_bootc_staged_must_be_the_version_and_not_retracted_or_failed() {
-        // The tag points at another version than the one asked for: discarded.
+    fn what_bootc_staged_must_be_the_digest_of_the_sheet() {
+        // The registry answered with another image than the sheet's digest: discarded.
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, Vec::new());
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
         fake.stage_digest = Some(C.into());
-        assert!(installed(&mut fake, &dir, CONF, "2026.10.2").is_err());
+        let e = installed(&mut fake, &dir, "2026.10.2").unwrap_err();
+        assert_eq!(
+            e,
+            Error::DigestMismatch {
+                expected: B.into(),
+                found: C.into()
+            }
+        );
         assert_eq!(fake.discarded.as_deref(), Some(C));
-        assert_eq!(dir.store().load().unwrap().pending, None);
-        // A retracted digest, and one this machine fell back from.
+    }
+
+    #[test]
+    fn a_retracted_or_failed_version_is_refused_before_anything_is_pulled() {
         for retracted in [true, false] {
             let dir = TempDir::new();
             let mut state = State::default();
@@ -2703,31 +2689,52 @@ mod install_tests {
                 state.failed.insert(B.into());
             }
             dir.store().save(&state).unwrap();
-            let mut fake = Fake::new(&dir, A, Vec::new());
-            fake.stage_digest = Some(B.into());
-            let e = installed(&mut fake, &dir, CONF, "2026.10.2").unwrap_err();
+            let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+            let e = installed(&mut fake, &dir, "2026.10.2").unwrap_err();
             if retracted {
                 assert_eq!(e, Error::Retracted(B.into()));
             } else {
                 assert_eq!(e, Error::Failed(B.into()));
             }
-            assert_eq!(fake.discarded.as_deref(), Some(B));
+            assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
         }
     }
 
     #[test]
-    fn with_a_sheet_key_the_sheet_decides_and_without_one_the_policy_alone() {
-        // A key, and a good sheet that retracts nothing that matters: staged, the fetch first.
+    fn only_the_current_or_the_previous_version_of_the_sheet_is_staged() {
+        // A sheet that offers C and B: either, by its digest. A is below both.
+        for (v, digest) in [("2026.10.3", C), ("2026.10.2", B)] {
+            let dir = TempDir::new();
+            let mut fake = Fake::new(&dir, Z, two_versions(C, B, false, &[]));
+            installed(&mut fake, &dir, v).unwrap();
+            assert_eq!(
+                fake.staged(),
+                [&format!("stage updates.nyraos.com/nyra@{digest}")]
+            );
+        }
+        // Another version, even a newer one than the machine runs, is refused.
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
-        fake.stage_digest = Some(B.into());
-        installed_with_sheet(&mut fake, &dir, "2026.10.2").unwrap();
-        assert_eq!(fake.calls.len(), 2, "{:?}", fake.calls);
-        assert_eq!(fake.calls[0], format!("fetch {SHEET_URL}"));
-        assert_eq!(dir.store().load().unwrap().sheets.len(), 1);
+        let mut fake = Fake::new(&dir, Z, two_versions(C, B, false, &[]));
+        let e = installed(&mut fake, &dir, "2026.10.1").unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("offers only 2026.10.3 and 2026.10.2"),
+            "{e}"
+        );
+        assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
+        // While the channel is halted nothing is staged, not even the previous version.
+        let dir = TempDir::new();
+        for v in ["2026.10.3", "2026.10.2"] {
+            let mut fake = Fake::new(&dir, Z, two_versions(C, B, true, &[]));
+            let e = installed(&mut fake, &dir, v).unwrap_err();
+            assert!(e.to_string().contains("halted"), "{v}: {e}");
+            assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
+        }
+    }
 
-        // A key, and no sheet (the server down, the network away), or one signed by another key:
-        // refused before anything is pulled.
+    #[test]
+    fn without_a_good_sheet_nothing_is_pulled_and_its_retractions_are_kept() {
+        // No sheet (the server down, the network away), or one signed by another key.
         for broken in [true, false] {
             let dir = TempDir::new();
             let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
@@ -2736,26 +2743,38 @@ mod install_tests {
             } else {
                 fake.sheet = b"not a sheet".to_vec();
             }
-            assert!(installed_with_sheet(&mut fake, &dir, "2026.10.2").is_err());
+            assert!(installed(&mut fake, &dir, "2026.10.2").is_err());
             assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
         }
-
-        // A key, and the sheet retracts the digest the tag turns out to have: pulled, discarded,
-        // and the retraction is remembered.
+        // A version the sheet does not offer is refused, and what the sheet retracted is remembered.
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, sheet(100, C, &[B]));
-        fake.stage_digest = Some(B.into());
-        let e = installed_with_sheet(&mut fake, &dir, "2026.10.2").unwrap_err();
-        assert_eq!(e, Error::Retracted(B.into()));
-        assert_eq!(fake.discarded.as_deref(), Some(B));
+        let mut fake = Fake::new(&dir, Z, sheet(100, C, &[B]));
+        assert!(installed(&mut fake, &dir, "2026.10.2").is_err());
         assert!(dir.store().load().unwrap().retracted.contains(B));
+    }
 
-        // No key in the image (updates not configured): no sheet is fetched, the version is staged.
+    #[test]
+    fn the_state_of_the_last_update_is_settled_before_a_new_one_is_staged() {
+        // B was prepared, booted, and the machine fell back to A, which reported the network
+        // check (`network-fallback`): as at the start of a check, B is failed, retried once, and
+        // the marker is taken.
         let dir = TempDir::new();
-        let mut fake = Fake::new(&dir, A, sheet(100, B, &[B]));
-        fake.stage_digest = Some(B.into());
-        installed(&mut fake, &dir, CONF, "2026.10.2").unwrap();
-        assert_eq!(fake.calls, ["stage updates.nyraos.com/nyra-base:2026.10.2"]);
+        let store = dir.store();
+        store
+            .save(&State {
+                pending: Some(B.into()),
+                ..State::default()
+            })
+            .unwrap();
+        fs::write(store.dir.join("network-fallback"), "").unwrap();
+        let mut fake = Fake::new(&dir, A, sheet(100, C, &[]));
+        fake.status.rollback = dep(B);
+        installed(&mut fake, &dir, "2026.10.3").unwrap();
+        let state = store.load().unwrap();
+        assert!(state.failed.contains(B));
+        assert_eq!(state.network_retry.map(|r| r.digest).as_deref(), Some(B));
+        assert_eq!(state.pending.as_deref(), Some(C));
+        assert!(!store.dir.join("network-fallback").exists());
     }
 
     /// A tree like an installed system's: the shipped file and the link to it in `etc`.
