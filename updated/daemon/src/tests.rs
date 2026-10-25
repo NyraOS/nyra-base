@@ -2034,7 +2034,7 @@ fn a_key_file_without_keys_means_updates_are_not_configured() {
     )
     .unwrap();
 
-    // No key (the image until the real key is committed): not configured, not an error.
+    // No key (a build of a fork, say): not configured, not an error.
     fs::write(&keys, "# no key yet\n").unwrap();
     assert!(Config::load(&conf, &keys).unwrap().is_none());
     // A key: configured.

@@ -200,7 +200,7 @@ by hand is discarded with it.
 |---|---|
 | `/usr/libexec/nyra-updated` | the binary, built on the CI tools image (Debian testing, like bootc) without network, from crates checked against `Cargo.lock` (not from cargo's cache or the registry index), and stripped; `Cargo.lock` and third-party crate licence notices in `/usr/share/doc/nyra-updated/` |
 | `/usr/lib/nyra/updates/updated.conf` | `repository`, `channel` (the default; a machine's own choice wins, rule 14), `version_floor`; every key required, unknown or repeated keys refused; the server is not configurable. Optional `stage_timeout_seconds`: shortens the 2-hour limit of a pull (never longer); only the test versions set it (90 s) |
-| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; **none yet**: updates are "not configured" until the real key is committed. Every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. The 14-day rule (below, "Updates that stop") does not make it an error: nothing is held up, there is nothing to update from. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
+| `/usr/lib/nyra/updates/channel-sheet.pem` | the trusted sheet keys; the public key of the channel sheet signer (Ed25519, in a Cloud KMS key that never leaves it). A file with no key means updates are "not configured": every sheet is refused (nothing is even fetched), and each check reports it as a warning without failing the unit, so machines are not all `degraded` for a known state. The 14-day rule (below, "Updates that stop") does not make it an error: nothing is held up, there is nothing to update from. A missing or broken key file is an error. When image signing is turned on, the release build must require at least one key |
 | `nyra-updated.timer` / `.service` | a check 15 minutes after boot, then every 6 hours (randomized); after `boot-complete.target`; only with the ESP checked and mounted at `/boot` (`RequiresMountsFor=`, docs/BOOT.md, "Mounts from /etc/fstab") |
 | `nyra-updated-wait-online.service` | before every check: `systemd-networkd-wait-online --any --timeout=3600`, so a check that comes due without a network waits up to an hour for one and runs once a link is online, or when the hour is over (below, and docs/DEFAULTS.md, "Without a network"); a dynamic user without capabilities, `IPAddressDeny=any` |
 | `nyra-health-system.service` | a health check: the core services (D-Bus, journald, logind, udevd, networkd, resolved) are running and AppArmor's profiles are loaded (`apparmor.service` active); the list is in `/usr/lib/nyra/health/system` |
@@ -435,7 +435,7 @@ that version, and nothing else (the image's repository from `updated.conf`: `nyr
 check stages a version. The staged image must be that digest, otherwise it is discarded and nothing
 is left to boot. Like a staged version of a check, it is remembered, so that a fallback marks it
 failed. The signature policy and the sheet are the two guarantees: an installed machine without a
-sheet key (none is in the image yet) can not use this command, as it can not check for updates. A
+sheet key (a file with no key, as in a build of a fork) can not use this command, as it can not check for updates. A
 change of Secure Boot key or of the disk's TPM policy needs the steps below.
 
 Only `systemctl start` of exactly these unit names, by a member of `sudo` in a local, active
@@ -457,7 +457,7 @@ checks of step 1 and the switch of step 5 itself, not the digest, MOK and TPM st
 
 A new VM is installed from a release with the installer (docs/INSTALL.md), which does the pull,
 the digest check (step 2) and the MOK import (step 3) itself. This section is for an owner who moves
-an existing Nyra VM to the published releases. Until the channel sheet key is in the image, a machine does not update by itself: each new release is a manual `bootc switch`
+an existing Nyra VM to the published releases. A machine installed from an image built before the channel sheet key was committed does not update by itself: each new release is a manual `bootc switch`
 to its version tag, with the same digest check as below. A machine installed from an image built
 before the signer address was committed (its policy names `signer-not-configured@nyra.invalid`)
 cannot switch: reinstall it from a release.
@@ -560,7 +560,8 @@ turn Secure Boot off: that changes PCR 7 and the TPM stops unlocking the disk.
 The `install-boot-updates` job follows one installed VM through 40 boots and real updates. Everything the
 guest trusts is made for the run: a sigstore key stands in for the keyless signer (the guest's
 `/etc/containers/policy.json` is the shipped policy with that key), a channel sheet key is baked
-only into the test versions, and a CA signs the certificate of a sheet server on the runner. The
+only into the test versions (the installed image keeps the real key, which no test sheet is signed
+with; the first boot empties the key file with a bind mount to prove the fail-closed cases), and a CA signs the certificate of a sheet server on the runner. The
 guest reaches the runner as `updates.nyraos.com` (`/etc/hosts` on the test disk): the registry on
 port 80 (plain HTTP, `insecure` on the test disk) and the sheet server on 443. The test versions
 v0-v17 carry the version in the manifest annotation `org.opencontainers.image.version`, which is where
@@ -568,7 +569,7 @@ bootc reads it.
 
 | Titanic | Scenario | Expected |
 |---|---|---|
-| T4 | the installed image, no sheet key | "updates are not configured" (`ok: false`), nothing fetched, the unit not failed |
+| T4 | the installed image with its key file emptied (a bind mount over it for these cases) | "updates are not configured" (`ok: false`), nothing fetched, the unit not failed |
 | T4 | unsigned image from `updates.nyraos.com`, shipped policy | `bootc switch` refused |
 | T4 | unsigned, and signed with another key, test policy | refused |
 | — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |

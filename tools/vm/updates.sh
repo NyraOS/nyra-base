@@ -8,14 +8,14 @@
 # Everything the guest trusts is made for this run and deleted with the runner: an image signing key
 # (sigstore, the stand-in for our keyless signer: the guest's /etc/containers/policy.json is replaced
 # by the shipped policy with this key), a channel sheet key (baked into the test versions'
-# /usr/lib/nyra/updates/channel-sheet.pem, never into the image CI builds), and a CA for the TLS
+# /usr/lib/nyra/updates/channel-sheet.pem, never into the image CI builds, which keeps the real key), and a CA for the TLS
 # certificate of the sheet server. The guest reaches the runner as 10.0.2.2, which /etc/hosts on the
 # test disk names updates.nyraos.com: the registry (tools/signing/local-registry.sh, plain HTTP) on
 # port 80 and a sheet server on 443 that serves whichever signed sheet the guest selects.
 #
 # Test versions of IMAGE (v1-v17: 2026.10.1-17, the version in the manifest annotation bootc reads;
 # v3 has a health check that always fails; v0 is unsigned), and the boots:
-#   1  installed image: no sheet key, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
+#   1  installed image with its sheet key file emptied by a bind mount, updates not configured (nothing fetched, unit not failed); unsigned refused by the shipped policy; test trust
 #      set up; unsigned and wrongly signed refused; `nyra-updated install` refuses a bad argument and,
 #      without a sheet key, everything; polkit's answers for the install unit (outside a local active
 #      session, even a sudo member gets no; in one, the member's own password gives yes and a wrong one
@@ -348,10 +348,10 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   "${setup[@]}" \
   --command "$lib; running && systemctl is-active boot-complete.target && systemctl is-active nyra-health-system.service && systemctl is-active nyra-updated.timer" \
   --command 'systemd-analyze security --no-pager nyra-updated.service | tail -1; /usr/libexec/nyra-updated check-config' \
-  --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version' && install_refused 2026.10.600 'updates are not configured'" \
+  --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version' && without_key install_refused 2026.10.600 'updates are not configured'" \
   --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_cases" \
   --command 'bootc status --format json' \
-  --command "$lib; run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
+  --command "$lib; without_key run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \
   --command 'mkdir -p /etc/systemd/system/systemd-networkd.service.d && printf "[Service]\nEnvironment=SYSTEMD_LOG_LEVEL=debug\n" > /etc/systemd/system/systemd-networkd.service.d/50-ci-debug.conf' \
   --command "$lib; refused_switch updates.nyraos.com/nyra-base:v0 'A signature was required, but no signature exists'" \

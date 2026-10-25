@@ -69,6 +69,16 @@ run_check() { # nyra-updated check, as the timer starts it; prints last-check.js
 	return $rc
 }
 
+without_key() { # without_key COMMAND...: COMMAND runs with an empty channel sheet key file (a bind mount over the
+	# image's real key, undone afterwards): the fail-closed case of an image with no key
+	key=/usr/lib/nyra/updates/channel-sheet.pem
+	: >/run/nyra-test-no-key && mount --bind /run/nyra-test-no-key "$key" || return 1
+	"$@"
+	rc=$?
+	umount "$key"
+	return $rc
+}
+
 outcome() { # outcome SHEET PATTERN: the check succeeds with a result matching PATTERN
 	select_sheet "$1" && run_check && grep -q -- "$2" /var/lib/nyra-updated/last-check.json
 }
