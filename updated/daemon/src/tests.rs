@@ -2726,7 +2726,7 @@ mod install_tests {
         let other = dir.0.join("install.tmp");
         fs::write(&other, "other").unwrap();
         write_stage(&stage, Stage::Checking);
-        write_result(&result, A, &Ok(String::new()));
+        write_result(&result, "2026.10.1", &Ok(String::new()));
         assert_eq!(fs::read_to_string(&other).unwrap(), "other");
         assert!(stage.exists() && result.exists());
     }
