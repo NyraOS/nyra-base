@@ -107,6 +107,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod available;
 pub mod install;
 pub mod system;
 

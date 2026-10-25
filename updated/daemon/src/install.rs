@@ -22,6 +22,7 @@ use nyra_channel_sheet::{verify, Image, Sheet};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// The signer of a machine that was installed before the real address was committed.
@@ -49,6 +50,36 @@ pub fn check_version(v: &str) -> Result<(), Error> {
     Err(Error::Config(
         "not a release version: expected YEAR.MONTH.BUILD, for example 2026.10.600".into(),
     ))
+}
+
+/// Where an `install` leaves its result for the administrator who started it (`nyra update`), who
+/// can read neither the journal nor `bootc status`. On `/run`: it is gone at the next boot, which
+/// is when a staged version stops being staged.
+pub const RESULT: &str = "/run/nyra-updated-install.result";
+
+/// The one line of the result: `staged VERSION`, or `failed VERSION` and the reason.
+pub fn result_line(version: &str, outcome: &Result<String, Error>) -> String {
+    match outcome {
+        Ok(_) => format!("staged {version}"),
+        Err(e) => format!("failed {version} {}", crate::one_line(&e.to_string())),
+    }
+}
+
+/// Writes the result for everybody to read (mode 0644 although the unit's umask is 0077). A version
+/// that is not one is not written: the line is read back by a program. Best effort, like the
+/// notice of a failed health check: a result that can not be written does not change the outcome.
+pub fn write_result(path: &Path, version: &str, outcome: &Result<String, Error>) {
+    if !is_version(version) {
+        return;
+    }
+    let tmp = path.with_extension("tmp");
+    let line = format!("{}\n", result_line(version, outcome));
+    let written = fs::write(&tmp, line)
+        .and_then(|()| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)))
+        .and_then(|()| fs::rename(&tmp, path));
+    if let Err(e) = written {
+        eprintln!("<4>nyra-updated: {}: {e}", path.display());
+    }
 }
 
 /// Where the signature policy lives and who could replace it.

@@ -799,6 +799,11 @@ Each line is something that broke or surprised us once.
   `polkit.message` differs ("Authentication is required to start transient unit '$(unit)'."), so the rule
   matches the plain start's text exactly (a changed text refuses the install, which the typed-password
   VM case sees). A refusal that is `Interactive authentication required` is a challenge, not a refusal.
+- An administrator in the group `sudo` alone can read neither the journal nor `bootc status`, and
+  `systemctl start` of a one-shot unit prints nothing while it runs: a command that starts a unit as
+  the user must show its own progress and read back the unit's result from a file the unit writes
+  for everybody (on `/run`; the state directory is 0700). The exit status of `systemctl start` is the
+  outcome; the file only says why.
 - polkit counts a session as local only when it has a seat: a logind session without one
   (`systemd-run -p PAMName=login --uid=USER`) is `Active=yes` for logind but gets a policy's
   `allow_any` answer, and `-p TTYPath=` does not give it a seat either. A login on a virtual

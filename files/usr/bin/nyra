@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nyra update: tells an administrator which system version is available and installs it after a
+# yes (docs/UPDATES.md, "Updating from a terminal as an administrator"). It needs no sudo and does no
+# work as root itself: `nyra-updated available` (any user) finds the version, and `systemctl start`
+# of nyra-updated-install@VERSION.service installs it, after polkit asks for the administrator's own
+# password through systemctl's agent on this terminal. It never restarts the computer.
+# An administrator can read neither the journal nor bootc's status, so the program leaves its result
+# in a file everybody can read (RESULT), which this reads back.
+set -eu
+
+RESULT=/run/nyra-updated-install.result
+
+if [ "$#" != 1 ] || [ "$1" != update ]; then
+	echo "Usage: nyra update" >&2
+	exit 2
+fi
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+	echo "Run this in a terminal: it asks a question and a password." >&2
+	exit 1
+fi
+
+case " $(id -nG) " in
+*" sudo "*) ;;
+*)
+	echo "Only an administrator can update the system." >&2
+	exit 1
+	;;
+esac
+
+# The reason is printed by nyra-updated, in one line.
+available="$(/usr/libexec/nyra-updated available)" || exit 1
+# shellcheck source=/dev/null
+installed="$(. /usr/lib/os-release && echo "$IMAGE_VERSION")"
+
+if [ -z "$available" ]; then
+	echo "The system is up to date. Version $installed is installed."
+	exit 0
+fi
+
+# Staged by an earlier run of this command since the last restart, and still what the channel offers.
+if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available" ]; then
+	echo "Version $available is already installed. Restart when you are ready to finish the update."
+	exit 0
+fi
+
+printf 'Version %s is installed. %s is available. Install it? [y/N] ' "$installed" "$available"
+answer=n
+read -r answer || true
+case "$answer" in
+y | Y | yes | YES | Yes) ;;
+*)
+	echo "Nothing was installed."
+	exit 0
+	;;
+esac
+
+marker="$(mktemp)"
+trap 'rm -f "$marker"' EXIT
+echo "Downloading and preparing version $available. This can take a few minutes."
+if ! systemctl start "nyra-updated-install@$available.service"; then
+	# The program's reason, if it wrote one during this run (not an older one: the start may have been refused).
+	reason=
+	if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
+		reason="$(sed -n 's/^failed [^ ]* //p' "$RESULT")"
+	fi
+	echo "The update was not installed${reason:+: $reason}." >&2
+	exit 1
+fi
+echo "Installed. Restart when you are ready to finish the update."

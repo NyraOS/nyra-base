@@ -399,7 +399,7 @@ names the signature, which counts as a refusal (the prudent side as well).
 
 On an installed system root has no password and there is no root shell (docs/DEFAULTS.md, "su"), so
 nobody can run `bootc switch` by hand. An administrator (the user the installer made, a member of
-the group `sudo`) stages a release with one command, naming the version:
+the group `sudo`) runs `nyra update` (below). Under it is one command that names the version:
 
 ```sh
 systemctl start nyra-updated-install@2026.10.600.service
@@ -448,6 +448,34 @@ message of `systemctl start` and nothing else (a transient unit runs any command
 password is polkit's usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md, "Passwords through
 polkit"), and this is the one action there that a password approves; polkit's administrator is root
 alone, so this explicit rule, not the group `sudo`, is what lets the member of `sudo` through.
+
+**`nyra update`** (`/usr/bin/nyra`, a short shell script) is what an administrator types. It needs no
+`sudo` and does nothing as root itself. It says which version is installed and which one is available,
+asks `Install it? [y/N]`, then starts the unit above with `systemctl start`, so polkit asks for the
+password through systemctl's own agent on the terminal, and ends with "Installed. Restart when you are
+ready to finish the update." It never restarts the computer. It refuses with one line when it is not
+run on a terminal, by a member of `sudo` (polkit still refuses a session that is not local and active,
+for instance over SSH), or when the update is not possible. Run again after an install, it says that
+the version waits for the restart.
+
+- **The newest version** comes from `nyra-updated available`, which any user can run and which writes
+  nothing (no lock, nothing under `/var/lib`). It fetches the channel sheet and verifies it as a check
+  does (the mandatory key, the signature, repository and channel, the validity time) and prints the
+  sheet's `current` version when it is newer than `IMAGE_VERSION` of `/usr/lib/os-release`; a halted
+  sheet, a sheet that does not verify, a missing key or no network is one plain sentence and a failure.
+  It is an offer, not a decision: a user can not read the daemon's state (`/var/lib/nyra-updated` is 0700:
+  the sequence of the last sheet, retracted and failed versions, a channel chosen with `set-channel`) or
+  run `bootc status`, so `install` repeats every check with them as root and has the last word. A
+  version it refuses is reported with its reason. The offer ignores the gradual rollout (a machine whose
+  group is not reached yet is offered `current` too, as `install` accepts it). What a check stored is not used: a stored value would
+  be an offer that was not verified now.
+- **The result** of `install` is written, success or failure, as one line to
+  `/run/nyra-updated-install.result` (mode 0644, gone at the next boot, which is when a staged version
+  stops being staged): `staged VERSION` or `failed VERSION` and the reason. An administrator reads
+  neither the journal nor `bootc status`, so `nyra update` shows the reason from this file when the
+  install failed during this run (not an older line), and uses `staged VERSION` for "already installed".
+  The progress line before the wait ("Downloading and preparing ...") is the wrapper's: the unit prints
+  nothing a user can see.
 
 ## Moving a machine to updates.nyraos.com
 
