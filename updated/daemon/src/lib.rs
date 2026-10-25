@@ -548,14 +548,26 @@ impl Store {
 /// The longest message written to the journal or to `last-check.json`, in characters.
 pub const MAX_MESSAGE: usize = 2000;
 
+/// Unicode format characters (category Cf) that can reorder or hide text on a terminal.
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+}
+
 /// `text` as one line that is safe to log and store: what bootc and curl print can come from the
 /// registry or the server, and a control character (a newline followed by `<0>`, an escape
-/// sequence) would forge journal lines or garble a terminal. Control characters become spaces, and
+/// sequence, a character that reorders text) would forge journal lines or garble a terminal. Control
+/// characters and Unicode format characters become spaces, and
 /// the text is cut at [`MAX_MESSAGE`] characters.
 pub fn one_line(text: &str) -> String {
     let mut line: String = text
         .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || is_format(c) {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(MAX_MESSAGE)
         .collect();
     if text.chars().nth(MAX_MESSAGE).is_some() {

@@ -18,7 +18,7 @@
 
 use nyra_updated::available::{available, installed_version, NOT_SET_UP};
 use nyra_updated::install::{check_version, install, write_result, PolicyFiles, RESULT};
-use nyra_updated::system::{run as run_limited, Real, SHORT};
+use nyra_updated::system::{fetch_sheet_clean, run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
     System, NOT_CONFIGURED,
@@ -61,7 +61,7 @@ fn available_once(now: u64) -> Result<Option<String>, Error> {
     let os_release = std::fs::read_to_string(OS_RELEASE).unwrap_or_default();
     let installed = installed_version(&os_release)
         .ok_or_else(|| Error::Config("The installed version is not known.".into()))?;
-    available(&mut Real::default(), &cfg, &installed, now)
+    available(fetch_sheet_clean, &cfg, &installed, now)
 }
 
 /// One update check, with the lock held (`run`).

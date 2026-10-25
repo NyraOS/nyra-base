@@ -314,9 +314,9 @@ polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmi
 # The password of vmadmin, a member of sudo (polkit_cases sets it).
 admin_pw=correct-test-password-1
 
-nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC: USER logs in on a virtual console (a local, active
+nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD]: USER logs in on a virtual console (a local, active
 	# session) and runs `nyra update` on a terminal, as an administrator does: ANSWER is typed at the question,
-	# and USER's own password (admin_pw) at the password prompt that systemctl's agent shows. The output goes to
+	# and USER's own password (admin_pw, or PASSWORD) at the password prompt that systemctl's agent shows. The output goes to
 	# /var/tmp/nyra-update.out; the exit status must be WANT_RC.
 	session_of "$1" || return 1
 	scope="$(sed -n 's|^0::||p' "/proc/$pid/cgroup")"
@@ -358,7 +358,7 @@ else:
     os.kill(agent, 9)
     os.waitpid(agent, 0)
     sys.exit(124)
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "$admin_pw" >/var/tmp/nyra-update.out
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "${4:-$admin_pw}" >/var/tmp/nyra-update.out
 	rc=$?
 	cat /var/tmp/nyra-update.out
 	echo "nyra update as $1: $rc, wanted $3"

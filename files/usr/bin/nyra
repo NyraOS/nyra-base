@@ -7,9 +7,18 @@
 # password through systemctl's agent on this terminal. It never restarts the computer.
 # An administrator can read neither the journal nor bootc's status, so the program leaves its result
 # in a file everybody can read (RESULT), which this reads back.
+# Everything that carries data is printed with printf '%s': dash's echo would act on a backslash in it.
 set -eu
 
+PATH=/usr/bin:/bin
+export PATH
+
 RESULT=/run/nyra-updated-install.result
+
+restart_note() { # the same two lines whenever a version waits for the restart
+	printf 'Restart with `systemctl reboot` when you are ready to finish the update.\n'
+	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost and has to be prepared again.\n'
+}
 
 if [ "$#" != 1 ] || [ "$1" != update ]; then
 	echo "Usage: nyra update" >&2
@@ -32,18 +41,21 @@ esac
 # The reason is printed by nyra-updated, in one line.
 available="$(/usr/libexec/nyra-updated available)" || exit 1
 # shellcheck source=/dev/null
-installed="$(. /usr/lib/os-release && echo "$IMAGE_VERSION")"
+installed="$(. /usr/lib/os-release && printf '%s' "$IMAGE_VERSION")"
 
 if [ -z "$available" ]; then
-	echo "The system is up to date. Version $installed is installed."
+	printf 'The system is up to date. Version %s is installed.\n' "$installed"
 	exit 0
 fi
 
-# Staged by an earlier run of this command since the last restart, and still what the channel offers.
-if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available" ]; then
-	echo "Version $available is already installed. Restart when you are ready to finish the update."
+# Prepared by an earlier run since the last restart, and still what the channel offers.
+case "$(cat "$RESULT" 2>/dev/null)" in
+"staged $available" | "staged $available already")
+	printf 'Version %s is already prepared.\n' "$available"
+	restart_note
 	exit 0
-fi
+	;;
+esac
 
 printf 'Version %s is installed. %s is available. Install it? [y/N] ' "$installed" "$available"
 answer=n
@@ -57,15 +69,27 @@ y | Y | yes | YES | Yes) ;;
 esac
 
 marker="$(mktemp)"
-trap 'rm -f "$marker"' EXIT
-echo "Downloading and preparing version $available. This can take a few minutes."
-if ! systemctl start "nyra-updated-install@$available.service"; then
-	# The program's reason, if it wrote one during this run (not an older one: the start may have been refused).
-	reason=
+errors="$(mktemp)"
+trap 'rm -f "$marker" "$errors"' EXIT
+printf 'Downloading and preparing version %s. This can take a few minutes.\n' "$available"
+# systemctl's own messages go to a file: its password prompt is on the terminal, not on stderr.
+if ! systemctl start "nyra-updated-install@$available.service" 2>"$errors"; then
 	if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
+		# The program's reason, written during this run (an older line may belong to another run).
 		reason="$(sed -n 's/^failed [^ ]* //p' "$RESULT")"
+		reason="${reason%.}"
+		printf 'The update was not installed: %s.\n' "$reason" >&2
+	elif grep -qiE 'access denied|authenticat|not authorized' "$errors"; then
+		echo "Nothing was installed: the password was not accepted, the question was cancelled, or this is not a session at the computer itself." >&2
+	else
+		cat "$errors" >&2
+		echo "The update was not installed." >&2
 	fi
-	echo "The update was not installed${reason:+: $reason}." >&2
 	exit 1
 fi
-echo "Installed. Restart when you are ready to finish the update."
+if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available already" ]; then
+	printf 'Version %s was already prepared.\n' "$available"
+else
+	printf 'Installed version %s.\n' "$available"
+fi
+restart_note
