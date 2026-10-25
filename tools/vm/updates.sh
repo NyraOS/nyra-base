@@ -132,7 +132,9 @@ for s in pe.sections:
             f.write(s.get_data()[:s.Misc_VirtualSize])
 EOF
 version() { # version NAME VERSION [Containerfile lines]
-  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version && sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=%s/" /usr/lib/os-release && echo "stage_timeout_seconds = 90" >> /usr/lib/nyra/updates/updated.conf\n%s\n' \
+  # The version is written to os-release in a layer of its own: the corruption tests below need it once
+  # in the layer that holds /usr/lib/nyra-test-version (the last RUN, see top).
+  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=%s/" /usr/lib/os-release\nRUN echo %s > /usr/lib/nyra-test-version && echo "stage_timeout_seconds = 90" >> /usr/lib/nyra/updates/updated.conf\n%s\n' \
     "$image" "$2" "$2" "${3:-}" >"$u/Containerfile.$1"
   sudo podman build -q -t "localhost/nyra-test:$1-rootfs" -f "$u/Containerfile.$1" "$u/context" >/dev/null
   mkdir -p "$u/$1-uki"
