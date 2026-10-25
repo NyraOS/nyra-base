@@ -194,6 +194,19 @@ pub fn curl(url: &str) -> Command {
     cmd
 }
 
+/// The channel sheet for a user's program (`nyra-updated available`): the same command as
+/// [`System::fetch_sheet`], run with an empty environment, so that the offer does not depend on the
+/// proxy or certificate variables of the user who asked (the daemon runs without them too).
+pub fn fetch_sheet_clean(url: &str) -> Result<Vec<u8>, Error> {
+    let mut cmd = curl(url);
+    cmd.env_clear().env("PATH", "/usr/bin:/bin");
+    let sheet = run_ok(&mut cmd, SHORT)?;
+    if sheet.len() > MAX_ENVELOPE_BYTES {
+        return Err(Error::Sheet(nyra_channel_sheet::Error::TooLarge));
+    }
+    Ok(sheet)
+}
+
 /// `systemd-bless-boot status`: the booted entry still counts tries. `indeterminate` while tries
 /// are left, `dirty` on the last one (seen in the VM on the third try), `bad` once marked bad.
 pub fn on_trial(bless_status: &str) -> bool {

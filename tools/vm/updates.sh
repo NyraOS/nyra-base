@@ -19,15 +19,19 @@
 #      set up; unsigned and wrongly signed refused; `nyra-updated install` refuses a bad argument and,
 #      without a sheet key, everything; polkit's answers for the install unit (outside a local active
 #      session, even a sudo member gets no; in one, the member's own password gives yes and a wrong one
-#      does not; another unit or verb, systemd-run and run0: no); switch to v0 from another registry
+#      does not; another unit or verb, systemd-run and run0: no); `nyra update` without a sheet key, as
+#      a user who is not an administrator and without a terminal; switch to v0 from another registry
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
 #   3  v1: a sheet signed with another key refused; `install` refuses the stand-in policy; power cut while v2 downloads (throttled link)
 #   4  v1: v2 staged again; power cut before the staged version is finalized
 #   5  v1: v2 staged again, after a copy of /etc (nyra-updated makes one before it stages); clean
 #      shutdown
 #   6  power cut when v2's kernel starts (first try)
-#   7  v2, second try, blessed; v4 staged, then retracted: discarded (never finalized); v11
-#      staged by hand afterwards (discarded at shutdown too)
+#   7  v2, second try, blessed; `nyra update` as an administrator without journal access (up to date,
+#      a halted or unverifiable sheet refused, the question declined, the install refused by the stand-in
+#      policy with its reason shown, a staged version through the unit and polkit's password); v4
+#      staged, then retracted: discarded (never finalized); v11 staged by hand afterwards (discarded at
+#      shutdown too)
 #   8  v2 again (boot order kept, no staged entries left); v3 staged
 #   9  v3 fails its health check and reboots by itself, three times; systemd-boot falls back to v2;
 #      v3 is marked failed, and bootc's order, which still has v3 first, is set right (rule 11); v3
@@ -128,8 +132,10 @@ for s in pe.sections:
             f.write(s.get_data()[:s.Misc_VirtualSize])
 EOF
 version() { # version NAME VERSION [Containerfile lines]
-  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN echo %s > /usr/lib/nyra-test-version && echo "stage_timeout_seconds = 90" >> /usr/lib/nyra/updates/updated.conf\n%s\n' \
-    "$image" "$2" "${3:-}" >"$u/Containerfile.$1"
+  # The version is written to os-release in a layer of its own: the corruption tests below need it once
+  # in the layer that holds /usr/lib/nyra-test-version (the last RUN, see top).
+  printf 'FROM %s\nRUN rm -rf /boot/EFI\nCOPY channel-sheet.pem /usr/lib/nyra/updates/channel-sheet.pem\nRUN sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=%s/" /usr/lib/os-release\nRUN echo %s > /usr/lib/nyra-test-version && echo "stage_timeout_seconds = 90" >> /usr/lib/nyra/updates/updated.conf\n%s\n' \
+    "$image" "$2" "$2" "${3:-}" >"$u/Containerfile.$1"
   sudo podman build -q -t "localhost/nyra-test:$1-rootfs" -f "$u/Containerfile.$1" "$u/context" >/dev/null
   mkdir -p "$u/$1-uki"
   sudo podman run --rm --network none --tmpfs /tmp --tmpfs /var/tmp \
@@ -202,13 +208,16 @@ old="sha256:$(printf '%064d' 1)" # 2026.9.1, below the version floor; never pull
 
 # --- signed channel sheets -------------------------------------------------------------------------
 sheet() { # sheet NAME KEY SEQUENCE CURRENT_DIGEST CURRENT_VERSION RETRACTED_DIGEST...
+  # With PREVIOUS_DIGEST and PREVIOUS_VERSION set the sheet has a previous version and is halted.
   local name="$1" key="$2" seq="$3" digest="$4" ver="$5" now type=application/vnd.nyra.channel-sheet.v1+json
   shift 5
   now="$(date +%s)"
   jq -cnj --argjson seq "$seq" --argjson now "$now" --arg d "$digest" --arg v "$ver" \
+    --arg pd "${PREVIOUS_DIGEST:-}" --arg pv "${PREVIOUS_VERSION:-}" \
     '{schema: 1, repository: "nyra-base", channel: "stable", sequence: $seq, issued_at: $now,
-      expires_at: ($now + 604800), current: {digest: $d, version: $v}, previous: null,
-      percent: 100, halted: false, retracted: $ARGS.positional}' --args "$@" >"$u/payload"
+      expires_at: ($now + 604800), current: {digest: $d, version: $v},
+      previous: (if $pd == "" then null else {digest: $pd, version: $pv} end),
+      percent: 100, halted: ($pd != ""), retracted: $ARGS.positional}' --args "$@" >"$u/payload"
   { printf 'DSSEv1 %d %s %d ' ${#type} "$type" "$(wc -c <"$u/payload")"; cat "$u/payload"; } >"$u/pae"
   openssl pkeyutl -sign -inkey "$u/$key.key" -rawin -in "$u/pae" -out "$u/sig"
   jq -cn --arg t "$type" --arg p "$(base64 -w0 <"$u/payload")" --arg s "$(base64 -w0 <"$u/sig")" \
@@ -217,6 +226,7 @@ sheet() { # sheet NAME KEY SEQUENCE CURRENT_DIGEST CURRENT_VERSION RETRACTED_DIG
 sheet s1 sheet 100 "$d2" 2026.10.2
 sheet wrong wrong 100 "$d2" 2026.10.2
 sheet s2 sheet 200 "$d4" 2026.10.4
+PREVIOUS_DIGEST="$d1" PREVIOUS_VERSION=2026.10.1 sheet halted sheet 250 "$d4" 2026.10.4
 sheet s3 sheet 300 "$d2" 2026.10.2 "$d4"
 sheet s4 sheet 400 "$d3" 2026.10.3 "$d4"
 sheet s8 sheet 450 "$d8" 2026.10.8 "$d4"
@@ -350,6 +360,7 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   --command 'systemd-analyze security --no-pager nyra-updated.service | tail -1; /usr/libexec/nyra-updated check-config' \
   --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version' && without_key install_refused 2026.10.600 'updates are not configured'" \
   --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_cases" \
+  --command "$lib; without_key nyra_update_session vmadmin y 1 && said 'Updates are not set up on this system.' && nyra_update_refused" \
   --command 'bootc status --format json' \
   --command "$lib; without_key run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \
@@ -395,8 +406,12 @@ vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command "$lib; expect booted $d2 && running && blessed" \
   --command 'journalctl -b -u systemd-bless-boot -o cat --no-pager' \
-  --command "$lib; outcome s1 UpToDate" \
-  --command "$lib; outcome s2 Staged && expect staged $d4" \
+  --command "$lib; outcome s1 UpToDate && nyra_update_session vmadmin y 0 && said 'The system is up to date. Version 2026.10.2 is installed.'" \
+  --command "$lib; select_sheet halted && nyra_update_session vmadmin y 1 && said 'Updates are paused.' && select_sheet wrong && nyra_update_session vmadmin y 1 && said 'The update information could not be verified.' && expect staged none" \
+  --command "$lib; select_sheet s2 && nyra_update_session vmadmin n 0 && said 'Version 2026.10.2 is installed. 2026.10.4 is available. Install it? [y/N]' && said 'Nothing was installed.' && expect staged none" \
+  --command "$lib; nyra_update_session vmadmin y 1 wrong-password && said 'Nothing was installed: the password was not accepted' && expect staged none" \
+  --command "$lib; nyra_update_session vmadmin y 1 && said 'Downloading and preparing version 2026.10.4.' && said \"The update was not installed: refusing: the signature policy is not the image's\" && journalctl -u nyra-updated-install@2026.10.4.service -o cat --no-pager | grep -F \"signature policy is not the image's\" && expect staged none && test \"\$(stat -c %a /run/nyra-updated-install.result)\" = 644 && grep -q '^failed 2026.10.4 ' /run/nyra-updated-install.result && test -z \"\$(runuser -u vmadmin -- journalctl -b -u nyra-updated-install@2026.10.4.service -o cat 2>/dev/null)\"" \
+  --command "$lib; install_unit_checks && nyra_update_session vmadmin y 0; rc=\$?; install_unit_restored && [ \$rc = 0 ] && said 'Installed version 2026.10.4.' && said 'Do not force-reset the computer' && expect staged $d4 && echo 'staged 2026.10.4' > /run/nyra-updated-install.result && nyra_update_session vmadmin n 0 && said 'Version 2026.10.4 is already prepared.' && said 'Do not force-reset the computer'; rc=\$?; rm -f /run/nyra-updated-install.result; [ \$rc = 0 ]" \
   --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
   --command 'bootc status --format json' \
   --command "$lib; bootc switch --quiet other.test/nyra-base:v11 && expect staged $d11 && ls /boot/loader/entries.staged"

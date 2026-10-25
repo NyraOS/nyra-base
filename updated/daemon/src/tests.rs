@@ -1833,6 +1833,8 @@ fn what_bootc_and_curl_print_is_logged_and_stored_as_one_short_line() {
         one_line("pull failed: denied\n<0>nyra-updated check: UpToDate\r\u{1b}[2J\t."),
         "pull failed: denied <0>nyra-updated check: UpToDate  [2J ."
     );
+    // Characters that reorder text (right-to-left override, isolates) or hide it (zero width).
+    assert_eq!(one_line("a\u{202e}b\u{2066}c\u{200b}d\u{feff}"), "a b c d ");
     let long = "é".repeat(MAX_MESSAGE + 1);
     let line = one_line(&long);
     assert_eq!(line.chars().count(), MAX_MESSAGE + 1);
@@ -2662,6 +2664,48 @@ mod install_tests {
     }
 
     #[test]
+    fn the_result_is_one_line_readable_by_everybody() {
+        use crate::install::{result_line, write_result};
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            result_line("2026.10.2", &Ok("long text".into())),
+            "staged 2026.10.2"
+        );
+        let refused = Err(Error::Config("refusing: not\nnewer".into()));
+        assert_eq!(
+            result_line("2026.10.2", &refused),
+            "failed 2026.10.2 refusing: not newer"
+        );
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join("result");
+        write_result(&path, "2026.10.2", &refused);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "failed 2026.10.2 refusing: not newer\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        // Not a version: nothing is written, and the older result stays.
+        write_result(&path, "x;reboot", &Ok(String::new()));
+        assert!(fs::read_to_string(&path).unwrap().starts_with("failed"));
+    }
+
+    #[test]
+    fn a_version_that_is_staged_already_is_not_pulled_again() {
+        use crate::install::result_line;
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        fake.status.staged = dep(B);
+        let m = installed(&mut fake, &dir, "2026.10.2").unwrap();
+        assert!(m.starts_with("already staged"), "{m}");
+        assert_eq!(fake.calls, [format!("fetch {SHEET_URL}")]);
+        assert_eq!(result_line("2026.10.2", &Ok(m)), "staged 2026.10.2 already");
+    }
+
+    #[test]
     fn what_bootc_staged_must_be_the_digest_of_the_sheet() {
         // The registry answered with another image than the sheet's digest: discarded.
         let dir = TempDir::new();
@@ -2866,5 +2910,140 @@ mod install_tests {
         assert!(limit > STAGE_TIMEOUT + 4 * SHORT, "{limit:?}");
         assert!(unit.contains("ExecStart=/usr/libexec/nyra-updated install %i\n"));
         assert!(!unit.contains("%I"), "the escaped instance only");
+    }
+}
+
+mod available_tests {
+    use super::*;
+    use crate::available::{available, installed_version};
+
+    /// What the fake server answers, and the addresses that were asked for.
+    struct Server {
+        sheet: Vec<u8>,
+        error: Option<Error>,
+        asked: Vec<String>,
+    }
+
+    fn server(sheet: Vec<u8>) -> Server {
+        Server {
+            sheet,
+            error: None,
+            asked: Vec::new(),
+        }
+    }
+
+    fn offer(server: &mut Server, installed: &str) -> Result<Option<String>, Error> {
+        let fetch = |url: &str| {
+            server.asked.push(url.into());
+            match server.error.clone() {
+                Some(e) => Err(e),
+                None => Ok(server.sheet.clone()),
+            }
+        };
+        available(fetch, &config(), installed, NOW)
+    }
+
+    fn halted_sheet() -> Vec<u8> {
+        let mut p = payload(100, C, &[]);
+        p["previous"] = json!({"digest": B, "version": version(B)});
+        p["halted"] = json!(true);
+        sign(&p)
+    }
+
+    #[test]
+    fn the_installed_version_is_the_image_version_of_os_release() {
+        let os = "NAME=\"Nyra OS\"\nIMAGE_VERSION=2026.10.686\nLOGO=nyra-logo\n";
+        assert_eq!(installed_version(os).as_deref(), Some("2026.10.686"));
+        assert_eq!(
+            installed_version("IMAGE_VERSION=\"2026.10.7\"\n").as_deref(),
+            Some("2026.10.7")
+        );
+        for bad in ["", "IMAGE_VERSION=dev\n", "IMAGE_VERSION=\n", "NAME=x\n"] {
+            assert_eq!(installed_version(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_newer_version_is_offered_and_nothing_is_written() {
+        let dir = TempDir::new();
+        let mut fake = server(sheet(100, B, &[]));
+        assert_eq!(offer(&mut fake, "2026.10.1"), Ok(Some("2026.10.2".into())));
+        // Only the sheet is fetched; no state directory, no staging.
+        assert_eq!(fake.asked, [SHEET_URL]);
+        assert!(!dir.store().dir.exists());
+    }
+
+    #[test]
+    fn the_same_or_an_older_version_is_up_to_date() {
+        for installed in ["2026.10.2", "2026.10.3", "2027.1.1"] {
+            let mut fake = server(sheet(100, B, &[]));
+            assert_eq!(offer(&mut fake, installed), Ok(None), "{installed}");
+        }
+    }
+
+    #[test]
+    fn the_previous_version_is_never_offered() {
+        let mut p = payload(100, C, &[]);
+        p["previous"] = json!({"digest": B, "version": version(B)});
+        let mut fake = server(sign(&p));
+        assert_eq!(offer(&mut fake, "2026.10.1"), Ok(Some("2026.10.3".into())));
+    }
+
+    #[test]
+    fn a_halted_channel_offers_nothing() {
+        let mut fake = server(halted_sheet());
+        let e = offer(&mut fake, "2026.10.1").unwrap_err().to_string();
+        assert!(e.contains("paused"), "{e}");
+    }
+
+    #[test]
+    fn a_sheet_that_does_not_verify_offers_nothing() {
+        // Signed by another key, for another channel, expired, and not a sheet at all.
+        let other = {
+            let bytes = serde_json::to_vec(&payload(100, B, &[])).unwrap();
+            let sig = SigningKey::from_bytes(&[3; 32]).sign(&pae(PAYLOAD_TYPE, &bytes));
+            serde_json::to_vec(&json!({
+                "payloadType": PAYLOAD_TYPE,
+                "payload": BASE64.encode(&bytes),
+                "signatures": [{"keyid": "", "sig": BASE64.encode(sig.to_bytes())}]
+            }))
+            .unwrap()
+        };
+        let mut beta = payload(100, B, &[]);
+        beta["channel"] = json!("beta");
+        let mut expired = payload(100, B, &[]);
+        expired["issued_at"] = json!(NOW - 8 * DAY);
+        expired["expires_at"] = json!(NOW - DAY);
+        for envelope in [
+            other,
+            sign(&beta),
+            sign(&expired),
+            b"<html>log in</html>".to_vec(),
+        ] {
+            let mut fake = server(envelope);
+            let e = offer(&mut fake, "2026.10.1").unwrap_err().to_string();
+            assert!(!e.contains("2026.10.2"), "{e}");
+            assert!(e.starts_with("The update information"), "{e}");
+        }
+    }
+
+    #[test]
+    fn no_network_is_one_plain_sentence() {
+        let mut fake = server(sheet(100, B, &[]));
+        fake.error = Some(Error::Command("curl: (6) Could not resolve host".into()));
+        let e = offer(&mut fake, "2026.10.1").unwrap_err().to_string();
+        assert!(e.starts_with("Could not reach the update server"), "{e}");
+        assert!(!e.contains("curl"), "{e}");
+    }
+
+    #[test]
+    fn a_signed_version_that_is_not_a_release_is_not_offered() {
+        for v in ["1.2.3", "2026.10.0600", "2026.10"] {
+            let mut p = payload(100, B, &[]);
+            p["current"]["version"] = json!(v);
+            let mut fake = server(sign(&p));
+            let e = offer(&mut fake, "2026.10.1");
+            assert!(e.is_err(), "{v}: {e:?}");
+        }
     }
 }

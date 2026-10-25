@@ -401,7 +401,7 @@ RUN --mount=type=tmpfs,dst=/run cd /usr/lib/systemd/system && \
       nyra-updated-health-failed.service nyra-health-system.service nyra-health-bootc.service nyra-health-network.service \
       systemd-bless-boot.service systemd-boot-random-seed.service apparmor.service ntpd-rs.service \
       serial-getty@ttyS0.service getty@tty1.service nyra-tty-hangup@ttyS0.service systemd-journal-flush.service && \
-    test -x /usr/lib/nyra/health/notice && test -x /usr/lib/nyra/health/network && /usr/libexec/nyra-updated check-config && \
+    test -x /usr/lib/nyra/health/notice && test -x /usr/lib/nyra/health/network && test -x /usr/bin/nyra && /usr/libexec/nyra-updated check-config && \
     grep -qx 'channel = stable' /usr/lib/nyra/updates/updated.conf
 
 # keyutils without its request-key upcall (mkosi/mkosi.conf, RemoveFiles=): only keyctl.

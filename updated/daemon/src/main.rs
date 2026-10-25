@@ -10,11 +10,15 @@
 //! - `check-config` (image build): the configuration parses and holds no test key;
 //! - `set-channel NAME` (root, by hand until Settings offers it): this machine follows channel
 //!   NAME from the next check on, whatever the image says (rule 14);
+//! - `available` (`nyra update`, run by any user): prints the newest version the verified channel
+//!   sheet offers when it is newer than the installed one, and changes nothing, see the `available`
+//!   module;
 //! - `install VERSION` (`nyra-updated-install@VERSION.service`, started by an administrator through
 //!   polkit): stages that release, never reboots, see the `install` module.
 
-use nyra_updated::install::{check_version, install, PolicyFiles};
-use nyra_updated::system::{run as run_limited, Real, SHORT};
+use nyra_updated::available::{available, installed_version, NOT_SET_UP};
+use nyra_updated::install::{check_version, install, write_result, PolicyFiles, RESULT};
+use nyra_updated::system::{fetch_sheet_clean, run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
     System, NOT_CONFIGURED,
@@ -27,6 +31,7 @@ const CONFIG: &str = "/usr/lib/nyra/updates/updated.conf";
 const KEYS: &str = "/usr/lib/nyra/updates/channel-sheet.pem";
 const STATE_DIR: &str = "/var/lib/nyra-updated";
 const LOCK: &str = "/run/nyra-updated.lock";
+const OS_RELEASE: &str = "/usr/lib/os-release";
 /// Writes what the user sees when the system stays up after a failed health check (docs/UPDATES.md).
 const NOTICE: &str = "/usr/lib/nyra/health/notice";
 
@@ -48,6 +53,15 @@ fn install_once(version: &str, now: u64) -> Result<String, Error> {
         stage_limit: cfg.stage_timeout,
     };
     install(&mut sys, &store, &cfg, now, version)
+}
+
+/// `available`: the version to print, if any. No lock and no state: it is run by a user.
+fn available_once(now: u64) -> Result<Option<String>, Error> {
+    let cfg = config()?.ok_or_else(|| Error::Config(NOT_SET_UP.into()))?;
+    let os_release = std::fs::read_to_string(OS_RELEASE).unwrap_or_default();
+    let installed = installed_version(&os_release)
+        .ok_or_else(|| Error::Config("The installed version is not known.".into()))?;
+    available(fetch_sheet_clean, &cfg, &installed, now)
 }
 
 /// One update check, with the lock held (`run`).
@@ -147,9 +161,13 @@ fn run(command: &str, arg: Option<&str>, now: u64) -> Result<(u8, bool, String),
             set_channel(&store, channel)?;
             Ok((6, true, format!("this machine follows channel {channel}")))
         }
-        ("install", Some(version)) => install_once(version, now).map(|m| (6, true, m)),
+        ("install", Some(version)) => {
+            let outcome = install_once(version, now);
+            write_result(Path::new(RESULT), version, &outcome);
+            outcome.map(|m| (6, true, m))
+        }
         _ => Err(Error::Config(
-            "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME|install VERSION"
+            "usage: nyra-updated check|health-failed|health|check-config|set-channel NAME|install VERSION|available"
                 .into(),
         )),
     }
@@ -166,6 +184,21 @@ fn main() -> ExitCode {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // For people, not for the journal: the version alone, or one sentence and a failure.
+    if command == "available" && arg.is_none() {
+        return match available_once(now) {
+            Ok(version) => {
+                if let Some(version) = version {
+                    println!("{version}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", one_line(&e.to_string()));
+                ExitCode::FAILURE
+            }
+        };
+    }
     // Every line is one_line: error messages carry what bootc and curl print.
     match run(command, arg, now) {
         Ok((priority, _, message)) => {

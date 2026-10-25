@@ -286,7 +286,7 @@ polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to
 
 polkit_cases() { # 49-nyra.rules: a member of sudo in a local and active session is asked for their own
 	# password to start the install unit; no seat, or not in sudo: no (1); root: yes (0)
-	pw=correct-test-password-1
+	pw=$admin_pw
 	echo "vmadmin:$pw" | chpasswd || return 1
 	process_of vmadmin && polkit_user 1 &&
 		process_of vmuser && polkit_user 1 &&
@@ -309,6 +309,92 @@ polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmi
 		polkit_diagnose
 		return 1
 	}
+}
+
+# The password of vmadmin, a member of sudo (polkit_cases sets it).
+admin_pw=correct-test-password-1
+
+nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD]: USER logs in on a virtual console (a local, active
+	# session) and runs `nyra update` on a terminal, as an administrator does: ANSWER is typed at the question,
+	# and USER's own password (admin_pw, or PASSWORD) at the password prompt that systemctl's agent shows. The output goes to
+	# /var/tmp/nyra-update.out; the exit status must be WANT_RC.
+	session_of "$1" || return 1
+	scope="$(sed -n 's|^0::||p' "/proc/$pid/cgroup")"
+	# shellcheck disable=SC2016 # the quoted script is Python
+	python3 -I -c 'import os, pty, pwd, select, sys, time
+scope, user, answer, password = sys.argv[1:5]
+agent, fd = pty.fork()
+if agent == 0:
+    # Into the scope of the login first (as root), so polkit sees a process of that session.
+    with open("/sys/fs/cgroup" + scope + "/cgroup.procs", "w") as f:
+        f.write(str(os.getpid()))
+    pw = pwd.getpwnam(user)
+    os.initgroups(user, pw.pw_gid)
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.environ.update(HOME=pw.pw_dir, USER=user, LOGNAME=user)
+    os.chdir(pw.pw_dir)
+    os.execvp("nyra", ["nyra", "update"])
+end = time.time() + 150
+seen = b""
+while time.time() < end:
+    if not select.select([fd], [], [], 1)[0]:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.flush()
+    seen += data
+    if b"[y/N]" in seen:
+        os.write(fd, answer.encode() + b"\n")
+        seen = b""
+    elif b"Password:" in seen:
+        time.sleep(0.3)  # the agent clears the terminal input right after it shows the prompt
+        os.write(fd, password.encode() + b"\n")
+        seen = b""
+else:
+    os.kill(agent, 9)
+    os.waitpid(agent, 0)
+    sys.exit(124)
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "${4:-$admin_pw}" >/var/tmp/nyra-update.out
+	rc=$?
+	cat /var/tmp/nyra-update.out
+	echo "nyra update as $1: $rc, wanted $3"
+	session_end
+	[ "$rc" = "$3" ]
+}
+
+install_unit_checks() { # nyra-updated-install@.service runs a check (it stages what the sheet offers): the
+	# install itself refuses the stand-in policy of this test (it is not the image's), so this is how the test
+	# reaches a staged version through polkit, the unit and `nyra update`
+	mkdir -p /run/systemd/system/nyra-updated-install@.service.d &&
+		printf '[Service]\nExecStart=\nExecStart=/usr/libexec/nyra-updated check\n' \
+			>/run/systemd/system/nyra-updated-install@.service.d/50-test-check.conf &&
+		systemctl daemon-reload
+}
+
+install_unit_restored() {
+	rm -rf /run/systemd/system/nyra-updated-install@.service.d
+	systemctl daemon-reload
+}
+
+said() { # said PATTERN: the last `nyra update` printed PATTERN (grep -F)
+	grep -qF -- "$1" /var/tmp/nyra-update.out
+}
+
+nyra_update_refused() { # nyra_update_refused: `nyra update` does nothing for what is not an administrator at a terminal
+	nyra_update_session vmuser n 1 && said 'Only an administrator can update the system.' || return 1
+	# In an administrator's session, but without a terminal: no question could be asked.
+	session_of vmadmin || return 1
+	in_session vmadmin 'nyra update' >/var/tmp/nyra-update.out 2>&1
+	rc=$?
+	cat /var/tmp/nyra-update.out
+	session_end
+	[ "$rc" = 1 ] && said 'Run this in a terminal' || return 1
+	nyra update bogus 2>/dev/null
+	[ $? = 2 ]
 }
 
 untrusted_tls() { # the sheet server's certificate is no longer trusted (a spoofed server)
