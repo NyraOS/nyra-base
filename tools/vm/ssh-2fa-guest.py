@@ -174,7 +174,7 @@ def console_login(user, password):
         os.execv("/bin/login", ["login", user])
     out = b""
 
-    def until(pattern, timeout=60):
+    def until(pattern, timeout=60, wait_for_login=False):
         nonlocal out
         end = time.monotonic() + timeout
         while not re.search(pattern, out) and time.monotonic() < end:
@@ -182,13 +182,19 @@ def console_login(user, password):
                 try:
                     chunk = os.read(fd, 4096)
                 except OSError:
+                    # login(1) calls vhangup() and opens the terminal again; for a moment nothing has
+                    # the slave side open, and reading the master fails (EIO) although login is alive.
+                    # Closing our side then would hang it up before it asks for the password.
+                    if wait_for_login:
+                        time.sleep(0.05)
+                        continue
                     break
                 if not chunk:
                     break
                 out += chunk
         return re.search(pattern, out)
 
-    ok = until(rb"Password: ?$") is not None
+    ok = until(rb"Password: ?$", wait_for_login=True) is not None
     if ok:
         os.write(fd, password.encode() + b"\n")
         ok = until(rb"[$#] $") is not None
