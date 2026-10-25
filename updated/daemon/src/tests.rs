@@ -2715,6 +2715,23 @@ mod install_tests {
     }
 
     #[test]
+    fn the_stage_and_the_result_do_not_share_a_temporary_file() {
+        use crate::install::{write_result, write_stage, Stage};
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        // The names of the real files differ only in their last part.
+        let stage = dir.0.join("install.stage");
+        let result = dir.0.join("install.result");
+        // A file another writer is in the middle of: neither write may take it.
+        let other = dir.0.join("install.tmp");
+        fs::write(&other, "other").unwrap();
+        write_stage(&stage, Stage::Checking);
+        write_result(&result, A, &Ok(String::new()));
+        assert_eq!(fs::read_to_string(&other).unwrap(), "other");
+        assert!(stage.exists() && result.exists());
+    }
+
+    #[test]
     fn the_download_is_announced_after_the_checks_and_only_when_it_happens() {
         use crate::install::Stage;
         let dir = TempDir::new();

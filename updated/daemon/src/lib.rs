@@ -549,9 +549,12 @@ impl Store {
 pub const MAX_MESSAGE: usize = 2000;
 
 /// Unicode format characters (category Cf) are invisible but change how text is shown: bidi
-/// overrides (U+202A-202E), isolates (U+2060-206F), zero-width characters (U+200B-200F), U+061C and
-/// the byte order mark (U+FEFF) can reorder or hide text ("Trojan Source"). The list is written by
-/// hand: std has no Cf test, and a crate for it would add a dependency. It covers the known ones.
+/// overrides and embeddings (U+202A-202E), bidi isolates (U+2066-2069), zero-width characters and
+/// direction marks (U+200B-200F), the Arabic letter mark (U+061C), the word joiner and invisible
+/// operators (U+2060-2064), the deprecated formatters (U+2065, U+206A-206F) and the byte order mark
+/// (U+FEFF) can reorder or hide text ("Trojan Source"). The list is written by hand: std has no Cf
+/// test, and a crate for it would add a dependency. It covers the common ones; the soft hyphen
+/// (U+00AD) and the tag characters (U+E0001, U+E0020-E007F) are Cf too and are not in it.
 fn is_format(c: char) -> bool {
     matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
 }

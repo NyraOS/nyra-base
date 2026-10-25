@@ -95,10 +95,13 @@ impl Stage {
 /// 0077, renamed over `path`. Best effort, like the notice of a failed health check: a line that can
 /// not be written does not change the outcome.
 fn write_for_everybody(path: &Path, line: &str) {
-    let tmp = path.with_extension("tmp");
-    let written = fs::write(&tmp, format!("{line}\n"))
-        .and_then(|()| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)))
-        .and_then(|()| fs::rename(&tmp, path));
+    // Its own temporary file: the stage and the result are written by different calls.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = Path::new(&tmp);
+    let written = fs::write(tmp, format!("{line}\n"))
+        .and_then(|()| fs::set_permissions(tmp, fs::Permissions::from_mode(0o644)))
+        .and_then(|()| fs::rename(tmp, path));
     if let Err(e) = written {
         eprintln!("<4>nyra-updated: {}: {e}", path.display());
     }

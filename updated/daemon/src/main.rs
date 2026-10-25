@@ -45,10 +45,11 @@ fn config() -> Result<Option<Config>, Error> {
 /// Updates must be configured, as for a check: without a sheet key nothing is installed.
 fn install_once(version: &str, now: u64) -> Result<String, Error> {
     check_version(version)?;
+    // The lock first, so that only the run that holds it writes the stage.
+    let _lock = Lock::acquire(Path::new(LOCK))?;
     write_stage(Path::new(STAGE), Stage::Checking);
     let cfg = config()?.ok_or_else(|| Error::Config(NOT_CONFIGURED.into()))?;
     PolicyFiles::system().check()?;
-    let _lock = Lock::acquire(Path::new(LOCK))?;
     let store = Store {
         dir: STATE_DIR.into(),
     };

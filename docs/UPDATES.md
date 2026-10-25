@@ -454,7 +454,8 @@ alone, so this explicit rule, not the group `sudo`, is what lets the member of `
 asks `Install it? [y/N]`, then starts the unit above with `systemctl start --no-block`, so polkit asks
 for the password through systemctl's own agent on the terminal and the job then runs on without the
 command. While it runs, one line on the terminal shows the stage and the time since the wait began,
-rewritten in place (`Downloading and preparing the update... 2:35`). It ends by telling the administrator to
+rewritten in place (`Downloading and preparing the update... 2:35`; on a terminal too narrow for
+it, the time alone, so that the line never wraps). It ends by telling the administrator to
 restart with `systemctl reboot` when ready, and not to force-reset the computer (for example with the
 Restart or Stop button of a virtual machine), or the update is lost and has to be prepared again. It
 never restarts the computer. It refuses with one line when it is not run on a terminal, by a member of
@@ -462,6 +463,9 @@ never restarts the computer. It refuses with one line when it is not run on a te
 the update is not possible. Run again while the version waits for the restart, it says so. Ctrl+C
 stops only the waiting: the install goes on, the command says so, and the next `nyra update` (while
 the install still runs) shows that install instead of asking again, without a new password.
+What it reports is only what the program wrote during this run (below), never the state of the
+unit: a unit whose dependency failed, or that root stopped, ends `inactive` with no result, and that
+is "The update was not installed."
 
 - **The newest version** comes from `nyra-updated available`, which any user can run and which writes
   nothing (no lock, nothing under `/var/lib`). It fetches the channel sheet (curl with an empty
@@ -492,7 +496,11 @@ the install still runs) shows that install instead of asking again, without a ne
   `Downloading and preparing the update` just before the pull (not when the version was staged
   before). The lines are fixed words, never text from bootc, curl or the registry. The wrapper polls
   the unit every second (a job is queued or running) and reads the stage only if the file was
-  written after the wrapper's own start, as it does for the result. There is no percentage:
+  written after the wrapper's own start, as it does for the result. An empty answer of `systemctl`
+  is not "finished": it is waited through, for 30 seconds at most. When the job has ended, the
+  wrapper waits up to 5 seconds for a result written during this run; without one, or with one for
+  another version, the update was not installed. The stage is written after the lock is taken, so
+  only the run that holds it writes it, and each file has a temporary file of its own. There is no percentage:
   bootc has a hidden `--progress-fd` that reports bytes as JSON lines, but it needs a pipe on a
   file descriptor that the daemon's `run` (which collects the output only at the end) does not give, and the
   VM test could not exercise it. The stage and the time are what is shown.

@@ -70,49 +70,99 @@ stop_waiting() {
 	exit 130
 }
 
-wait_for_unit() { # shows the stage and the time until the unit has no job any more
+terminal_width() { # sets width: the columns of the terminal, 80 when they are not known
+	width="$(stty size 2>/dev/null)"
+	width="${width#* }"
+	case "$width" in
+	'' | *[!0-9]*) width=80 ;;
+	esac
+	[ "$width" -gt 0 ] || width=80
+}
+
+# Shows the stage and the time until the unit has neither a job nor a state that says it works, then
+# the outcome. The outcome is only what the program wrote during this run (RESULT newer than the
+# marker, for this version): the state of the unit cannot say it, since a unit that was never run
+# (a mount it needs failed, root stopped it) is inactive too. An answer of systemctl that is empty
+# is not known, which is not finished: it is waited for, for 30 seconds at most.
+wait_for_unit() { # wait_for_unit STAGE: STAGE is shown until the program writes one
 	started="$(date +%s)"
 	# Ctrl+C stops the waiting only: systemd keeps the job.
 	trap stop_waiting INT
-	stage=Starting
-	while [ -n "$(systemctl show -p Job --value "$unit" 2>/dev/null)" ]; do
+	stage="$1"
+	unknown=0
+	while [ "$unknown" -lt 30 ]; do
+		info="$(systemctl show -p Job -p ActiveState "$unit" 2>/dev/null)" || info=
+		case "$info" in
+		*ActiveState=*) unknown=0 ;;
+		*)
+			unknown=$((unknown + 1))
+			sleep 1
+			continue
+			;;
+		esac
+		# A job, or the unit still working: it goes on.
+		case "$info" in
+		*Job=[0-9]* | *ActiveState=activating*) ;;
+		*) break ;;
+		esac
 		# Only a stage written during this run: an older line belongs to another one.
 		if [ -n "$(find "$STAGE" -newer "$marker" 2>/dev/null)" ]; then
 			stage="$(cat "$STAGE")"
 		fi
 		elapsed=$(($(date +%s) - started))
-		printf '\r\033[K%s... %d:%02d' "$stage" $((elapsed / 60)) $((elapsed % 60))
+		time="$(printf '%d:%02d' $((elapsed / 60)) $((elapsed % 60)))"
+		line="$stage... $time"
+		terminal_width
+		# A line as wide as the terminal would wrap, and the next \r would only reach its last row.
+		if [ "${#line}" -ge "$width" ]; then
+			line="$time"
+		fi
+		printf '\r\033[K%s' "$line"
 		sleep 1
 	done
 	trap - INT
 	printf '\r\033[K'
-}
-
-finish() { # the outcome of the unit, after wait_for_unit
-	if [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = failed ]; then
-		if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
-			# The program's reason, written during this run (an older line may belong to another run).
-			reason="$(sed -n 's/^failed [^ ]* //p' "$RESULT")"
-			reason="${reason%.}"
-			printf 'The update was not installed: %s.\n' "$reason" >&2
-		else
-			echo "The update was not installed." >&2
-		fi
+	if [ "$unknown" -ge 30 ]; then
+		echo "The update could not be followed. Run \`nyra update\` again to see how it went." >&2
 		exit 1
 	fi
-	if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available already" ]; then
-		printf 'Version %s was already prepared.\n' "$available"
-	else
-		printf 'Installed version %s.\n' "$available"
+	# The program writes its result before the unit ends; a few seconds of grace cover the rest.
+	for _ in 1 2 3 4 5; do
+		[ -z "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ] || break
+		sleep 1
+	done
+}
+
+finish() { # the outcome of this run, after wait_for_unit
+	result=
+	if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
+		result="$(cat "$RESULT" 2>/dev/null)" || result=
 	fi
-	restart_note
+	case "$result" in
+	"staged $available")
+		printf 'Installed version %s.\n' "$available"
+		restart_note
+		;;
+	"staged $available already")
+		printf 'Version %s was already prepared.\n' "$available"
+		restart_note
+		;;
+	"failed $available "*)
+		reason="${result#"failed $available "}"
+		printf 'The update was not installed: %s.\n' "${reason%.}" >&2
+		exit 1
+		;;
+	*)
+		echo "The update was not installed." >&2
+		exit 1
+		;;
+	esac
 }
 
 # A run that was started before, and left with Ctrl+C, is still going: show it instead of asking.
 if [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = activating ]; then
 	printf 'Version %s is being prepared.\n' "$available"
-	touch -d @0 "$marker"
-	wait_for_unit
+	wait_for_unit Preparing
 	finish
 	exit 0
 fi
@@ -140,5 +190,5 @@ if ! systemctl start --no-block "$unit" 2>"$errors"; then
 	exit 1
 fi
 printf 'Preparing version %s. This can take a few minutes; Ctrl+C stops only the waiting.\n' "$available"
-wait_for_unit
+wait_for_unit Starting
 finish

@@ -372,34 +372,59 @@ sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2"
 
 install_unit_checks() { # nyra-updated-install@.service runs a check (it stages what the sheet offers): the
 	# install itself refuses the stand-in policy of this test (it is not the image's), so this is how the test
-	# reaches a staged version through polkit, the unit and `nyra update`. The stand-in writes the two stage
-	# lines the install writes, in the same way, and takes a while in each, as a real install does.
+	# reaches a staged version through polkit, the unit and `nyra update`. The stand-in writes the stage lines
+	# and the result as the install writes them, and takes a while in each stage, as a real install does.
 	cat >/run/nyra-test-install.sh <<'EOS' &&
 #!/bin/sh
-stage() {
-	printf '%s' "$1" >/run/nyra-updated-install.stage.new && chmod 644 /run/nyra-updated-install.stage.new &&
-		mv /run/nyra-updated-install.stage.new /run/nyra-updated-install.stage
+# The version is the instance of the unit. Both files are written as the install writes them.
+write() { # write FILE LINE
+	printf '%s\n' "$2" >"$1.tmp" && chmod 644 "$1.tmp" && mv "$1.tmp" "$1"
 }
-stage 'Checking the update'
+write /run/nyra-updated-install.stage 'Checking the update'
 sleep 3
-stage 'Downloading and preparing the update'
+write /run/nyra-updated-install.stage 'Downloading and preparing the update'
 sleep 20
-exec /usr/libexec/nyra-updated check
+if /usr/libexec/nyra-updated check; then
+	write /run/nyra-updated-install.result "staged $1"
+else
+	write /run/nyra-updated-install.result "failed $1 the check failed."
+fi
 EOS
 		mkdir -p /run/systemd/system/nyra-updated-install@.service.d &&
-		printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/nyra-test-install.sh\n' \
+		printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/nyra-test-install.sh %%i\n' \
 			>/run/systemd/system/nyra-updated-install@.service.d/50-test-check.conf &&
 		systemctl daemon-reload
 }
 
 install_unit_restored() {
-	rm -rf /run/systemd/system/nyra-updated-install@.service.d /run/nyra-test-install.sh
+	rm -rf /run/systemd/system/nyra-updated-install@.service.d /run/systemd/system/nyra-test-dependency.service \
+		/run/nyra-test-install.sh
 	systemctl daemon-reload
+}
+
+install_dependency_failure() { # the unit needs a unit that fails: it never runs, ends inactive and writes no
+	# result, and `nyra update` says that nothing was installed (an older failure line is not its reason)
+	printf '[Service]\nType=oneshot\nExecStart=/bin/false\n' >/run/systemd/system/nyra-test-dependency.service &&
+		mkdir -p /run/systemd/system/nyra-updated-install@.service.d &&
+		printf '[Unit]\nRequires=nyra-test-dependency.service\nAfter=nyra-test-dependency.service\n' \
+			>/run/systemd/system/nyra-updated-install@.service.d/50-test-dependency.conf &&
+		systemctl daemon-reload || return 1
+	ok=0
+	{
+		nyra_update_session vmadmin y 1 &&
+			said 'The update was not installed.' &&
+			! said 'Installed version' &&
+			! said 'signature policy' &&
+			expect staged none
+	} || ok=1
+	install_unit_restored
+	[ "$ok" = 0 ]
 }
 
 install_progress_cases() { # the install as a stand-in that takes a while (install_unit_checks): the stage and the
 	# time are shown, Ctrl+C stops only the waiting, the next `nyra update` picks the running install up,
 	# and a start of its own ends with the installed version
+	install_dependency_failure || return 1
 	install_unit_checks || return 1
 	ok=0
 	{
@@ -411,6 +436,7 @@ install_progress_cases() { # the install as a stand-in that takes a while (insta
 			said 'Version 2026.10.4 is being prepared.' &&
 			said 'Downloading and preparing the update... 0:' &&
 			said 'Installed version 2026.10.4.' &&
+			rm -f /run/nyra-updated-install.result &&
 			nyra_update_session vmadmin y 0 &&
 			said 'Preparing version 2026.10.4.' &&
 			said 'Checking the update... 0:' &&

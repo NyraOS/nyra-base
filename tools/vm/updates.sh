@@ -31,7 +31,8 @@
 #      a halted or unverifiable sheet refused, the question declined, the install refused by the stand-in
 #      policy with its reason shown and the stage the install had reached; a stand-in install that
 #      takes a while: its stages and the time shown, Ctrl+C stopping only the waiting, the next run
-#      picking the install up, a start of its own ending with the installed version); v4
+#      picking the install up, a start of its own ending with the installed version; a unit whose
+#      dependency fails and writes no result: not installed); v4
 #      staged, then retracted: discarded (never finalized); v11 staged by hand afterwards (discarded at
 #      shutdown too)
 #   8  v2 again (boot order kept, no staged entries left); v3 staged
