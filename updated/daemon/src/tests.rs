@@ -2593,7 +2593,7 @@ mod install_tests {
     }
 
     fn installed(fake: &mut Fake, dir: &TempDir, v: &str) -> Result<String, Error> {
-        install(fake, &dir.store(), &config(), NOW, v)
+        install(fake, &dir.store(), &config(), NOW, v, |_| {})
     }
 
     /// A sheet for everybody that offers `current` and `previous`; `halted`: nobody gets `current`.
@@ -2654,7 +2654,7 @@ mod install_tests {
             ..config()
         };
         assert_eq!(
-            install(&mut fake, &dir.store(), &floor, NOW, "2026.10.2"),
+            install(&mut fake, &dir.store(), &floor, NOW, "2026.10.2", |_| {}),
             Err(Error::BelowFloor {
                 version: "2026.10.2".into(),
                 floor: "2026.10.5".into()
@@ -2691,6 +2691,54 @@ mod install_tests {
         // Not a version: nothing is written, and the older result stays.
         write_result(&path, "x;reboot", &Ok(String::new()));
         assert!(fs::read_to_string(&path).unwrap().starts_with("failed"));
+    }
+
+    #[test]
+    fn the_stage_is_one_fixed_line_readable_by_everybody() {
+        use crate::install::{write_stage, Stage};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join("stage");
+        write_stage(&path, Stage::Checking);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Checking the update\n");
+        write_stage(&path, Stage::Downloading);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "Downloading and preparing the update\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert!(!dir.0.join("stage.tmp").exists());
+    }
+
+    #[test]
+    fn the_download_is_announced_after_the_checks_and_only_when_it_happens() {
+        use crate::install::Stage;
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        let mut heard = Vec::new();
+        install(&mut fake, &dir.store(), &config(), NOW, "2026.10.2", |s| {
+            heard.push(s)
+        })
+        .unwrap();
+        assert_eq!(heard, [Stage::Downloading]);
+        // Refused by a check, or staged already: nothing is downloaded, nothing is announced.
+        let mut heard = Vec::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        fake.status.staged = dep(B);
+        install(&mut fake, &dir.store(), &config(), NOW, "2026.10.2", |s| {
+            heard.push(s)
+        })
+        .unwrap();
+        let mut fake = Fake::new(&dir, B, sheet(100, B, &[]));
+        install(&mut fake, &dir.store(), &config(), NOW, "2026.10.2", |s| {
+            heard.push(s)
+        })
+        .unwrap_err();
+        assert!(heard.is_empty(), "{heard:?}");
     }
 
     #[test]

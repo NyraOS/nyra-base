@@ -451,13 +451,17 @@ alone, so this explicit rule, not the group `sudo`, is what lets the member of `
 
 **`nyra update`** (`/usr/bin/nyra`, a short shell script) is what an administrator types. It needs no
 `sudo` and does nothing as root itself. It says which version is installed and which one is available,
-asks `Install it? [y/N]`, then starts the unit above with `systemctl start`, so polkit asks for the
-password through systemctl's own agent on the terminal. It ends by telling the administrator to
+asks `Install it? [y/N]`, then starts the unit above with `systemctl start --no-block`, so polkit asks
+for the password through systemctl's own agent on the terminal and the job then runs on without the
+command. While it runs, one line on the terminal shows the stage and the time since the wait began,
+rewritten in place (`Downloading and preparing the update... 2:35`). It ends by telling the administrator to
 restart with `systemctl reboot` when ready, and not to force-reset the computer (for example with the
 Restart or Stop button of a virtual machine), or the update is lost and has to be prepared again. It
 never restarts the computer. It refuses with one line when it is not run on a terminal, by a member of
 `sudo` (polkit still refuses a session that is not local and active, for instance over SSH), or when
-the update is not possible. Run again while the version waits for the restart, it says so.
+the update is not possible. Run again while the version waits for the restart, it says so. Ctrl+C
+stops only the waiting: the install goes on, the command says so, and the next `nyra update` (while
+the install still runs) shows that install instead of asking again, without a new password.
 
 - **The newest version** comes from `nyra-updated available`, which any user can run and which writes
   nothing (no lock, nothing under `/var/lib`). It fetches the channel sheet (curl with an empty
@@ -481,9 +485,17 @@ the update is not possible. Run again while the version waits for the restart, i
   this file when the install failed during this run (not an older line), and uses `staged VERSION` to
   say that a version is already prepared. When the unit was not started at all (a wrong password, a
   cancelled question, a session that is not at the computer), there is no new line, and it says so
-  in one sentence. The progress line before the wait ("Downloading and preparing ...") is the
-  wrapper's: the unit prints nothing a user can see. Everything the wrapper prints that carries data
-  goes through `printf '%s'`: dash's `echo` acts on a backslash in it.
+  in one sentence. Everything the wrapper prints that carries data goes through `printf '%s'`:
+  dash's `echo` acts on a backslash in it.
+- **The stage** is written by `install` as one line to `/run/nyra-updated-install.stage` (mode 0644,
+  written to a temporary file and renamed, best effort): `Checking the update` when it starts, and
+  `Downloading and preparing the update` just before the pull (not when the version was staged
+  before). The lines are fixed words, never text from bootc, curl or the registry. The wrapper polls
+  the unit every second (a job is queued or running) and reads the stage only if the file was
+  written after the wrapper's own start, as it does for the result. There is no percentage:
+  bootc has a hidden `--progress-fd` that reports bytes as JSON lines, but it needs a pipe on a
+  file descriptor that the daemon's `run` (which collects the output only at the end) does not give, and the
+  VM test could not exercise it. The stage and the time are what is shown.
 
 ## Moving a machine to updates.nyraos.com
 

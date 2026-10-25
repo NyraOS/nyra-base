@@ -314,15 +314,16 @@ polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmi
 # The password of vmadmin, a member of sudo (polkit_cases sets it).
 admin_pw=correct-test-password-1
 
-nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD]: USER logs in on a virtual console (a local, active
+nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD [interrupt]]: USER logs in on a virtual console (a local, active
 	# session) and runs `nyra update` on a terminal, as an administrator does: ANSWER is typed at the question,
 	# and USER's own password (admin_pw, or PASSWORD) at the password prompt that systemctl's agent shows. The output goes to
-	# /var/tmp/nyra-update.out; the exit status must be WANT_RC.
+	# /var/tmp/nyra-update.out; the exit status must be WANT_RC. With "interrupt", Ctrl+C is typed once the
+	# stage "Checking the update" is shown.
 	session_of "$1" || return 1
 	scope="$(sed -n 's|^0::||p' "/proc/$pid/cgroup")"
 	# shellcheck disable=SC2016 # the quoted script is Python
 	python3 -I -c 'import os, pty, pwd, select, sys, time
-scope, user, answer, password = sys.argv[1:5]
+scope, user, answer, password, interrupt = sys.argv[1:6]
 agent, fd = pty.fork()
 if agent == 0:
     # Into the scope of the login first (as root), so polkit sees a process of that session.
@@ -354,11 +355,14 @@ while time.time() < end:
         time.sleep(0.3)  # the agent clears the terminal input right after it shows the prompt
         os.write(fd, password.encode() + b"\n")
         seen = b""
+    elif interrupt and b"Checking the update" in seen:
+        os.write(fd, b"\x03")
+        interrupt = ""
 else:
     os.kill(agent, 9)
     os.waitpid(agent, 0)
     sys.exit(124)
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "${4:-$admin_pw}" >/var/tmp/nyra-update.out
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "${4:-$admin_pw}" "${5:-}" >/var/tmp/nyra-update.out
 	rc=$?
 	cat /var/tmp/nyra-update.out
 	echo "nyra update as $1: $rc, wanted $3"
@@ -368,16 +372,53 @@ sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2"
 
 install_unit_checks() { # nyra-updated-install@.service runs a check (it stages what the sheet offers): the
 	# install itself refuses the stand-in policy of this test (it is not the image's), so this is how the test
-	# reaches a staged version through polkit, the unit and `nyra update`
-	mkdir -p /run/systemd/system/nyra-updated-install@.service.d &&
-		printf '[Service]\nExecStart=\nExecStart=/usr/libexec/nyra-updated check\n' \
+	# reaches a staged version through polkit, the unit and `nyra update`. The stand-in writes the two stage
+	# lines the install writes, in the same way, and takes a while in each, as a real install does.
+	cat >/run/nyra-test-install.sh <<'EOS' &&
+#!/bin/sh
+stage() {
+	printf '%s' "$1" >/run/nyra-updated-install.stage.new && chmod 644 /run/nyra-updated-install.stage.new &&
+		mv /run/nyra-updated-install.stage.new /run/nyra-updated-install.stage
+}
+stage 'Checking the update'
+sleep 3
+stage 'Downloading and preparing the update'
+sleep 20
+exec /usr/libexec/nyra-updated check
+EOS
+		mkdir -p /run/systemd/system/nyra-updated-install@.service.d &&
+		printf '[Service]\nExecStart=\nExecStart=/bin/sh /run/nyra-test-install.sh\n' \
 			>/run/systemd/system/nyra-updated-install@.service.d/50-test-check.conf &&
 		systemctl daemon-reload
 }
 
 install_unit_restored() {
-	rm -rf /run/systemd/system/nyra-updated-install@.service.d
+	rm -rf /run/systemd/system/nyra-updated-install@.service.d /run/nyra-test-install.sh
 	systemctl daemon-reload
+}
+
+install_progress_cases() { # the install as a stand-in that takes a while (install_unit_checks): the stage and the
+	# time are shown, Ctrl+C stops only the waiting, the next `nyra update` picks the running install up,
+	# and a start of its own ends with the installed version
+	install_unit_checks || return 1
+	ok=0
+	{
+		nyra_update_session vmadmin y 130 "$admin_pw" interrupt &&
+			said 'Checking the update... 0:' &&
+			said 'The update keeps preparing in the background; run `nyra update` again to see it.' &&
+			systemctl is-active nyra-updated-install@2026.10.4.service | grep -x activating &&
+			nyra_update_session vmadmin n 0 &&
+			said 'Version 2026.10.4 is being prepared.' &&
+			said 'Downloading and preparing the update... 0:' &&
+			said 'Installed version 2026.10.4.' &&
+			nyra_update_session vmadmin y 0 &&
+			said 'Preparing version 2026.10.4.' &&
+			said 'Checking the update... 0:' &&
+			said 'Installed version 2026.10.4.' &&
+			said 'Do not force-reset the computer'
+	} || ok=1
+	install_unit_restored
+	[ "$ok" = 0 ]
 }
 
 said() { # said PATTERN: the last `nyra update` printed PATTERN (grep -F)

@@ -7,6 +7,7 @@
 # password through systemctl's agent on this terminal. It never restarts the computer.
 # An administrator can read neither the journal nor bootc's status, so the program leaves its result
 # in a file everybody can read (RESULT), which this reads back.
+# While the unit runs, the stage it writes (STAGE, fixed words) and the time are shown on one line.
 # Everything that carries data is printed with printf '%s': dash's echo would act on a backslash in it.
 set -eu
 
@@ -14,6 +15,7 @@ PATH=/usr/bin:/bin
 export PATH
 
 RESULT=/run/nyra-updated-install.result
+STAGE=/run/nyra-updated-install.stage
 
 restart_note() { # the same two lines whenever a version waits for the restart
 	printf 'Restart with `systemctl reboot` when you are ready to finish the update.\n'
@@ -57,6 +59,64 @@ case "$(cat "$RESULT" 2>/dev/null)" in
 	;;
 esac
 
+marker="$(mktemp)"
+errors="$(mktemp)"
+trap 'rm -f "$marker" "$errors"' EXIT
+unit="nyra-updated-install@$available.service"
+
+stop_waiting() {
+	printf '\r\033[K'
+	printf 'The update keeps preparing in the background; run `nyra update` again to see it.\n'
+	exit 130
+}
+
+wait_for_unit() { # shows the stage and the time until the unit has no job any more
+	started="$(date +%s)"
+	# Ctrl+C stops the waiting only: systemd keeps the job.
+	trap stop_waiting INT
+	stage=Starting
+	while [ -n "$(systemctl show -p Job --value "$unit" 2>/dev/null)" ]; do
+		# Only a stage written during this run: an older line belongs to another one.
+		if [ -n "$(find "$STAGE" -newer "$marker" 2>/dev/null)" ]; then
+			stage="$(cat "$STAGE")"
+		fi
+		elapsed=$(($(date +%s) - started))
+		printf '\r\033[K%s... %d:%02d' "$stage" $((elapsed / 60)) $((elapsed % 60))
+		sleep 1
+	done
+	trap - INT
+	printf '\r\033[K'
+}
+
+finish() { # the outcome of the unit, after wait_for_unit
+	if [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = failed ]; then
+		if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
+			# The program's reason, written during this run (an older line may belong to another run).
+			reason="$(sed -n 's/^failed [^ ]* //p' "$RESULT")"
+			reason="${reason%.}"
+			printf 'The update was not installed: %s.\n' "$reason" >&2
+		else
+			echo "The update was not installed." >&2
+		fi
+		exit 1
+	fi
+	if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available already" ]; then
+		printf 'Version %s was already prepared.\n' "$available"
+	else
+		printf 'Installed version %s.\n' "$available"
+	fi
+	restart_note
+}
+
+# A run that was started before, and left with Ctrl+C, is still going: show it instead of asking.
+if [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = activating ]; then
+	printf 'Version %s is being prepared.\n' "$available"
+	touch -d @0 "$marker"
+	wait_for_unit
+	finish
+	exit 0
+fi
+
 printf 'Version %s is installed. %s is available. Install it? [y/N] ' "$installed" "$available"
 answer=n
 read -r answer || true
@@ -68,18 +128,10 @@ y | Y | yes | YES | Yes) ;;
 	;;
 esac
 
-marker="$(mktemp)"
-errors="$(mktemp)"
-trap 'rm -f "$marker" "$errors"' EXIT
-printf 'Downloading and preparing version %s. This can take a few minutes.\n' "$available"
-# systemctl's own messages go to a file: its password prompt is on the terminal, not on stderr.
-if ! systemctl start "nyra-updated-install@$available.service" 2>"$errors"; then
-	if [ -n "$(find "$RESULT" -newer "$marker" 2>/dev/null)" ]; then
-		# The program's reason, written during this run (an older line may belong to another run).
-		reason="$(sed -n 's/^failed [^ ]* //p' "$RESULT")"
-		reason="${reason%.}"
-		printf 'The update was not installed: %s.\n' "$reason" >&2
-	elif grep -qiE 'access denied|authenticat|not authorized' "$errors"; then
+# systemctl's own messages go to a file: its password prompt is on the terminal, not on stderr. The
+# password is asked here, once; the job then runs on without this command.
+if ! systemctl start --no-block "$unit" 2>"$errors"; then
+	if grep -qiE 'access denied|authenticat|not authorized' "$errors"; then
 		echo "Nothing was installed: the password was not accepted, the question was cancelled, or this is not a session at the computer itself." >&2
 	else
 		cat "$errors" >&2
@@ -87,9 +139,6 @@ if ! systemctl start "nyra-updated-install@$available.service" 2>"$errors"; then
 	fi
 	exit 1
 fi
-if [ "$(cat "$RESULT" 2>/dev/null)" = "staged $available already" ]; then
-	printf 'Version %s was already prepared.\n' "$available"
-else
-	printf 'Installed version %s.\n' "$available"
-fi
-restart_note
+printf 'Preparing version %s. This can take a few minutes; Ctrl+C stops only the waiting.\n' "$available"
+wait_for_unit
+finish

@@ -548,7 +548,10 @@ impl Store {
 /// The longest message written to the journal or to `last-check.json`, in characters.
 pub const MAX_MESSAGE: usize = 2000;
 
-/// Unicode format characters (category Cf) that can reorder or hide text on a terminal.
+/// Unicode format characters (category Cf) are invisible but change how text is shown: bidi
+/// overrides (U+202A-202E), isolates (U+2060-206F), zero-width characters (U+200B-200F), U+061C and
+/// the byte order mark (U+FEFF) can reorder or hide text ("Trojan Source"). The list is written by
+/// hand: std has no Cf test, and a crate for it would add a dependency. It covers the known ones.
 fn is_format(c: char) -> bool {
     matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
 }
@@ -556,11 +559,13 @@ fn is_format(c: char) -> bool {
 /// `text` as one line that is safe to log and store: what bootc and curl print can come from the
 /// registry or the server, and a control character (a newline followed by `<0>`, an escape
 /// sequence, a character that reorders text) would forge journal lines or garble a terminal. Control
-/// characters and Unicode format characters become spaces, and
-/// the text is cut at [`MAX_MESSAGE`] characters.
+/// characters and Unicode format characters become spaces, and the text is cut at [`MAX_MESSAGE`]
+/// characters. It is applied to everything that comes from bootc, curl or the registry before it
+/// reaches the journal, `last-check.json` or the result file (the stage file holds fixed words only).
 pub fn one_line(text: &str) -> String {
     let mut line: String = text
         .chars()
+        // A control character (a newline, ESC) can forge journal lines or garble a terminal.
         .map(|c| {
             if c.is_control() || is_format(c) {
                 ' '

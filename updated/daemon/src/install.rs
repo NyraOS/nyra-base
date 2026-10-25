@@ -70,21 +70,50 @@ pub fn result_line(version: &str, outcome: &Result<String, Error>) -> String {
     }
 }
 
-/// Writes the result for everybody to read (mode 0644 although the unit's umask is 0077). A version
-/// that is not one is not written: the line is read back by a program. Best effort, like the
-/// notice of a failed health check: a result that can not be written does not change the outcome.
-pub fn write_result(path: &Path, version: &str, outcome: &Result<String, Error>) {
-    if !is_version(version) {
-        return;
+/// Where `install` says what it is doing now, for `nyra update` to show while the administrator waits
+/// (the same readers and the same reasons as [`RESULT`]).
+pub const STAGE: &str = "/run/nyra-updated-install.stage";
+
+/// What `install` is doing. The words are the user's: this is the only text the stage file holds, so
+/// nothing from bootc, curl or the registry reaches a terminal through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Checking,
+    Downloading,
+}
+
+impl Stage {
+    pub fn text(self) -> &'static str {
+        match self {
+            Stage::Checking => "Checking the update",
+            Stage::Downloading => "Downloading and preparing the update",
+        }
     }
+}
+
+/// Writes `line` for everybody to read: a temporary file, mode 0644 although the unit's umask is
+/// 0077, renamed over `path`. Best effort, like the notice of a failed health check: a line that can
+/// not be written does not change the outcome.
+fn write_for_everybody(path: &Path, line: &str) {
     let tmp = path.with_extension("tmp");
-    let line = format!("{}\n", result_line(version, outcome));
-    let written = fs::write(&tmp, line)
+    let written = fs::write(&tmp, format!("{line}\n"))
         .and_then(|()| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)))
         .and_then(|()| fs::rename(&tmp, path));
     if let Err(e) = written {
         eprintln!("<4>nyra-updated: {}: {e}", path.display());
     }
+}
+
+/// Writes the result. A version that is not one is not written: the line is read back by a program.
+pub fn write_result(path: &Path, version: &str, outcome: &Result<String, Error>) {
+    if is_version(version) {
+        write_for_everybody(path, &result_line(version, outcome));
+    }
+}
+
+/// Writes the stage the install has reached.
+pub fn write_stage(path: &Path, stage: Stage) {
+    write_for_everybody(path, stage.text());
 }
 
 /// Where the signature policy lives and who could replace it.
@@ -270,13 +299,15 @@ fn sheet_image(sheet: &Sheet, version: &str) -> Result<Image, Error> {
 
 /// Stages `version` of the image's repository. `cfg`: the image's configuration with the sheet
 /// keys (updates must be configured). The caller has checked the signature policy
-/// ([`PolicyFiles::check`]) and holds the update lock.
+/// ([`PolicyFiles::check`]) and holds the update lock. `note` hears each stage that is reached after
+/// the checks.
 pub fn install(
     sys: &mut impl System,
     store: &Store,
     cfg: &Config,
     now: u64,
     version: &str,
+    mut note: impl FnMut(Stage),
 ) -> Result<String, Error> {
     check_version(version)?;
     let status = sys.status()?;
@@ -296,6 +327,7 @@ pub fn install(
             target.digest
         ));
     }
+    note(Stage::Downloading);
     stage_target(sys, store, cfg, &mut state, target.clone())?;
     Ok(format!(
         "{version} ({}) is ready for the next boot, which stays yours to start",
