@@ -19,6 +19,10 @@ set -euo pipefail
 
 disk="$1" logs="$2" summary="$3"
 
+# These tests are about when the check starts, not about the sheet: the image's key file is emptied (a bind
+# mount), so the check ends at "updates are not configured" and never reaches the real server once the link is up.
+no_key='f=/usr/lib/nyra/updates/channel-sheet.pem && : > /run/no-key && mount --bind /run/no-key $f && test ! -s $f'
+
 # The system is running, no unit failed, and nothing pulled in network-online.target at boot.
 boot='{ s="$(systemctl is-system-running --wait)"; echo "system: $s"; systemctl --no-pager --failed; w="$(systemctl is-active systemd-networkd-wait-online.service network-online.target | sort -u)"; echo "systemd-networkd-wait-online.service, network-online.target: $w"; t="$(systemctl show -P ActiveEnterTimestampMonotonic graphical.target)"; echo "graphical.target $((t / 1000000)) s after the kernel started"; test "$s" = running && test "$w" = inactive && test "$t" -gt 0 && test "$t" -lt 60000000; }'
 online='busctl get-property org.freedesktop.network1 /org/freedesktop/network1 org.freedesktop.network1.Manager OnlineState'
@@ -43,6 +47,7 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 --no-car
   --title "Without a network: the cable unplugged from the start" \
   --command "networkctl list --no-legend --no-pager && networkctl list --no-legend --no-pager | grep -qw no-carrier && $online && $online | grep -q offline" \
   --command "$boot" \
+  --command "$no_key" \
   --command "systemctl start --no-block nyra-updated.service && echo 'waiting 150 s, past the 2 minutes of systemd-networkd-wait-online' && sleep 150 && $waiting" \
   --command "systemctl stop nyra-updated.service nyra-updated-wait-online.service && $shorter && systemctl start --no-block nyra-updated.service && $ran && $after_limit"
 
@@ -54,5 +59,6 @@ python3 -B tools/vm/vm-boot.py --autologin --disk "$disk" --timeout 240 \
   --log "$logs/serial-no-network-back.log" --summary "$summary" \
   --title "Without a network: the link down, then back" \
   --command "$boot" \
+  --command "$no_key" \
   --command "$link && echo \"link: \$d\" && ip link set dev \"\$d\" down && want=offline && $until_state && systemctl start --no-block nyra-updated.service && sleep 10 && $waiting" \
   --command "$link && ip link set dev \"\$d\" up && want='\"online\"' && $until_state && $ran && $wait_ok"
