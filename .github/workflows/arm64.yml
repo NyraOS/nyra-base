@@ -369,3 +369,5 @@ jobs:
       - uses: ./.github/actions/arm64-iso-sbom
         with:
           materials-artifact: ${{ needs.iso.outputs.iso_artifact }}-materials
+          # Never a release (nothing here is signed or published): findings are a warning (docs/SBOM.md).
+          vulnerabilities: report

@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The weekly vulnerability scan (docs/SBOM.md). The build workflows only report blocking vulnerabilities
+# until the first public release; this one fails, visibly, when one exists, and nothing depends on it.
+# It does not build anything: it downloads the SBOM inputs (package lists and Cargo.lock files) that the
+# latest successful build on main uploaded (the image's, and the x86_64 installer ISO's) and runs
+# tools/sbom/sbom.py in block mode over them with the scanner and the exceptions of main. The vulnerability
+# data is fetched fresh, so the result is today's. The aarch64 ISO is not covered (its inputs are kept 14 days).
+# A missing or expired artifact fails the run with a message.
+name: sbom-watch
+on:
+  schedule:
+    - cron: "0 5 * * 0"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: sbom-watch
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the inputs of the latest successful build on main
+        run: |
+          # Successful runs on main of image.yml (a push) and of titanic.yml (the nightly one, which
+          # builds the image too), newest first; never a fork's branch named main (--branch with --event).
+          list() { gh run list -R "$GITHUB_REPOSITORY" --workflow "$1" --branch main --event "$2" --status success \
+                     -L 30 --json databaseId,headSha,createdAt; }
+          runs="$({ list image.yml push; list titanic.yml schedule; } \
+                    | jq -rs 'add | sort_by(.createdAt) | reverse | .[] | "\(.databaseId) \(.headSha)"')"
+          [ -n "$runs" ] || { echo "::error::No successful build on main to read the SBOM inputs from."; exit 1; }
+          image="" iso=""
+          while read -r run sha; do
+            names="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired == false) | "\(.name) \(.id)"')"
+            image="$(awk '$1 == "nyra-base-sbom" { print $2 }' <<<"$names")"
+            iso="$(awk '$1 == "nyra-installer-iso-materials" { print $2 }' <<<"$names")"
+            [ -z "$image" ] || [ -z "$iso" ] || break
+            image="" iso=""
+          done <<<"$runs"
+          if [ -z "$image" ]; then
+            echo "::error::None of the last successful builds on main has both artifacts nyra-base-sbom and nyra-installer-iso-materials, or they have expired (they are kept 90 days). Run image.yml on main and run this again."
+            exit 1
+          fi
+          # The scanner reads the snapshot from this checkout: the build must have used the same one.
+          old="$(gh api -H "Accept: application/vnd.github.raw" "repos/$GITHUB_REPOSITORY/contents/mkosi/mkosi.conf?ref=$sha" \
+                   | sed -n 's/^Snapshot=//p')"
+          if [ "$old" != "$(sed -n 's/^Snapshot=//p' mkosi/mkosi.conf)" ]; then
+            echo "::error::The latest successful build on main used Snapshot=$old, not the one of main now: its package list is outdated. Run this again after the next build on main."
+            exit 1
+          fi
+          for kind in image iso; do
+            mkdir -p "$RUNNER_TEMP/$kind"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${!kind}/zip" > "$RUNNER_TEMP/$kind.zip"
+            unzip -q -o "$RUNNER_TEMP/$kind.zip" -d "$RUNNER_TEMP/$kind"
+          done
+          echo "Scanning the inputs of run $run (commit $sha), with the scanner and exceptions of this checkout." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install the scanner
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sbom-venv"
+          "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
+
+      - name: Vulnerability scan of the image (blocking)
+        run: |
+          d="$RUNNER_TEMP/image"
+          lock="$(ls "$d"/bootc-*.Cargo.lock)"
+          [[ "$(basename "$lock")" =~ ^bootc-(.+)-([0-9a-f]{40})\.Cargo\.lock$ ]] \
+            || { echo "::error::The artifact has not exactly one bootc Cargo.lock"; exit 1; }
+          export BOOTC_REF="${BASH_REMATCH[1]}" BOOTC_COMMIT="${BASH_REMATCH[2]}"
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --vulnerabilities=block "$d/nyra-base.manifest.json" \
+            "$lock" "$RUNNER_TEMP/nyra-base.cdx.json" "$d/nyra-zlib.Cargo.lock" "$d/nyra-ntpd.Cargo.lock" "$d/pam-totp.Cargo.lock" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Also when the image scan failed: both reports are wanted.
+      - name: Vulnerability scan of the installer ISO (blocking)
+        if: ${{ !cancelled() }}
+        run: |
+          d="$RUNNER_TEMP/iso"
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --vulnerabilities=block --iso "$d/manifest.json" \
+            "$d/Cargo.lock" "$RUNNER_TEMP/nyra-installer-iso.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"

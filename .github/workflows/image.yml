@@ -5,7 +5,8 @@
 #   (ci/build-image.sh, docs/BOOT.md) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
 # the Cargo.lock of bootc, zlib-rs, ntpd-rs and pam-totp) with its vulnerability report; known critical or high
-# vulnerabilities without a documented mitigation fail the build (docs/SBOM.md). Nothing is pushed
+# vulnerabilities without a documented mitigation are reported as a warning and do not fail the build until the
+# first public release (SBOM_VULNERABILITIES below; sbom-watch.yml fails weekly instead, docs/SBOM.md). Nothing is pushed
 # to a public registry; the `publish` job (off unless enabled, docs/SIGNING.md) publishes to the
 # update server.
 # Release builds (push or manual run on main) unpack no cache at all (they only look a cache up, to
@@ -74,6 +75,11 @@ env:
   BOOTC_REF: v1.16.13
   BOOTC_COMMIT: fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60
   WORK: /mnt/work
+  # What a blocking vulnerability of the SBOM scan does (tools/sbom/sbom.py --vulnerabilities): `report` = a warning
+  # and the report in the step summary, the run goes on; `block` = the run fails. The one place to change before the
+  # first public release (docs/SBOM.md): set it to
+  # ${{ github.workflow == 'image' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && 'block' || 'report' }}
+  SBOM_VULNERABILITIES: report
   RELEASE: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
 jobs:
   # Which jobs a change needs. Files that cannot change the image or its tests (the list below, kept
@@ -493,15 +499,15 @@ jobs:
 
       # Last step, after the image is uploaded: the scan fetches data from the network (Debian
       # snapshot index, Debian Security Tracker, OSV) and runs one pinned PyPI package, and none of
-      # that gets a chance to touch the image. A blocking finding fails this job, so install-boot
-      # and sign do not run.
+      # that gets a chance to touch the image. A blocking finding fails this job only when
+      # SBOM_VULNERABILITIES is `block`; a scan that cannot run fails it always.
       - name: SBOM and vulnerability scan (docs/SBOM.md)
         id: sbom
         run: |
           python3 -m venv "$RUNNER_TEMP/sbom-venv"
           "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
-          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$SBOM_VULNERABILITIES" dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock dist/nyra-ntpd.Cargo.lock \
             dist/pam-totp.Cargo.lock \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
@@ -571,7 +577,7 @@ jobs:
             exit 0
           fi
           # zlib/, ntpd-rs/ and pam-totp/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
-          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py dist/nyra-base.manifest.json \
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$SBOM_VULNERABILITIES" dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock \
             pam-totp/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
 
@@ -2284,7 +2290,8 @@ jobs:
         run: python3 tools/iso/boot-test.py "$WORK/tamper-digest.iso" "$WORK/boot-digest" "$RUNNER_TEMP/iso-digest-console.log" "$GITHUB_STEP_SUMMARY" --refusal digest
 
       # The installer system's packages and the installer program's crates, scanned like the image's
-      # (docs/SBOM.md); a critical or high finding without a documented mitigation fails the job.
+      # (docs/SBOM.md); a critical or high finding without a documented mitigation is reported, and fails the job
+      # only when SBOM_VULNERABILITIES is `block`.
       - name: SBOM and vulnerability scan of the ISO (tools/sbom/sbom.py --iso)
         if: ${{ !cancelled() }}
         run: |
@@ -2293,9 +2300,25 @@ jobs:
           # The packages of the installer system, and the five of the boot tree whose files reach the ISO
           # (GRUB and shim are known to the tracker by their source packages: ci/iso-manifest.sh).
           ci/iso-manifest.sh "$WORK/iso/os/nyra-installer-os.manifest" "$WORK/iso/boot/nyra-installer-boot.manifest" "$WORK/iso/manifest.json"
-          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso "$WORK/iso/manifest.json" \
+          "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$SBOM_VULNERABILITIES" --iso "$WORK/iso/manifest.json" \
             "$WORK/iso/installer/Cargo.lock" "$WORK/iso/nyra-installer-iso.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$WORK/iso/nyra-installer-iso.cdx.json" "$RUNNER_TEMP/"
+
+      # What the scan above read, for sbom-watch.yml (the weekly scan of the latest build on main).
+      - name: Keep the inputs of the scan of the ISO
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir "$RUNNER_TEMP/iso-materials"
+          cp "$WORK/iso/manifest.json" "$WORK/iso/installer/Cargo.lock" "$RUNNER_TEMP/iso-materials/"
+
+      - name: Upload the inputs of the scan of the ISO
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nyra-installer-iso-materials
+          path: ${{ runner.temp }}/iso-materials
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Upload the SBOM of the ISO
         if: ${{ !cancelled() }}
@@ -3236,6 +3259,7 @@ jobs:
       - uses: ./.github/actions/arm64-iso-sbom
         with:
           materials-artifact: ${{ needs.iso-arm64.outputs.iso_artifact }}-materials
+          vulnerabilities: ${{ env.SBOM_VULNERABILITIES }}
 
   # The ISO the owner can try, kept only when every boot test passed: the one the tests booted (its hash is
   # checked), under a name that says it is UNSIGNED and which mode it is in (docs/ISO.md). The scan passed too.

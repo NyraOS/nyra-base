@@ -1,8 +1,43 @@
-# SBOM and vulnerability gate
+# SBOM and vulnerability scan
 
 Every build of nyra-base produces a software bill of materials and checks it for known
-vulnerabilities. A known critical or high vulnerability without a documented mitigation fails the
-build, so it is never signed or released.
+vulnerabilities. A known critical or high vulnerability without a documented mitigation is a
+**blocking** finding.
+
+## What blocks where
+
+Nyra OS is not released yet. New advisories for packages that are not exploitable in our configuration
+appeared several times a day and stopped every pull request, main build and nightly run for hours, so the
+vulnerability scan is a task of its own that blocks nothing in the builds, for now:
+
+| Where | Mode | A blocking finding |
+|---|---|---|
+| `build`, `sbom`, `iso` jobs of `image.yml` (pull requests, pushes to main, manual runs, the nightly Titanic run, which calls `image.yml`) | `report` | warning, report in the job summary, the run goes on |
+| `iso-sbom-arm64` job of `image.yml`, `iso-sbom` job of `arm64.yml` | `report` | the same |
+| `sbom-watch.yml`, every Sunday at 05:00 UTC and by hand | `block` | the run fails (red), the report is in its summary; nothing depends on it |
+
+`tools/sbom/sbom.py --vulnerabilities=report|block` chooses the mode; without the flag it is `block`, so
+a call that forgets it stays strict. **Only the exit for blocking vulnerabilities changes.** In every mode
+the build still fails when the scan cannot run (no data from the network, a parse error, a package missing
+from the snapshot index), on an invalid or expired exception file, on a stale-data check (missing or
+malformed manifest, minimum versions, an empty ISO scan) and on the checks of the Containerfile.
+
+**Before the first public release, the release path must go back to `block`.** The one place is the
+`SBOM_VULNERABILITIES` line in the `env:` of `.github/workflows/image.yml` (all its scan steps and the
+`iso-sbom-arm64` job read it; the comment above it has the value: `block` on a push or manual run of
+`image` on main, `report` everywhere else). Then a release is never signed or published past a blocking
+vulnerability, as it was before this change. `arm64.yml` has its own `report` (it signs and publishes nothing).
+
+### The weekly scan
+
+`.github/workflows/sbom-watch.yml` does not build anything. It takes the newest successful run on main of
+`image.yml` (a push) or `titanic.yml` (the nightly) that still has the artifacts `nyra-base-sbom` (the
+image's package list and Cargo.lock files) and `nyra-installer-iso-materials` (the package list and
+Cargo.lock of the x86_64 installer ISO, kept 90 days like the first), and runs `sbom.py --vulnerabilities=block`
+over them with the scanner and exceptions (`mitigations*.toml`) of main. The advisories are fetched fresh, so
+it answers "is anything blocking now". It fails with a message when no such run is left (artifacts expire after
+90 days) or when that build used another `Snapshot=` than main now (run it again after the next build). The
+aarch64 ISO is not in it (its inputs are kept 14 days); its scan runs in report mode in the builds.
 
 The last step of the `build` job in `.github/workflows/image.yml` runs
 [`tools/sbom/sbom.py`](../tools/sbom/sbom.py). It writes these files to the `nyra-base-sbom`
@@ -66,7 +101,7 @@ script refuses a list without any.
 | Is a crate of bootc, zlib-rs, ntpd-rs or pam-totp affected? | [OSV](https://osv.dev), ecosystem `crates.io` (RustSec's advisories among them) |
 | How bad is it? | the CVSS vectors in the OSV record (`DEBIAN-<id>`, then `<id>`), scored with the [`cvss`](https://github.com/RedHatProductSecurity/cvss) library: critical ≥ 9.0, high ≥ 7.0 |
 
-A finding **blocks the build** when its severity is critical, high or unknown (no CVSS vector
+A finding is **blocking** (it fails a `block` run, and is reported in a `report` run) when its severity is critical, high or unknown (no CVSS vector
 anywhere) and it is not listed in [`tools/sbom/mitigations.toml`](../tools/sbom/mitigations.toml).
 Debian's own urgency `high` counts as high whatever the score. Unknown blocks because a fresh CVE
 without a score may well be critical: a person decides, not the absence of data.
@@ -75,10 +110,10 @@ Not blocking, but listed in the report: medium and low findings, and RustSec inf
 advisories (unmaintained, unsound). Findings that Debian marks `unimportant` are only counted:
 the Debian security team has already documented why they do not matter for Debian's build.
 
-The data is fetched at build time, so the same image can pass today and fail tomorrow. That is
-the point: the gate answers "is anything known now".
+The data is fetched at scan time, so the same image can pass today and block tomorrow. That is
+the point: the scan answers "is anything known now".
 
-## When the build is blocked
+## When the scan reports blocking findings
 
 1. **Fixed in Debian** (the report shows the version): the snapshot is older than the fix. Move
    `Snapshot=` in `mkosi/mkosi.conf` to a date that has it. This also rebuilds bootc (the snapshot is
@@ -102,8 +137,8 @@ the point: the gate answers "is anything known now".
    exception. Entries go through review like any other change (security review is required).
    `id` can be any of the advisory's IDs (for a crate: RUSTSEC, GHSA or CVE, through OSV aliases),
    so one entry covers the issue however many records OSV returns for it. The same `id` and
-   `package` twice makes the file invalid, and an invalid file blocks the build (the SBOM is still
-   written and uploaded). An expired entry blocks again; an entry that no longer blocks (now medium
+   `package` twice makes the file invalid, and an invalid file fails the build in every mode (the SBOM is still
+   written and uploaded). An expired entry fails the build in every mode, and its finding blocks again; an entry that no longer blocks (now medium
    or low) or matches nothing any more (fixed, package gone) is reported for removal.
 3. **Exposed and no fix:** remove or replace the package, or patch it in the Nyra apt repository.
 
@@ -131,12 +166,12 @@ BOOTC_REF=<tag> BOOTC_COMMIT=<commit> /tmp/sbom-venv/bin/python tools/sbom/sbom.
 
 ## Before a push: the scan on a branch
 
-The gate depends on the advisories of the day, not only on the change, so a branch can fail it
-although it touches nothing the scanner looks at. The scan runs in about 20 seconds on a machine
+The scan depends on the advisories of the day, not only on the change, so a branch can report
+blocking findings although it touches nothing the scanner looks at (and fails the `block` run). The scan runs in about 20 seconds on a machine
 without KVM, with this checkout's scanner, mitigations and Cargo.lock files against the package list
 of the last image built on main (the same inputs as the `sbom` job of `image.yml`). Run it before
 pushing a change to `tools/sbom/`, to `mitigations.toml`, to the package list or to a Cargo.lock, and
-whenever a pull request failed the gate, to see if a new advisory or the change is the cause. It
+whenever a pull request has blocking findings in its summary, to see if a new advisory or the change is the cause. It
 needs `gh` (logged in), `podman` and the network.
 
 The `sbom` job runs only for a change confined to `tools/sbom/`. If the last image built on main used
@@ -175,11 +210,10 @@ podman --root "$S/root" --runroot "$S/run" run --rm -v "$PWD:/repo:ro" -v "$D:/i
       zlib/Cargo.lock ntpd-rs/Cargo.lock pam-totp/Cargo.lock' | tee /tmp/sbom-report.md
 ```
 
-The report is the one the job summary shows; the exit status is 1 when a vulnerability blocks. The
+The report is the one the job summary shows; the exit status is 1 when a vulnerability blocks (the command above is in `block` mode). The
 image is python:3.13-slim by digest (the index of the multi-arch image), and the container runs
 as a rootless user with the checkout read-only. Remove the store with `podman unshare rm -rf "$S"`
-when it is not needed any more. This is a safety net, not a gate: CI runs the real one on every
-build.
+when it is not needed any more. This is a safety net: CI runs the scan on every build (docs above: what blocks where).
 
 The offline tests (canned tracker and OSV data) run first in CI:
 `/tmp/sbom-venv/bin/python tools/sbom/test_sbom.py`.
