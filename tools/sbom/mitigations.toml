@@ -213,3 +213,35 @@ id = "CVE-2026-98869"
 package = "linux"
 reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.12-1); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
 expires = 2026-11-07
+
+# zstd crates of bootc v1.16.13 (Cargo.lock; no other Cargo.lock of the repository has zstd). Fixed
+# releases exist (zstd 0.14.3, zstd-safe 8.2.0, zstd-sys 2.1.2) but are a new major version of the
+# crates, which bootc's dependencies (composefs-rs, async-compression's compression-codecs 0.4.38)
+# do not accept yet. End: a bootc whose Cargo.lock has them (compression-codecs 0.4.46 and later
+# already use zstd 0.14), or a Cargo.lock update in ci/build-bootc.sh, like the one for zlink.
+# Checked in the sources of bootc v1.16.13, composefs-rs v0.9.2, compression-codecs 0.4.38 and
+# async-compression 0.4.43, 2026-10-26.
+
+[[mitigation]]
+id = "RUSTSEC-2026-0391"
+package = "zstd"
+reason = "The flaw is in Encoder::with_context and Decoder::with_context of zstd::stream::raw, which reuse a borrowed context. Nothing in bootc, composefs-rs, async-compression or compression-codecs calls them: every stream creates its own context (zstd::stream::read::Decoder::new, Encoder::new, raw::Decoder::new), and compression-codecs resets the same decoder between frames with reinit()."
+expires = 2026-11-20
+
+[[mitigation]]
+id = "RUSTSEC-2026-0398"
+package = "zstd-safe"
+reason = "Affects Seekable::decompress, which exists only with the zstd-safe `seekable` feature. No crate of the lock enables it (the features of zstd 0.13.3 and compression-codecs 0.4.38 do not include it, and no Cargo.toml of bootc or composefs-rs names it) and nothing in bootc or composefs-rs refers to a seekable archive or to zstd_safe::seekable."
+expires = 2026-11-20
+
+[[mitigation]]
+id = "RUSTSEC-2026-0403"
+package = "zstd-safe"
+reason = "Affects DCtx::decompress_stream when a legacy-format frame fails to decode. Only composefs-oci's zstd layer decoder (compression-codecs through async-compression) calls it with a destination that matters here, and that decoder runs only for a layer whose media type in the manifest is zstd. The manifest is checked against the signature policy before any layer is read (docs/UPDATES.md, \"The guarantee\"), and every layer the image build and the publish jobs produce is gzip: no compression-format, zstd or zstd:chunked option appears anywhere in the build or publish scripts. So the zstd decoder is not used on the update path. The other zstd users (composefs's stream files, ostree-ext) use zstd::stream::read::Decoder or the encoder, which the advisory lists as not affected. A layer is decompressed while it is still being digest-checked (skopeo verifies the digest at the end of the stream), so this exception must be removed before the image is ever published with zstd layers."
+expires = 2026-11-20
+
+[[mitigation]]
+id = "RUSTSEC-2026-0410"
+package = "zstd-sys"
+reason = "Only for the wasm32 target: the shim is behind #[cfg(target_arch = \"wasm32\")] in zstd-sys. bootc is built for x86_64 and aarch64 Linux only, so the shim is not compiled."
+expires = 2026-11-20
