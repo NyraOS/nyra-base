@@ -179,8 +179,10 @@ y | Y | yes | YES | Yes) ;;
 esac
 
 # systemctl's own messages go to a file: its password prompt is on the terminal, not on stderr. The
-# password is asked here, once; the job then runs on without this command.
-if ! systemctl start --no-block "$unit" 2>"$errors"; then
+# password is asked here, once; the job then runs on without this command. The banner polkit's agent
+# prints around the prompt (the action, its message) is on the terminal too, so nyra-prompt-only
+# shows only the prompt. A failure shows through stderr and the exit status, which it passes on.
+if ! /usr/libexec/nyra-prompt-only systemctl start --no-block "$unit" 2>"$errors"; then
 	if grep -qiE 'access denied|authenticat|not authorized' "$errors"; then
 		echo "Nothing was installed: the password was not accepted, the question was cancelled, or this is not a session at the computer itself." >&2
 	else

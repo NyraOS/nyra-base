@@ -453,7 +453,16 @@ alone, so this explicit rule, not the group `sudo`, is what lets the member of `
 `sudo` and does nothing as root itself. It says which version is installed and which one is available,
 asks `Install it? [y/N]`, then starts the unit above with `systemctl start --no-block`, so polkit asks
 for the password through systemctl's own agent on the terminal and the job then runs on without the
-command. While it runs, one line on the terminal shows the stage and the time since the wait began,
+command. The administrator sees `Password:` and nothing else of the agent: pkttyagent writes a banner
+around its prompt (`==== AUTHENTICATING FOR org.freedesktop.systemd1.manage-units ====`, the action's
+message, `Authenticating as: NAME`, `==== AUTHENTICATION COMPLETE ====`) to `/dev/tty`, the terminal
+itself and not stdout, so no redirection removes it and the agent has no option for it. `nyra update`
+therefore runs `systemctl` through `/usr/libexec/nyra-prompt-only`, a short Python program that gives
+the command a terminal of its own and passes on only the unfinished line (the prompt) and the empty
+lines, not the lines that end in a newline. The keys typed go through unchanged, the polkit rule is
+untouched (the message text it matches is still the one systemctl sends, just no longer shown), and
+the failure of `systemctl` reaches `nyra update` as before: its stderr and its exit status.
+While the job runs, one line on the terminal shows the stage and the time since the wait began,
 rewritten in place (`Downloading and preparing the update... 2:35`; on a terminal too narrow for
 it, the time alone, so that the line never wraps). It ends by telling the administrator to
 restart with `systemctl reboot` when ready, and not to force-reset the computer (for example with the

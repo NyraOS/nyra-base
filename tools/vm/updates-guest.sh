@@ -411,7 +411,13 @@ install_dependency_failure() { # the unit needs a unit that fails: it never runs
 		systemctl daemon-reload || return 1
 	ok=0
 	{
-		nyra_update_session vmadmin y 1 &&
+		# A wrong password: the prompt only, then a clear message; nothing was started.
+		nyra_update_session vmadmin y 1 wrong-password &&
+			prompt_only &&
+			said 'Nothing was installed: the password was not accepted' &&
+			! said 'Installed version' &&
+			nyra_update_session vmadmin y 1 &&
+			prompt_only &&
 			said 'The update was not installed.' &&
 			! said 'Installed version' &&
 			! said 'signature policy' &&
@@ -430,6 +436,7 @@ install_progress_cases() { # the install as a stand-in that takes a while (insta
 	ok=0
 	{
 		nyra_update_session vmadmin y 130 "$admin_pw" interrupt &&
+			prompt_only &&
 			said 'Checking the update... 0:' &&
 			said 'The update keeps preparing in the background; run `nyra update` again to see it.' &&
 			systemctl is-active nyra-updated-install@2026.10.4.service | grep -x activating &&
@@ -452,6 +459,15 @@ install_progress_cases() { # the install as a stand-in that takes a while (insta
 
 said() { # said PATTERN: the last `nyra update` printed PATTERN (grep -F)
 	grep -qF -- "$1" /var/tmp/nyra-update.out
+}
+
+prompt_only() { # prompt_only: the last `nyra update` showed the password prompt and nothing of the banner that polkit's
+	# text agent writes around it (nyra-prompt-only keeps it from the terminal)
+	said 'Password:' &&
+		! said 'AUTHENTICAT' &&
+		! said 'manage-units' &&
+		! said 'Authentication is required' &&
+		! said 'Authenticating as'
 }
 
 nyra_update_refused() { # nyra_update_refused: `nyra update` does nothing for what is not an administrator at a terminal

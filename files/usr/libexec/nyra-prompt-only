@@ -1,0 +1,97 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nyra-prompt-only COMMAND...: runs COMMAND on a terminal of its own and shows on the real terminal only
+# what it asks (the password prompt), not what it says around it. `nyra update` uses it for `systemctl
+# start`: systemctl starts polkit's text agent (pkttyagent), which writes a banner of its own ("====
+# AUTHENTICATING FOR org.freedesktop.systemd1.manage-units ====", the action's message, "Authenticating
+# as: NAME", "==== AUTHENTICATION COMPLETE ====") to /dev/tty. That is the terminal itself, not stdout, so
+# no redirection removes it; and the agent has no option to leave it out. A terminal of its own is the
+# one place where this can be filtered, without changing the polkit rule or giving anything more rights.
+#
+# The agent ends every line of the banner with a newline and the prompt without one, so: lines are
+# dropped (empty ones stay: the agent's newline after the typed password), and the unfinished line at
+# the end is the prompt, shown once nothing follows it for a moment. The keys typed go to COMMAND
+# unchanged, so what the agent does with the terminal (no echo of the password) stays as it is.
+# stdout of COMMAND is dropped, its stderr is this program's stderr, its exit status is the result.
+import fcntl
+import os
+import re
+import select
+import subprocess
+import sys
+import termios
+import tty
+
+ESCAPES = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def own_terminal():
+    # In the child, after setsid: its stdin, the new terminal, becomes its controlling terminal,
+    # which is what /dev/tty means to the agent.
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+def shown(text):
+    """The bytes of text that are not escape sequences nor blank, or nothing."""
+    return text if ESCAPES.sub(b"", text).strip() else b""
+
+
+def keep_prompts(buf):
+    """Returns what of buf is shown (the empty lines), and the unfinished line that is left."""
+    head, newline, rest = buf.rpartition(b"\n")
+    out = b""
+    if newline:
+        for line in head.split(b"\n"):
+            if not ESCAPES.sub(b"", line).strip():
+                out += b"\r\n"
+    return out, rest
+
+
+def main():
+    master, slave = os.openpty()
+    try:
+        size = fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, size)
+    except OSError:
+        pass
+    child = subprocess.Popen(
+        sys.argv[1:], stdin=slave, stdout=subprocess.DEVNULL, start_new_session=True, preexec_fn=own_terminal
+    )
+    os.close(slave)
+    saved = termios.tcgetattr(0)
+    tty.setraw(0)
+    try:
+        relay(master, child)
+    finally:
+        termios.tcsetattr(0, termios.TCSADRAIN, saved)
+    code = child.wait()
+    sys.exit(code if code >= 0 else 128 - code)
+
+
+def relay(master, child):
+    inputs = [0, master]
+    pending = b""
+    while child.poll() is None:
+        # A prompt has no newline after it: it is what is left once nothing more comes.
+        ready = select.select(inputs, [], [], 0.3 if pending else 0.2)[0]
+        if not ready and ESCAPES.sub(b"", pending).endswith((b": ", b"? ")):
+            # Only what ends like a prompt: a banner line that arrived in two parts is not shown.
+            os.write(1, shown(pending))
+            pending = b""
+        if 0 in ready:
+            typed = os.read(0, 4096)
+            if typed:
+                os.write(master, typed)
+            else:
+                inputs.remove(0)
+        if master in ready:
+            try:
+                data = os.read(master, 4096)
+            except OSError:
+                break
+            out, pending = keep_prompts(pending + data)
+            os.write(1, out)
+
+
+if __name__ == "__main__":
+    main()
