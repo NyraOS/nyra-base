@@ -229,6 +229,7 @@ check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_
 check sign-jobs "Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"
 check publish-job "The publish job holds the secrets and cannot sign (ci/check-publish-job.py)" "python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py"
 check credential-jobs "Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)" "python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py"
+check iso-jobs "The ISO jobs of a pull request do not wait for sign and run the steps of the release ones (ci/check-iso-jobs.py)" "python3 -I ci/check-iso-jobs.py --self-test && python3 -I ci/check-iso-jobs.py"
 check actionlint "actionlint" check_actionlint
 check gitleaks "Secret scan of the commits not on origin/main (gitleaks)" check_gitleaks local
 check gitleaks-control "Control of the secret scan: a secret added, then removed in the next commit, is found" check_gitleaks_control local

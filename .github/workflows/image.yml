@@ -2072,17 +2072,25 @@ jobs:
   # Every input is checked against the job that made it (ci/check-artifact.sh). Then the ISO is booted:
   # as a CD and as a USB stick, under Secure Boot with a TPM (tools/iso/boot-test.py). It is not a
   # dependency of sign or publish, and an ISO failure never holds back an image.
+  #
+  # On a pull request the job is iso-pr below, which does not wait for sign: there the ISO is in test mode,
+  # made from build's image and a key made for the run, and uses nothing sign makes. Both jobs run the same
+  # steps (the anchor iso-steps); only what they know of sign (the three SIGN_* values) differs.
   iso:
     needs: [build, release-image, sign]
-    if: ${{ !cancelled() && github.workflow == 'image' && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name != 'pull_request' && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
+    env:
+      SIGN_RESULT: ${{ needs.sign.result }}
+      SIGN_IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+      SIGN_SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
     outputs:
       iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
       image_digest: ${{ steps.build.outputs.image_digest }}
-    steps:
+    steps: &iso-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -2102,7 +2110,6 @@ jobs:
         id: mode
         env:
           RELEASE_BUILD: ${{ needs.build.outputs.release }}
-          SIGN_RESULT: ${{ needs.sign.result }}
         run: |
           if [ "$RELEASE_BUILD" = true ] && [ "$SIGN_RESULT" = success ]; then mode=release; else mode=test; fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
@@ -2154,8 +2161,8 @@ jobs:
       - name: Check the signature against the sign job
         if: ${{ steps.mode.outputs.mode == 'release' }}
         env:
-          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
-          SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
+          IMAGE_DIGEST: ${{ env.SIGN_IMAGE_DIGEST }}
+          SIGNATURE_DIGEST: ${{ env.SIGN_SIGNATURE_DIGEST }}
         run: |
           die() { echo "::error::$*" >&2; exit 1; }
           digest_re='^sha256:[0-9a-f]{64}$'
@@ -2344,11 +2351,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The ISO of a pull request: the steps of iso (above) in test mode, started as soon as build is done, in
+  # parallel with the VM tests. It needs nothing from sign: that job never runs on a pull request, and the
+  # release mode (the sign job's signature, ci/iso-registry.sh) is only for a build on main. It reads what
+  # it consumes (build's image, version and source date) from build, as iso does, so the ISO is the one
+  # iso would make on a pull request. docs/ISO.md, "Two modes".
+  iso-pr:
+    needs: [build, release-image]
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name == 'pull_request' && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SIGN_RESULT: none
+      SIGN_IMAGE_DIGEST: ""
+      SIGN_SIGNATURE_DIGEST: ""
+    outputs:
+      iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
+    steps: *iso-steps
+
   # The installer ISO, used: the keys of the installer's seven screens on an empty virtual disk (QEMU, UEFI,
   # Secure Boot, swtpm), the disk unlocked by a password or by the TPM, then the installed system booted
   # (tools/iso/install-test.py, tools/iso/installed-test.sh, docs/ISO.md). No secret, no id-token. It uses
   # the ISO of the iso job (an artifact checked against the hash that job reported) and, to build the test
   # console of the installed system, the image of the run.
+  # iso-install-pr is the same on a pull request, after iso-pr.
   iso-install:
     needs: [build, release-image, iso]
     if: ${{ !cancelled() && github.workflow == 'image' && needs.iso.result == 'success' }}
@@ -2356,11 +2385,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      ISO_JOB_SHA256: ${{ needs.iso.outputs.iso_sha256 }}
+      ISO_JOB_IMAGE_DIGEST: ${{ needs.iso.outputs.image_digest }}
     strategy:
       fail-fast: false
       matrix:
         unlock: [password, tpm]
-    steps:
+    steps: &iso-install-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -2399,7 +2431,7 @@ jobs:
       - name: Check the ISO and the image, load the image
         env:
           RELEASE_BUILD: ${{ needs.build.outputs.release }}
-          ISO_SHA256: ${{ needs.iso.outputs.iso_sha256 }}
+          ISO_SHA256: ${{ env.ISO_JOB_SHA256 }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
           RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
@@ -2423,7 +2455,7 @@ jobs:
         env:
           UNLOCK: ${{ matrix.unlock }}
           UKI_CERT: ${{ needs.build.outputs.uki_cert }}
-          DIGEST: ${{ needs.iso.outputs.image_digest }}
+          DIGEST: ${{ env.ISO_JOB_IMAGE_DIGEST }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -2442,6 +2474,23 @@ jobs:
             ${{ runner.temp }}/serial-installed-*.log
           if-no-files-found: ignore
           retention-days: 14
+
+  # iso-install on a pull request, after iso-pr.
+  iso-install-pr:
+    needs: [build, release-image, iso-pr]
+    if: ${{ !cancelled() && github.workflow == 'image' && needs.iso-pr.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      ISO_JOB_SHA256: ${{ needs.iso-pr.outputs.iso_sha256 }}
+      ISO_JOB_IMAGE_DIGEST: ${{ needs.iso-pr.outputs.image_digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        unlock: [password, tpm]
+    steps: *iso-install-steps
 
   # The aarch64 release (docs/ARM64.md, "Releases"), off unless the repository variable ARM64_RELEASE
   # is `on`: a release of this run (same commit and version) for the repository nyra-base-arm64, in
