@@ -74,7 +74,8 @@ def relay(master, child):
     while child.poll() is None:
         # A prompt has no newline after it: it is what is left once nothing more comes.
         ready = select.select(inputs, [], [], 0.3 if pending else 0.2)[0]
-        if not ready:
+        if not ready and ESCAPES.sub(b"", pending).endswith((b": ", b"? ")):
+            # Only what ends like a prompt: a banner line that arrived in two parts is not shown.
             os.write(1, shown(pending))
             pending = b""
         if 0 in ready:

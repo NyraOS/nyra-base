@@ -461,7 +461,8 @@ therefore runs `systemctl` through `/usr/libexec/nyra-prompt-only`, a short Pyth
 the command a terminal of its own and passes on only the unfinished line (the prompt) and the empty
 lines, not the lines that end in a newline. The keys typed go through unchanged, the polkit rule is
 untouched (the message text it matches is still the one systemctl sends, just no longer shown), and
-the failure of `systemctl` reaches `nyra update` as before: its stderr and its exit status. While the job runs, one line on the terminal shows the stage and the time since the wait began,
+the failure of `systemctl` reaches `nyra update` as before: its stderr and its exit status.
+While the job runs, one line on the terminal shows the stage and the time since the wait began,
 rewritten in place (`Downloading and preparing the update... 2:35`; on a terminal too narrow for
 it, the time alone, so that the line never wraps). It ends by telling the administrator to
 restart with `systemctl reboot` when ready, and not to force-reset the computer (for example with the
