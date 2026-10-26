@@ -142,6 +142,13 @@ jobs:
               .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
               .github/workflows/ntpd-rs.yml) ;;
               .github/workflows/shellcheck.yml | .github/workflows/titanic.yml | tools/titanic/*) ;;
+              # arm64.yml builds the arm64 image from the same inputs and the actions image.yml uses: its
+              # change is an image change. Every other workflow file (updated.yml, a new probe workflow) is a
+              # workflow of its own that runs by itself and that image.yml does not call (ci/precheck.sh checks
+              # that no workflow but titanic.yml calls another), so it cannot change the image or its tests.
+              # Only *.yml: any other name (.yaml) and the actions are image changes, below.
+              .github/workflows/arm64.yml) image=true ;;
+              .github/workflows/*.yml) ;;
               tools/sbom/*) sbom=true ;;
               */*) image=true ;;
               *.md) ;; # Markdown at the top level only (README.md); elsewhere it may be part of the image
