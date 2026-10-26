@@ -84,3 +84,9 @@ id = "CVE-2026-98869"
 package = "linux"
 reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program."
 expires = 2027-01-07
+
+[[mitigation]]
+id = "CVE-2023-37454"
+package = "linux"
+reason = "Use-after-free write in udf_put_super and udf_close_lvid when a crafted UDF image is mounted. The Debian tracker lists it as vulnerable for 7.2.12-1 and unfixed (checked 2026-10-26). The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever has physical access can already edit the boot medium or open a shell from the menu and run mount as root (docs/ISO.md, \"The boot chain, and what Secure Boot covers\"). Ends when the tracker lists a fixed version that the snapshot has, or at the expiry."
+expires = 2026-11-20
