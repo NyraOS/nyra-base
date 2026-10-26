@@ -96,23 +96,6 @@ package = "expat"
 reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
 expires = 2026-10-30
 
-# harfbuzz 12.3.2-2: fixed upstream in HarfBuzz 15.0.0 (released 2026-10-22), no Debian upload yet.
-# The flaw is in the experimental WebAssembly shaper, which Debian does not build: debian/rules
-# configures meson with auto_features=enabled, but the `wasm` option is a feature option with a
-# fixed default of disabled, and it needs libiwasm (WAMR), which is no build dependency and no
-# package in Debian. Checked in the snapshot's libharfbuzz0b 12.3.2-2+b2: no wasm, iwasm or wamr
-# string, no exported wasm symbol, no libiwasm in its NEEDED libraries (2026-10-23). Only
-# libharfbuzz0b is in the image (through pango, used by librsvg2). The installer ISOs do not ship
-# harfbuzz (checked in their SBOMs), so tools/sbom/mitigations-iso*.toml need no entry. Expiry
-# allows for a Debian upload of 15.0.0 or a backported fix. End: a fixed harfbuzz in Debian and a
-# snapshot bump.
-
-[[mitigation]]
-id = "CVE-2026-113679"
-package = "harfbuzz"
-reason = "Out-of-bounds write in HarfBuzz's experimental WebAssembly shaper, fixed upstream in 15.0.0; Debian has no fixed upload yet. Debian's build does not include that shaper: its wasm option stays disabled (it needs libiwasm, which Debian does not package), and libharfbuzz0b 12.3.2-2+b2 contains no wasm code and does not link a wasm runtime. The vulnerable code is therefore not in the image. It would matter only if a rebuilt harfbuzz enabled wasm."
-expires = 2026-11-20
-
 # wget 1.25.0-3: fixed upstream (commits 37a40fc, c2640fe, dd692d9), no Debian upload yet. wget is in
 # the base image only for users who start it; nothing in the image runs it (no unit, timer or script).
 # Checked in the snapshot's source and its amd64 and arm64 binaries (2026-10-24). Metalink is not
@@ -161,6 +144,22 @@ id = "TEMP-0000000-153207"
 package = "libheif"
 reason = "GHSA-vr5j-9r89-725x: excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. No fix upstream or in Debian yet."
 expires = 2026-11-08
+
+# openssh 1:10.6p1-1: CVE-2026-110928 has no severity and no fix in Debian (the tracker says
+# "undetermined" for every release and "unclear if upstream is affected"). The public description
+# is that the `restrict` option of authorized_keys was not applied to tunnel forwarding. That needs
+# PermitTunnel, which is off in OpenSSH by default and off in the image: sshd is not started
+# (docs/DEFAULTS.md, "SSH"), nothing in /usr/lib/nyra/ssh/10-nyra.conf or any other file of this
+# repository sets PermitTunnel, and the Containerfile fails the build when `sshd -T` on the image's
+# configuration does not print "permittunnel no". The image ships no authorized_keys file. Expiry
+# allows for Debian to classify the issue. End: Debian marks it fixed or not affected, or a snapshot
+# bump with the fix.
+
+[[mitigation]]
+id = "CVE-2026-110928"
+package = "openssh"
+reason = "authorized_keys `restrict` was not applied to tunnel forwarding, so a key marked `restrict` could still open a tunnel. Needs PermitTunnel, which is off by default and off in the image: sshd is off as installed (docs/DEFAULTS.md, \"SSH\"), /usr/lib/nyra/ssh/10-nyra.conf and every other file of the repository leave PermitTunnel alone, and the Containerfile fails the build unless `sshd -T` on the image's configuration prints \"permittunnel no\". Also needs an authenticated user whose key relies on `restrict`; the image ships no authorized_keys. Debian lists the severity as undetermined and \"unclear if upstream is affected\"."
+expires = 2026-11-20
 
 # Kerberos: fixed upstream (krb5 1.22 branch), waiting for the Debian upload. End: a fixed krb5.
 
