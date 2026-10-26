@@ -214,6 +214,12 @@ package = "linux"
 reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.12-1); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
 expires = 2026-11-07
 
+[[mitigation]]
+id = "CVE-2023-37454"
+package = "linux"
+reason = "Use-after-free write in udf_put_super and udf_close_lvid when a crafted UDF image is mounted. Unfixed in Debian: the tracker lists it as vulnerable in every release and the fixed version as (unfixed), checked 2026-10-26. The image allows udf on removable media (90-nyra-udisks.rules; the module is udf.ko in linux-modules 7.2.12-1, not blacklisted), so the way in is a crafted UDF stick or disc, plugged in by someone with physical access and mounted by a user: udisks2 mounts only when asked (today root, udisksctl mount), nosuid and nodev, noexec unless the medium is in the list of trusted media. It is not reachable from the network and not part of the boot or update trust chain. Ends when the tracker lists a fixed version that the snapshot has, or if udf leaves the file systems allowed on removable media."
+expires = 2026-11-20
+
 # zstd crates of bootc v1.16.13 (Cargo.lock; no other Cargo.lock of the repository has zstd). Fixed
 # releases exist (zstd 0.14.3, zstd-safe 8.2.0, zstd-sys 2.1.2) but are a new major version of the
 # crates, which bootc's dependencies (composefs-rs, async-compression's compression-codecs 0.4.38)
