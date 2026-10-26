@@ -9,7 +9,9 @@ console= the screen, tty0), a serial port and a virtio disk. No test console add
 sealed command line as a person's machine runs it. Every --shot-every seconds the screen is saved
 (QMP screendump, a PNG) and read with tesseract. When the text asks for a passphrase, the password is
 typed on the keyboard (QMP send-key), and the power button is pressed until the guest powers itself off,
-which only a system that is up does (the initrd does not answer it). The test passes when the prompt was
+which only a system that is up does (the initrd does not answer it). It is pressed once a login prompt has
+been read after the typing, or after LOGIN_WAIT seconds if none was (a machine that never gets there still
+fails). The test passes when the prompt was
 on the screen and the password opened the disk.
 
   --blind-after SECONDS  type the password after that time even if no prompt was read from the screen, to
@@ -46,6 +48,10 @@ ASKS = re.compile(r"passphrase|recovery key|enter password|password for", re.I)
 INACTIVE = re.compile(r"not active", re.I)
 LOGIN = re.compile(r"login:", re.I)
 BOOTS = re.compile(r"BdsDxe: starting Boot")
+# How long after the typing the power button waits for the login prompt. Emulated aarch64 (no KVM on the
+# runner) starts the services slowly: 90 s were not enough, so the guest was powered off before its login
+# prompt. Well inside --timeout.
+LOGIN_WAIT = 600
 
 
 HIDDEN = "(not kept: the password was typed blind)"
@@ -187,10 +193,12 @@ class Watch:
         print(f"SCREEN-TEST {a.name}: typing the password on the keyboard at {t:.0f} s"
               + (" (blind: no prompt was read from the screen)" if self.blind else ""), flush=True)
         self.qmp.type(self.password)
-        self.next_power = self.now() + 90
 
     def press_power(self):
-        if self.seen["typed"] and self.now() >= self.next_power:
+        t = self.now()
+        # Wait for the login prompt: the system is up only then, and a slow emulated guest may need minutes
+        # for it. After LOGIN_WAIT press anyway, so that a machine without a login prompt fails as before.
+        if self.seen["typed"] and t >= self.next_power and (self.seen["login"] or t >= self.seen["typed"] + LOGIN_WAIT):
             self.pressed = True  # before the command: QEMU may end while it is on its way
             self.qmp.execute("system_powerdown")
             self.next_power = self.now() + 20
@@ -243,6 +251,29 @@ def write_results(a, w, ok, unlocked, shown):
                 f"| Last screen (OCR) | `{w.last_text[:200]}` |\n\n")
 
 
+def self_test():
+    """The power button waits for the login prompt, and is pressed anyway after LOGIN_WAIT."""
+    from types import SimpleNamespace
+
+    def presses(login_at):
+        clock, times = [0], []
+        qmp = SimpleNamespace(execute=lambda name: times.append(clock[0]))
+        w = Watch(SimpleNamespace(), None, qmp, "", "")
+        w.now = lambda: clock[0]
+        w.seen["typed"] = 10
+        for clock[0] in range(10 + LOGIN_WAIT + 50):
+            if login_at is not None and clock[0] >= login_at:
+                w.seen["login"] = login_at
+            w.press_power()
+        return times
+
+    slow = presses(login_at=300)  # a login prompt late in a slow boot: not a second before it
+    assert slow[0] == 300 and slow[1] == 320, slow
+    never = presses(login_at=None)  # no login prompt: only at the deadline, then every 20 s
+    assert never[0] == 10 + LOGIN_WAIT and never[1] == never[0] + 20, never
+    print("screen-boot.py self-test: ok")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--name", required=True)
@@ -281,4 +312,7 @@ def main():
     sys.exit(0 if ok else 1)
 
 
-main()
+if sys.argv[1:] == ["--self-test"]:
+    self_test()
+else:
+    main()
