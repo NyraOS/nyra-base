@@ -213,6 +213,7 @@ check nyra-update "Offline test of the waiting part of nyra update (tools/vm/tes
 check reserved-names "Offline test of the list of reserved names for the release tree (tools/install/test-reserved-names.sh)" "tools/install/test-reserved-names.sh"
 check network-health "Offline test of the network health check (tools/vm/test-network-health.sh)" "tools/vm/test-network-health.sh"
 check vm-boot "Self-test of the console matching (tools/vm/vm-boot.py)" "python3 -I tools/vm/vm-boot.py --self-test"
+check screen-boot "Self-test of the power button wait of the screen test (tools/vm/screen-boot.py)" "python3 -I tools/vm/screen-boot.py --self-test"
 check tpm-enroll "Offline test of the disk's TPM2 enrollment script (tools/vm/test-tpm-enroll.sh)" "tools/vm/test-tpm-enroll.sh"
 check titanic-results "Self-test of the Titanic results (tools/titanic/results.py)" "python3 -I tools/titanic/results.py --self-test"
 check verify-oci "Self-test of the cached image check (ci/verify-oci.py)" "python3 -I ci/verify-oci.py --self-test"
