@@ -422,8 +422,9 @@ install_dependency_failure() { # the unit needs a unit that fails: it never runs
 }
 
 install_progress_cases() { # the install as a stand-in that takes a while (install_unit_checks): the stage and the
-	# time are shown, Ctrl+C stops only the waiting, the next `nyra update` picks the running install up,
-	# and a start of its own ends with the installed version
+	# time are shown, Ctrl+C stops only the waiting, the next `nyra update` picks the running install up
+	# (without a stage: the lines in the files were written before it began to look), and a start of its
+	# own shows both stages and ends with the installed version
 	install_dependency_failure || return 1
 	install_unit_checks || return 1
 	ok=0
@@ -434,12 +435,14 @@ install_progress_cases() { # the install as a stand-in that takes a while (insta
 			systemctl is-active nyra-updated-install@2026.10.4.service | grep -x activating &&
 			nyra_update_session vmadmin n 0 &&
 			said 'Version 2026.10.4 is being prepared.' &&
-			said 'Downloading and preparing the update... 0:' &&
+			said 'Preparing... 0:' &&
+			! said 'Checking the update' &&
 			said 'Installed version 2026.10.4.' &&
 			rm -f /run/nyra-updated-install.result &&
 			nyra_update_session vmadmin y 0 &&
 			said 'Preparing version 2026.10.4.' &&
 			said 'Checking the update... 0:' &&
+			said 'Downloading and preparing the update... 0:' &&
 			said 'Installed version 2026.10.4.' &&
 			said 'Do not force-reset the computer'
 	} || ok=1
