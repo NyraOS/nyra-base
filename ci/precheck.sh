@@ -209,6 +209,7 @@ check shellcheck "shellcheck" check_shellcheck
 check security-defaults "Self-test of the secure-defaults guest commands (tools/vm/security-defaults.sh)" "tools/vm/security-defaults.sh --self-test"
 check etc-copy "The copies of /etc, their restore, and which a run removes (tools/vm/test-etc-copy.sh)" check_etc_copy
 check first-admin "The first administrator: the account, the refusals, the fixed defaults (tools/vm/test-first-admin.sh)" check_first_admin
+check nyra-update "Offline test of the waiting part of nyra update (tools/vm/test-nyra-update.sh)" "tools/vm/test-nyra-update.sh"
 check reserved-names "Offline test of the list of reserved names for the release tree (tools/install/test-reserved-names.sh)" "tools/install/test-reserved-names.sh"
 check network-health "Offline test of the network health check (tools/vm/test-network-health.sh)" "tools/vm/test-network-health.sh"
 check vm-boot "Self-test of the console matching (tools/vm/vm-boot.py)" "python3 -I tools/vm/vm-boot.py --self-test"

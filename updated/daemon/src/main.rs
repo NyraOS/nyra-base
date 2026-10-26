@@ -17,7 +17,9 @@
 //!   polkit): stages that release, never reboots, see the `install` module.
 
 use nyra_updated::available::{available, installed_version, NOT_SET_UP};
-use nyra_updated::install::{check_version, install, write_result, PolicyFiles, RESULT};
+use nyra_updated::install::{
+    check_version, install, write_result, write_stage, PolicyFiles, Stage, RESULT, STAGE,
+};
 use nyra_updated::system::{fetch_sheet_clean, run as run_limited, Real, SHORT};
 use nyra_updated::{
     check, on_health_failure, one_line, set_channel, Config, Error, HealthAction, Lock, Store,
@@ -43,16 +45,20 @@ fn config() -> Result<Option<Config>, Error> {
 /// Updates must be configured, as for a check: without a sheet key nothing is installed.
 fn install_once(version: &str, now: u64) -> Result<String, Error> {
     check_version(version)?;
+    // The lock first, so that only the run that holds it writes the stage.
+    let _lock = Lock::acquire(Path::new(LOCK))?;
+    write_stage(Path::new(STAGE), Stage::Checking);
     let cfg = config()?.ok_or_else(|| Error::Config(NOT_CONFIGURED.into()))?;
     PolicyFiles::system().check()?;
-    let _lock = Lock::acquire(Path::new(LOCK))?;
     let store = Store {
         dir: STATE_DIR.into(),
     };
     let mut sys = Real {
         stage_limit: cfg.stage_timeout,
     };
-    install(&mut sys, &store, &cfg, now, version)
+    install(&mut sys, &store, &cfg, now, version, |stage| {
+        write_stage(Path::new(STAGE), stage)
+    })
 }
 
 /// `available`: the version to print, if any. No lock and no state: it is run by a user.

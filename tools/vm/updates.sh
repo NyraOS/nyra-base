@@ -29,7 +29,10 @@
 #   6  power cut when v2's kernel starts (first try)
 #   7  v2, second try, blessed; `nyra update` as an administrator without journal access (up to date,
 #      a halted or unverifiable sheet refused, the question declined, the install refused by the stand-in
-#      policy with its reason shown, a staged version through the unit and polkit's password); v4
+#      policy with its reason shown and the stage the install had reached; a stand-in install that
+#      takes a while: its stages and the time shown, Ctrl+C stopping only the waiting, the next run
+#      picking the install up, a start of its own ending with the installed version; a unit whose
+#      dependency fails and writes no result: not installed); v4
 #      staged, then retracted: discarded (never finalized); v11 staged by hand afterwards (discarded at
 #      shutdown too)
 #   8  v2 again (boot order kept, no staged entries left); v3 staged
@@ -410,8 +413,8 @@ vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command "$lib; select_sheet halted && nyra_update_session vmadmin y 1 && said 'Updates are paused.' && select_sheet wrong && nyra_update_session vmadmin y 1 && said 'The update information could not be verified.' && expect staged none" \
   --command "$lib; select_sheet s2 && nyra_update_session vmadmin n 0 && said 'Version 2026.10.2 is installed. 2026.10.4 is available. Install it? [y/N]' && said 'Nothing was installed.' && expect staged none" \
   --command "$lib; nyra_update_session vmadmin y 1 wrong-password && said 'Nothing was installed: the password was not accepted' && expect staged none" \
-  --command "$lib; nyra_update_session vmadmin y 1 && said 'Downloading and preparing version 2026.10.4.' && said \"The update was not installed: refusing: the signature policy is not the image's\" && journalctl -u nyra-updated-install@2026.10.4.service -o cat --no-pager | grep -F \"signature policy is not the image's\" && expect staged none && test \"\$(stat -c %a /run/nyra-updated-install.result)\" = 644 && grep -q '^failed 2026.10.4 ' /run/nyra-updated-install.result && test -z \"\$(runuser -u vmadmin -- journalctl -b -u nyra-updated-install@2026.10.4.service -o cat 2>/dev/null)\"" \
-  --command "$lib; install_unit_checks && nyra_update_session vmadmin y 0; rc=\$?; install_unit_restored && [ \$rc = 0 ] && said 'Installed version 2026.10.4.' && said 'Do not force-reset the computer' && expect staged $d4 && echo 'staged 2026.10.4' > /run/nyra-updated-install.result && nyra_update_session vmadmin n 0 && said 'Version 2026.10.4 is already prepared.' && said 'Do not force-reset the computer'; rc=\$?; rm -f /run/nyra-updated-install.result; [ \$rc = 0 ]" \
+  --command "$lib; nyra_update_session vmadmin y 1 && said 'Preparing version 2026.10.4.' && said \"The update was not installed: refusing: the signature policy is not the image's\" && journalctl -u nyra-updated-install@2026.10.4.service -o cat --no-pager | grep -F \"signature policy is not the image's\" && expect staged none && test \"\$(stat -c %a /run/nyra-updated-install.result)\" = 644 && grep -q '^failed 2026.10.4 ' /run/nyra-updated-install.result && test \"\$(stat -c %a /run/nyra-updated-install.stage)\" = 644 && test \"\$(cat /run/nyra-updated-install.stage)\" = 'Checking the update' && test -z \"\$(runuser -u vmadmin -- journalctl -b -u nyra-updated-install@2026.10.4.service -o cat 2>/dev/null)\"" \
+  --command "$lib; install_progress_cases && expect staged $d4 && echo 'staged 2026.10.4' > /run/nyra-updated-install.result && nyra_update_session vmadmin n 0 && said 'Version 2026.10.4 is already prepared.' && said 'Do not force-reset the computer'; rc=\$?; rm -f /run/nyra-updated-install.result; [ \$rc = 0 ]" \
   --command "$lib; outcome s3 Discarded && test -e /run/nyra-updated/discarded && ! test -e /boot/loader/entries.staged && expect booted $d2 && expect rollback $d1 && test \"\$(queued)\" = false" \
   --command 'bootc status --format json' \
   --command "$lib; bootc switch --quiet other.test/nyra-base:v11 && expect staged $d11 && ls /boot/loader/entries.staged"
