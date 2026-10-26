@@ -1030,6 +1030,11 @@ Each line is something that broke or surprised us once.
   Debian's arm64 kernel builds neither driver (`CONFIG_TCG_TIS`, `CONFIG_TCG_TIS_I2C` off; CRB is
   built in): the guest gets the firmware's TPM2 table but no `/dev/tpm0`, and waits 90 s for it in
   the initrd.
+- A stalled Ubuntu mirror made `apt-get install` of the VM tools wait 7 to 19 minutes, without an error, in one job of a run
+  (the step took under a minute otherwise), and every job that boots a VM waited for it. Every `apt-get` on a runner now has
+  `-o Acquire::Retries=5 -o Acquire::http::Timeout=30` (a stalled download fails after 30 s and is tried again) and the pure
+  install steps have `timeout-minutes: 10`; a real failure (a missing package) still fails at once. `ci/tools.Containerfile`
+  keeps its plain `apt-get`: its text is part of the key of the bootc build cache.
 
 ## Titanic (docs/TITANIC.md)
 - bootc 1.16 enables `bootc-sysusers-shadow-sync.service` (through its generator, on composefs boots

@@ -39,9 +39,10 @@ jobs:
         run: test -r /dev/kvm && test -w /dev/kvm && echo "/dev/kvm is usable by $(id -un)"
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
           qemu-system-x86_64 --version
 
       - name: Cache the Debian cloud image

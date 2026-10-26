@@ -17,7 +17,7 @@ runs:
     - name: Podman, the build inputs (as image.yml), the work directory
       shell: bash
       run: |
-        command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends podman; }
+        command -v podman >/dev/null || { sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends podman; }
         # As in image.yml: no `podman image prune` from the runner during the job (docs/LESSONS.md).
         if systemctl list-unit-files podman-auto-update.timer >/dev/null 2>&1; then
           sudo systemctl stop podman-auto-update.timer podman-auto-update.service

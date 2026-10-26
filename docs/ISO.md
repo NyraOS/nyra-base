@@ -157,6 +157,14 @@ Two modes, one code path:
 The job has no secret and no `id-token`, runs no code from the image, and is not a dependency of `sign` or
 `publish`.
 
+On a pull request the ISO is always in test mode: it uses only the image of the `build` job and a key made for the
+run, nothing `sign` makes (that job is skipped there). So a pull request builds its ISO with the jobs `iso-pr`
+and `iso-install-pr`, which have the steps of `iso` and `iso-install` (the same YAML anchors) and start as
+soon as `build` is done, in parallel with the VM tests, instead of after `sign` and the tests. A build on main
+or a manual run keeps `iso` and `iso-install` after `sign`, as the release mode needs its signature.
+`ci/check-iso-jobs.py` (part of `ci/precheck.sh`) checks that the two pairs have the same steps and that the
+pull request jobs do not need `sign`.
+
 ## Tests
 
 `tools/iso/boot-test.py` boots the ISO in QEMU with the Microsoft Secure Boot keys (OVMF), a TPM (swtpm) and

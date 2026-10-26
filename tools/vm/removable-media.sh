@@ -77,12 +77,12 @@ EOF
 sudo podman run --rm --network none -v "$media:/w" "$image" bash /w/sticks.sh
 sudo chown "$(id -u):$(id -g)" "$media"/*.raw
 # A stick with a file system Nyra does not mount (squashfs, on the whole stick), made on the runner.
-command -v mksquashfs >/dev/null || sudo apt-get install -y -q --no-install-recommends squashfs-tools >/dev/null
+command -v mksquashfs >/dev/null || sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends squashfs-tools >/dev/null
 mkdir -p "$media/foreign"
 echo "a squashfs stick" > "$media/foreign/readme"
 mksquashfs "$media/foreign" "$media/foreign.raw" -quiet -noappend
 truncate -s 4M "$media/foreign.raw"
-command -v mkfs.exfat >/dev/null || sudo apt-get install -y -q --no-install-recommends exfatprogs >/dev/null
+command -v mkfs.exfat >/dev/null || sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends exfatprogs >/dev/null
 truncate -s 64M "$media/exfat.img"
 mkfs.exfat -L T14EXFAT "$media/exfat.img" >/dev/null
 dd if="$media/exfat.img" of="$media/fs.raw" bs=1M seek=65 conv=notrunc status=none

@@ -142,6 +142,13 @@ jobs:
               .github/workflows/bootc-cache.yml | .github/workflows/kvm.yml | .github/workflows/secrets.yml) ;;
               .github/workflows/ntpd-rs.yml) ;;
               .github/workflows/shellcheck.yml | .github/workflows/titanic.yml | tools/titanic/*) ;;
+              # arm64.yml builds the arm64 image from the same inputs and the actions image.yml uses: its
+              # change is an image change. Every other workflow file (updated.yml, a new probe workflow) is a
+              # workflow of its own that runs by itself and that image.yml does not call (ci/precheck.sh checks
+              # that no workflow but titanic.yml calls another), so it cannot change the image or its tests.
+              # Only *.yml: any other name (.yaml) and the actions are image changes, below.
+              .github/workflows/arm64.yml) image=true ;;
+              .github/workflows/*.yml) ;;
               tools/sbom/*) sbom=true ;;
               */*) image=true ;;
               *.md) ;; # Markdown at the top level only (README.md); elsewhere it may be part of the image
@@ -299,7 +306,7 @@ jobs:
       - name: Add the bootc layer, the sealed UKI, and lint
         id: image
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
           ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
@@ -388,7 +395,7 @@ jobs:
       - name: Test the UKI release gate (docs/SIGNING.md)
         if: steps.mode.outputs.release != 'true'
         run: |
-          sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
             "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/pcr-next/tpm2-pcr-public-key-next.pem" "$WORK"
 
@@ -641,9 +648,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -853,9 +861,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -931,9 +940,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1045,9 +1055,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1181,9 +1192,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1251,9 +1263,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1372,9 +1385,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1543,7 +1557,7 @@ jobs:
       # with the Nyra key and its PCR policy with pcr-policy-1, every image is refused (docs/SIGNING.md).
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -1809,8 +1823,8 @@ jobs:
               -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
               "$DEBIAN_IMAGE" bash -c '
                 set -euo pipefail
-                apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends \
                   skopeo podman jq git ca-certificates >/dev/null
                 skopeo --version
                 /src/tools/install/verified-pull.sh "$@"
@@ -1873,10 +1887,11 @@ jobs:
 
       # Runs as root, so it comes before the auth step: no credential is present yet.
       - name: Install sbsign, pefile and the PKCS#11 engine for openssl
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -2028,7 +2043,7 @@ jobs:
         name: UKI release gate (signed with the committed Nyra certificate)
         run: |
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -2064,17 +2079,25 @@ jobs:
   # Every input is checked against the job that made it (ci/check-artifact.sh). Then the ISO is booted:
   # as a CD and as a USB stick, under Secure Boot with a TPM (tools/iso/boot-test.py). It is not a
   # dependency of sign or publish, and an ISO failure never holds back an image.
+  #
+  # On a pull request the job is iso-pr below, which does not wait for sign: there the ISO is in test mode,
+  # made from build's image and a key made for the run, and uses nothing sign makes. Both jobs run the same
+  # steps (the anchor iso-steps); only what they know of sign (the three SIGN_* values) differs.
   iso:
     needs: [build, release-image, sign]
-    if: ${{ !cancelled() && github.workflow == 'image' && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name != 'pull_request' && needs.build.result == 'success' && (needs.build.outputs.release != 'true' || needs.release-image.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
+    env:
+      SIGN_RESULT: ${{ needs.sign.result }}
+      SIGN_IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
+      SIGN_SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
     outputs:
       iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
       image_digest: ${{ steps.build.outputs.image_digest }}
-    steps:
+    steps: &iso-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -2094,7 +2117,6 @@ jobs:
         id: mode
         env:
           RELEASE_BUILD: ${{ needs.build.outputs.release }}
-          SIGN_RESULT: ${{ needs.sign.result }}
         run: |
           if [ "$RELEASE_BUILD" = true ] && [ "$SIGN_RESULT" = success ]; then mode=release; else mode=test; fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
@@ -2107,9 +2129,10 @@ jobs:
           sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$snapshot" -t localhost/nyra-tools -f ci/tools.Containerfile ci
 
       - name: Install the tools that write and boot the ISO
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 ovmf swtpm xorriso mtools dosfstools cpio zstd jq
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 ovmf swtpm xorriso mtools dosfstools cpio zstd jq
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -2145,8 +2168,8 @@ jobs:
       - name: Check the signature against the sign job
         if: ${{ steps.mode.outputs.mode == 'release' }}
         env:
-          IMAGE_DIGEST: ${{ needs.sign.outputs.image_digest }}
-          SIGNATURE_DIGEST: ${{ needs.sign.outputs.signature_digest }}
+          IMAGE_DIGEST: ${{ env.SIGN_IMAGE_DIGEST }}
+          SIGNATURE_DIGEST: ${{ env.SIGN_SIGNATURE_DIGEST }}
         run: |
           die() { echo "::error::$*" >&2; exit 1; }
           digest_re='^sha256:[0-9a-f]{64}$'
@@ -2335,11 +2358,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The ISO of a pull request: the steps of iso (above) in test mode, started as soon as build is done, in
+  # parallel with the VM tests. It needs nothing from sign: that job never runs on a pull request, and the
+  # release mode (the sign job's signature, ci/iso-registry.sh) is only for a build on main. It reads what
+  # it consumes (build's image, version and source date) from build, as iso does, so the ISO is the one
+  # iso would make on a pull request. docs/ISO.md, "Two modes".
+  iso-pr:
+    needs: [build, release-image]
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name == 'pull_request' && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SIGN_RESULT: none
+      SIGN_IMAGE_DIGEST: ""
+      SIGN_SIGNATURE_DIGEST: ""
+    outputs:
+      iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
+    steps: *iso-steps
+
   # The installer ISO, used: the keys of the installer's seven screens on an empty virtual disk (QEMU, UEFI,
   # Secure Boot, swtpm), the disk unlocked by a password or by the TPM, then the installed system booted
   # (tools/iso/install-test.py, tools/iso/installed-test.sh, docs/ISO.md). No secret, no id-token. It uses
   # the ISO of the iso job (an artifact checked against the hash that job reported) and, to build the test
   # console of the installed system, the image of the run.
+  # iso-install-pr is the same on a pull request, after iso-pr.
   iso-install:
     needs: [build, release-image, iso]
     if: ${{ !cancelled() && github.workflow == 'image' && needs.iso.result == 'success' }}
@@ -2347,11 +2392,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      ISO_JOB_SHA256: ${{ needs.iso.outputs.iso_sha256 }}
+      ISO_JOB_IMAGE_DIGEST: ${{ needs.iso.outputs.image_digest }}
     strategy:
       fail-fast: false
       matrix:
         unlock: [password, tpm]
-    steps:
+    steps: &iso-install-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -2370,9 +2418,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf python3-virt-firmware \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf python3-virt-firmware \
             systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -2389,7 +2438,7 @@ jobs:
       - name: Check the ISO and the image, load the image
         env:
           RELEASE_BUILD: ${{ needs.build.outputs.release }}
-          ISO_SHA256: ${{ needs.iso.outputs.iso_sha256 }}
+          ISO_SHA256: ${{ env.ISO_JOB_SHA256 }}
           IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
           RELEASE_IMAGE_SHA256: ${{ needs.release-image.outputs.image_sha256 }}
         run: |
@@ -2413,7 +2462,7 @@ jobs:
         env:
           UNLOCK: ${{ matrix.unlock }}
           UKI_CERT: ${{ needs.build.outputs.uki_cert }}
-          DIGEST: ${{ needs.iso.outputs.image_digest }}
+          DIGEST: ${{ env.ISO_JOB_IMAGE_DIGEST }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -2432,6 +2481,23 @@ jobs:
             ${{ runner.temp }}/serial-installed-*.log
           if-no-files-found: ignore
           retention-days: 14
+
+  # iso-install on a pull request, after iso-pr.
+  iso-install-pr:
+    needs: [build, release-image, iso-pr]
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name == 'pull_request' && needs.iso-pr.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      ISO_JOB_SHA256: ${{ needs.iso-pr.outputs.iso_sha256 }}
+      ISO_JOB_IMAGE_DIGEST: ${{ needs.iso-pr.outputs.image_digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        unlock: [password, tpm]
+    steps: *iso-install-steps
 
   # The aarch64 release (docs/ARM64.md, "Releases"), off unless the repository variable ARM64_RELEASE
   # is `on`: a release of this run (same commit and version) for the repository nyra-base-arm64, in
@@ -2519,10 +2585,11 @@ jobs:
 
       # Runs as root, so it comes before the auth step: no credential is present yet.
       - name: Install sbsign, pefile, the PKCS#11 engine for openssl and qemu-user-static
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
           sudo /usr/lib/systemd/systemd-binfmt /usr/lib/binfmt.d/qemu-aarch64.conf
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
 
@@ -2781,7 +2848,7 @@ jobs:
 
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q --platform linux/arm64 localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -3113,8 +3180,8 @@ jobs:
               -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
               "$DEBIAN_IMAGE" bash -c '
                 set -euo pipefail
-                apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends \
                   skopeo podman jq git ca-certificates >/dev/null
                 skopeo --version
                 /src/tools/install/verified-pull.sh "$@"
