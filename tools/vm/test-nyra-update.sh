@@ -26,9 +26,10 @@ sed -e "s#^PATH=.*#PATH=$work/bin:/usr/bin:/bin#" \
   -e "s#^RESULT=.*#RESULT=$work/result#" \
   -e "s#^STAGE=.*#STAGE=$work/stage#" \
   -e "s#/usr/libexec/nyra-updated#$work/bin/nyra-updated#" \
+  -e "s#/usr/libexec/nyra-prompt-only#$PWD/files/usr/libexec/nyra-prompt-only#" \
   -e "s#/usr/lib/os-release#$work/os-release#" \
   -e 's#id -nG#echo sudo#' files/usr/bin/nyra >"$work/nyra"
-[ "$(grep -c "$work" "$work/nyra")" = 5 ] && grep -q 'echo sudo' "$work/nyra" ||
+[ "$(grep -c "$work" "$work/nyra")" = 5 ] && grep -q "^if ! $PWD/files/usr/libexec/nyra-prompt-only systemctl" "$work/nyra" && grep -q 'echo sudo' "$work/nyra" ||
   { echo "FAIL: the copy of files/usr/bin/nyra was not made as expected"; exit 1; }
 echo IMAGE_VERSION=2026.10.1 >"$work/os-release"
 
@@ -40,6 +41,22 @@ cat >"$work/bin/systemctl" <<EOS
 d=$work
 case "\$1" in
 start)
+  # The real command ends when the job is queued; this one leaves a background job, which must live on after the
+  # terminal that nyra-prompt-only gave the command is closed (hangup).
+  trap '' HUP
+  if [ -n "\$SC_ASK" ]; then
+    # What pkttyagent writes to /dev/tty around its prompt, and what it does with the typed password.
+    printf '\033[1;31m==== AUTHENTICATING FOR org.freedesktop.systemd1.manage-units ====\n\033[0m' >/dev/tty
+    printf "Authentication is required to start 'x.service'.\nAuthenticating as: tester\n" >/dev/tty
+    printf 'Password: ' >/dev/tty
+    stty -echo </dev/tty; read -r pw </dev/tty; stty echo </dev/tty; echo >/dev/tty
+    if [ "\$pw" != right ]; then
+      printf '\033[1;31m==== AUTHENTICATION FAILED ====\n\033[0m' >/dev/tty
+      echo "Failed to start x.service: Access denied" >&2
+      exit 1
+    fi
+    printf '\033[1;31m==== AUTHENTICATION COMPLETE ====\n\033[0m' >/dev/tty
+  fi
   touch \$d/job
   case "\$SC_MODE" in
   dep) ( sleep 2; rm -f \$d/job ) >/dev/null 2>&1 & ;;
@@ -71,7 +88,7 @@ pid, fd = pty.fork()
 if pid == 0:
     os.execv("/bin/sh", ["sh", sys.argv[1], "update"])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
-start, out, sent, status = time.time(), b"", False, None
+start, out, sent, password_sent, status = time.time(), b"", False, False, None
 while time.time() - start < seconds:
     if select.select([fd], [], [], 0.2)[0]:
         try:
@@ -83,6 +100,10 @@ while time.time() - start < seconds:
         if not sent and b"[y/N]" in out:
             os.write(fd, b"y\n")
             sent = True
+        if not password_sent and b"Password:" in out:
+            time.sleep(0.3)  # the agent clears the terminal input right after it shows the prompt
+            os.write(fd, os.environ.get("PW", "").encode() + b"\n")
+            password_sent = True
     if ctrl_c and time.time() - start > ctrl_c:
         os.write(fd, b"\x03")
         ctrl_c = 0
@@ -135,4 +156,22 @@ expect "30 columns: no row of the live line reaches the width" no_wide_row
 run ok 15 80 2
 expect "Ctrl+C: says the install goes on" shows 'The update keeps preparing in the background; run `nyra update` again to see it.'
 expect "Ctrl+C: status 130" status_is 130
+# The password: only the prompt is shown, none of the banner of polkit's agent. The prompt and what is typed
+# at it are the agent's: the password itself is not shown.
+SC_ASK=1 PW=right run ok 15
+expect "password: the prompt is shown" shows 'Password:'
+expect "password: no banner of the agent" not_shows 'AUTHENTICAT'
+expect "password: no message of the action" not_shows 'Authentication is required'
+expect "password: no line saying who" not_shows 'Authenticating as'
+expect "password: the typed password is not shown" not_shows 'right'
+expect "password: the right one installs" shows "Installed version $version."
+expect "password: status 0" status_is 0
+
+SC_ASK=1 PW=wrong run ok 15
+expect "wrong password: the prompt is shown" shows 'Password:'
+expect "wrong password: no banner of the agent" not_shows 'AUTHENTICAT'
+expect "wrong password: a clear message" shows 'Nothing was installed: the password was not accepted'
+expect "wrong password: status 1" status_is 1
+expect "wrong password: not installed" not_shows 'Installed version'
+
 echo "test-nyra-update: all passed"
