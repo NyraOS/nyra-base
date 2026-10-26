@@ -17,6 +17,7 @@ it is something the user switches on, not off), and how CI proves it.
 | Rare filesystems not autoloaded | `/usr/lib/modprobe.d/nyra-filesystems.conf` (`blacklist`) | `blacklist f2fs`, `hfsplus` and `squashfs` are there and none for vfat, exfat, ntfs, ext4, btrfs, xfs, udf, isofs, erofs, overlay; mounting an f2fs image fails without loading f2fs; a vfat image mounts |
 | Removable media: mounted only when asked, not executable unless trusted | udisks2 and polkitd, started through D-Bus when a user asks to mount; `/usr/lib/udev/rules.d/90-nyra-udisks.rules` (see "Removable media") | Titanic T14 (`tools/vm/removable-media.sh`, docs/TITANIC.md): nothing mounted or running before a user asks; a squashfs stick refused, by its type and by name; `nosuid,nodev,noexec` on an untrusted stick (FAT, ext4 and exFAT), `exec`, `suid` and `dev` refused; a trusted stick without `noexec`, also from a last line without a newline, and a list others can write ignored; a user's loop device refused; udisks2's hardening in place |
 | Authenticated time | ntpd-rs (Rust, built by us with our patch for a clock that is far off) with NTS only (Cloudflare, Netnod, PTB, SIDN Labs), run by `ntpd-rs.service` (never root, only `CAP_SYS_TIME`, sandboxed, AppArmor); configuration in `/usr/lib/nyra/ntpd-rs/ntp.toml`; no chrony, no `systemd-timesyncd` (see "Time") | no `systemd-timesyncd` or chrony; the service active, ntp-daemon as its dynamic user with `CAP_SYS_TIME` as its only effective capability, no new privileges, its seccomp filter on and its AppArmor profile in enforce mode without a denial, our configuration with exactly the four NTS sources and every running source NTS, a systemd exposure of at most 1.9; `timedatectl` reports NTP on, and after `timedatectl set-ntp true` the same service runs. That it corrects a wrong clock and ignores spoofed servers is proven by the update tests (T9, docs/UPDATES.md) |
+| Memory that runs out closes a program, not the machine | `systemd-zram-generator` (swap of half the RAM, at most 4 GiB, in compressed memory, zstd; `/usr/lib/systemd/zram-generator.conf.d/10-nyra.conf`), `/usr/lib/sysctl.d/90-nyra-memory.conf` (`vm.swappiness = 180`, `vm.page-cluster = 0`) and `systemd-oomd` enabled by our preset (see "Running out of memory") | Titanic-style test `tools/vm/oom.sh`: zram0 of about half the RAM, priority 100, zstd, the two settings, oomd enabled and watching the user's manager; a program of the user's manager that takes memory without end is closed by systemd-oomd (the journal says so, not the kernel's out-of-memory killer), a small one next to it and the system survive |
 | Kernel messages on the console: errors only | `/usr/lib/sysctl.d/90-nyra-console.conf` (`kernel.printk = 4 4 1 7`, the threshold of the `quiet` kernel argument, without changing the sealed command line; see "Kernel messages on the console") | the threshold is 4; after a restart of `systemd-timedated` (a unit start and BPF program loads, each an audit record) the serial console shows no kernel audit line, while `journalctl _TRANSPORT=audit` and `journalctl -k` have them; with the threshold raised, the same restart prints them (the control) |
 | `su` without `sudo` | `su` is sudo-rs's (Rust), setuid root in place of util-linux's; sudo-rs's `sudo`, `sudoedit` and `visudo` are removed (see "Rust components") | `su --version` is sudo-rs's, `/usr/bin/su` is mode 4755 owned by root, no `sudo` command. Recovery checks an administrator's password with it (docs/BOOT.md, "Recovery") |
 | wget does not build an HTML index of an FTP directory | `htmlify = off` in `/usr/lib/nyra/wgetrc`, linked from `/etc/wgetrc` (the one system file wget reads; it follows the image on updates). `wget ftp://host/dir/`, or a redirect to such a URL, then saves the server's listing as it is (the file `.listing`, which wget also keeps because htmlify off forces `remove_listing` off), instead of passing every name in it through `html_quote_string()`, which has an unfixed bug (docs/SBOM.md, `tools/sbom/mitigations.toml`). While `/etc/wgetrc` is the image's link, this is the default. A user turns it back on with `--htmlify`, `-e`, `--config` or in `~/.wgetrc`, or skips the file with `--no-config` | not in the VM: the `Containerfile` fails the build unless `/etc/wgetrc` is that link and its last `htmlify` line is `off` |
@@ -421,6 +422,30 @@ in the update tests (T9, the boot with the clock in 2035, one run on the CI's VM
 about 8.8 MB resident and 11.2 MB charged to its cgroup (chronyd: 10.8 and 6.3 MB); 58 context
 switches in 60 s (chronyd: at most 5); 229 ms of CPU time from its start, key exchanges included
 (chronyd: 82 to 87 ms).
+
+## Running out of memory
+
+Without a safeguard the kernel waits until nothing is left, stalls everything while it reads and
+writes pages again and again (the desktop stops answering for minutes), and then its out-of-memory
+killer picks a victim that may be the desktop itself. Two things change that:
+
+- **Compressed swap.** `systemd-zram-generator` makes `/dev/zram0`, swap kept in RAM compressed with
+  zstd, half the RAM at most 4 GiB. Idle memory shrinks instead of the machine reaching for the disk;
+  `vm.swappiness = 180` and `vm.page-cluster = 0` are the values for swap that costs no disk seek.
+  There is no swap on the disk: the disk is encrypted, a hibernation image is not planned, and a swap
+  file would mean more writes to the SSD for little.
+- **`systemd-oomd`** watches memory pressure (PSI), not only the amount that is free. Debian's package
+  turns it on for the user's manager (`user@.service`): when its programs have been stalled on memory
+  more than half the time for 20 seconds (the package defaults, kept), it closes the one that uses the
+  most. The system services are outside that cgroup, so they are never the victim. The kernel's own
+  killer remains the last resort.
+
+What this does not do yet: it does not protect the desktop session from being chosen. The extended
+attribute that does it (`ManagedOOMPreference=avoid`) is not inherited, so it goes on the units of the
+session, with the desktop (the compositor and the shell), not in the base. Telling the user which
+program was closed is also the desktop's part: it can follow the journal (`journalctl -u systemd-oomd`,
+a line "Killed ... due to memory pressure"). The swap rule of oomd (`ManagedOOMSwap`) stays at the
+package's `auto`: it would let oomd choose among system services too.
 
 ## Filesystems
 

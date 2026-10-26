@@ -605,7 +605,8 @@ jobs:
   # that probes it again masked the initrd ends in emergency mode, with the rule the system starts).
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
-  # policy, filesystem autoload).
+  # policy, filesystem autoload), and tools/vm/oom.sh (zram swap; systemd-oomd closes a program that
+  # takes all the memory, the system stays up).
   # Security: this job runs images built from pull requests with --privileged and
   # /dev mounted, so it must stay on ephemeral GitHub-hosted runners; never run it on
   # self-hosted runners for pull_request events.
@@ -731,6 +732,12 @@ jobs:
       - name: Secure defaults (docs/DEFAULTS.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/vm/security-defaults.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # zram swap, and systemd-oomd closing the program that takes all the memory (tools/vm/oom.sh).
+      - name: Running out of memory (docs/DEFAULTS.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 15
+        run: tools/vm/oom.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       # SSH is off as installed; turned on for the test only, a key alone or a password with a
       # one-time code logs in, nothing else does, and the console login is unchanged (tools/vm/ssh-2fa.sh).

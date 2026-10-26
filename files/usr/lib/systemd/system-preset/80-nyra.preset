@@ -18,3 +18,6 @@ enable polkit-agent-helper.socket
 disable ssh.service
 disable ssh.socket
 disable sshd-keygen.service
+# Running out of memory (docs/DEFAULTS.md): systemd-oomd closes the program that uses the most memory
+# when the user's programs stall on memory, instead of the whole machine stalling.
+enable systemd-oomd.service

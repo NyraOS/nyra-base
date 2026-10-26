@@ -39,7 +39,7 @@ read -r -d '' units_allowed <<'EOF' || true
 dbus\.(service|socket)
 ntpd-rs\.service
 polkit-agent-helper\.socket
-systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed)\.service
+systemd-(journald|logind|networkd|resolved|udevd|userdbd|hostnamed|oomd)\.service
 systemd-[a-z0-9-]+\.socket
 (serial-)?getty@[a-zA-Z0-9]+\.service
 user@[0-9]+\.service

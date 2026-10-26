@@ -333,6 +333,13 @@ RUN for u in nftables.service dpkg-db-backup.timer dpkg-db-backup.service \
       printf '# Nyra: no purpose in the base image (docs/DEFAULTS.md)\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-%s\n' "$u" \
         > "/usr/lib/systemd/system/$u.d/10-nyra.conf" || exit 1; done
 
+# Running out of memory (docs/DEFAULTS.md): zram swap from the generator, which reads our drop-in, and
+# systemd-oomd, enabled by our preset. The build fails if either is missing.
+RUN systemctl preset systemd-oomd.service && test "$(systemctl is-enabled systemd-oomd.service)" = enabled && \
+    test -x /usr/lib/systemd/system-generators/zram-generator && \
+    grep -qx 'compression-algorithm = zstd' /usr/lib/systemd/zram-generator.conf.d/10-nyra.conf && \
+    grep -qx 'vm.swappiness = 180' /usr/lib/sysctl.d/90-nyra-memory.conf
+
 # Without a network (docs/DEFAULTS.md): nothing in the base pulls in network-online.target, so
 # systemd-networkd-wait-online never runs at boot. Two of the blocked units wanted it from
 # default.target; our preset disables them. An update check waits for the network on its own, for a
