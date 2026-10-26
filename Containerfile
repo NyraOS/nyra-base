@@ -239,7 +239,7 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     test "$(ls -A /etc/ssh/sshd_config.d)" = 10-nyra.conf && \
     mkdir -p /run/sshd && ssh-keygen -q -t ed25519 -N '' -f /tmp/hostkey && c="$(sshd -T -h /tmp/hostkey)" && \
     for l in 'passwordauthentication no' 'kbdinteractiveauthentication yes' 'permitrootlogin no' 'usepam yes' \
-      'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qix "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
+      'permittunnel no' 'authenticationmethods publickey keyboard-interactive:pam'; do echo "$c" | grep -qix "$l" || { echo "sshd -T: no '$l'"; exit 1; }; done && \
     echo "$c" | grep -qi '^persourcepenalties ' && ! echo "$c" | grep -qix 'persourcepenalties no' && \
     mkdir -p /usr/lib/systemd/system/ssh.socket.d && \
     printf '# Nyra: SSH is off in the base (docs/DEFAULTS.md, "SSH")\n[Unit]\nConditionPathExists=/usr/lib/nyra/allow-ssh\n' \

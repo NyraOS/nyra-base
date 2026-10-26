@@ -263,6 +263,8 @@ firewall has no opening for it either (see "Firewall").
   `sshd_config.d` before its own lines, so these win over them; an administrator's file there that
   sorts before `10-nyra.conf` wins over these. `PerSourcePenalties` (OpenSSH's defaults) refuses an
   address for a while after repeated failed logins.
+  The image sets no `PermitTunnel` (OpenSSH's default is `no`); the Containerfile fails the build when
+  `sshd -T` on the image's configuration does not print `permittunnel no`.
 - **The password and the code** go through PAM (`/usr/lib/nyra/pam.d/sshd`, linked from
   `/etc/pam.d/sshd`): Debian's stack for sshd with its authentication lines (`@include common-auth`)
   replaced by
