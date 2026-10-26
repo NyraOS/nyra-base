@@ -724,5 +724,6 @@ from the signer in `policy.json`.
 
 - The signed channel sheet (channel, version order, freshness): docs/UPDATES.md.
 - Attestations of the SBOM (mkosi package manifest, bootc `Cargo.lock`): later. The vulnerability
-  gate on the SBOM is in docs/SBOM.md.
+  gate on the SBOM is in docs/SBOM.md. Until its switch is set back to `block` (before the first
+  public release), the release jobs sign past blocking vulnerabilities: the build only reports them.
 - The update server side of publishing (`nyra-updates`: the registry, the channel sheets).

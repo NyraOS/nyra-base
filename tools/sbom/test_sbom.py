@@ -108,7 +108,7 @@ class Gate(unittest.TestCase):
             setattr(sbom, k, v)
         shutil.rmtree(self.dir)
 
-    def run_gate(self, *entries, extra_locks=(), iso=False, iso_entries=(), arm64_entries=(), arch=None):
+    def run_gate(self, *entries, extra_locks=(), iso=False, iso_entries=(), arm64_entries=(), arch=None, mode=None):
         """Runs main() with these (id, package, days until expiry); returns (exit code, report)."""
         today = datetime.datetime.now(datetime.UTC).date()
         for name, listed in (("mitigations.toml", entries), ("mitigations-iso.toml", iso_entries),
@@ -117,7 +117,7 @@ class Gate(unittest.TestCase):
                 for vid, package, days in listed:
                     f.write(f'[[mitigation]]\nid = "{vid}"\npackage = "{package}"\nreason = "test"\n'
                             f"expires = {today + datetime.timedelta(days=days)}\n")
-        sys.argv = ["sbom.py", *(["--iso"] if iso else []), *(["--arch", arch] if arch else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
+        sys.argv = ["sbom.py", *([f"--vulnerabilities={mode}"] if mode else []), *(["--iso"] if iso else []), *(["--arch", arch] if arch else []), self.path("manifest.json"), self.path("Cargo.lock"), self.path("sbom.json"), *extra_locks]
         out = io.StringIO()
         code = 0
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -152,6 +152,67 @@ class Gate(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("| CVE-2026-0003 | bar | 2.0-1 | high 7.8 | 2.0-2 (bump the snapshot) |", report)
         self.assertIn("Mitigation for CVE-2026-0003 (bar) expired on", report)
+
+    def test_block_mode_fails_and_is_the_default(self):
+        for mode in (None, "block"):
+            code, report = self.run_gate(mode=mode)
+            self.assertEqual(code, 1)
+            self.assertIn("| CVE-2026-0001 | foo | 1.0-1 | critical 9.8 |", report)
+            self.assertNotIn("Report mode", report)
+
+    def test_report_mode_prints_the_findings_and_exits_0(self):
+        code, report = self.run_gate(mode="report")
+        self.assertEqual(code, 0)
+        self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
+        self.assertIn("| CVE-2026-0001 | foo | 1.0-1 | critical 9.8 |", report)
+        self.assertIn("Report mode: these do not fail this run", report)
+        with open(self.path("sbom.json")) as f:
+            self.assertEqual(len(json.load(f)["components"]), 6)
+
+    def test_report_mode_lists_unknown_severity(self):
+        # No CVSS vector in any record: the severity is unknown, which blocks, so the report must show it.
+        TRACKER["foo"]["CVE-2026-0007"] = {"releases": {"sid": {"status": "open", "urgency": "not yet assigned"}}}
+        try:
+            code, report = self.run_gate(mode="report")
+        finally:
+            del TRACKER["foo"]["CVE-2026-0007"]
+        self.assertEqual(code, 0)
+        self.assertIn("| CVE-2026-0007 | foo | 1.0-1 | unknown |", report)
+
+    def test_report_mode_in_the_iso_scans(self):
+        self.assertEqual(self.run_gate(iso=True, mode="report")[0], 0)
+        self.assertEqual(self.run_gate(iso=True, mode="block")[0], 1)
+
+    def test_report_mode_still_fails_on_everything_but_findings(self):
+        # An expired exception and an invalid exception file.
+        code, report = self.run_gate(("CVE-2026-0001", "foo", 10), ("CVE-2026-0003", "bar", -1),
+                                     ("RUSTSEC-2026-0001", "baz", 10), mode="report")
+        self.assertEqual(code, 1)
+        self.assertIn("Mitigation for CVE-2026-0003 (bar) expired on", report)
+        code, _ = self.run_gate(("CVE-2026-0001", "foo", 10), ("CVE-2026-0001", "foo", 20), mode="report")
+        self.assertIn("is listed twice", str(code))
+        # No Debian packages in the manifest.
+        with open(self.path("manifest.json"), "w") as f:
+            json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
+                       "packages": []}, f)
+        code, _ = self.run_gate(mode="report")
+        self.assertIn("lists no Debian packages", str(code))
+
+    def test_report_mode_fails_when_the_scan_cannot_run(self):
+        def no_network(url, data=None):
+            if url == sbom.TRACKER:
+                raise OSError("no route to host")
+            return fake_fetch(url, data)
+        sbom.fetch = no_network
+        try:
+            with self.assertRaises(OSError):
+                self.run_gate(mode="report")
+        finally:
+            sbom.fetch = fake_fetch
+
+    def test_unknown_mode_refused(self):
+        code, _ = self.run_gate(mode="warn")
+        self.assertIn("--vulnerabilities=report|block", str(code))
 
     def test_stale_entries_reported(self):
         code, report = self.run_gate(("CVE-2026-0001", "foo", 10), ("CVE-2026-0003", "bar", 10),

@@ -6,11 +6,14 @@ description: >-
   known to the tracker by their source packages: ci/iso-manifest.sh fails unless exactly these are found,
   for arm64), and the crates of the installer program, read by tools/sbom/sbom.py --iso --arch arm64 against
   the arm64 package index, with the exceptions of tools/sbom/mitigations-iso-arm64.toml only. A critical or
-  high finding without a documented exception fails the job. The package lists are the ones arm64-iso
+  high finding without a documented exception is reported, and fails the job only in `block` mode. The package lists are the ones arm64-iso
   uploaded as <iso-artifact>-materials. No secret; the files are read as data.
 inputs:
   materials-artifact:
     description: The name of the artifact with the manifests and Cargo.lock (arm64-iso's materials)
+    required: true
+  vulnerabilities:
+    description: What a blocking vulnerability does (sbom.py --vulnerabilities, image.yml's SBOM_VULNERABILITIES)
     required: true
 runs:
   using: composite
@@ -22,13 +25,15 @@ runs:
 
     - name: SBOM and vulnerability scan of the aarch64 ISO (tools/sbom/sbom.py --iso --arch arm64)
       shell: bash
+      env:
+        VULNERABILITIES: ${{ inputs.vulnerabilities }}
       run: |
         m="$RUNNER_TEMP/materials"
         [ "$(find "$m" -type f | wc -l)" = 3 ] || { echo "::error::the materials artifact must hold exactly three files"; exit 1; }
         python3 -m venv "$RUNNER_TEMP/sbom-venv"
         "$RUNNER_TEMP/sbom-venv/bin/pip" install -q --no-deps --require-hashes -r tools/sbom/requirements.txt
         ISO_ARCH=arm64 ci/iso-manifest.sh "$m/nyra-installer-os.manifest" "$m/nyra-installer-boot.manifest" "$m/manifest.json"
-        "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --iso --arch arm64 "$m/manifest.json" \
+        "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$VULNERABILITIES" --iso --arch arm64 "$m/manifest.json" \
           "$m/Cargo.lock" "$RUNNER_TEMP/nyra-installer-iso-arm64.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
 
     - name: Upload the SBOM of the aarch64 ISO

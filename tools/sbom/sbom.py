@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CycloneDX SBOM and vulnerability gate for nyra-base (docs/SBOM.md).
 
-usage: sbom.py [--iso [--arch amd64|arm64]] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
+usage: sbom.py [--vulnerabilities=report|block] [--iso [--arch amd64|arm64]] MANIFEST CARGO_LOCK SBOM_OUT [CARGO_LOCK...]
+  --vulnerabilities  block (the default, so a forgotten call stays strict): exit 1 on a blocking vulnerability.
+              report: the same report and a warning, exit 0. Only that exit changes; a scan that cannot run
+              (no data, a parse error), an invalid or expired exception file and every other check still fail.
   MANIFEST    mkosi JSON manifest (exact Debian package versions)
   CARGO_LOCK  bootc's Cargo.lock (the Rust crates compiled into bootc); after SBOM_OUT, the
               Cargo.lock of other Rust code the image build compiles (zlib-rs); a crate in several
@@ -19,7 +22,7 @@ file of the x86_64 ISO never applies to it, nor this one to the x86_64 ISO or th
 Environment (not with --iso): BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
 commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
 
-Writes the SBOM, then prints a Markdown report and exits 1 if a vulnerability blocks the build:
+Writes the SBOM, then prints a Markdown report and (in block mode) exits 1 if a vulnerability blocks the build:
 critical, high or unknown severity, not marked unimportant by Debian, and not listed in
 tools/sbom/mitigations.toml with a reason and an expiry date at most 90 days ahead.
 An entry matches by ID or any OSV alias; duplicates refuse the file; entries that no longer
@@ -269,8 +272,17 @@ def load_mitigations(today, path):
 
 
 def main():
-    iso = sys.argv[1:2] == ["--iso"]
-    args = sys.argv[2:] if iso else sys.argv[1:]
+    argv = sys.argv[1:]
+    mode = "block"
+    for a in argv:
+        if a.startswith("--vulnerabilities="):
+            mode = a.split("=", 1)[1]
+            argv.remove(a)
+            break
+    if mode not in ("report", "block"):
+        sys.exit(f"sbom.py: --vulnerabilities=report|block, not {mode!r}")
+    iso = argv[:1] == ["--iso"]
+    args = argv[1:] if iso else argv
     arch = "amd64"
     if args[:1] == ["--arch"]:
         if not iso or args[1:2] not in (["amd64"], ["arm64"]):
@@ -373,6 +385,8 @@ def main():
     print(f"| Not blocking (medium, low, Rust informational) | {len(other)} |")
     print(f"| Marked unimportant by Debian | {unimportant} |\n")
     if blocking:
+        if mode == "report":
+            print("> Report mode: these do not fail this run (docs/SBOM.md).\n")
         print("### Blocking\n\n| ID | Package | Version | Severity | Fixed in Debian | Description |\n|---|---|---|---|---|---|")
         for f in blocking:
             print(f"| {f['id']} | {f['package']} | {f['version']} | {level(f)} | {fixed(f)} | {short(f['about'])} |")
@@ -393,7 +407,13 @@ def main():
         for f in other:
             print(f"| {f['id']} | {f['package']} | {f['version']} | {level(f)} | {fixed(f)} |")
         print("\n</details>")
-    if blocking:
+    # An exception past its expiry date is a rule of the exception file, not a finding: it fails in every mode.
+    if expired:
+        print(f"sbom.py: {len(expired)} expired exceptions (see the report)", file=sys.stderr)
+        sys.exit(1)
+    if blocking and mode == "report":
+        print(f"::warning::sbom.py: {len(blocking)} blocking vulnerabilities, not failing this run (see the report)", file=sys.stderr)
+    elif blocking:
         print(f"sbom.py: {len(blocking)} blocking vulnerabilities (see the report)", file=sys.stderr)
         sys.exit(1)
 
