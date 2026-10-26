@@ -202,21 +202,6 @@ check_gitleaks_control() {
   return "$status"
 }
 
-# The changes job of image.yml lets any workflow file but image.yml and arm64.yml change without building the
-# image, because no other workflow is called by one that builds it. A workflow that calls another (a local
-# `uses: ./.github/workflows/...`) would break that: only titanic.yml calls one (image.yml, for its nightly run).
-check_workflow_calls() {
-  local f bad=0
-  for f in .github/workflows/*.yml; do
-    [ "$f" != .github/workflows/titanic.yml ] || continue
-    if grep -nE 'uses:[[:space:]]*\./\.github/workflows/' "$f"; then
-      echo "$f calls a local workflow: make the changes job of image.yml build the image for it first"
-      bad=1
-    fi
-  done
-  return "$bad"
-}
-
 # THE LIST: ID, the heading of its output (the step names of the shellcheck workflow), the command.
 IDS=() TITLES=() CMDS=() LOCAL_ONLY=()
 check() { IDS+=("$1"); TITLES+=("$2"); CMDS+=("$3"); LOCAL_ONLY+=("${4:-}"); }
@@ -245,7 +230,7 @@ check sign-jobs "Only the sign jobs are in the environment sign and only they an
 check publish-job "The publish job holds the secrets and cannot sign (ci/check-publish-job.py)" "python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py"
 check credential-jobs "Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)" "python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py"
 check iso-jobs "The ISO jobs of a pull request do not wait for sign and run the steps of the release ones (ci/check-iso-jobs.py)" "python3 -I ci/check-iso-jobs.py --self-test && python3 -I ci/check-iso-jobs.py"
-check workflow-calls "Only titanic.yml calls a local workflow (the changes job of image.yml relies on it)" check_workflow_calls
+check workflow-calls "Only titanic.yml calls a workflow of this repository (the changes job of image.yml relies on it; ci/check-workflow-calls.py)" "python3 -I ci/check-workflow-calls.py --self-test && python3 -I ci/check-workflow-calls.py"
 check actionlint "actionlint" check_actionlint
 check gitleaks "Secret scan of the commits not on origin/main (gitleaks)" check_gitleaks local
 check gitleaks-control "Control of the secret scan: a secret added, then removed in the next commit, is found" check_gitleaks_control local

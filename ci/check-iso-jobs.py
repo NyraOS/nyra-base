@@ -10,6 +10,9 @@ they can only start early if nothing of `sign` is in their needs or steps. Check
   in their steps reads `needs.sign`;
 - iso never runs on a pull request and iso-pr only on one (iso-install and iso-install-pr follow their
   ISO job), so that a pull request has exactly one ISO and one install test and a push on main has no early ISO;
+- the pull request jobs have exactly permissions {contents: read}, exactly the needs build, release-image
+  (and iso-pr for the install job), iso-pr has SIGN_RESULT none (so its Mode step can never choose the
+  release mode), and iso-install-pr runs only on a pull request, after iso-pr succeeded;
 - no job other than the four reads `needs.iso-pr` or `needs.iso-install-pr`.
 
   check-iso-jobs.py [FILE]   (.github/workflows/image.yml by default)
@@ -40,11 +43,19 @@ def problems(workflow):
         needs = [needs] if isinstance(needs, str) else needs
         if "sign" in needs:
             out.append(f"{pr} needs sign")
+        if jobs[pr].get("permissions") != {"contents": "read"}:
+            out.append(f"{pr} must have exactly permissions: {{contents: read}}")
+        wanted = {"build", "release-image"} if main == "iso" else {"build", "release-image", "iso-pr"}
+        if sorted(needs) != sorted(wanted):
+            out.append(f"{pr} must need exactly {sorted(wanted)}")
         # iso-install-pr is only ever started by iso-pr, which runs on a pull request only.
         if main == "iso" and "github.event_name == 'pull_request'" not in jobs[pr].get("if", ""):
             out.append(f"{pr} does not run only on a pull request")
-        if main == "iso-install" and "iso-pr" not in needs:
-            out.append("iso-install-pr does not need iso-pr")
+        if main == "iso" and jobs[pr].get("env", {}).get("SIGN_RESULT") != "none":
+            out.append("iso-pr must have SIGN_RESULT: none (it never runs in release mode)")
+        if main == "iso-install" and ("needs.iso-pr.result == 'success'" not in jobs[pr].get("if", "")
+                                      or "github.event_name == 'pull_request'" not in jobs[pr].get("if", "")):
+            out.append("iso-install-pr must run only on a pull request, after iso-pr succeeded")
         # iso-install is skipped on a pull request because iso is: it needs iso.
         if main == "iso" and "github.event_name != 'pull_request'" not in jobs[main].get("if", ""):
             out.append("iso runs on a pull request")
@@ -69,15 +80,18 @@ jobs:
     if: ${{ github.event_name != 'pull_request' }}
     steps: &s [{run: a}]
   iso-pr:
-    needs: [build]
+    needs: [build, release-image]
     if: ${{ github.event_name == 'pull_request' }}
+    permissions: {contents: read}
+    env: {SIGN_RESULT: none}
     steps: *s
   iso-install:
     needs: [build, iso]
     steps: &t [{run: b}]
   iso-install-pr:
-    needs: [build, iso-pr]
-    if: ${{ github.event_name == 'pull_request' }}
+    needs: [build, release-image, iso-pr]
+    if: ${{ github.event_name == 'pull_request' && needs.iso-pr.result == 'success' }}
+    permissions: {contents: read}
     steps: *t
 """)
     cases = []
@@ -93,6 +107,17 @@ jobs:
     case("pr steps read sign", lambda j: (j["iso"].update(steps=[{"run": "${{ needs.sign.result }}"}]),
                                           j["iso-pr"].update(steps=[{"run": "${{ needs.sign.result }}"}])), True)
     case("iso runs on a pull request", lambda j: j["iso"].update({"if": "${{ true }}"}), True)
+    case("iso-pr SIGN_RESULT is success", lambda j: j["iso-pr"].update(env={"SIGN_RESULT": "success"}), True)
+    case("iso-pr has no SIGN_RESULT", lambda j: j["iso-pr"].pop("env"), True)
+    case("iso-pr needs one more job", lambda j: j["iso-pr"].update(needs=["build", "release-image", "iso"]), True)
+    case("iso-pr needs only build", lambda j: j["iso-pr"].update(needs=["build"]), True)
+    case("iso-install-pr needs one less", lambda j: j["iso-install-pr"].update(needs=["iso-pr"]), True)
+    case("iso-install-pr if lacks iso-pr", lambda j: j["iso-install-pr"].update({"if": "${{ github.event_name == 'pull_request' }}"}), True)
+    case("iso-install-pr if lacks pull_request", lambda j: j["iso-install-pr"].update({"if": "${{ needs.iso-pr.result == 'success' }}"}), True)
+    case("iso-pr permissions wider", lambda j: j["iso-pr"].update(permissions={"contents": "read", "id-token": "write"}), True)
+    case("iso-pr permissions missing", lambda j: j["iso-pr"].pop("permissions"), True)
+    case("iso-install-pr permissions wider", lambda j: j["iso-install-pr"].update(permissions={"contents": "write"}), True)
+    case("iso-install-pr permissions missing", lambda j: j["iso-install-pr"].pop("permissions"), True)
     case("install-pr after iso", lambda j: j["iso-install-pr"].update(needs=["build", "iso"]), True)
     case("iso-pr runs everywhere", lambda j: j["iso-pr"].update({"if": "${{ true }}"}), True)
     case("a job needs iso-pr", lambda j: j["sign"].update(needs=["iso-pr"]), True)

@@ -2485,7 +2485,7 @@ jobs:
   # iso-install on a pull request, after iso-pr.
   iso-install-pr:
     needs: [build, release-image, iso-pr]
-    if: ${{ !cancelled() && github.workflow == 'image' && needs.iso-pr.result == 'success' }}
+    if: ${{ !cancelled() && github.workflow == 'image' && github.event_name == 'pull_request' && needs.iso-pr.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
