@@ -169,6 +169,16 @@ class Gate(unittest.TestCase):
         with open(self.path("sbom.json")) as f:
             self.assertEqual(len(json.load(f)["components"]), 6)
 
+    def test_report_mode_lists_unknown_severity(self):
+        # No CVSS vector in any record: the severity is unknown, which blocks, so the report must show it.
+        TRACKER["foo"]["CVE-2026-0007"] = {"releases": {"sid": {"status": "open", "urgency": "not yet assigned"}}}
+        try:
+            code, report = self.run_gate(mode="report")
+        finally:
+            del TRACKER["foo"]["CVE-2026-0007"]
+        self.assertEqual(code, 0)
+        self.assertIn("| CVE-2026-0007 | foo | 1.0-1 | unknown |", report)
+
     def test_report_mode_in_the_iso_scans(self):
         self.assertEqual(self.run_gate(iso=True, mode="report")[0], 0)
         self.assertEqual(self.run_gate(iso=True, mode="block")[0], 1)

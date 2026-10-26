@@ -32,7 +32,7 @@ vulnerability, as it was before this change. `arm64.yml` has its own `report` (i
 
 `.github/workflows/sbom-watch.yml` does not build anything. It takes the newest successful run on main of
 `image.yml` (a push) or `titanic.yml` (the nightly) that still has the artifacts `nyra-base-sbom` (the
-image's package list and Cargo.lock files) and `nyra-installer-iso-materials` (the package list and
+image's package list and Cargo.lock files) and `nyra-installer-iso-scan-inputs` (the package list and
 Cargo.lock of the x86_64 installer ISO, kept 90 days like the first), and runs `sbom.py --vulnerabilities=block`
 over them with the scanner and exceptions (`mitigations*.toml`) of main. The advisories are fetched fresh, so
 it answers "is anything blocking now". It fails with a message when no such run is left (artifacts expire after
