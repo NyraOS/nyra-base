@@ -299,7 +299,7 @@ jobs:
       - name: Add the bootc layer, the sealed UKI, and lint
         id: image
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
           sudo podman tag "$id" localhost/nyra-base-rootfs:latest
           ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
@@ -388,7 +388,7 @@ jobs:
       - name: Test the UKI release gate (docs/SIGNING.md)
         if: steps.mode.outputs.release != 'true'
         run: |
-          sudo apt-get install -y -q --no-install-recommends osslsigncode >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends osslsigncode >/dev/null
           tools/signing/test-uki-gate.sh localhost/nyra-base:ci "$WORK/uki/uki.crt" \
             "$WORK/uki/pcr/tpm2-pcr-public-key.pem" "$WORK/uki/pcr-next/tpm2-pcr-public-key-next.pem" "$WORK"
 
@@ -641,9 +641,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -853,9 +854,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -931,9 +933,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1045,9 +1048,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1181,9 +1185,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1251,9 +1256,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1372,9 +1378,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf \
             python3-virt-firmware systemd-ukify sbsigntool
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -1543,7 +1550,7 @@ jobs:
       # with the Nyra key and its PCR policy with pcr-policy-1, every image is refused (docs/SIGNING.md).
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -1809,8 +1816,8 @@ jobs:
               -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
               "$DEBIAN_IMAGE" bash -c '
                 set -euo pipefail
-                apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends \
                   skopeo podman jq git ca-certificates >/dev/null
                 skopeo --version
                 /src/tools/install/verified-pull.sh "$@"
@@ -1873,10 +1880,11 @@ jobs:
 
       # Runs as root, so it comes before the auth step: no credential is present yet.
       - name: Install sbsign, pefile and the PKCS#11 engine for openssl
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -2028,7 +2036,7 @@ jobs:
         name: UKI release gate (signed with the committed Nyra certificate)
         run: |
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -2107,9 +2115,10 @@ jobs:
           sudo podman build -q --pull=never --from localhost/pinned/debian --build-arg SNAPSHOT="$snapshot" -t localhost/nyra-tools -f ci/tools.Containerfile ci
 
       - name: Install the tools that write and boot the ISO
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 ovmf swtpm xorriso mtools dosfstools cpio zstd jq
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 ovmf swtpm xorriso mtools dosfstools cpio zstd jq
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -2370,9 +2379,10 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - name: Install QEMU and OVMF
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf python3-virt-firmware \
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf python3-virt-firmware \
             systemd-ukify sbsigntool swtpm python3-pefile
           sudo mkdir -p "$WORK" && sudo chown "$(id -u):$(id -g)" "$WORK"
 
@@ -2519,10 +2529,11 @@ jobs:
 
       # Runs as root, so it comes before the auth step: no credential is present yet.
       - name: Install sbsign, pefile, the PKCS#11 engine for openssl and qemu-user-static
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
           sudo /usr/lib/systemd/systemd-binfmt /usr/lib/binfmt.d/qemu-aarch64.conf
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
 
@@ -2781,7 +2792,7 @@ jobs:
 
       - name: UKI release gate (signed with the committed Nyra certificate)
         run: |
-          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
           cid="$(sudo podman create -q --platform linux/arm64 localhost/nyra-base:ci)"
           sudo podman cp "$cid:/boot" "$WORK/boot"
           sudo podman cp "$cid:/usr/lib/nyra/secureboot/tpm2-pcr-public-key-next.pem" "$WORK/image-next.pem"
@@ -3113,8 +3124,8 @@ jobs:
               -v "$PWD:/src:ro" -v "$RUNNER_TEMP/storage:/storage" \
               "$DEBIAN_IMAGE" bash -c '
                 set -euo pipefail
-                apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends \
                   skopeo podman jq git ca-certificates >/dev/null
                 skopeo --version
                 /src/tools/install/verified-pull.sh "$@"

@@ -110,8 +110,8 @@ runs:
       id: image
       shell: bash
       run: |
-        sudo apt-get update -q >/dev/null
-        sudo apt-get install -y -q --no-install-recommends sbsigntool python3-pefile jq osslsigncode >/dev/null
+        sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
+        sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile jq osslsigncode >/dev/null
         id="$(sudo podman pull -q "oci:$WORK/out/nyra-base-rootfs")"
         sudo podman tag "$id" localhost/nyra-base-rootfs:latest
         ci/build-image.sh localhost/nyra-base-rootfs:latest localhost/nyra-base:ci "$WORK/uki" \
