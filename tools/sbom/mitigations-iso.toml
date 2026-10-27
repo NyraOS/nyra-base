@@ -64,8 +64,8 @@ expires = 2027-01-07
 [[mitigation]]
 id = "CVE-2026-98869"
 package = "linux"
-reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program."
-expires = 2027-01-07
+reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program. The Debian tracker listed sid (linux 7.2.12-1) as open on 2026-10-27. Ends when a Debian kernel with the fix is in the snapshot."
+expires = 2026-11-20
 
 [[mitigation]]
 id = "CVE-2023-37454"

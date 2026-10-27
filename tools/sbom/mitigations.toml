@@ -51,20 +51,21 @@ expires = 2026-11-08
 # yet. libexpat1 is in the image through dbus-daemon, polkitd, fontconfig and python3.14-minimal. The
 # only XML those parse on their own is root-owned configuration and policy files (dbus and polkit
 # policy, fonts.conf); no program of the base image parses XML from outside. The installer ISO does
-# not ship libexpat1 (checked in its SBOM), so tools/sbom/mitigations-iso*.toml need no entry. Short
-# expiry. End: a fixed expat in Debian and a snapshot bump.
+# not ship libexpat1 (checked in its SBOM), so tools/sbom/mitigations-iso*.toml need no entry. Renewed
+# on 2026-10-27, when the Debian tracker still listed sid (2.9.0-1) as open for both, with no fixed
+# version in any release; short expiry. End: a fixed expat in Debian and a snapshot bump.
 
 [[mitigation]]
 id = "CVE-2026-113351"
 package = "expat"
-reason = "Denial of service when a parser is reset and reused. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
-expires = 2026-10-30
+reason = "Denial of service when a parser is reset and reused. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet (the tracker listed sid, expat 2.9.0-1, as open with no fixed version on 2026-10-27)."
+expires = 2026-11-20
 
 [[mitigation]]
 id = "CVE-2026-115506"
 package = "expat"
-reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet."
-expires = 2026-10-30
+reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet (the tracker listed sid, expat 2.9.0-1, as open with no fixed version on 2026-10-27)."
+expires = 2026-11-20
 
 # wget 1.25.0-3: fixed upstream (commits 37a40fc, c2640fe, dd692d9), no Debian upload yet. wget is in
 # the base image only for users who start it; nothing in the image runs it (no unit, timer or script).
@@ -181,8 +182,8 @@ expires = 2027-01-07
 [[mitigation]]
 id = "CVE-2026-98869"
 package = "linux"
-reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.12-1); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
-expires = 2026-11-07
+reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.12-1; the tracker listed sid as open on 2026-10-27); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
+expires = 2026-11-20
 
 [[mitigation]]
 id = "CVE-2023-37454"
