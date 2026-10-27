@@ -39,7 +39,7 @@ jobs:
         run: test -r /dev/kvm && test -w /dev/kvm && echo "/dev/kvm is usable by $(id -un)"
 
       - name: Install QEMU and OVMF
-        timeout-minutes: 10
+        timeout-minutes: 30 # a slow mirror took 12-19 min
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
