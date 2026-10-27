@@ -209,6 +209,7 @@ by hand is discarded with it.
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
 | `nyra-updated-install@.service` | `nyra-updated install %i`: stages the release named by the instance, started by an administrator with `systemctl start` after polkit asks for the password (above, "Updating from a terminal as an administrator"; the rule is in `49-nyra.rules`). Hardened like `nyra-updated.service` (same sandbox, `TimeoutStartSec=2h30min`, above the 2-hour pull); listed in the image build's `systemd-analyze verify` |
+| `/usr/lib/nyra/profile.d/update-hint.sh` | the message at the login of an administrator about a version that was prepared and lost to a hard reset (above, "After a hard reset"); linked from `/etc/profile.d/update-hint.sh` |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
 | `systemd-bless-boot.service.d/10-nyra.conf` | no blessing after a soft reboot (below) |
 
@@ -466,7 +467,8 @@ While the job runs, one line on the terminal shows the stage and the time since 
 rewritten in place (`Downloading and preparing the update... 2:35`; on a terminal too narrow for
 it, the time alone, so that the line never wraps). It ends by telling the administrator to
 restart with `systemctl reboot` when ready, and not to force-reset the computer (for example with the
-Restart or Stop button of a virtual machine), or the update is lost and has to be prepared again. It
+Restart or Stop button of a virtual machine), or the update is lost, and to run `nyra update` again
+if it is (below, "After a hard reset"). It
 never restarts the computer. It refuses with one line when it is not run on a terminal, by a member of
 `sudo` (polkit still refuses a session that is not local and active, for instance over SSH), or when
 the update is not possible. Run again while the version waits for the restart, it says so. Ctrl+C
@@ -483,9 +485,9 @@ is "The update was not installed."
   sheet's `current` version when that is a release version and newer than `IMAGE_VERSION` of
   `/usr/lib/os-release`. A halted sheet, a sheet that does not verify, a missing key or no network is
   one plain sentence and a failure.
-- **The offer is informational.** A user can not read the daemon's state (`/var/lib/nyra-updated` is
-  0700: the sequence of the last sheet, retracted and failed versions, a channel chosen with
-  `set-channel`) or run `bootc status`. So the offer takes no sequence number, and an older signed
+- **The offer is informational.** A user can not read the daemon's state (the files of
+  `/var/lib/nyra-updated` are root's, mode 0600: the sequence of the last sheet, retracted and failed
+  versions, a channel chosen with `set-channel`) or run `bootc status`. So the offer takes no sequence number, and an older signed
   sheet that is still valid could be offered. `install` repeats every check as root, with the stored
   sequence, and has the last word; a version it refuses is reported with its reason. The offer also
   ignores the gradual rollout (`install` accepts `current` for every machine). What a check stored is
@@ -513,6 +515,50 @@ is "The update was not installed."
   bootc has a hidden `--progress-fd` that reports bytes as JSON lines, but it needs a pipe on a
   file descriptor that the daemon's `run` (which collects the output only at the end) does not give, and the
   VM test could not exercise it. The stage and the time are what is shown.
+
+### After a hard reset
+
+`bootc` keeps a staged deployment in memory only: the marker `/run/composefs/staged-deployment` is made
+when a version is staged and read at the clean shutdown that applies it. A power cut or a forced restart
+before that shutdown loses the marker, and the old version boots, without a word. What was pulled stays on
+disk (`/sysroot/composefs`), so staging the version again pulls only what is missing.
+The update test (below, T2) counts the bytes the registry sends for the second staging and fails when they
+are not a small part of the first staging's, so "nothing is downloaded again" is a measured claim.
+
+So that the administrator learns of it, `nyra-updated` leaves the version it staged last in
+`/var/lib/nyra-updated/staged-version` (one line, mode 0644, written like the other state files:
+a temporary file, `fsync`, rename). Every staging writes it (a check or `install`), after bootc staged the
+digest of the sheet, and a newer staging replaces it. The directory is mode 0711 for this: everybody can
+enter it, so that a login can read this file by its name, and only root can list it; every other file in
+it stays root's, 0600. The file holds only the version, which is not a secret (the channel sheet is
+public).
+
+**The message.** The login script `/usr/lib/nyra/profile.d/update-hint.sh` (linked from
+`/etc/profile.d/update-hint.sh`, which Debian's `/etc/profile` reads for a login shell; the content is in
+`/usr` and updates with the image, a user who removes the link only loses the message) prints, once per
+login, to an administrator:
+
+```
+Version 2026.10.600 was prepared, but the update was not finished.
+Run `nyra update` to prepare it again; nothing is downloaded again.
+```
+
+only when all of this is true: the shell is interactive and its input and output are a terminal (not an
+`ssh` command, `scp`, `sftp` or a script); `staged-version` holds a release version and it is newer than
+`IMAGE_VERSION` of `/usr/lib/os-release` (numbers compared one by one); `/run/composefs/staged-deployment`
+does not exist (a version that is staged now is applied by the next restart); and the user is a member of
+`sudo`, the test `nyra update` makes. It reads these three files and runs `id`; it asks nothing, runs
+nothing privileged, evaluates nothing from the files (the version is checked for its shape, digits and dots
+only, before the arithmetic), prints nothing on any error, and leaves no variable or function in the shell.
+A terminal opened inside a desktop session is not a login shell and shows nothing.
+
+**When the record goes.** A newer staging replaces it. `nyra-updated` removes it at the start of every
+check and `install` when the running version is the one it names or a newer one (it was applied, or
+something else was installed), and when the machine fell back from the version that was pending (it
+failed: nothing to prepare again). The script ignores it in the same cases by itself (the running version
+is not older), and while the version is staged. What the record cannot know: a version that was
+retracted after it was staged still shows the message until the next check stages another one (or
+`nyra update` says why that version is refused).
 
 ## Moving a machine to updates.nyraos.com
 
@@ -640,7 +686,7 @@ bootc reads it.
 | — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |
 | T4 | sheet signed with another key | refused |
 | T2 | power cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 4–12 s into a ~16 MiB pull, while `nyra-updated` is still activating and nothing is staged) | the old version boots, nothing staged; the next check stages it again |
-| T2 | power cut after staging, before finalization | the old version boots, nothing staged; staged again |
+| T2 | power cut after staging, before finalization | the old version boots, nothing staged; an administrator's login says that the version was prepared, a standard user's says nothing; staged again, and the registry sends a small part of the bytes of the first staging (counted); while it is staged, no message; once it runs, no message and the record is removed at the next check |
 | T2 | power cut after staging, before finalization, then an update to another version | only the new version's entry and the running one are staged (the stale ones are removed at boot); the new version boots, two boot entries |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
 | — | staged version retracted before the reboot, with an acceptable rollback deployment and with a failed one | not finalized: the next boot is the running version, boot order and rollback deployment unchanged, no staged entries left |

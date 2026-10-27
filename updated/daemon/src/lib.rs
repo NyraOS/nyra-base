@@ -418,7 +418,15 @@ impl NetworkRetry {
     }
 }
 
-/// The state directory (`/var/lib/nyra-updated`, 0700, files 0600).
+/// Everybody may enter the state directory (execute, not read): see [`Store`].
+const STATE_DIR_MODE: u32 = 0o711;
+
+/// The file that tells a login that a version was prepared (see [`Store::save_staged_version`]).
+pub const STAGED_VERSION: &str = "staged-version";
+
+/// The state directory (`/var/lib/nyra-updated`, 0711, files 0600 except [`STAGED_VERSION`]). The
+/// directory can be entered by everybody but not listed: the one file a login reads
+/// ([`STAGED_VERSION`]) is reached by its name, and every other file is root's alone.
 pub struct Store {
     pub dir: PathBuf,
 }
@@ -427,10 +435,10 @@ impl Store {
     fn ensure_dir(&self) -> Result<(), Error> {
         DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .mode(STATE_DIR_MODE)
             .create(&self.dir)
             .map_err(|e| io(&self.dir, e))?;
-        fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(&self.dir, fs::Permissions::from_mode(STATE_DIR_MODE))
             .map_err(|e| io(&self.dir, e))
     }
 
@@ -453,6 +461,10 @@ impl Store {
     }
 
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
+        self.write_atomic_mode(name, bytes, 0o600)
+    }
+
+    fn write_atomic_mode(&self, name: &str, bytes: &[u8], mode: u32) -> Result<(), Error> {
         self.ensure_dir()?;
         let path = self.dir.join(name);
         let tmp = self.dir.join(format!("{name}.tmp"));
@@ -460,8 +472,11 @@ impl Store {
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o600)
+            .mode(mode)
             .open(&tmp)
+            .map_err(|e| io(&tmp, e))?;
+        // Explicit: the mode of the open is cut by the umask (0077 in the unit).
+        f.set_permissions(fs::Permissions::from_mode(mode))
             .map_err(|e| io(&tmp, e))?;
         f.write_all(bytes).map_err(|e| io(&tmp, e))?;
         f.sync_all().map_err(|e| io(&tmp, e))?;
@@ -508,6 +523,40 @@ impl Store {
         Ok(report)
     }
 
+    /// Remembers that `version` was prepared for the next boot, in [`STAGED_VERSION`]: only the
+    /// version, in a file everybody can read (0644, set explicitly: the unit's umask is 0077). The login
+    /// that tells the user (`/usr/lib/nyra/profile.d/update-hint.sh`) reads it, and it is on `/var`
+    /// because a hard reset loses what `bootc` keeps in `/run`. Not a version
+    /// ([`install::is_version`]): nothing is written. Best effort: a hint that can not be written
+    /// does not change the outcome of the staging.
+    pub fn save_staged_version(&self, version: &str) {
+        if !install::is_version(version) {
+            return;
+        }
+        if let Err(e) =
+            self.write_atomic_mode(STAGED_VERSION, format!("{version}\n").as_bytes(), 0o644)
+        {
+            eprintln!("<4>nyra-updated: {STAGED_VERSION}: {e}");
+        }
+    }
+
+    /// The version in [`STAGED_VERSION`], if the file holds one.
+    pub fn staged_version(&self) -> Option<String> {
+        let text = fs::read_to_string(self.dir.join(STAGED_VERSION)).ok()?;
+        let version = text.trim_end_matches('\n');
+        install::is_version(version).then(|| version.to_string())
+    }
+
+    /// Takes [`STAGED_VERSION`] away (best effort, like writing it).
+    pub fn forget_staged_version(&self) {
+        let path = self.dir.join(STAGED_VERSION);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("<4>nyra-updated: {}: {e}", path.display()),
+        }
+    }
+
     /// The links with a routable address at this check (`network-links`, written by
     /// `/usr/lib/nyra/health/network record` just before it); empty when there is none.
     pub fn network_links(&self) -> String {
@@ -548,13 +597,29 @@ impl Store {
 /// The longest message written to the journal or to `last-check.json`, in characters.
 pub const MAX_MESSAGE: usize = 2000;
 
-/// Unicode format characters (category Cf) are invisible but change how text is shown: bidi
-/// overrides and embeddings (U+202A-202E), bidi isolates (U+2066-2069), zero-width characters and
-/// direction marks (U+200B-200F), the Arabic letter mark (U+061C), the word joiner and invisible
-/// operators (U+2060-2064), the deprecated formatters (U+2065, U+206A-206F) and the byte order mark
-/// (U+FEFF) can reorder or hide text ("Trojan Source"). The list is written by hand: std has no Cf
-/// test, and a crate for it would add a dependency. It covers the common ones; the soft hyphen
-/// (U+00AD) and the tag characters (U+E0001, U+E0020-E007F) are Cf too and are not in it.
+/// Unicode format characters (category Cf) take no room on the screen but change how the text
+/// around them is shown, so a text that holds one can say something other than what it looks like
+/// ("Trojan Source"). The ones listed here:
+///
+/// - U+202A-202E: the bidirectional embeddings and overrides (LRE, RLE, PDF, LRO, RLO). They make
+///   the text after them run right to left, so the end of a line can be shown in front of its start;
+/// - U+2066-2069: the bidirectional isolates (LRI, RLI, FSI, PDI), which do the same for a part of
+///   a line;
+/// - U+200B-200F: the zero-width space, the zero-width (non-)joiner and the left-to-right and
+///   right-to-left marks, which hide in a word or flip the direction of what follows;
+/// - U+061C: the Arabic letter mark, a direction mark like U+200E and U+200F;
+/// - U+2060-2064: the word joiner and the invisible operators, which cannot be seen at all;
+/// - U+206A-206F: the deprecated formatting characters, and U+2065, which is unassigned but sits
+///   between the two ranges, so the whole block U+2060-206F is listed;
+/// - U+FEFF: the byte order mark, a zero-width no-break space when it is not at the start of a file.
+///
+/// The list is written by hand: `std` has no test for category Cf, and a crate for it would add a
+/// dependency for one function (the simplest thing that works). It covers the characters known to
+/// forge or hide text, not every Cf character: the soft hyphen (U+00AD), the Arabic and Syriac
+/// number and end-of-ayah signs (U+0600-0605, U+06DD, U+070F, U+0890-0891, U+08E2), the Mongolian
+/// vowel separator (U+180E), the interlinear annotation marks (U+FFF9-FFFB), the tag characters
+/// (U+E0001, U+E0020-E007F) and a few historic scripts' format characters are Cf too and are not in
+/// it. Checked against Unicode 15.1 (`unicodedata`).
 fn is_format(c: char) -> bool {
     matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
 }
@@ -568,7 +633,13 @@ fn is_format(c: char) -> bool {
 pub fn one_line(text: &str) -> String {
     let mut line: String = text
         .chars()
-        // A control character (a newline, ESC) can forge journal lines or garble a terminal.
+        // Both kinds become a space, so the rest of the text stays readable. A control character
+        // (category Cc) is dangerous: a newline starts a new journal line (so one that looks like
+        // another service's entry can be forged, `<0>` or `<3>` at its start even sets its priority),
+        // and ESC starts a terminal command (move the cursor, clear the line, change a title) that
+        // garbles or hides what an administrator reads. A format character (`is_format`) is
+        // invisible and reorders or hides the text around it. `char::is_control` covers U+0000-001F
+        // and U+007F-009F, the C1 controls (U+009B is a one-character CSI) included.
         .map(|c| {
             if c.is_control() || is_format(c) {
                 ' '
@@ -836,9 +907,37 @@ fn settle_pending(
     state.pending = None;
 }
 
+/// Takes [`STAGED_VERSION`] away once it has nothing more to say: the version runs (or a newer one),
+/// or the machine fell back from the version that was pending (it failed). Before
+/// [`settle_pending`], which forgets `pending`. A later staging writes it again, so a newer version
+/// replaces it. What a login shows is only this file (`docs/UPDATES.md`, "After a hard reset").
+fn settle_staged_version(store: &Store, state: &State, status: &Status) {
+    let Some(version) = store.staged_version() else {
+        return;
+    };
+    let runs_it = status
+        .booted
+        .as_ref()
+        .and_then(|b| b.version.as_deref())
+        .is_some_and(|running| {
+            matches!(
+                compare_versions(running, &version),
+                Ok(Ordering::Equal | Ordering::Greater)
+            )
+        });
+    let failed = state
+        .pending
+        .as_deref()
+        .is_some_and(|pending| fell_back_from(status, pending));
+    if runs_it || failed {
+        store.forget_staged_version();
+    }
+}
+
 /// [`settle_pending`] with the network-fallback marker of the state directory, saved when it
 /// changed: the start of every check and of `install`.
 fn settle_state(store: &Store, state: &mut State, status: &Status, now: u64) -> Result<(), Error> {
+    settle_staged_version(store, state, status);
     let before = state.clone();
     let network_fallback = store.take_network_fallback()?;
     settle_pending(state, status, network_fallback, &store.network_links(), now);
@@ -1155,6 +1254,8 @@ fn stage_target(
             found: staged,
         });
     }
+    // Only now: a deployment that was discarded above is not prepared for anything.
+    store.save_staged_version(&target.version);
     Ok(Outcome::Staged(target))
 }
 

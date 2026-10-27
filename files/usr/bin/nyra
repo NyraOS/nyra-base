@@ -19,7 +19,7 @@ STAGE=/run/nyra-updated-install.stage
 
 restart_note() { # the same two lines whenever a version waits for the restart
 	printf 'Restart with `systemctl reboot` when you are ready to finish the update.\n'
-	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost and has to be prepared again.\n'
+	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost. Run `nyra update` again; nothing is downloaded again.\n'
 }
 
 if [ "$#" != 1 ] || [ "$1" != update ]; then

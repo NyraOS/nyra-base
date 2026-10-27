@@ -1645,7 +1645,8 @@ fn the_state_is_written_atomically_and_privately() {
     };
     store.save(&state).unwrap();
     assert_eq!(store.load().unwrap(), state);
-    assert_eq!(mode(&store.dir), 0o700);
+    // Entered by everybody, listed by root only: a login reads one file of it by name.
+    assert_eq!(mode(&store.dir), 0o711);
     assert_eq!(mode(&store.dir.join("state.json")), 0o600);
     assert!(!store.dir.join("state.json.tmp").exists());
     // A temporary file left by a crash before the rename does not matter.
@@ -2884,6 +2885,125 @@ mod install_tests {
         assert_eq!(state.network_retry.map(|r| r.digest).as_deref(), Some(B));
         assert_eq!(state.pending.as_deref(), Some(C));
         assert!(!store.dir.join("network-fallback").exists());
+    }
+
+    #[test]
+    fn install_stages_outside_the_rollout_percent() {
+        // The sheet gives this machine the previous version (A: its group is above `percent`), and
+        // the machine runs Z. A check would stage A; an administrator who names B, the current
+        // version, gets it: `install` does not look at `percent`.
+        let dir = TempDir::new();
+        let mut p = payload(100, B, &[]);
+        p["previous"] = json!({"digest": A, "version": version(A)});
+        p["percent"] = json!(0);
+        let mut fake = Fake::new(&dir, Z, sign(&p));
+        installed(&mut fake, &dir, "2026.10.2").unwrap();
+        assert_eq!(
+            fake.staged(),
+            [&format!("stage updates.nyraos.com/nyra@{B}")]
+        );
+    }
+
+    #[test]
+    fn a_prepared_version_is_remembered_for_the_next_login() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let store = dir.store();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        installed(&mut fake, &dir, "2026.10.2").unwrap();
+        let path = store.dir.join("staged-version");
+        // Only the version, readable by everybody, in a directory everybody can enter.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.2\n");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(mode(&store.dir), 0o711);
+        assert_eq!(mode(&store.dir.join("state.json")), 0o600);
+        assert!(!store.dir.join("staged-version.tmp").exists());
+        // A newer staging replaces it.
+        let mut fake = Fake::new(&dir, A, sheet(101, C, &[]));
+        installed(&mut fake, &dir, "2026.10.3").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.3\n");
+        // A refusal or a version that is staged already leaves it as it is.
+        let mut fake = Fake::new(&dir, A, sheet(102, B, &[]));
+        installed(&mut fake, &dir, "2026.10.1").unwrap_err();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.3\n");
+        // A digest bootc did not stage is discarded, and says nothing is prepared.
+        let dir = TempDir::new();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        fake.stage_digest = Some(C.into());
+        installed(&mut fake, &dir, "2026.10.2").unwrap_err();
+        assert!(!dir.store().dir.join("staged-version").exists());
+    }
+
+    #[test]
+    fn the_hint_is_kept_after_a_hard_reset_and_goes_when_it_has_nothing_to_say() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
+        installed(&mut fake, &dir, "2026.10.2").unwrap();
+        let settle = |status: &Status| {
+            let mut state = store.load().unwrap();
+            settle_state(&store, &mut state, status, NOW).unwrap();
+        };
+        // Staged, and staged no more after a hard reset (nothing staged, B never booted, the
+        // state still says pending): the next check or install settles `pending` and the hint
+        // stays, for the login that comes before the machine is offered B again.
+        settle(&fake.status);
+        assert_eq!(store.staged_version().as_deref(), Some("2026.10.2"));
+        let reset = Status {
+            booted: dep(A),
+            ..Status::default()
+        };
+        settle(&reset);
+        assert_eq!(store.load().unwrap().pending, None);
+        assert_eq!(store.staged_version().as_deref(), Some("2026.10.2"));
+        // The machine fell back from B: it failed, nothing to prepare again.
+        store
+            .save(&State {
+                pending: Some(B.into()),
+                ..State::default()
+            })
+            .unwrap();
+        settle(&Status {
+            booted: dep(A),
+            rollback: dep(B),
+            ..Status::default()
+        });
+        assert_eq!(store.staged_version(), None);
+        assert!(!store.dir.join("staged-version").exists());
+        // B runs, or something newer: applied.
+        for running in [B, C] {
+            store.save_staged_version("2026.10.2");
+            settle(&Status {
+                booted: dep(running),
+                ..Status::default()
+            });
+            assert_eq!(store.staged_version(), None, "{running}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_version_is_not_used() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        fs::create_dir_all(&store.dir).unwrap();
+        for bad in [
+            "",
+            "stable\n",
+            "2026.10.2 \n",
+            "$(reboot)\n",
+            "2026.10.2\n2026.10.3\n",
+        ] {
+            fs::write(store.dir.join("staged-version"), bad).unwrap();
+            assert_eq!(store.staged_version(), None, "{bad:?}");
+        }
+        // And one is never written.
+        store.save_staged_version("x;reboot");
+        assert_eq!(store.staged_version(), None);
+        store.forget_staged_version();
+        store.forget_staged_version();
     }
 
     /// A tree like an installed system's: the shipped file and the link to it in `etc`.

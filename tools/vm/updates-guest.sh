@@ -470,6 +470,41 @@ prompt_only() { # prompt_only: the last `nyra update` showed the password prompt
 		! said 'Authenticating as'
 }
 
+login_hint() { # login_hint USER: USER logs in with a login shell on a terminal (what a console login or an ssh
+	# session without a command is), and leaves it at once; what was printed is in /var/tmp/login-hint.out
+	# shellcheck disable=SC2016 # the quoted script is Python
+	python3 -I -c 'import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("runuser", ["runuser", "-l", sys.argv[1]])
+time.sleep(3)  # the profile has run when the first prompt is there
+os.write(fd, b"exit\n")
+out, end = b"", time.time() + 30
+while time.time() < end:
+    if not select.select([fd], [], [], 1)[0]:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+os.waitpid(pid, 0)
+sys.stdout.buffer.write(out)' "$1" >/var/tmp/login-hint.out
+	echo "--- login of $1:"
+	cat /var/tmp/login-hint.out
+}
+
+hint_shown() { # hint_shown VERSION: the last login_hint told the administrator about VERSION, in these words
+	grep -qF -- "Version $1 was prepared, but the update was not finished." /var/tmp/login-hint.out &&
+		grep -qF -- 'Run `nyra update` to prepare it again; nothing is downloaded again.' /var/tmp/login-hint.out
+}
+
+hint_silent() { # the last login_hint printed nothing about an update, and no error
+	! grep -qE 'was prepared|nyra update|rror|No such file|denied' /var/tmp/login-hint.out
+}
+
 nyra_update_refused() { # nyra_update_refused: `nyra update` does nothing for what is not an administrator at a terminal
 	nyra_update_session vmuser n 1 && said 'Only an administrator can update the system.' || return 1
 	# In an administrator's session, but without a terminal: no question could be asked.
