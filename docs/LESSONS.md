@@ -1033,7 +1033,8 @@ Each line is something that broke or surprised us once.
 - A stalled Ubuntu mirror made `apt-get install` of the VM tools wait 7 to 19 minutes, without an error, in one job of a run
   (the step took under a minute otherwise), and every job that boots a VM waited for it. Every `apt-get` on a runner now has
   `-o Acquire::Retries=5 -o Acquire::http::Timeout=30` (a stalled download fails after 30 s and is tried again) and the pure
-  install steps have `timeout-minutes: 10`; a real failure (a missing package) still fails at once. `ci/tools.Containerfile`
+  install steps have `timeout-minutes: 30` (not 10: a slow, not stalled, mirror gave about 25 files in 8 min, so retries do
+  not help and the step needs the 12 to 19 minutes it can take); a real failure (a missing package) still fails at once. `ci/tools.Containerfile`
   keeps its plain `apt-get`: its text is part of the key of the bootc build cache.
 
 ## Titanic (docs/TITANIC.md)

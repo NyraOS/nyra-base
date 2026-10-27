@@ -123,7 +123,7 @@ jobs:
 
       # As release-sign-arm64's step of the same name.
       - name: Install sbsign, pefile and qemu-user-static
-        timeout-minutes: 10
+        timeout-minutes: 30 # a slow mirror took 12-19 min
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
