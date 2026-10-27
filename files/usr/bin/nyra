@@ -18,7 +18,7 @@ RESULT=/run/nyra-updated-install.result
 STAGE=/run/nyra-updated-install.stage
 
 # What to do when the update is lost (the sentence is kept in one place).
-AGAIN='Run `nyra update` again; nothing is downloaded again.'
+AGAIN='Run `nyra update` again; the files already downloaded are reused.'
 
 restart_note() { # the same two lines whenever a version waits for the restart
 	printf 'Restart with `systemctl reboot` when you are ready to finish the update.\n'

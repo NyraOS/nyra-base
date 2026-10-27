@@ -94,7 +94,7 @@ silent() { # nothing of the script reaches the terminal: no message, no error
 }
 clean() { shows 'left:[]' && ! shows 'left: function'; }
 message="Version 2026.10.5 was prepared, but the update was not finished."
-again='Run `nyra update` to prepare it again; nothing is downloaded again.'
+again='Run `nyra update` to prepare it again; the files already downloaded are reused.'
 
 for sh in bash dash; do
   reset

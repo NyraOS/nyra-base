@@ -511,7 +511,7 @@ sys.stdout.buffer.write(out)' "$1" >/var/tmp/login-hint.out
 	cat /var/tmp/login-hint.out
 }
 
-HINT_AGAIN='Run `nyra update` to prepare it again; nothing is downloaded again.' # the sentence, in one place
+HINT_AGAIN='Run `nyra update` to prepare it again; the files already downloaded are reused.' # the sentence, in one place
 
 hint_shown() { # hint_shown VERSION: the last login_hint told the administrator about VERSION, in these words
 	grep -qF -- "Version $1 was prepared, but the update was not finished." /var/tmp/login-hint.out &&

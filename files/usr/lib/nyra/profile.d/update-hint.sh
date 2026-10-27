@@ -73,7 +73,7 @@ nyra_update_hint() (
 	[ -n "$boot" ] && [ "$boot" != "$staged_boot" ] || exit 0
 
 	# shellcheck disable=SC2016 # the backticks are text
-	again='Run `nyra update` to prepare it again; nothing is downloaded again.' # the sentence, in one place
+	again='Run `nyra update` to prepare it again; the files already downloaded are reused.' # the sentence, in one place
 	printf '\nVersion %s was prepared, but the update was not finished.\n%s\n\n' "$want" "$again"
 )
 nyra_update_hint 2>/dev/null || :

@@ -546,7 +546,7 @@ login, to an administrator:
 
 ```
 Version 2026.10.600 was prepared, but the update was not finished.
-Run `nyra update` to prepare it again; nothing is downloaded again.
+Run `nyra update` to prepare it again; the files already downloaded are reused.
 ```
 
 only when all of this is true: the shell is interactive and its input and output are a terminal (not an
@@ -695,7 +695,7 @@ bootc reads it.
 | — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |
 | T4 | sheet signed with another key | refused |
 | T2 | power cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 4–12 s into a ~16 MiB pull, while `nyra-updated` is still activating and nothing is staged) | the old version boots, nothing staged; the next check stages it again |
-| T2 | power cut after staging, before finalization | the old version boots, nothing staged; an administrator's login says that the version was prepared, a standard user's says nothing; staged again, and the bytes the registry sends are counted and judged against the first staging's; while it is staged, no message; once it runs, no message and the record is removed at the next check |
+| T2 | power cut after staging, before finalization | the old version boots, nothing staged; an administrator's login says that the version was prepared, a standard user's says nothing; staged again, and the bytes the registry sends are counted and judged against the first staging's (measured on the test image: 87 MiB the first time, 61 KiB again); while it is staged, no message; once it runs, no message and the record is removed at the next check |
 | T2 | power cut after staging, before finalization, then an update to another version | only the new version's entry and the running one are staged (the stale ones are removed at boot); the new version boots, two boot entries |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
 | — | staged version retracted before the reboot, with an acceptable rollback deployment and with a failed one | not finalized: the next boot is the running version, boot order and rollback deployment unchanged, no staged entries left |
