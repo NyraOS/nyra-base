@@ -2912,8 +2912,11 @@ mod install_tests {
         let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
         installed(&mut fake, &dir, "2026.10.2").unwrap();
         let path = store.dir.join("staged-version");
-        // Only the version, readable by everybody, in a directory everybody can enter.
-        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.2\n");
+        // The version and the boot that staged it, readable by everybody, in a directory
+        // everybody can enter.
+        let text = fs::read_to_string(&path).unwrap();
+        let boot = fs::read_to_string(BOOT_ID).unwrap();
+        assert_eq!(text, format!("2026.10.2\n{}\n", boot.trim()));
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o644
@@ -2924,11 +2927,11 @@ mod install_tests {
         // A newer staging replaces it.
         let mut fake = Fake::new(&dir, A, sheet(101, C, &[]));
         installed(&mut fake, &dir, "2026.10.3").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.3\n");
+        assert_eq!(store.staged_version().as_deref(), Some("2026.10.3"));
         // A refusal or a version that is staged already leaves it as it is.
         let mut fake = Fake::new(&dir, A, sheet(102, B, &[]));
         installed(&mut fake, &dir, "2026.10.1").unwrap_err();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "2026.10.3\n");
+        assert_eq!(store.staged_version().as_deref(), Some("2026.10.3"));
         // A digest bootc did not stage is discarded, and says nothing is prepared.
         let dir = TempDir::new();
         let mut fake = Fake::new(&dir, A, sheet(100, B, &[]));
@@ -2985,23 +2988,44 @@ mod install_tests {
     }
 
     #[test]
+    fn a_discarded_version_is_not_prepared_any_more() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let mut fake = Fake::new(&dir, B, sheet(100, C, &[]));
+        fake.status.rollback = dep(A);
+        assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Staged(image(C))));
+        assert!(store.staged_version().is_some());
+        // The next sheet retracts it while it is still staged: it is discarded, and the login
+        // must not say it was prepared.
+        fake.sheet = sheet(101, B, &[C]);
+        assert_eq!(run_check(&mut fake, &dir), Ok(Outcome::Discarded(C.into())));
+        assert_eq!(store.staged_version(), None);
+    }
+
+    #[test]
     fn a_file_that_is_not_a_version_is_not_used() {
         let dir = TempDir::new();
         let store = dir.store();
         fs::create_dir_all(&store.dir).unwrap();
-        for bad in [
-            "",
-            "stable\n",
-            "2026.10.2 \n",
-            "$(reboot)\n",
-            "2026.10.2\n2026.10.3\n",
-        ] {
+        for bad in ["", "stable\n", "2026.10.2 \n", "$(reboot)\n"] {
             fs::write(store.dir.join("staged-version"), bad).unwrap();
             assert_eq!(store.staged_version(), None, "{bad:?}");
         }
         // And one is never written.
         store.save_staged_version("x;reboot");
         assert_eq!(store.staged_version(), None);
+        // The second line is the boot that staged it; only the first is the version.
+        store.save_staged_version_of_boot("2026.10.2", "0123-abcd");
+        let text = fs::read_to_string(store.dir.join("staged-version")).unwrap();
+        assert_eq!(text, "2026.10.2\n0123-abcd\n");
+        assert_eq!(store.staged_version().as_deref(), Some("2026.10.2"));
+        // On a real machine the boot identifier is the kernel's: two lines, the second a UUID.
+        store.save_staged_version("2026.10.3");
+        let text = fs::read_to_string(store.dir.join("staged-version")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text:?}");
+        assert_eq!(lines[0], "2026.10.3");
+        assert!(lines[1].bytes().all(|c| c.is_ascii_hexdigit() || c == b'-'));
         store.forget_staged_version();
         store.forget_staged_version();
     }

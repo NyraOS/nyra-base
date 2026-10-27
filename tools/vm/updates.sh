@@ -417,13 +417,14 @@ vm "v1 after the power cut: v2 staged again; power cut before finalization" --po
 bytes1="$(registry_bytes)"
 
 # The hard reset of boot 4 lost the staged deployment; the version that was prepared is still on record,
-# and the administrator is told at the login, a standard user is not. The marker of a staged deployment
-# is visible to a standard user (the message depends on it).
+# and the administrator is told at the login, a standard user is not. The login cannot look at bootc's
+# marker of a staged deployment (the directory is root's, 0700), so the file of nyra-updated names the
+# boot that staged the version instead.
 vm "v1 after the power cut: the login says v2 was prepared; v2 staged again (what it downloads is counted), after a copy of /etc" --poweroff \
   --command "$lib; expect booted $d1 && running && expect staged none && ! test -e /run/composefs/staged-deployment" \
-  --command "$lib; test \"\$(cat /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && test \"\$(stat -c '%a %U' /var/lib/nyra-updated /var/lib/nyra-updated/staged-version | tr '\n' ' ')\" = '711 root 644 root ' && test \"\$(stat -c %a /var/lib/nyra-updated/state.json)\" = 600 && login_hint vmadmin && hint_shown 2026.10.2 && login_hint vmuser && hint_silent" \
+  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" != \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(stat -c '%a %U' /var/lib/nyra-updated /var/lib/nyra-updated/staged-version | tr '\n' ' ')\" = '711 root 644 root ' && test \"\$(stat -c %a /var/lib/nyra-updated/state.json)\" = 600 && login_hint vmadmin && hint_shown 2026.10.2 && login_hint vmuser && hint_silent" \
   --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\"" \
-  --command "$lib; ls -la /run/composefs; runuser -u vmuser -- test -e /run/composefs/staged-deployment && login_hint vmadmin && hint_silent && test \"\$(cat /var/lib/nyra-updated/staged-version)\" = 2026.10.2"
+  --command "$lib; ls -la /run/composefs; test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" = \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent"
 bytes2="$(registry_bytes)"
 sudo tc qdisc del dev lo root
 
@@ -448,7 +449,7 @@ vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command "$lib; expect booted $d2 && running && blessed" \
   --command 'journalctl -b -u systemd-bless-boot -o cat --no-pager' \
-  --command "$lib; test \"\$(cat /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent" \
+  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent" \
   --command "$lib; outcome s1 UpToDate && ! test -e /var/lib/nyra-updated/staged-version && nyra_update_session vmadmin y 0 && said 'The system is up to date. Version 2026.10.2 is installed.'" \
   --command "$lib; select_sheet halted && nyra_update_session vmadmin y 1 && said 'Updates are paused.' && select_sheet wrong && nyra_update_session vmadmin y 1 && said 'The update information could not be verified.' && expect staged none" \
   --command "$lib; select_sheet s2 && nyra_update_session vmadmin n 0 && said 'Version 2026.10.2 is installed. 2026.10.4 is available. Install it? [y/N]' && said 'Nothing was installed.' && expect staged none" \

@@ -424,6 +424,9 @@ const STATE_DIR_MODE: u32 = 0o711;
 /// The file that tells a login that a version was prepared (see [`Store::save_staged_version`]).
 pub const STAGED_VERSION: &str = "staged-version";
 
+/// The kernel's identifier of this boot, which changes at every boot (a restart, a hard reset).
+const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
+
 /// The state directory (`/var/lib/nyra-updated`, 0711, files 0600 except [`STAGED_VERSION`]). The
 /// directory can be entered by everybody but not listed: the one file a login reads
 /// ([`STAGED_VERSION`]) is reached by its name, and every other file is root's alone.
@@ -523,27 +526,46 @@ impl Store {
         Ok(report)
     }
 
-    /// Remembers that `version` was prepared for the next boot, in [`STAGED_VERSION`]: only the
-    /// version, in a file everybody can read (0644, set explicitly: the unit's umask is 0077). The login
-    /// that tells the user (`/usr/lib/nyra/profile.d/update-hint.sh`) reads it, and it is on `/var`
-    /// because a hard reset loses what `bootc` keeps in `/run`. Not a version
-    /// ([`install::is_version`]): nothing is written. Best effort: a hint that can not be written
-    /// does not change the outcome of the staging.
+    /// Remembers that `version` was prepared for the next boot, in [`STAGED_VERSION`]: two lines,
+    /// the version and the identifier of this boot ([`BOOT_ID`]), in a file everybody can read
+    /// (0644, set explicitly: the unit's umask is 0077). The login that tells the user
+    /// (`/usr/lib/nyra/profile.d/update-hint.sh`) reads it. It is on `/var` because a hard reset
+    /// loses the staged deployment, which `bootc` keeps in `/run` (root's alone: 0700, so a login
+    /// can not see it). The boot identifier says whether the version is staged now: it is when
+    /// the login is in the boot that staged it, and lost when it is in a later one. Not a version
+    /// ([`install::is_version`]), or no boot identifier: nothing is written (the login then says
+    /// nothing, the prudent side). Best effort: a hint that can not be written does not change the
+    /// outcome of the staging.
     pub fn save_staged_version(&self, version: &str) {
+        let Some(boot) = fs::read_to_string(BOOT_ID)
+            .ok()
+            .map(|b| b.trim().to_string())
+            .filter(|b| {
+                (1..=64).contains(&b.len()) && b.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+            })
+        else {
+            return;
+        };
+        self.save_staged_version_of_boot(version, &boot);
+    }
+
+    fn save_staged_version_of_boot(&self, version: &str, boot: &str) {
         if !install::is_version(version) {
             return;
         }
-        if let Err(e) =
-            self.write_atomic_mode(STAGED_VERSION, format!("{version}\n").as_bytes(), 0o644)
-        {
+        if let Err(e) = self.write_atomic_mode(
+            STAGED_VERSION,
+            format!("{version}\n{boot}\n").as_bytes(),
+            0o644,
+        ) {
             eprintln!("<4>nyra-updated: {STAGED_VERSION}: {e}");
         }
     }
 
-    /// The version in [`STAGED_VERSION`], if the file holds one.
+    /// The version in [`STAGED_VERSION`] (its first line), if it is one.
     pub fn staged_version(&self) -> Option<String> {
         let text = fs::read_to_string(self.dir.join(STAGED_VERSION)).ok()?;
-        let version = text.trim_end_matches('\n');
+        let version = text.lines().next()?;
         install::is_version(version).then(|| version.to_string())
     }
 
@@ -1049,6 +1071,7 @@ pub fn check(
     }
     // Rules 7 and 11: after a discard nothing is staged until the next reboot.
     if let Some(digest) = sys.discarded()? {
+        store.forget_staged_version();
         return Ok(Outcome::Discarded(digest));
     }
 
@@ -1109,6 +1132,7 @@ pub fn check(
     if let Some(staged) = &status.staged {
         if unacceptable(staged, &state, floor) {
             sys.discard_staged(&staged.digest)?;
+            store.forget_staged_version();
             state.pending = None;
             store.save(&state)?;
             return Ok(Outcome::Discarded(staged.digest.clone()));
@@ -1249,6 +1273,7 @@ fn stage_target(
         if after.staged.is_some() {
             sys.discard_staged(&staged)?;
         }
+        store.forget_staged_version();
         return Err(Error::DigestMismatch {
             expected: target.digest,
             found: staged,

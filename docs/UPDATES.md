@@ -518,20 +518,22 @@ is "The update was not installed."
 
 ### After a hard reset
 
-`bootc` keeps a staged deployment in memory only: the marker `/run/composefs/staged-deployment` is made
-when a version is staged and read at the clean shutdown that applies it. A power cut or a forced restart
+`bootc` keeps a staged deployment in memory only: the marker `/run/composefs/staged-deployment` (root's
+alone: the directory is 0700 and the file 0600) is made when a version is staged and read at the clean
+shutdown that applies it. A power cut or a forced restart
 before that shutdown loses the marker, and the old version boots, without a word. What was pulled stays on
 disk (`/sysroot/composefs`), so staging the version again pulls only what is missing.
 The update test (below, T2) counts the bytes the registry sends for the second staging and fails when they
 are not a small part of the first staging's, so "nothing is downloaded again" is a measured claim.
 
 So that the administrator learns of it, `nyra-updated` leaves the version it staged last in
-`/var/lib/nyra-updated/staged-version` (one line, mode 0644, written like the other state files:
-a temporary file, `fsync`, rename). Every staging writes it (a check or `install`), after bootc staged the
+`/var/lib/nyra-updated/staged-version` (two lines, mode 0644, written like the other state files:
+a temporary file, `fsync`, rename): the version, and the kernel's identifier of the boot that staged it
+(`/proc/sys/kernel/random/boot_id`, which is new at every boot). Every staging writes it (a check or `install`), after bootc staged the
 digest of the sheet, and a newer staging replaces it. The directory is mode 0711 for this: everybody can
 enter it, so that a login can read this file by its name, and only root can list it; every other file in
-it stays root's, 0600. The file holds only the version, which is not a secret (the channel sheet is
-public).
+it stays root's, 0600. The file holds a version, which is not a secret (the channel sheet is public),
+and a boot identifier, which says nothing about the user.
 
 **The message.** The login script `/usr/lib/nyra/profile.d/update-hint.sh` (linked from
 `/etc/profile.d/update-hint.sh`, which Debian's `/etc/profile` reads for a login shell; the content is in
@@ -545,9 +547,11 @@ Run `nyra update` to prepare it again; nothing is downloaded again.
 
 only when all of this is true: the shell is interactive and its input and output are a terminal (not an
 `ssh` command, `scp`, `sftp` or a script); `staged-version` holds a release version and it is newer than
-`IMAGE_VERSION` of `/usr/lib/os-release` (numbers compared one by one); `/run/composefs/staged-deployment`
-does not exist (a version that is staged now is applied by the next restart); and the user is a member of
-`sudo`, the test `nyra update` makes. It reads these three files and runs `id`; it asks nothing, runs
+`IMAGE_VERSION` of `/usr/lib/os-release` (numbers compared one by one); the file was written in an earlier
+boot than this one (in the boot that staged the version it is staged still, and the next restart applies
+it; a later boot means the staged deployment was lost, since a clean restart would have applied it and the
+running version would not be older); and the user is a member of
+`sudo`, the test `nyra update` makes. It reads these three files (the third is the boot identifier) and runs `id`; it asks nothing, runs
 nothing privileged, evaluates nothing from the files (the version is checked for its shape, digits and dots
 only, before the arithmetic), prints nothing on any error, and leaves no variable or function in the shell.
 A terminal opened inside a desktop session is not a login shell and shows nothing.
@@ -555,10 +559,11 @@ A terminal opened inside a desktop session is not a login shell and shows nothin
 **When the record goes.** A newer staging replaces it. `nyra-updated` removes it at the start of every
 check and `install` when the running version is the one it names or a newer one (it was applied, or
 something else was installed), and when the machine fell back from the version that was pending (it
-failed: nothing to prepare again). The script ignores it in the same cases by itself (the running version
-is not older), and while the version is staged. What the record cannot know: a version that was
-retracted after it was staged still shows the message until the next check stages another one (or
-`nyra update` says why that version is refused).
+failed: nothing to prepare again), and when it discards the staged version (retracted, below the
+floor, failed) or `bootc` staged a digest that is not the sheet's. The script ignores it in the same
+cases by itself where it can (the running version is not older), and in the boot that staged it. What
+the record cannot know: a version retracted after the hard reset shows the message until the next check
+(or `nyra update` says why that version is refused).
 
 ## Moving a machine to updates.nyraos.com
 

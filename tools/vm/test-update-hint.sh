@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Offline test of the message after a login (files/usr/lib/nyra/profile.d/update-hint.sh, docs/UPDATES.md,
 # "After a hard reset"), without root or a VM. The real script is sourced by bash and by dash from a copy
-# whose paths (the file of nyra-updated, bootc's marker, os-release, id) point into a work directory, in
-# a shell on a terminal made here. It checks that the message is shown to an administrator when a version
-# newer than the running one was prepared and is not staged now, and is never shown, and never leaves an
-# error or a variable behind, otherwise: a standard user, a version that is staged, applied or older, a
+# whose paths (the file of nyra-updated, the kernel's boot identifier, os-release, id) point into a work
+# directory, in a shell on a terminal made here. It checks that the message is shown to an administrator
+# when a version newer than the running one was prepared in an earlier boot, and is never shown, and never
+# leaves an error or a variable behind, otherwise: a standard user, a version staged in this boot, applied or older, a
 # file that is not a version (also one that tries to run a command), a missing file, a shell that is not
 # interactive, and an interactive shell whose output is not a terminal.
 #   tools/vm/test-update-hint.sh
@@ -13,15 +13,15 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir "$work/bin" "$work/run"
+mkdir "$work/bin"
 src=files/usr/lib/nyra/profile.d/update-hint.sh
 
 sed -e "s#/var/lib/nyra-updated/staged-version#$work/staged-version#" \
-  -e "s#/run/composefs/staged-deployment#$work/run/staged-deployment#" \
+  -e "s#/proc/sys/kernel/random/boot_id#$work/boot_id#" \
   -e "s#/usr/lib/os-release#$work/os-release#" \
   -e "s#/usr/bin/id#$work/bin/id#" "$src" >"$work/hint.sh"
 code="$(grep -v '^[[:space:]]*#' "$work/hint.sh")"
-[ "$(grep -c "$work" <<<"$code")" = 4 ] && ! grep -qE '/var/lib/nyra-updated|/run/composefs|/usr/lib/os-release|/usr/bin/id' <<<"$code" ||
+[ "$(grep -c "$work" <<<"$code")" = 4 ] && ! grep -qE '/var/lib/nyra-updated|/proc/sys/kernel/random|/usr/lib/os-release|/usr/bin/id' <<<"$code" ||
   { echo "FAIL: the copy of $src was not made as expected"; exit 1; }
 printf '#!/bin/sh\nif [ -e %s/sudo ]; then echo "tester sudo"; else echo tester; fi\n' "$work" >"$work/bin/id"
 chmod +x "$work/bin/id"
@@ -29,8 +29,8 @@ chmod +x "$work/bin/id"
 # reset: the machine after a hard reset, with an administrator; each case changes what it needs.
 reset() {
   touch "$work/sudo"
-  rm -f "$work/run/staged-deployment"
-  echo 2026.10.5 >"$work/staged-version"
+  echo f3c1-new >"$work/boot_id"
+  printf '2026.10.5\nb7d2-old\n' >"$work/staged-version"
   echo 'IMAGE_VERSION=2026.10.1' >"$work/os-release"
 }
 
@@ -41,7 +41,7 @@ shell() {
   python3 -I -c '
 import os, pty, select, subprocess, sys, time
 shell, mode, hint = sys.argv[1:4]
-check = "echo \"left:[${flag-}${want-}${running-}${k-}${y-}${line-}]\"; type nyra_update_hint >/dev/null 2>&1 && echo \"left: function\"; exit"
+check = "echo \"left:[${flag-}${want-}${running-}${k-}${y-}${line-}${staged_boot-}${boot-}]\"; type nyra_update_hint >/dev/null 2>&1 && echo \"left: function\"; exit"
 script = f". {hint}\n{check}\n"
 if mode == "pipe":
     pid, fd = pty.fork()
@@ -112,19 +112,28 @@ for sh in bash dash; do
   expect "$sh: not an administrator: silent" silent
   expect "$sh: not an administrator: nothing left" clean
 
-  reset; touch "$work/run/staged-deployment"
+  reset; printf '2026.10.5\nf3c1-new\n' >"$work/staged-version"
   shell "$sh" tty
-  expect "$sh: staged now: silent" silent
+  expect "$sh: staged in this boot (still staged): silent" silent
+  reset; printf '2026.10.5\n' >"$work/staged-version"
+  shell "$sh" tty
+  expect "$sh: no boot identifier in the file: silent" silent
+  reset; rm "$work/boot_id"
+  shell "$sh" tty
+  expect "$sh: no boot identifier of this boot: silent" silent
+  reset; printf '2026.10.5\nb7d2-old' >"$work/staged-version"
+  shell "$sh" tty
+  expect "$sh: no newline at the end of the file: shown" shows "$message"
 
   for running in 2026.10.5 2026.10.6 2026.11.1 2027.1.1; do
     reset; echo "IMAGE_VERSION=$running" >"$work/os-release"
     shell "$sh" tty
     expect "$sh: running $running, prepared 2026.10.5: silent" silent
   done
-  reset; echo 2026.10.5 >"$work/staged-version"; echo IMAGE_VERSION=2026.9.20 >"$work/os-release"
+  reset; echo IMAGE_VERSION=2026.9.20 >"$work/os-release"
   shell "$sh" tty
   expect "$sh: numbers, not text (2026.9.20 < 2026.10.5)" shows "$message"
-  reset; echo 2026.10.100 >"$work/staged-version"; echo IMAGE_VERSION=2026.10.99 >"$work/os-release"
+  reset; printf '2026.10.100\nb7d2-old\n' >"$work/staged-version"; echo IMAGE_VERSION=2026.10.99 >"$work/os-release"
   shell "$sh" tty
   expect "$sh: numbers, not text (2026.10.99 < 2026.10.100)" shows 'Version 2026.10.100 was prepared'
 
@@ -144,12 +153,13 @@ for sh in bash dash; do
 
   for bad in '' 'stable' '2026.10' '2026.10.5.1' '2026.010.5' '2026.10.05' '026.10.5' '99999999999999999999.1.1' \
     '2026.10.5 x' '2026.10.5;touch pwned' '$(touch pwned)' '`touch pwned`' '2026.10.9999999' '2026.10.-5'; do
-    reset; printf '%s\n' "$bad" >"$work/staged-version"
+    reset; printf '%s\nb7d2-old\n' "$bad" >"$work/staged-version"
     (cd "$work" && shell "$sh" tty)
     expect "$sh: '$bad' is no version: silent" silent
     [ ! -e "$work/pwned" ] || { echo "FAIL $sh: '$bad' ran a command"; exit 1; }
   done
   reset; printf '2026.10.5\n$(touch pwned)\n' >"$work/staged-version"
+  printf '$(touch pwned)\n' >"$work/boot_id"
   (cd "$work" && shell "$sh" tty)
   [ ! -e "$work/pwned" ] || { echo "FAIL $sh: a second line ran a command"; exit 1; }
   echo "ok   $sh: nothing in the file is run"
