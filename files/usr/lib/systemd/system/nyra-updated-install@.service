@@ -17,7 +17,9 @@ ExecStart=/usr/libexec/nyra-updated install %i
 # nyra-updated stops a pull after 2 h itself (bootc and its helpers); this is only a backstop.
 TimeoutStartSec=2h30min
 StateDirectory=nyra-updated
-StateDirectoryMode=0700
+# 0711, not 0700: systemd sets this mode at every start, and a login must be able to enter the
+# directory to read staged-version (docs/UPDATES.md, "After a hard reset"). The files in it are 0600.
+StateDirectoryMode=0711
 UMask=0077
 # Sandboxing, as for a check (nyra-updated.service): bootc runs as root in its own mount namespace,
 # pulls over the network and writes /sysroot and /var. No RestrictSUIDSGID= (openat2, bootc).

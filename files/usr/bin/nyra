@@ -17,9 +17,12 @@ export PATH
 RESULT=/run/nyra-updated-install.result
 STAGE=/run/nyra-updated-install.stage
 
+# What to do when the update is lost (the sentence is kept in one place).
+AGAIN='Run `nyra update` again; nothing is downloaded again.'
+
 restart_note() { # the same two lines whenever a version waits for the restart
 	printf 'Restart with `systemctl reboot` when you are ready to finish the update.\n'
-	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost. Run `nyra update` again; nothing is downloaded again.\n'
+	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost. %s\n' "$AGAIN"
 }
 
 if [ "$#" != 1 ] || [ "$1" != update ]; then

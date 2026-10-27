@@ -522,9 +522,9 @@ is "The update was not installed."
 alone: the directory is 0700 and the file 0600) is made when a version is staged and read at the clean
 shutdown that applies it. A power cut or a forced restart
 before that shutdown loses the marker, and the old version boots, without a word. What was pulled stays on
-disk (`/sysroot/composefs`), so staging the version again pulls only what is missing.
-The update test (below, T2) counts the bytes the registry sends for the second staging and fails when they
-are not a small part of the first staging's, so "nothing is downloaded again" is a measured claim.
+disk (`/sysroot/composefs`). The update test (below, T2) counts the bytes the registry sends for the second
+staging and fails when they are not a small part of the first staging's, so what the message below says
+about the second staging is a measured claim.
 
 So that the administrator learns of it, `nyra-updated` leaves the version it staged last in
 `/var/lib/nyra-updated/staged-version` (two lines, mode 0644, written like the other state files:
@@ -532,7 +532,11 @@ a temporary file, `fsync`, rename): the version, and the kernel's identifier of 
 (`/proc/sys/kernel/random/boot_id`, which is new at every boot). Every staging writes it (a check or `install`), after bootc staged the
 digest of the sheet, and a newer staging replaces it. The directory is mode 0711 for this: everybody can
 enter it, so that a login can read this file by its name, and only root can list it; every other file in
-it stays root's, 0600. The file holds a version, which is not a secret (the channel sheet is public),
+it stays root's, 0600: the files of the daemon are written with that mode, the health check that leaves
+its markers there (`/usr/lib/nyra/health/network`) sets `umask 077`, and the two units that have the
+directory (`nyra-updated.service`, `nyra-updated-install@.service`) say `StateDirectoryMode=0711`, since
+systemd sets the mode of the directory again at every start. T2 checks the mode of the directory and of
+every file in it. The file holds a version, which is not a secret (the channel sheet is public),
 and a boot identifier, which says nothing about the user.
 
 **The message.** The login script `/usr/lib/nyra/profile.d/update-hint.sh` (linked from
@@ -691,7 +695,7 @@ bootc reads it.
 | — | image from another registry | accepted; `nyra-updated` reports `ForeignImage` (journal warning) |
 | T4 | sheet signed with another key | refused |
 | T2 | power cut while the update downloads (the registry throttled to 2 Mbit/s, the cut 4–12 s into a ~16 MiB pull, while `nyra-updated` is still activating and nothing is staged) | the old version boots, nothing staged; the next check stages it again |
-| T2 | power cut after staging, before finalization | the old version boots, nothing staged; an administrator's login says that the version was prepared, a standard user's says nothing; staged again, and the registry sends a small part of the bytes of the first staging (counted); while it is staged, no message; once it runs, no message and the record is removed at the next check |
+| T2 | power cut after staging, before finalization | the old version boots, nothing staged; an administrator's login says that the version was prepared, a standard user's says nothing; staged again, and the bytes the registry sends are counted and judged against the first staging's; while it is staged, no message; once it runs, no message and the record is removed at the next check |
 | T2 | power cut after staging, before finalization, then an update to another version | only the new version's entry and the running one are staged (the stale ones are removed at boot); the new version boots, two boot entries |
 | T2 | power cut when the new version's kernel starts | the second try boots and is blessed; the first boot of the new version counts (rule 9) |
 | — | staged version retracted before the reboot, with an acceptable rollback deployment and with a failed one | not finalized: the next boot is the running version, boot order and rollback deployment unchanged, no staged entries left |

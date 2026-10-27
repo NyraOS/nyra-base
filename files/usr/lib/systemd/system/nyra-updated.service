@@ -24,7 +24,9 @@ ExecStart=/usr/libexec/nyra-updated check
 # nyra-updated stops a pull after 2 h itself (bootc and its helpers); this is only a backstop.
 TimeoutStartSec=2h30min
 StateDirectory=nyra-updated
-StateDirectoryMode=0700
+# 0711, not 0700: systemd sets this mode at every start, and a login must be able to enter the
+# directory to read staged-version (docs/UPDATES.md, "After a hard reset"). The files in it are 0600.
+StateDirectoryMode=0711
 UMask=0077
 # Sandboxing, as far as bootc allows: it runs as root in its own mount namespace (it remounts
 # /sysroot and the read-only ESP read-write there, as esp-sync discard does through esp-writable),

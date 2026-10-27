@@ -623,8 +623,10 @@ pub const MAX_MESSAGE: usize = 2000;
 /// around them is shown, so a text that holds one can say something other than what it looks like
 /// ("Trojan Source"). The ones listed here:
 ///
-/// - U+202A-202E: the bidirectional embeddings and overrides (LRE, RLE, PDF, LRO, RLO). They make
-///   the text after them run right to left, so the end of a line can be shown in front of its start;
+/// - U+202A-202E: the bidirectional embeddings and overrides (LRE, RLE, PDF, LRO, RLO). They change
+///   the direction of the text after them (the right-to-left ones, RLE and RLO, and the
+///   left-to-right ones, LRE and LRO, inside a right-to-left text), so the end of a line can be
+///   shown in front of its start;
 /// - U+2066-2069: the bidirectional isolates (LRI, RLI, FSI, PDI), which do the same for a part of
 ///   a line;
 /// - U+200B-200F: the zero-width space, the zero-width (non-)joiner and the left-to-right and

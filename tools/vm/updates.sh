@@ -422,7 +422,7 @@ bytes1="$(registry_bytes)"
 # boot that staged the version instead.
 vm "v1 after the power cut: the login says v2 was prepared; v2 staged again (what it downloads is counted), after a copy of /etc" --poweroff \
   --command "$lib; expect booted $d1 && running && expect staged none && ! test -e /run/composefs/staged-deployment" \
-  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" != \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(stat -c '%a %U' /var/lib/nyra-updated /var/lib/nyra-updated/staged-version | tr '\n' ' ')\" = '711 root 644 root ' && test \"\$(stat -c %a /var/lib/nyra-updated/state.json)\" = 600 && login_hint vmadmin && hint_shown 2026.10.2 && login_hint vmuser && hint_silent" \
+  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" != \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(stat -c '%a %U' /var/lib/nyra-updated /var/lib/nyra-updated/staged-version | tr '\n' ' ')\" = '711 root 644 root ' && test \"\$(stat -c %a /var/lib/nyra-updated/state.json)\" = 600 && ls -l /var/lib/nyra-updated && test -z \"\$(find /var/lib/nyra-updated -type f ! -name staged-version ! -perm 600)\" && login_hint vmadmin && hint_shown 2026.10.2 && login_hint vmuser && hint_silent" \
   --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\"" \
   --command "$lib; ls -la /run/composefs; test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" = \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent"
 bytes2="$(registry_bytes)"
@@ -430,7 +430,7 @@ sudo tc qdisc del dev lo root
 
 # v2 carries 16 MiB that do not compress, so pulling it for the first time costs more than that. Staging
 # it again after a cut must not pull it again: bootc keeps the layers it fetched (/sysroot/composefs).
-# The claim of `nyra update` and of the login message ("nothing is downloaded again") is this one.
+# What `nyra update` and the login message say about the second staging is judged by this.
 first=$((bytes1 - bytes0)) again=$((bytes2 - bytes1))
 echo "registry bytes sent to the guest: staging v2 after the cut of boot 3: $first, staging it again after the cut of boot 4: $again"
 {
@@ -442,7 +442,7 @@ measure_failed=
 [ "$first" -gt $((12 * 1024 * 1024)) ] ||
   { echo "::error::the counter saw only $first bytes while v2 was pulled: it does not measure the registry"; measure_failed=1; }
 [ "$again" -lt $((first / 20)) ] ||
-  { echo "::error::staging v2 again after a power cut downloaded $again bytes of $first: not 'nothing is downloaded again'"; measure_failed=1; }
+  { echo "::error::staging v2 again after a power cut downloaded $again bytes of $first: not what the messages say"; measure_failed=1; }
 
 vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 

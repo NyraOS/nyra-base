@@ -72,9 +72,9 @@ nyra_update_hint() (
 	read -r boot </proc/sys/kernel/random/boot_id || :
 	[ -n "$boot" ] && [ "$boot" != "$staged_boot" ] || exit 0
 
-	printf '\nVersion %s was prepared, but the update was not finished.\n' "$want"
 	# shellcheck disable=SC2016 # the backticks are text
-	printf 'Run `nyra update` to prepare it again; nothing is downloaded again.\n\n'
+	again='Run `nyra update` to prepare it again; nothing is downloaded again.' # the sentence, in one place
+	printf '\nVersion %s was prepared, but the update was not finished.\n%s\n\n' "$want" "$again"
 )
 nyra_update_hint 2>/dev/null || :
 unset -f nyra_update_hint
