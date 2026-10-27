@@ -471,17 +471,28 @@ prompt_only() { # prompt_only: the last `nyra update` showed the password prompt
 }
 
 login_hint() { # login_hint USER: USER logs in with a login shell on a terminal (what a console login or an ssh
-	# session without a command is), and leaves it at once; what was printed is in /var/tmp/login-hint.out
+	# session without a command is: the shell is started with a leading "-" in its name, as login does, so it reads
+	# /etc/profile), and leaves it at once; what was printed is in /var/tmp/login-hint.out. Nothing here waits for
+	# anything for more than 40 seconds.
 	# shellcheck disable=SC2016 # the quoted script is Python
-	python3 -I -c 'import os, pty, select, sys, time
+	python3 -I -c 'import os, pty, pwd, select, signal, sys, time
+user = sys.argv[1]
+pw = pwd.getpwnam(user)
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp("runuser", ["runuser", "-l", sys.argv[1]])
-time.sleep(3)  # the profile has run when the first prompt is there
-os.write(fd, b"exit\n")
-out, end = b"", time.time() + 30
-while time.time() < end:
-    if not select.select([fd], [], [], 1)[0]:
+    os.initgroups(user, pw.pw_gid)
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.chdir(pw.pw_dir)
+    env = {"HOME": pw.pw_dir, "USER": user, "LOGNAME": user, "SHELL": pw.pw_shell, "TERM": "dumb",
+           "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    os.execve(pw.pw_shell, ["-" + os.path.basename(pw.pw_shell)], env)
+out, start, sent = b"", time.time(), False
+while time.time() - start < 40:
+    if not sent and time.time() - start > 3:  # the profile has run when the first prompt is there
+        os.write(fd, b"exit\n")
+        sent = True
+    if not select.select([fd], [], [], 0.5)[0]:
         continue
     try:
         data = os.read(fd, 4096)
@@ -490,6 +501,10 @@ while time.time() < end:
     if not data:
         break
     out += data
+try:
+    os.kill(pid, signal.SIGKILL)
+except ProcessLookupError:
+    pass
 os.waitpid(pid, 0)
 sys.stdout.buffer.write(out)' "$1" >/var/tmp/login-hint.out
 	echo "--- login of $1:"
