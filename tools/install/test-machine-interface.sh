@@ -101,7 +101,7 @@ case "$1" in
     [ -f "$hash_file" ] || exit 2
     echo "$(stat -c %a "$hash_file") $(cat "$hash_file")" > "$MOK_SEEN"
     env >> "$ENVLOG"
-    ps -eww -o args= >> "$PROCLOG"
+    "$PSOWN" >> "$PROCLOG"
     # A request that is queued already is refused, as mokutil does.
     [ ! -e "$MOK_QUEUED" ] || exit 1
     [ "${IMPORT_RC:-0}" != 0 ] || : > "$MOK_QUEUED"
@@ -114,14 +114,14 @@ cat > "$t/bin/sfdisk" << 'EOF2'
 #!/bin/sh
 echo "sfdisk $*" >> "$CALLS"
 cat > "$DISKFILE.sfdisk"
-{ tr '\0' ' ' < "/proc/$PPID/cmdline"; echo; tr '\0' '\n' < "/proc/$PPID/environ"; ps -eww -o args=; } >> "$PROCLOG"
+{ tr '\0' ' ' < "/proc/$PPID/cmdline"; echo; tr '\0' '\n' < "/proc/$PPID/environ"; "$PSOWN"; } >> "$PROCLOG"
 dd if=/dev/zero of="$DISKFILE" bs=1k count=1 conv=notrunc status=none
 EOF2
 cat > "$t/bin/podman" << 'EOF2'
 #!/bin/bash
 echo "podman $*" >> "$CALLS"
 env >> "$ENVLOG"
-ps -eww -o args= >> "$PROCLOG"
+"$PSOWN" >> "$PROCLOG"
 args=("$@")
 step="" host_secrets=""
 for i in "${!args[@]}"; do
@@ -169,7 +169,7 @@ cat > "$t/bin/openssl" << EOF2
 #!/bin/sh
 echo "openssl \$*" >> "\$CALLS"
 env >> "\$ENVLOG"
-ps -eww -o args= >> "\$PROCLOG"
+"\$PSOWN" >> "\$PROCLOG"
 exec $(command -v openssl) "\$@"
 EOF2
 chmod +x "$t/bin/"*
@@ -210,7 +210,23 @@ cat > "$t/one-disk.json" << 'EOF2'
 {"blockdevices": [{"name":"vda","path":"/dev/vda","type":"disk","size":64000000000,"model":"QEMU HARDDISK","ro":false,"rm":false,"fstype":null,"label":null,"parttype":null,"mountpoints":[]}]}
 EOF2
 
+# The arguments of the processes of this test, to look for a password: not those of the whole machine.
+# A busy machine runs other jobs (a second run of this test, an agent's grep) whose command lines hold
+# the same fixed strings as the searches here, and "ps -e" showed them as a leak, now and then. The
+# processes below this shell are the ones the installer and the stand-ins start.
+cat > "$t/ps-own" << 'EOF2'
+#!/bin/sh
+ps -eww -o pid=,ppid=,args= | awk -v root="$TEST_ROOT" '
+  { pid = $1; par[pid] = $2; sub(/^ *[0-9]+ +[0-9]+ ?/, ""); args[pid] = $0; order[++n] = pid }
+  END {
+    for (i = 1; i <= n; i++)
+      for (p = order[i]; p + 0 > 1; p = par[p])
+        if (p == root) { print args[order[i]]; break }
+  }'
+EOF2
+chmod +x "$t/ps-own"
 printf '%s' "$key" > "$t/key.txt"
+export TEST_ROOT=$$ PSOWN="$t/ps-own"
 export CALLS="$t/calls.log" ENVLOG="$t/env.log" PROCLOG="$t/proc.log" DISKFILE="$t/disk" KEYFILE="$t/key.txt"
 export SB_STATE="$t/sb-state" LUKS_JSON="$t/luks.json" FIXTURE="$t/one-disk.json" IMAGE_CERT="$t/image.crt"
 export ADMIN_STDIN="$t/admin-stdin" ADMIN_PLACED="$t/admin-placed" PW_SEEN="$t/pw-seen" MOK_SEEN="$t/mok-seen" MOK_QUEUED="$t/mok-queued"
@@ -219,6 +235,19 @@ export DISK_PW_SHA
 : > "$CALLS"
 : > "$ENVLOG"
 : > "$PROCLOG"
+# The control: the list sees a process of this test that holds a string on its command line, and not one of
+# another job (setsid -f leaves the tree), so that the search finds a real leak and a stranger is no leak.
+bash -c 'sleep 3; :' ps-own-control own-argument-4711 &
+own=$!
+setsid -f bash -c 'sleep 3; :' ps-own-control foreign-argument-4711
+sleep 0.5
+seen="$("$PSOWN")"
+kill "$own"
+wait "$own" 2> /dev/null || true
+pkill -f foreign-argument-4711 || true
+grep -qF own-argument-4711 <<< "$seen" || fail "the list of the processes of the test does not show a process of the test"
+! grep -qF foreign-argument-4711 <<< "$seen" || fail "the list of the processes of the test shows a process of another job"
+echo "control: the list of processes holds those of the test and none of other jobs"
 
 # --- the trees ---------------------------------------------------------------------------------------
 # set_line FILE OLD NEW: replaces the line OLD, which must be there exactly once, by NEW.
