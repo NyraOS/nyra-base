@@ -470,6 +470,58 @@ prompt_only() { # prompt_only: the last `nyra update` showed the password prompt
 		! said 'Authenticating as'
 }
 
+login_hint() { # login_hint USER: USER logs in with a login shell on a terminal (what a console login or an ssh
+	# session without a command is: the shell is started with a leading "-" in its name, as login does, so it reads
+	# /etc/profile), and leaves it at once; what was printed is in /var/tmp/login-hint.out. Nothing here waits for
+	# anything for more than 40 seconds.
+	# shellcheck disable=SC2016 # the quoted script is Python
+	python3 -I -c 'import os, pty, pwd, select, signal, sys, time
+user = sys.argv[1]
+pw = pwd.getpwnam(user)
+pid, fd = pty.fork()
+if pid == 0:
+    os.initgroups(user, pw.pw_gid)
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.chdir(pw.pw_dir)
+    env = {"HOME": pw.pw_dir, "USER": user, "LOGNAME": user, "SHELL": pw.pw_shell, "TERM": "dumb",
+           "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    os.execve(pw.pw_shell, ["-" + os.path.basename(pw.pw_shell)], env)
+out, start, sent = b"", time.time(), False
+while time.time() - start < 40:
+    if not sent and time.time() - start > 3:  # the profile has run when the first prompt is there
+        os.write(fd, b"exit\n")
+        sent = True
+    if not select.select([fd], [], [], 0.5)[0]:
+        continue
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+try:
+    os.kill(pid, signal.SIGKILL)
+except ProcessLookupError:
+    pass
+os.waitpid(pid, 0)
+sys.stdout.buffer.write(out)' "$1" >/var/tmp/login-hint.out
+	echo "--- login of $1:"
+	cat /var/tmp/login-hint.out
+}
+
+HINT_AGAIN='Run `nyra update` to prepare it again; the files already downloaded are reused.' # the sentence, in one place
+
+hint_shown() { # hint_shown VERSION: the last login_hint told the administrator about VERSION, in these words
+	grep -qF -- "Version $1 was prepared, but the update was not finished." /var/tmp/login-hint.out &&
+		grep -qF -- "$HINT_AGAIN" /var/tmp/login-hint.out
+}
+
+hint_silent() { # the last login_hint printed nothing about an update, and no error
+	! grep -qE 'was prepared|nyra update|rror|No such file|denied' /var/tmp/login-hint.out
+}
+
 nyra_update_refused() { # nyra_update_refused: `nyra update` does nothing for what is not an administrator at a terminal
 	nyra_update_session vmuser n 1 && said 'Only an administrator can update the system.' || return 1
 	# In an administrator's session, but without a terminal: no question could be asked.

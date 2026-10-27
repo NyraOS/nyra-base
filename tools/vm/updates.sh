@@ -23,11 +23,12 @@
 #      a user who is not an administrator and without a terminal; switch to v0 from another registry
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
 #   3  v1: a sheet signed with another key refused; `install` refuses the stand-in policy; power cut while v2 downloads (throttled link)
-#   4  v1: v2 staged again; power cut before the staged version is finalized
-#   5  v1: v2 staged again, after a copy of /etc (nyra-updated makes one before it stages); clean
-#      shutdown
+#   4  v1: v2 staged again (the registry's bytes are counted); power cut before the staged version is finalized
+#   5  v1: the login tells an administrator that v2 was prepared, not a standard user; v2 staged again, after a
+#      copy of /etc (nyra-updated makes one before it stages), with the registry's bytes counted: far fewer
+#      than the first time; a login while it is staged says nothing; clean shutdown
 #   6  power cut when v2's kernel starts (first try)
-#   7  v2, second try, blessed; `nyra update` as an administrator without journal access (up to date,
+#   7  v2, second try, blessed; no login message, and the next check removes the record of v2; `nyra update` as an administrator without journal access (up to date,
 #      a halted or unverifiable sheet refused, the question declined, the install refused by the stand-in
 #      policy with its reason shown and the stage the install had reached; a stand-in install that
 #      takes a while: its stages and the time shown, Ctrl+C stopping only the waiting, the next run
@@ -394,22 +395,62 @@ vm "v1: wrong sheet key; power cut ${cut} s into the download of v2" --power-cut
   --command "$lib; select_sheet s1 && systemctl start --no-block nyra-updated.service && sleep $cut && systemctl is-active nyra-updated.service | grep -x activating && expect staged none && echo POWER''CUT"
 sudo tc qdisc del dev lo root
 
+# What the registry sends to the guest, counted by the same traffic filter as the throttle above (the
+# registry's answers are the packets from port 80 on lo), without limiting the rate. The two boots below
+# stage v2 twice: the first time after the cut of boot 3 left only a small part of it (at most about 3 MB
+# at 2 Mbit/s), the second after the cut of boot 4, which kept what was pulled.
+sudo tc qdisc add dev lo root handle 1: htb default 10
+sudo tc class add dev lo parent 1: classid 1:10 htb rate 10gbit
+sudo tc class add dev lo parent 1: classid 1:20 htb rate 10gbit
+sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport 80 0xffff flowid 1:20
+registry_bytes() { # bytes sent by the registry since the counter was added
+  sudo tc -s class show dev lo | awk '$1 == "class" && $3 == "1:20" { f = 1; next } f && $1 == "Sent" { print $2; exit }'
+}
+bytes0="$(registry_bytes)"
+echo "registry bytes before boot 4: $bytes0"
+
 vm "v1 after the power cut: v2 staged again; power cut before finalization" --power-cut-at POWERCUT \
   --command "$lib; expect booted $d1 && running && expect staged none" \
   --command "$lib; outcome s1 Staged && expect staged $d2 && expect_version staged 2026.10.2 && expect rollback $d0" \
   --command 'bootc status --format json' \
   --command 'echo POWER''CUT'
+bytes1="$(registry_bytes)"
 
-vm "v1 after the power cut: v2 staged again, after a copy of /etc" --poweroff \
-  --command "$lib; expect booted $d1 && running && expect staged none" \
-  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\""
+# The hard reset of boot 4 lost the staged deployment; the version that was prepared is still on record,
+# and the administrator is told at the login, a standard user is not. The login cannot look at bootc's
+# marker of a staged deployment (the directory is root's, 0700), so the file of nyra-updated names the
+# boot that staged the version instead.
+vm "v1 after the power cut: the login says v2 was prepared; v2 staged again (what it downloads is counted), after a copy of /etc" --poweroff \
+  --command "$lib; expect booted $d1 && running && expect staged none && ! test -e /run/composefs/staged-deployment" \
+  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" != \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(stat -c '%a %U' /var/lib/nyra-updated /var/lib/nyra-updated/staged-version | tr '\n' ' ')\" = '711 root 644 root ' && test \"\$(stat -c %a /var/lib/nyra-updated/state.json)\" = 600 && ls -l /var/lib/nyra-updated && test -z \"\$(find /var/lib/nyra-updated -type f ! -name staged-version ! -perm 600)\" && login_hint vmadmin && hint_shown 2026.10.2 && login_hint vmuser && hint_silent" \
+  --command "$lib; n=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$'); outcome s1 Staged && expect staged $d2 && m=\$(ls /var/lib/nyra/etc-copies | grep -c -- '-update\$') && echo \"copies of /etc made before an update: \$n, then \$m\" && test \"\$m\" -gt \"\$n\" && c=\$(ls /var/lib/nyra/etc-copies | grep -- '-update\$' | tail -n 1) && test -f /var/lib/nyra/etc-copies/\$c/removed && echo \"\$c: the format with the list of what was removed\"" \
+  --command "$lib; ls -la /run/composefs; test \"\$(sed -n 2p /var/lib/nyra-updated/staged-version)\" = \"\$(cat /proc/sys/kernel/random/boot_id)\" && test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent"
+bytes2="$(registry_bytes)"
+sudo tc qdisc del dev lo root
+
+# v2 carries 16 MiB that do not compress, so pulling it for the first time costs more than that. Staging
+# it again after a cut must not pull it again: bootc keeps the layers it fetched (/sysroot/composefs).
+# What `nyra update` and the login message say about the second staging is judged by this.
+first=$((bytes1 - bytes0)) again=$((bytes2 - bytes1))
+echo "registry bytes sent to the guest: staging v2 after the cut of boot 3: $first, staging it again after the cut of boot 4: $again"
+{
+  echo
+  echo "Staging v2 again after a power cut: the registry sent $again bytes (the first staging: $first bytes; the image of v2 adds 16 MiB that do not compress)"
+} >>"$summary"
+# The result is judged at the end, so that the boots after it still run and show what else is wrong.
+measure_failed=
+[ "$first" -gt $((12 * 1024 * 1024)) ] ||
+  { echo "::error::the counter saw only $first bytes while v2 was pulled: it does not measure the registry"; measure_failed=1; }
+[ "$again" -lt $((first / 20)) ] ||
+  { echo "::error::staging v2 again after a power cut downloaded $again bytes of $first: not what the messages say"; measure_failed=1; }
 
 vm "power cut when v2's kernel starts" --power-cut-at 'Linux version'
 
 vm "v2, second try: blessed; v4 staged, retracted, discarded" --poweroff \
   --command "$lib; expect booted $d2 && running && blessed" \
   --command 'journalctl -b -u systemd-bless-boot -o cat --no-pager' \
-  --command "$lib; outcome s1 UpToDate && nyra_update_session vmadmin y 0 && said 'The system is up to date. Version 2026.10.2 is installed.'" \
+  --command "$lib; test \"\$(head -n 1 /var/lib/nyra-updated/staged-version)\" = 2026.10.2 && login_hint vmadmin && hint_silent" \
+  --command "$lib; outcome s1 UpToDate && ! test -e /var/lib/nyra-updated/staged-version && nyra_update_session vmadmin y 0 && said 'The system is up to date. Version 2026.10.2 is installed.'" \
   --command "$lib; select_sheet halted && nyra_update_session vmadmin y 1 && said 'Updates are paused.' && select_sheet wrong && nyra_update_session vmadmin y 1 && said 'The update information could not be verified.' && expect staged none" \
   --command "$lib; select_sheet s2 && nyra_update_session vmadmin n 0 && said 'Version 2026.10.2 is installed. 2026.10.4 is available. Install it? [y/N]' && said 'Nothing was installed.' && expect staged none" \
   --command "$lib; nyra_update_session vmadmin y 1 wrong-password && said 'Nothing was installed: the password was not accepted' && expect staged none" \
@@ -705,3 +746,4 @@ vm "v13: a dead network, before a check and in the middle of the download of v17
   --command "$lib; expect staged none && expect booted $d13 && network up && curl -fsS https://updates.nyraos.com/_test/rate/0 && outcome s17 Staged && expect staged $d17 && running"
 vm "v17 boots counted and is blessed" --poweroff \
   --command "$lib; expect booted $d17 && running && blessed && outcome s17 UpToDate && expect staged none"
+[ -z "$measure_failed" ]

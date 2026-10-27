@@ -301,6 +301,15 @@ RUN grep -aqF /etc/wgetrc /usr/bin/wget && wget --version | grep -q -- -metalink
     test "$(grep -E '^[[:space:]]*htmlify[[:space:]]*=' /etc/wgetrc | tail -n 1 | tr -d '[:space:]')" = htmlify=off && \
     test "$(grep -Ev '^(#|[[:space:]]*$)' /etc/wgetrc | tr -d ' ' | paste -sd,)" = passive_ftp=on,htmlify=off
 
+# The message after a login that tells an administrator about a version that was prepared and lost to a
+# hard reset (docs/UPDATES.md, "After a hard reset"): the script is /usr/lib/nyra/profile.d/update-hint.sh,
+# linked from /etc/profile.d, whose *.sh files Debian's /etc/profile reads (run-parts) for every login
+# shell. The link keeps the content in /usr, so it updates with the image; a user who removes the link
+# only loses the message.
+RUN grep -q 'run-parts .*/etc/profile.d' /etc/profile && mkdir -p /etc/profile.d && \
+    ln -sfn /usr/lib/nyra/profile.d/update-hint.sh /etc/profile.d/update-hint.sh && \
+    test "$(readlink /etc/profile.d/update-hint.sh)" = /usr/lib/nyra/profile.d/update-hint.sh && test -r /etc/profile.d/update-hint.sh
+
 # Boot (docs/BOOT.md), on the ESP, where bootc does neither: at every boot the boot files (shim,
 # systemd-boot, MokManager; named and fallback copies), loader.conf (no command line editor) and the
 # "Nyra OS" firmware entry first in BootOrder; three boot tries for every newly staged version.

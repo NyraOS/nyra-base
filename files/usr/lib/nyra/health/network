@@ -20,6 +20,9 @@
 #                   there is none: the machine is offline), so a link the settings no longer give an
 #                   address (bridged, bonded, unmanaged) is not judged after the next check
 set -fu
+# The files in the state directory are root's alone (the directory can be entered by everybody, for
+# staged-version only): the empty markers and the record are made 0600 like the ones nyra-updated writes.
+umask 077
 dir=/var/lib/nyra-updated
 record="$dir/network-links"
 # network-failed: this check failed a trial boot, so the next boot is judged too. network-fallback:

@@ -69,6 +69,8 @@ check_shellcheck() {
   local scripts
   mapfile -t scripts < <(git ls-files | while read -r f; do
     [ -f "$f" ] && head -n 1 "$f" | grep -qE '^#!(/usr)?/bin/(env )?(ba|da)?sh( |$)' && echo "$f"; done)
+  # Read by login shells, not run: no first line to find it by (its own directive says sh).
+  scripts+=(files/usr/lib/nyra/profile.d/update-hint.sh)
   if [ -n "$IN_CI" ]; then printf '%s\n' "${scripts[@]}"; else echo "${#scripts[@]} scripts"; fi
   if [ -n "$IN_CI" ] || shellcheck --version 2>/dev/null | grep -qx "version: $SHELLCHECK_VERSION"; then
     shellcheck --version
@@ -210,6 +212,7 @@ check security-defaults "Self-test of the secure-defaults guest commands (tools/
 check etc-copy "The copies of /etc, their restore, and which a run removes (tools/vm/test-etc-copy.sh)" check_etc_copy
 check first-admin "The first administrator: the account, the refusals, the fixed defaults (tools/vm/test-first-admin.sh)" check_first_admin
 check nyra-update "Offline test of the waiting part of nyra update (tools/vm/test-nyra-update.sh)" "tools/vm/test-nyra-update.sh"
+check update-hint "Offline test of the message after a login about a version lost to a hard reset (tools/vm/test-update-hint.sh)" "tools/vm/test-update-hint.sh"
 check reserved-names "Offline test of the list of reserved names for the release tree (tools/install/test-reserved-names.sh)" "tools/install/test-reserved-names.sh"
 check network-health "Offline test of the network health check (tools/vm/test-network-health.sh)" "tools/vm/test-network-health.sh"
 check vm-boot "Self-test of the console matching (tools/vm/vm-boot.py)" "python3 -I tools/vm/vm-boot.py --self-test"

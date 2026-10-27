@@ -94,12 +94,16 @@ test ! -e "$t/var/network-fallback" && echo "ok: a trial boot that passes asks f
   { echo "FAILED: network-fallback on a trial boot"; fails=$((fails + 1)); }
 check "trial: carrier, no address" 1 'no routable address after 3 s.*enp1s0 \(degraded configured\)' LINKS="$(links enp1s0:degraded:configured)"
 test -e "$t/var/network-failed" && echo "ok: the next boot judges too" || { echo "FAILED: no marker"; fails=$((fails + 1)); }
+test "$(stat -c %a "$t/var/network-failed")" = 600 && echo "ok: the marker is root's alone" ||
+  { echo "FAILED: the marker is not 0600 (the state directory can be entered by everybody)"; fails=$((fails + 1)); }
 check "trial: not managed any more" 1 'enp1s0 \(off unmanaged\)' LINKS="$(links enp1s0:off:unmanaged)"
 rm "$t/counted"
 check "after the fallback: an address" 0 'a routable address as before' LINKS="$up"
 test ! -e "$t/var/network-failed" && echo "ok: marker gone" || { echo "FAILED: marker left"; fails=$((fails + 1)); }
 test -e "$t/var/network-fallback" && echo "ok: the fallback was the network check's alone (nyra-updated tries again)" ||
   { echo "FAILED: no network-fallback"; fails=$((fails + 1)); }
+test "$(stat -c %a "$t/var/network-fallback")" = 600 && echo "ok: network-fallback is root's alone" ||
+  { echo "FAILED: network-fallback is not 0600"; fails=$((fails + 1)); }
 rm "$t/var/network-fallback"
 check "after the fallback, without the marker" 0 '^$' LINKS="$(links enp1s0:degraded:configured)"
 touch "$t/counted"
