@@ -93,6 +93,31 @@ RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmp
     CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/sha1-*/ && [ $# = 1 ] && \
     cp LICENSE target/doc/LICENSE
 
+# The terminal editor (docs/DEFAULTS.md, "Terminal editor"), nyra-editor from NyraOS/editor at the
+# commit pinned in editor/commit, built like pam-totp: the source cloned from the repository
+# ci/build-image.sh fetched, checked out by that commit; its Cargo.lock must be the copy in editor/
+# (the SBOM's), its crates are checked against it and the build has no network. Why a pinned commit
+# and --locked: administrators run this program as root on the system's files, so what goes into the
+# image must be exactly the reviewed source and the crates the SBOM lists, never a newer commit or a
+# crate version cargo picked by itself. The release build must not have the test-only switch that
+# reads the system nanorc from NYRA_EDITOR_SYSCONFDIR. Its licence and the licence notices of every
+# crate in the program go to target/doc (ci/crate-licenses.sh).
+FROM ${TOOLS} AS editor
+RUN --network=none --mount=type=bind,from=crates,target=/crates --mount=type=tmpfs,dst=/root \
+    --mount=type=bind,source=editor,target=/pin \
+    --mount=type=bind,source=ci/vendor-crates.sh,target=/vendor-crates.sh \
+    --mount=type=bind,source=ci/crate-licenses.sh,target=/crate-licenses.sh \
+    commit="$(cat /pin/commit)" && echo "$commit" | grep -Eqx '[0-9a-f]{40}' && \
+    git -c safe.directory='*' -c transfer.fsckObjects=true clone -q --no-local --no-checkout /crates/editor.git /src && \
+    git -C /src -c advice.detachedHead=false checkout -q "$commit" && test "$(git -C /src rev-parse HEAD)" = "$commit" && \
+    rm -rf /src/.git && cmp /src/Cargo.lock /pin/Cargo.lock && \
+    sh /vendor-crates.sh /src/Cargo.lock && \
+    cd /src && CARGO_NET_OFFLINE=true cargo build --release --locked && \
+    strip target/release/nyra-editor && ! grep -aq NYRA_EDITOR_SYSCONFDIR target/release/nyra-editor && \
+    target/release/nyra-editor --version | grep -q '^Editor .* (nyra-editor), ' && \
+    CARGO_NET_OFFLINE=true sh /crate-licenses.sh target/doc/third-party && set -- target/doc/third-party/ropey-*/ && [ $# = 1 ] && \
+    cp LICENSE target/doc/LICENSE
+
 FROM ${ROOTFS} AS base
 
 # bootc expects the kernel next to its modules.
@@ -131,7 +156,11 @@ RUN systemd-hwdb update --usr && test -s /usr/lib/udev/hwdb.bin && test ! -e /et
 
 # su from sudo-rs (docs/DEFAULTS.md, "su") in place of util-linux's, setuid root like it (its package
 # script set the mode). Nothing else of sudo-rs stays: no sudo, sudoedit or visudo on the desktop.
+# Without an editor in SUDO_EDITOR, VISUAL or EDITOR, sudo-rs's sudoedit runs the first of
+# /usr/bin/editor, /usr/bin/nano and /usr/bin/vi: a layer that brings it back gets the terminal
+# editor below, and the build fails when sudo-rs's list changes.
 RUN test "$(stat -c '%a %U %G' /usr/lib/cargo/bin/su)" = '4755 root root' && test -f /etc/pam.d/su && \
+    grep -aqF /usr/bin/editor:/usr/bin/nano:/usr/bin/vi /usr/lib/cargo/bin/sudo && \
     mv -f /usr/lib/cargo/bin/su /usr/bin/su && \
     rm /usr/lib/cargo/bin/sudo /usr/lib/cargo/bin/visudo /usr/bin/su-rs /usr/bin/sudo-rs /usr/bin/sudoedit-rs \
       /usr/bin/visudo-rs && rmdir /etc/sudoers.d && \
@@ -256,8 +285,33 @@ RUN --mount=type=tmpfs,dst=/run --mount=type=tmpfs,dst=/tmp \
     f=/usr/lib/tmpfiles.d/openssh-client.conf && grep -qx 'z /usr/bin/ssh-agent 2755 root _ssh' "$f" && \
     sed -i '\|^z /usr/bin/ssh-agent |d' "$f" && ! grep -q ssh-agent "$f"
 
+# The terminal editor (docs/DEFAULTS.md, "Terminal editor"): /usr/libexec/nyra-editor, and the
+# command editor as Debian's alternative for it (/usr/bin/editor -> /etc/alternatives/editor), so a
+# layer that installs another editor can take its place the Debian way. update-alternatives keeps its
+# records and log out of the image (a tmpfs and /dev/null): the image has no dpkg database, and the
+# log holds the build's wall-clock time (docs/LESSONS.md). No nano and no edit command (edit is
+# Debian's mailcap's). EDITOR and VISUAL are "editor" for every PAM session: /etc/environment, which
+# pam_env reads in the stacks of login, su, su-l and sshd, is a link to /usr/lib/nyra/environment, so it
+# follows the image (an administrator who replaces the link keeps their own); Debian's file is empty.
+# sudo-rs's sudoedit, when a layer brings it back (docs/DEFAULTS.md, "su"), takes SUDO_EDITOR, VISUAL
+# or EDITOR, and without them /usr/bin/editor first (checked above, before its removal).
+COPY --from=editor /src/target/release/nyra-editor /usr/libexec/nyra-editor
+COPY --from=editor /src/Cargo.lock /src/target/doc/ /usr/share/doc/nyra-editor/
+RUN --mount=type=tmpfs,dst=/tmp \
+    chmod 0755 /usr/libexec/nyra-editor && ! test -e /usr/bin/editor && ! test -e /etc/alternatives/editor && \
+    update-alternatives --admindir /tmp --log /dev/null --install /usr/bin/editor editor /usr/libexec/nyra-editor 50 && \
+    test "$(readlink /usr/bin/editor)" = /etc/alternatives/editor && \
+    test "$(readlink /etc/alternatives/editor)" = /usr/libexec/nyra-editor && \
+    editor --version | grep -q '^Editor .* (nyra-editor), ' && \
+    { ! test -e /etc/environment || test -z "$(grep -Ev '^[[:space:]]*(#|$)' /etc/environment)"; } && \
+    ln -sfn /usr/lib/nyra/environment /etc/environment && test -r /etc/environment && \
+    test "$(grep -Ev '^(#|$)' /etc/environment | paste -sd,)" = EDITOR=editor,VISUAL=editor && \
+    for f in /etc/pam.d/login /etc/pam.d/su /etc/pam.d/su-l /usr/lib/nyra/pam.d/sshd; do \
+      grep -Eq '^session[[:space:]]+required[[:space:]]+pam_env\.so([[:space:]]+readenv=1)?([[:space:]]+#.*)?$' "$f" || \
+        { echo "$f: no pam_env line that reads /etc/environment" >&2; exit 1; }; done
+
 # A Rust program's Cargo.lock and licence notices must not drop out of the image silently.
-RUN for p in ntpd-rs nyra-updated nyra-zlib pam-totp; do \
+RUN for p in ntpd-rs nyra-editor nyra-updated nyra-zlib pam-totp; do \
       test -s /usr/share/doc/$p/Cargo.lock && test -n "$(ls -A /usr/share/doc/$p/third-party)" || exit 1; \
     done
 

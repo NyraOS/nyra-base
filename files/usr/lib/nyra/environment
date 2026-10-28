@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nyra: the system's environment (docs/DEFAULTS.md, "Terminal editor"), linked from /etc/environment,
+# which pam_env reads in the PAM stacks of login, su, su-l and sshd (console and SSH logins, su),
+# so it updates with the image. EDITOR and VISUAL name the terminal editor for the programs that start
+# one (git, crontab -e, systemctl edit, sudoedit); a user's own setting in a shell file wins.
+EDITOR=editor
+VISUAL=editor

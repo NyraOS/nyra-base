@@ -4,7 +4,7 @@
 #   snapshot -> bootc layer (Containerfile) -> sealed UKI, signed with a key made for the run
 #   (ci/build-image.sh, docs/BOOT.md) -> `bootc container lint --fatal-warnings`.
 # Artifacts: the image as an oci-archive and the SBOM (CycloneDX, from the mkosi package list and
-# the Cargo.lock of bootc, zlib-rs, ntpd-rs and pam-totp) with its vulnerability report; known critical or high
+# the Cargo.lock of bootc, zlib-rs, ntpd-rs, pam-totp and the editor) with its vulnerability report; known critical or high
 # vulnerabilities without a documented mitigation are reported as a warning and do not fail the build until the
 # first public release (SBOM_VULNERABILITIES below; sbom-watch.yml fails weekly instead, docs/SBOM.md). Nothing is pushed
 # to a public registry; the `publish` job (off unless enabled, docs/SIGNING.md) publishes to the
@@ -434,6 +434,7 @@ jobs:
           cp zlib/Cargo.lock dist/nyra-zlib.Cargo.lock
           cp ntpd-rs/Cargo.lock dist/nyra-ntpd.Cargo.lock
           cp pam-totp/Cargo.lock dist/pam-totp.Cargo.lock
+          cp editor/Cargo.lock dist/nyra-editor.Cargo.lock
           sudo chown -R "$(id -u):$(id -g)" dist
           m=dist/nyra-base.manifest.json
           {
@@ -444,8 +445,9 @@ jobs:
             echo "| Debian snapshot | \`$SNAPSHOT\` (unstable) |"
             echo "| bootc | $BOOTC_REF (\`$BOOTC_COMMIT\`) |"
             echo "| pam-totp | \`$(cat pam-totp/commit)\` |"
+            echo "| editor | \`$(cat editor/commit)\` |"
             echo "| Kernel | linux-image-amd64 $(jq -r '.packages[] | select(.name == "linux-image-amd64") | .version' "$m") |"
-            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs, $(grep -c '^source = ' dist/nyra-ntpd.Cargo.lock) in ntpd-rs, $(grep -c '^source = ' dist/pam-totp.Cargo.lock) in pam-totp |"
+            echo "| Packages (SBOM) | $(jq '.packages | length' "$m") Debian packages, $(grep -c '^\[\[package\]\]' dist/bootc-*.Cargo.lock) Rust crates in bootc, $(grep -c '^source = ' dist/nyra-zlib.Cargo.lock) in zlib-rs, $(grep -c '^source = ' dist/nyra-ntpd.Cargo.lock) in ntpd-rs, $(grep -c '^source = ' dist/pam-totp.Cargo.lock) in pam-totp, $(grep -c '^source = ' dist/nyra-editor.Cargo.lock) in the editor |"
             echo "| Image | $(sudo podman image inspect -f '{{.Id}}' localhost/nyra-base:ci | cut -c1-12), $(du -h dist/nyra-base.oci.tar | cut -f1) oci-archive |"
             echo
             echo "\`bootc container lint --fatal-warnings\`"
@@ -516,7 +518,7 @@ jobs:
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/test_sbom.py
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$SBOM_VULNERABILITIES" dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json dist/nyra-zlib.Cargo.lock dist/nyra-ntpd.Cargo.lock \
-            dist/pam-totp.Cargo.lock \
+            dist/pam-totp.Cargo.lock dist/nyra-editor.Cargo.lock \
             | tee dist/nyra-base.vulnerabilities.md >> "$GITHUB_STEP_SUMMARY"
           echo "sbom_sha256=$(sha256sum < dist/nyra-base.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -535,6 +537,7 @@ jobs:
             dist/nyra-zlib.Cargo.lock
             dist/nyra-ntpd.Cargo.lock
             dist/pam-totp.Cargo.lock
+            dist/nyra-editor.Cargo.lock
           retention-days: 90
 
   # A change only in tools/sbom/ (scanner, mitigations): the offline tests, then the scan with this
@@ -583,10 +586,10 @@ jobs:
             echo "Scan skipped: the last image built on main used Snapshot=$old, not the one of this checkout, so its package list is outdated. The offline tests passed; the build that moved Snapshot= scans the new one." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # zlib/, ntpd-rs/ and pam-totp/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
+          # zlib/, ntpd-rs/, pam-totp/ and editor/Cargo.lock from this checkout: a change to one is an image change, which builds instead.
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py "--vulnerabilities=$SBOM_VULNERABILITIES" dist/nyra-base.manifest.json \
             "dist/bootc-$BOOTC_REF-$BOOTC_COMMIT.Cargo.lock" dist/nyra-base.cdx.json zlib/Cargo.lock ntpd-rs/Cargo.lock \
-            pam-totp/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
+            pam-totp/Cargo.lock editor/Cargo.lock >> "$GITHUB_STEP_SUMMARY"
 
   # Installs the image from the oci-archive artifact the way a user's disk gets it
   # (bootc install to-disk, composefs backend, systemd-boot, then esp-sync install for the boot
@@ -610,7 +613,7 @@ jobs:
   # no older boot loader over a newer one, a newer one only after the version is blessed, nothing
   # written to the ESP when its file system check fails), and
   # tools/vm/recovery.sh (the UKI's signed "Nyra OS Recovery" profile boots under Secure Boot and asks
-  # for an administrator's password; a wrong one gives no shell), and tools/vm/reset-settings.sh (the
+  # for an administrator's password; a wrong one gives no shell; the terminal editor starts there), and tools/vm/reset-settings.sh (the
   # "Nyra OS Reset settings" profile brings /etc back to the image's, keeps accounts, /home, machine ID
   # and host name, and leaves /etc whole across power cuts).
   # Finding the root partition (docs/BOOT.md): tools/vm/boot-repeat.sh's checks, without its repeated
@@ -619,6 +622,7 @@ jobs:
   # Secure defaults (docs/DEFAULTS.md), one more boot of the installed disk in snapshot
   # mode: tools/vm/security-defaults.sh (AppArmor, lockdown, firewall, listening sockets, signature
   # policy, filesystem autoload).
+  # The terminal editor (docs/DEFAULTS.md), one more boot in snapshot mode: tools/vm/editor.sh.
   # Security: this job runs images built from pull requests with --privileged and
   # /dev mounted, so it must stay on ephemeral GitHub-hosted runners; never run it on
   # self-hosted runners for pull_request events.
@@ -752,6 +756,14 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 15
         run: tools/vm/ssh-2fa.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
+
+      # The terminal editor (docs/DEFAULTS.md, "Terminal editor"): the editor command and its
+      # alternatives link, EDITOR and VISUAL for root and a user, and a file opened, changed and
+      # written on a pseudo-terminal, as root and as a user (tools/vm/editor.sh).
+      - name: Terminal editor (docs/DEFAULTS.md)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 15
+        run: tools/vm/editor.sh "$WORK/disk.qcow2" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
       - name: Without a network (docs/DEFAULTS.md)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

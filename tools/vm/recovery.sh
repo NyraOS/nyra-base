@@ -10,7 +10,8 @@
 #      only (bootctl set-oneshot);
 #   2. the recovery entry boots profile 1 under Secure Boot and asks for an administrator: an
 #      administrator with an empty password and a plain user are refused without a password prompt,
-#      a wrong password gives no shell, the right one gives a root shell in rescue.target.
+#      a wrong password gives no shell, the right one gives a root shell in rescue.target, where the
+#      terminal editor starts (docs/DEFAULTS.md, "Terminal editor").
 # The test console add-on that tools/vm/test-console.sh put on the disk is replaced by one signed
 # with a key made here and enrolled as a MOK ("local"; it lives only in WORKDIR and is deleted at the
 # end). The passwords are random, for this throwaway disk only.
@@ -88,4 +89,5 @@ vm --log "$logs/serial-recovery-2.log" \
   --command "e=\"\$($(efivar LoaderEntrySelected))\"; p=\"\$($(efivar StubProfile))\"; echo \"entry: \$e, profile: \$p\"; test \"\$e\" = nyra-recovery.conf && test \"\$p\" = 1" \
   --command 'cat /proc/cmdline; grep -q "systemd.unit=rescue.target" /proc/cmdline && grep -Eq "(^| )composefs=[0-9a-f]{128}( |$)" /proc/cmdline' \
   --command 'mokutil --sb-state; mokutil --sb-state | grep -qx "SecureBoot enabled"' \
-  --command 'systemctl is-active rescue.target'
+  --command 'systemctl is-active rescue.target' \
+  --command 'v="$(editor --version)" && echo "$v" && case "$v" in "Editor "*" (nyra-editor), "*) ;; *) false ;; esac && test "$(readlink -f /usr/bin/editor)" = /usr/libexec/nyra-editor && echo "the terminal editor starts in the recovery shell"'

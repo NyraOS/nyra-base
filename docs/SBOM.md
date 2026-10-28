@@ -52,8 +52,9 @@ artifact:
 | `nyra-zlib.Cargo.lock` | the Rust crates compiled into the image's zlib (zlib-rs, docs/DEFAULTS.md) |
 | `nyra-ntpd.Cargo.lock` | the Rust crates compiled into the time client (ntpd-rs, docs/DEFAULTS.md) |
 | `pam-totp.Cargo.lock` | the Rust crates compiled into the SSH two-step authentication (pam-totp, docs/DEFAULTS.md "SSH") |
+| `nyra-editor.Cargo.lock` | the Rust crates of the terminal editor (nyra-editor, docs/DEFAULTS.md "Terminal editor") |
 
-The licence notices of each Rust program in the image (ntpd-rs, nyra-updated, nyra-zlib, pam-totp) are in
+The licence notices of each Rust program in the image (ntpd-rs, nyra-editor, nyra-updated, nyra-zlib, pam-totp) are in
 `/usr/share/doc/<program>/third-party/`, next to its `Cargo.lock`; the build fails if one is missing.
 
 Once images are published, releases will attach the SBOM next to the image.
@@ -76,9 +77,12 @@ Components:
 - bootc itself: `pkg:github/bootc-dev/bootc@<commit>`;
 - pam-totp itself (the SSH two-step authentication, built from its own repository at the commit in
   `pam-totp/commit`): `pkg:github/NyraOS/pam-totp@<commit>`;
-- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock`, `ntpd-rs/Cargo.lock` and
-  `pam-totp/Cargo.lock` (zlib-rs, ntpd-rs and pam-totp, which the image build compiles; the last is a
-  copy of pam-totp's own, and the build fails when they differ): `pkg:cargo/<name>@<version>` (git sources add
+- the terminal editor itself (built from its own repository at the commit in `editor/commit`):
+  `pkg:github/NyraOS/editor@<commit>`;
+- one per crate in bootc's `Cargo.lock`, `zlib/Cargo.lock`, `ntpd-rs/Cargo.lock`,
+  `pam-totp/Cargo.lock` and `editor/Cargo.lock` (zlib-rs, ntpd-rs, pam-totp and the editor, which the
+  image build compiles; the last two are copies of the projects' own, and the build fails when they
+  differ; they also list the crates of their tests, which the image does not have): `pkg:cargo/<name>@<version>` (git sources add
   `vcs_url`); a crate in several counts once. ntpd-rs's crates `ntpd` and `ntp-proto` are listed at
   their upstream version; the image's `ntp-proto` carries our patch
   (`patches/upstream/ntpd-rs-wrong-clock.md`).

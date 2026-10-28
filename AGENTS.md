@@ -13,7 +13,7 @@ Guide for coding agents and people working in this repository. The rules in full
 3. `files/usr/`: what is copied into the image. Configuration goes in `/usr`, never in `/etc`.
 4. `ci/`: scripts and checks CI runs (`ci/precheck.sh` is the list of offline checks).
 5. `tools/`: `vm/` (guest and VM tests), `install/` (installer script), `signing/`, `titanic/`, `sbom/`, `iso/`, `hooks/`.
-6. `updated/`: `nyra-updated`, the update daemon (Rust). `ntpd-rs/`, `zlib/`, `pam-totp/`: other projects built into the image, pinned. `patches/upstream/`: our patches to other projects.
+6. `updated/`: `nyra-updated`, the update daemon (Rust). `ntpd-rs/`, `zlib/`, `pam-totp/`, `editor/`: other projects built into the image, pinned. `patches/upstream/`: our patches to other projects.
 7. `.github/workflows/`: what runs where.
 
 ## Build, test, lint

@@ -614,6 +614,42 @@ now reads the first five bytes (`od -N5`) and takes the fifth, which both do the
 The time client is ntpd-rs, built in the image build from its crates with our patch for a clock
 that is far off; see "Time".
 
+### Terminal editor
+
+The terminal editor is [NyraOS/editor](https://github.com/NyraOS/editor) (MIT), a nano-compatible
+editor written from scratch in Rust, the same in every edition: the command `editor`. GNU nano is not
+in the base, and nothing named `nano` or `edit` leads to the editor (`edit` belongs to Debian's
+`mailcap`).
+
+- **Built from a pinned commit.** `editor/commit` names the commit and `editor/Cargo.lock` is a copy
+  of its `Cargo.lock`, as for pam-totp: `ci/build-image.sh` fetches only that commit and its crates,
+  the Containerfile checks the source against the commit and the crates against the lock, and builds
+  without network (`cargo build --release --locked`). Administrators run the editor as root on the
+  system's files, so only the reviewed source and the crates the SBOM lists may go into it. The build
+  fails if the binary has the test-only switch that reads the system nanorc from another directory.
+  Moving to a newer commit is a pull request that changes both files.
+- **Where.** The program is `/usr/libexec/nyra-editor`; `/usr/bin/editor` is Debian's alternatives
+  link to it (`/usr/bin/editor` -> `/etc/alternatives/editor` -> `/usr/libexec/nyra-editor`), set
+  with `update-alternatives` in the image build, so a layer that installs another editor can take
+  the name the Debian way. Like `awk` (docs/LESSONS.md), the command needs that link in `/etc`: with
+  `/etc` emptied, `/usr/libexec/nyra-editor` still runs. Its `Cargo.lock` and licence notices are in
+  `/usr/share/doc/nyra-editor/`. It reads its settings from `/usr/share/nyra-editor/nanorc` (not
+  shipped yet), `/etc/nanorc` and the user's nanorc.
+- **EDITOR and VISUAL** are `editor`: `/etc/environment`, which `pam_env` reads, is a link to
+  `/usr/lib/nyra/environment`, so it follows the image. The build fails unless the PAM stacks of
+  `login`, `su`, `su-l` and `sshd` read it (console and SSH logins, `su`); a layer with a graphical
+  login must read it in that login's stack too. A user's own value in a shell file wins.
+- **sudoedit** is not in the base (see "su"). sudo-rs's `sudoedit` takes `SUDO_EDITOR`, `VISUAL` or
+  `EDITOR`, and without them the first of `/usr/bin/editor`, `/usr/bin/nano` and `/usr/bin/vi`, so a
+  layer that brings it back gets this editor; the build fails when sudo-rs's list changes.
+- **Recovery.** The recovery shell (docs/BOOT.md, "Recovery") runs it like any other command.
+
+Checked in a VM (`tools/vm/editor.sh`, the `Terminal editor` step of `install-boot-system`): `editor
+--version` and the links; EDITOR and VISUAL in root's console login and in a user's login; on a
+pseudo-terminal, a file in `/etc` as root and one in the home directory as a user is opened, changed,
+written with ^O and the editor ended with ^X, with the new text, the same owner and mode, and no lock
+file left. `tools/vm/recovery.sh` runs `editor --version` in the recovery shell.
+
 ### What stays Debian's
 
 | Component | Why it is not replaced (yet) |

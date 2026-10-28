@@ -83,8 +83,9 @@ jobs:
             mkdir -p "$RUNNER_TEMP/$kind"
             unzip -q -o "$zip" "$@" -d "$RUNNER_TEMP/$kind"
           }
-          fetch image "$image" 'nyra-base\.(cdx|manifest)\.json|nyra-base\.vulnerabilities\.md|bootc-[A-Za-z0-9._-]+-[0-9a-f]{40}\.Cargo\.lock|nyra-(zlib|ntpd)\.Cargo\.lock|pam-totp\.Cargo\.lock' \
-            nyra-base.manifest.json 'bootc-*.Cargo.lock' nyra-zlib.Cargo.lock nyra-ntpd.Cargo.lock pam-totp.Cargo.lock
+          fetch image "$image" 'nyra-base\.(cdx|manifest)\.json|nyra-base\.vulnerabilities\.md|bootc-[A-Za-z0-9._-]+-[0-9a-f]{40}\.Cargo\.lock|nyra-(zlib|ntpd|editor)\.Cargo\.lock|pam-totp\.Cargo\.lock' \
+            nyra-base.manifest.json 'bootc-*.Cargo.lock' nyra-zlib.Cargo.lock nyra-ntpd.Cargo.lock pam-totp.Cargo.lock \
+            nyra-editor.Cargo.lock
           fetch iso "$iso" 'manifest\.json|Cargo\.lock' manifest.json Cargo.lock
           echo "Scanning the inputs of run $run (commit $sha), with the scanner and exceptions of this checkout." >> "$GITHUB_STEP_SUMMARY"
 
@@ -103,6 +104,7 @@ jobs:
           export BOOTC_REF="${BASH_REMATCH[1]}" BOOTC_COMMIT="${BASH_REMATCH[2]}"
           "$RUNNER_TEMP/sbom-venv/bin/python" tools/sbom/sbom.py --vulnerabilities=block "$d/nyra-base.manifest.json" \
             "$lock" "$RUNNER_TEMP/nyra-base.cdx.json" "$d/nyra-zlib.Cargo.lock" "$d/nyra-ntpd.Cargo.lock" "$d/pam-totp.Cargo.lock" \
+            "$d/nyra-editor.Cargo.lock" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Also when the image scan failed (both reports are wanted), never after a failed download.
