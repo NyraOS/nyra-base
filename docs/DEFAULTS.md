@@ -635,10 +635,10 @@ in the base, and nothing named `nano` or `edit` leads to the editor (`edit` belo
   `/etc` emptied, `/usr/libexec/nyra-editor` still runs. Its `Cargo.lock` and licence notices are in
   `/usr/share/doc/nyra-editor/`. It reads its settings from `/usr/share/nyra-editor/nanorc` (not
   shipped yet), `/etc/nanorc` and the user's nanorc.
-- **EDITOR and VISUAL** are `editor` for every PAM session (console and SSH logins, `su`, the
-  desktop's login): `/etc/environment`, which `pam_env` reads, is a link to
+- **EDITOR and VISUAL** are `editor`: `/etc/environment`, which `pam_env` reads, is a link to
   `/usr/lib/nyra/environment`, so it follows the image. The build fails unless the PAM stacks of
-  `login`, `su` and `sshd` read it. A user's own value in a shell file wins.
+  `login`, `su`, `su-l` and `sshd` read it (console and SSH logins, `su`); a layer with a graphical
+  login must read it in that login's stack too. A user's own value in a shell file wins.
 - **sudoedit** is not in the base (see "su"). sudo-rs's `sudoedit` takes `SUDO_EDITOR`, `VISUAL` or
   `EDITOR`, and without them the first of `/usr/bin/editor`, `/usr/bin/nano` and `/usr/bin/vi`, so a
   layer that brings it back gets this editor; the build fails when sudo-rs's list changes.

@@ -21,6 +21,12 @@ Each line is something that broke or surprised us once.
   them. The final file system did not even contain them (bootc's layout removes `/var`), but the layer
   digest still changed. The image workflow builds a second time on `main` and compares the layers
   (`ci/check-reproducible.sh`), which lists the differing files when it fails.
+- **`update-alternatives` in a Containerfile step writes the same two files again.** Its log
+  (`/var/log/alternatives.log`, the wall-clock time) and its records (`/var/lib/dpkg/alternatives`)
+  would land in that layer, out of reach of mkosi's `RemoveFiles=`. The terminal editor's step runs it
+  with `--admindir` on a tmpfs and `--log /dev/null`: the layer gets only the two links
+  (`/usr/bin/editor`, `/etc/alternatives/editor`). The image has no dpkg database anyway, so the records
+  would be of no use on a machine.
 - **Two compiles of the same bootc commit must give the same binary.** They did not: zlink-macros 0.7.0
   (the varlink service macro behind cfsctl in bootc) emits the variants of a generated enum in `HashMap`
   order, and a proc macro's `HashMap` gets a new random seed in every compiler run, so the enum, and with
