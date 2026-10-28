@@ -76,11 +76,17 @@ class Pty:
         os.close(self.fd)
         return None
 
-    def show(self):
-        # A cursor movement to a line starts a new line here; the other escape sequences go.
+    def text(self):
+        """What the terminal showed, as lines: a cursor movement to a line starts a new line, the other
+        escape sequences go. Among them systemd's OSC 3008 context marks, which the shell writes before
+        every prompt and before a command's output, on the same line."""
         text = re.sub(r"\x1b\[[0-9;]*H", "\n", self.out.decode(errors="replace"))
+        text = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", text)
         text = re.sub(r"\x1b(\[[0-?]*[ -/]*[@-~]|[()][0-9A-Za-z]|[=>78])", "", text).replace("\r", "\n")
-        print("\n".join("  " + line.rstrip() for line in text.splitlines() if line.strip()))
+        return [line.rstrip() for line in text.splitlines()]
+
+    def show(self):
+        print("\n".join("  " + line for line in self.text() if line.strip()))
 
 
 def edit(user, path):
@@ -137,8 +143,8 @@ def login(user, password):
         p.until(rb"ENV-[a-z]+ [^\r\n]* -\r?\n")
     p.end()
     p.show()
-    line = f"ENV-{user} EDITOR=editor VISUAL=editor -"
-    return 0 if re.search(rb"^" + re.escape(line.encode()) + rb"\r?$", p.out, re.M) else 1
+    # The whole line, as the shell printed it (not the command typed, which has "$(id -un)").
+    return 0 if f"ENV-{user} EDITOR=editor VISUAL=editor -" in p.text() else 1
 
 
 def main(argv):
