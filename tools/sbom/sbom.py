@@ -20,7 +20,8 @@ unstable, arm64, from the arm64 Packages index), the packages iso/mkosi.conf lis
 name for the kernel (linux-image-arm64), and its own exceptions, tools/sbom/mitigations-iso-arm64.toml: the
 file of the x86_64 ISO never applies to it, nor this one to the x86_64 ISO or the image.
 Environment (not with --iso): BOOTC_REF, BOOTC_COMMIT. Snapshot and repositories come from mkosi/mkosi.conf, the
-commit of pam-totp (built into the image from its own repository) from pam-totp/commit.
+commits of pam-totp and the terminal editor (built into the image from their own repositories) from
+pam-totp/commit and editor/commit.
 
 Writes the SBOM, then prints a Markdown report and (in block mode) exits 1 if a vulnerability blocks the build:
 critical, high or unknown severity, not marked unimportant by Debian, and not listed in
@@ -51,6 +52,7 @@ MITIGATIONS = os.path.join(HERE, "mitigations.toml")
 MITIGATIONS_ISO = os.path.join(HERE, "mitigations-iso.toml")
 MITIGATIONS_ISO_ARM64 = os.path.join(HERE, "mitigations-iso-arm64.toml")
 PAM_TOTP_COMMIT = os.path.join(HERE, "..", "..", "pam-totp", "commit")
+EDITOR_COMMIT = os.path.join(HERE, "..", "..", "editor", "commit")
 INSTALLER_COMMIT = os.path.join(HERE, "..", "..", "iso", "installer-commit")
 ISO_MKOSI_CONF = os.path.join(HERE, "..", "..", "iso", "mkosi.conf")
 TRACKER = "https://security-tracker.debian.org/tracker/data/json"
@@ -329,10 +331,12 @@ def main():
         what = "nyra-installer"
     else:
         pam_totp_commit = commit_of(PAM_TOTP_COMMIT)
+        editor_commit = commit_of(EDITOR_COMMIT)
         applications = [("bootc", os.environ["BOOTC_REF"], f"pkg:github/bootc-dev/bootc@{os.environ['BOOTC_COMMIT']}"),
-                        ("pam-totp", pam_totp_commit, f"pkg:github/NyraOS/pam-totp@{pam_totp_commit}")]
+                        ("pam-totp", pam_totp_commit, f"pkg:github/NyraOS/pam-totp@{pam_totp_commit}"),
+                        ("nyra-editor", editor_commit, f"pkg:github/NyraOS/editor@{editor_commit}")]
         name, description = "nyra-base", "Nyra OS base image (desktop): Debian unstable snapshot {snapshot}, x86_64"
-        what = "bootc, pam-totp"
+        what = "bootc, pam-totp, nyra-editor"
     count = write_sbom(sbom_path, snapshot, debs, crates, applications, name, description)
     exceptions = (MITIGATIONS_ISO_ARM64 if arch == "arm64" else MITIGATIONS_ISO) if iso else MITIGATIONS
     mitigations = load_mitigations(today, exceptions)  # after the SBOM: an invalid file still blocks, but the SBOM is there

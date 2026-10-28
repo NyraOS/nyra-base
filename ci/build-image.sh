@@ -23,10 +23,11 @@
 #      (ci/final-image.sh, the only script that builds it).
 # Before step 1, the next PCR policy key's public half is put in place for the image (below; a release
 # takes the committed one or fails, never generates one), and
-# the crates of nyra-updated, zlib-rs, ntpd-rs and pam-totp are fetched into UKI_DIR/crates (cargo
-# fetch --locked: the checksums in the Cargo.lock of updated/, zlib/, ntpd-rs/ and pam-totp's), the only
-# download of the build together with pam-totp's source, fetched as the commit pinned in
-# pam-totp/commit into the git repository UKI_DIR/crates/pam-totp.git; the Containerfile checks each
+# the crates of nyra-updated, zlib-rs, ntpd-rs, pam-totp and the editor are fetched into UKI_DIR/crates
+# (cargo fetch --locked: the checksums in the Cargo.lock of updated/, zlib/, ntpd-rs/, pam-totp's and
+# the editor's), the only download of the build together with the source of pam-totp and the editor,
+# each fetched as the commit pinned in pam-totp/commit and editor/commit into the git repositories
+# UKI_DIR/crates/pam-totp.git and UKI_DIR/crates/editor.git; the Containerfile checks each
 # crate against its Cargo.lock again, clones the source from that repository by its commit (git
 # hashes every object it receives), and compiles them without network.
 # With UKI_DIR/final already there (ci/check-reproducible.sh), steps 2 and 3 are skipped and that
@@ -73,23 +74,30 @@ if [ "${NYRA_RELEASE:-}" = 1 ] || [ ! -f "$uki/pcr-next/tpm2-pcr-public-key-next
 fi
 
 # 10 retries instead of cargo's 3: these span over a minute for each request, cargo's about 10 s.
-# pam-totp (docs/DEFAULTS.md, "SSH"): only the pinned commit is fetched; its crates are fetched from
-# a copy of its files at that commit, whose Cargo.lock must be the one in pam-totp/ (the SBOM's).
+# pam-totp (docs/DEFAULTS.md, "SSH") and the terminal editor (NyraOS/editor, docs/DEFAULTS.md
+# "Terminal editor"): only the commit pinned in pam-totp/commit and editor/commit is fetched; their
+# crates are fetched from a copy of their files at that commit, whose Cargo.lock must be the one in
+# pam-totp/ and editor/ (the SBOM's).
+pinned() { # DIR REPOSITORY: the commit in DIR/commit into UKI_DIR/crates/DIR.git, its files into UKI_DIR/DIR-src
+  local commit
+  commit="$(cat "$1/commit")"
+  git init -q --bare "$uki/crates/$1.git"
+  git -C "$uki/crates/$1.git" fetch -q --depth 1 "https://github.com/NyraOS/$2.git" "$commit:refs/heads/pinned"
+  git -C "$uki/crates/$1.git" symbolic-ref HEAD refs/heads/pinned
+  test "$(git -C "$uki/crates/$1.git" rev-parse "$commit^{commit}")" = "$commit"
+  mkdir -p "$uki/$1-src"
+  git -C "$uki/crates/$1.git" archive "$commit" | tar -x -C "$uki/$1-src"
+  cmp "$uki/$1-src/Cargo.lock" "$1/Cargo.lock"
+}
 if [ ! -d "$uki/crates" ]; then
   mkdir -p "$uki/crates"
-  commit="$(cat pam-totp/commit)"
-  git init -q --bare "$uki/crates/pam-totp.git"
-  git -C "$uki/crates/pam-totp.git" fetch -q --depth 1 https://github.com/NyraOS/pam-totp.git "$commit:refs/heads/pinned"
-  git -C "$uki/crates/pam-totp.git" symbolic-ref HEAD refs/heads/pinned
-  test "$(git -C "$uki/crates/pam-totp.git" rev-parse "$commit^{commit}")" = "$commit"
-  mkdir -p "$uki/pam-totp-src"
-  git -C "$uki/crates/pam-totp.git" archive "$commit" | tar -x -C "$uki/pam-totp-src"
-  cmp "$uki/pam-totp-src/Cargo.lock" pam-totp/Cargo.lock
-  for src in updated zlib ntpd-rs "$uki/pam-totp-src"; do
+  pinned pam-totp pam-totp
+  pinned editor editor
+  for src in updated zlib ntpd-rs "$uki/pam-totp-src" "$uki/editor-src"; do
     sudo podman run --rm -e CARGO_NET_RETRY=10 -v "$(realpath "$src"):/src:ro" -v "$uki/crates:/root/.cargo" localhost/nyra-tools \
       cargo fetch --locked --manifest-path /src/Cargo.toml
   done
-  rm -rf "$uki/pam-totp-src"
+  rm -rf "$uki/pam-totp-src" "$uki/editor-src"
 else
   echo "build-image.sh: the crates are the ones fetched before ($uki/crates), nothing is downloaded" >&2
 fi

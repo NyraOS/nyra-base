@@ -82,6 +82,8 @@ class Gate(unittest.TestCase):
             f.write("Snapshot=20261006T060000Z\nRepositories=main\n")
         with open(self.path("commit"), "w") as f:
             f.write("1" * 40 + "\n")
+        with open(self.path("editor-commit"), "w") as f:
+            f.write("3" * 40 + "\n")
         with open(self.path("manifest.json"), "w") as f:
             json.dump({"config": {"distribution": "debian", "release": "unstable", "architecture": "x86-64"},
                        "packages": [{"name": "libfoo1", "version": "1.0-1", "architecture": "amd64"},
@@ -97,7 +99,7 @@ class Gate(unittest.TestCase):
         self.patches = {"fetch": fake_fetch, "INSTALLER_COMMIT": self.path("installer-commit"), "ISO_MKOSI_CONF": self.path("iso-mkosi.conf"), "MKOSI_CONF": self.path("mkosi.conf"),
                         "MITIGATIONS": self.path("mitigations.toml"), "MITIGATIONS_ISO": self.path("mitigations-iso.toml"),
                         "MITIGATIONS_ISO_ARM64": self.path("mitigations-iso-arm64.toml"),
-                        "PAM_TOTP_COMMIT": self.path("commit")}
+                        "PAM_TOTP_COMMIT": self.path("commit"), "EDITOR_COMMIT": self.path("editor-commit")}
         self.saved = {k: getattr(sbom, k) for k in self.patches}
         for k, v in self.patches.items():
             setattr(sbom, k, v)
@@ -167,7 +169,7 @@ class Gate(unittest.TestCase):
         self.assertIn("| CVE-2026-0001 | foo | 1.0-1 | critical 9.8 |", report)
         self.assertIn("Report mode: these do not fail this run", report)
         with open(self.path("sbom.json")) as f:
-            self.assertEqual(len(json.load(f)["components"]), 6)
+            self.assertEqual(len(json.load(f)["components"]), 7)  # bootc, pam-totp, nyra-editor, 3 Debian packages, 1 crate
 
     def test_report_mode_lists_unknown_severity(self):
         # No CVSS vector in any record: the severity is unknown, which blocks, so the report must show it.
@@ -227,8 +229,9 @@ class Gate(unittest.TestCase):
         self.assertIn("is listed twice", str(code))
         with open(self.path("sbom.json")) as f:
             components = json.load(f)["components"]
-        self.assertEqual(len(components), 6)  # bootc, pam-totp, 3 Debian packages, 1 crate
+        self.assertEqual(len(components), 7)  # bootc, pam-totp, nyra-editor, 3 Debian packages, 1 crate
         self.assertIn("pkg:github/NyraOS/pam-totp@" + "1" * 40, [c["purl"] for c in components])
+        self.assertIn("pkg:github/NyraOS/editor@" + "3" * 40, [c["purl"] for c in components])
 
     def test_more_cargo_locks(self):
         # A second Cargo.lock: its crates are in the SBOM and scanned; one already listed counts once.
@@ -240,7 +243,7 @@ class Gate(unittest.TestCase):
                     '[[package]]\nname = "local"\nversion = "0.0.0"\n')
         code, report = self.run_gate(extra_locks=[self.path("other.lock")])
         self.assertEqual(code, 1)
-        self.assertIn("(3 Debian packages, 2 Rust crates, bootc, pam-totp)", report)
+        self.assertIn("(3 Debian packages, 2 Rust crates, bootc, pam-totp, nyra-editor)", report)
         self.assertIn("| **Blocking** (critical, high or unknown severity) | **4** |", report)
         with open(self.path("sbom.json")) as f:
             purls = [c.get("purl") for c in json.load(f)["components"]]
@@ -253,8 +256,14 @@ class Gate(unittest.TestCase):
         code, _ = self.run_gate()
         self.assertIn("is not a commit", str(code))
 
+    def test_editor_commit_checked(self):
+        with open(self.path("editor-commit"), "w") as f:
+            f.write("1c3aaef\n")
+        code, _ = self.run_gate()
+        self.assertIn("editor-commit is not a commit", str(code))
+
     def test_iso_mode(self):
-        # The ISO: the installer program instead of bootc and pam-totp, no bootc environment, the same scan.
+        # The ISO: the installer program instead of bootc, pam-totp and the editor, no bootc environment, the same scan.
         saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
         try:
             code, report = self.run_gate(iso=True)
@@ -307,7 +316,7 @@ class Gate(unittest.TestCase):
         self.assertEqual(bom["metadata"]["component"]["name"], "nyra-installer-iso")
         purls = [c.get("purl") for c in bom["components"]]
         self.assertIn("pkg:github/NyraOS/installer@" + "2" * 40, purls)
-        self.assertFalse([p for p in purls if p and ("bootc" in p or "pam-totp" in p)])
+        self.assertFalse([p for p in purls if p and ("bootc" in p or "pam-totp" in p or "editor" in p)])
 
     def iso_refused(self):
         saved = {k: os.environ.pop(k) for k in ("BOOTC_REF", "BOOTC_COMMIT")}
