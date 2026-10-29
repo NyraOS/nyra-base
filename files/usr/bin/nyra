@@ -9,6 +9,9 @@
 # in a file everybody can read (RESULT), which this reads back.
 # While the unit runs, the stage it writes (STAGE, fixed words) and the time are shown on one line.
 # Everything that carries data is printed with printf '%s': dash's echo would act on a backslash in it.
+# `nyra update --channel NAME` makes the computer follow another update channel (docs/UPDATES.md,
+# "Channels"), the same way: systemctl start of nyra-updated-channel@NAME.service, with the
+# administrator's own password; the next update check uses the new channel.
 set -eu
 
 PATH=/usr/bin:/bin
@@ -25,10 +28,15 @@ restart_note() { # the same two lines whenever a version waits for the restart
 	printf 'Do not force-reset the computer (for example with the Restart or Stop button of a virtual machine), or the update is lost. %s\n' "$AGAIN"
 }
 
-if [ "$#" != 1 ] || [ "$1" != update ]; then
-	echo "Usage: nyra update" >&2
+channel=
+case "$#:${1:-}:${2:-}:${3:-}" in
+1:update::) ;;
+3:update:--channel:dev | 3:update:--channel:beta | 3:update:--channel:stable) channel="$3" ;;
+*)
+	echo "Usage: nyra update [--channel dev|beta|stable]" >&2
 	exit 2
-fi
+	;;
+esac
 
 if [ ! -t 0 ] || [ ! -t 1 ]; then
 	echo "Run this in a terminal: it asks a question and a password." >&2
@@ -42,6 +50,24 @@ case " $(id -nG) " in
 	exit 1
 	;;
 esac
+
+# The password is asked once, by systemctl's agent on this terminal (nyra-prompt-only shows only the
+# prompt, as for an install below); the unit only writes the choice, so this waits for it.
+if [ -n "$channel" ]; then
+	errors="$(mktemp)"
+	trap 'rm -f "$errors"' EXIT
+	if /usr/libexec/nyra-prompt-only systemctl start "nyra-updated-channel@$channel.service" 2>"$errors"; then
+		printf 'This computer now follows the %s channel. The next update check uses it.\n' "$channel"
+		exit 0
+	fi
+	if grep -qiE 'access denied|authenticat|not authorized' "$errors"; then
+		echo "The channel was not changed: the password was not accepted, the question was cancelled, or this is not a session at the computer itself." >&2
+	else
+		cat "$errors" >&2
+		echo "The channel was not changed. If the system is checking for or installing an update, try again when it is done." >&2
+	fi
+	exit 1
+fi
 
 # The reason is printed by nyra-updated, in one line.
 available="$(/usr/libexec/nyra-updated available)" || exit 1

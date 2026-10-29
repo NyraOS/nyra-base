@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# `systemctl start nyra-updated-channel@NAME.service` (what `nyra update --channel NAME` runs): this
+# machine follows channel NAME from the next update check on (docs/UPDATES.md, "Channels"). Only members
+# of the group sudo may start it, with their own password, and only for dev, beta or stable
+# (/usr/share/polkit-1/rules.d/49-nyra.rules); the program refuses any other name again. It only writes
+# the choice into the state: the check that follows verifies the channel's sheet as for any channel.
+[Unit]
+Description=Nyra: follow update channel %i (started by an administrator)
+Documentation=https://github.com/NyraOS/nyra-base/blob/main/docs/UPDATES.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nyra-updated set-channel %i
+TimeoutStartSec=1min
+StateDirectory=nyra-updated
+# 0711, as in nyra-updated.service: systemd sets this mode at every start, and a login must be able to
+# enter the directory to read staged-version (docs/UPDATES.md, "After a hard reset"). The files are 0600.
+StateDirectoryMode=0711
+UMask=0077
+# It reads and writes the state file and takes the update lock in /run: nothing more.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
