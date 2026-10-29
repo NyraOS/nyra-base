@@ -20,7 +20,9 @@
 #      without a sheet key, everything; polkit's answers for the install unit (outside a local active
 #      session, even a sudo member gets no; in one, the member's own password gives yes and a wrong one
 #      does not; another unit or verb, systemd-run and run0: no); `nyra update` without a sheet key, as
-#      a user who is not an administrator and without a terminal; switch to v0 from another registry
+#      a user who is not an administrator and without a terminal; `nyra update --channel dev`: a standard
+#      user refused by polkit, an administrator with a wrong password refused, with their own password the
+#      machine follows dev (state put back); switch to v0 from another registry
 #   2  v0: a foreign image, reported (ForeignImage); switch to v1 by its channel tag
 #   3  v1: a sheet signed with another key refused; `install` refuses the stand-in policy; power cut while v2 downloads (throttled link)
 #   4  v1: v2 staged again (the registry's bytes are counted); power cut before the staged version is finalized
@@ -365,6 +367,7 @@ vm "installed image: fail closed, signatures, test trust" --poweroff \
   --command "$lib; install_refused 'x;reboot' 'not a release version' && install_refused 2026.10.600.1 'not a release version' && without_key install_refused 2026.10.600 'updates are not configured'" \
   --command "$lib; systemctl cat nyra-updated-install@2026.10.600.service >/dev/null && useradd -m -G sudo vmadmin && useradd -m vmuser && polkit_cases" \
   --command "$lib; without_key nyra_update_session vmadmin y 1 && said 'Updates are not set up on this system.' && nyra_update_refused" \
+  --command "$lib; channel_switch" \
   --command 'bootc status --format json' \
   --command "$lib; without_key run_check && grep -q '\"ok\":false' /var/lib/nyra-updated/last-check.json && grep -q 'updates are not configured' /var/lib/nyra-updated/last-check.json && ! systemctl is-failed --quiet nyra-updated.service" \
   --command 'echo "10.0.2.2 updates.nyraos.com other.test" >> /etc/hosts && update-ca-certificates >/dev/null 2>&1' \

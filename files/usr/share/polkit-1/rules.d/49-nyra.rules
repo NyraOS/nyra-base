@@ -36,6 +36,10 @@ polkit.addRule(function(action, subject) {
 // set the manager's environment, which would be the root shell the base does not have. root is not
 // asked (polkit allows root everything). The unit name has the shape the program accepts
 // (nyra-updated, install.rs), which it checks again.
+// The same holds for nyra-updated-channel@NAME.service (`nyra update --channel NAME`): it only writes
+// which channel the machine follows, and only the three channel names nyra-updated knows match. Every
+// channel's sheet is signed by us and verified by the next check, so the choice changes which signed
+// release is offered, never what is trusted.
 // systemd asks manage-units with the same unit and verb ("start") for StartUnit (a unit that exists) and
 // for StartTransientUnit (`systemd-run`, `run0`: a new unit that runs any command, under any name). Only
 // the message that systemd sends with it tells them apart ("polkit.message", systemd 262:
@@ -43,6 +47,7 @@ polkit.addRule(function(action, subject) {
 // the first and nothing else gets a yes: a changed text refuses the install too, which the VM test sees.
 var nyraStartMessage = "Authentication is required to start '$(unit)'.";
 var nyraInstallUnit = /^nyra-updated-install@[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,6}\.service$/;
+var nyraChannelUnit = /^nyra-updated-channel@(dev|beta|stable)\.service$/;
 var nyraManagerActions = [
     "org.freedesktop.systemd1.manage-units",
     "org.freedesktop.systemd1.manage-unit-files",
@@ -56,7 +61,7 @@ polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         action.lookup("verb") == "start" &&
         action.lookup("polkit.message") == nyraStartMessage &&
-        nyraInstallUnit.test(action.lookup("unit")) &&
+        (nyraInstallUnit.test(action.lookup("unit")) || nyraChannelUnit.test(action.lookup("unit"))) &&
         subject.isInGroup("sudo") &&
         subject.local && subject.active) {
         return polkit.Result.AUTH_SELF;

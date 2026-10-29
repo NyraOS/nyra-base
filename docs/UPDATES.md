@@ -146,8 +146,11 @@ previous version", it must warn about that.
 
 The image says which channel a new installation follows (`channel` in `updated.conf`, always
 `stable`: the image build fails otherwise). The same signed image is promoted from one channel to
-the next (`dev`, `beta`, `stable`), so the image does not decide which channel a machine is on: root can choose with `nyra-updated set-channel NAME`
-(Settings will offer it later, to an administrator with a password). The choice is kept in the
+the next (`dev`, `beta`, `stable`), so the image does not decide which channel a machine is on. An
+administrator chooses with `nyra update --channel NAME` and their own password (below, "Changing the
+channel from a terminal"); root can run `nyra-updated set-channel NAME` (Settings will offer it later).
+`dev` follows every release published from `main` (for test machines); `stable` only what passed every
+check. The choice is kept in the
 state (`channel` in `/var/lib/nyra-updated/state.json`) and wins over the image's: it stays after a
 rollback to an older version and after "Reset settings", which leaves `/var` alone. An unknown channel
 is refused, by `set-channel` and in the state; a sheet of another channel or repository is refused
@@ -208,6 +211,7 @@ by hand is discarded with it.
 | `nyra-health-network.service` | a health check, on a version on trial: the links that had a routable address at the last update check get one again (below, "The network"); `/usr/lib/nyra/health/network`, which also writes that list (`/var/lib/nyra-updated/network-links`, before every check of `nyra-updated.service`) |
 | `nyra-health-.service.d/10-nyra.conf` | for every `nyra-health-*.service`: `Before=boot-complete.target systemd-user-sessions.service`, `OnFailure=nyra-updated-health-failed.service`, sandboxing |
 | `nyra-updated-health-failed.service` | `nyra-updated health-failed`: the full reboot while on trial (rule 8); off trial, a version fallen back from forgiven once (rule 12), and the notice. Off trial it takes the check's lock: if a check holds it, the version is not forgiven (the prudent side) and the notice is still shown. `TimeoutStartSec=5min`, above its slowest path (the boot state, `bootc status` and the notice, up to 60 s each), so systemd does not stop it before the notice |
+| `nyra-updated-channel@.service` | `nyra-updated set-channel %i`: the machine follows channel `dev`, `beta` or `stable`, started by an administrator with `nyra update --channel NAME` after polkit asks for the password (below, "Changing the channel from a terminal"; the rule is in `49-nyra.rules`). It only writes the choice into the state (no network, no devices, Unix sockets only); `StateDirectoryMode=0711` like the other units of the directory; listed in the image build's `systemd-analyze verify` |
 | `nyra-updated-install@.service` | `nyra-updated install %i`: stages the release named by the instance, started by an administrator with `systemctl start` after polkit asks for the password (above, "Updating from a terminal as an administrator"; the rule is in `49-nyra.rules`). Hardened like `nyra-updated.service` (same sandbox, `TimeoutStartSec=2h30min`, above the 2-hour pull); listed in the image build's `systemd-analyze verify` |
 | `/usr/lib/nyra/profile.d/update-hint.sh` | the message at the login of an administrator about a version that was prepared and lost to a hard reset (above, "After a hard reset"); linked from `/etc/profile.d/update-hint.sh` |
 | `/usr/lib/nyra/health/notice` | the notice on the login console (`/run/issue.d`) and after a login (`/run/motd.d`): which services did not start (plain characters of their names only: agetty reads `\` escapes), and how to reset the settings |
@@ -447,7 +451,7 @@ when it is named `nyra-updated-install@VERSION.service`: systemd asks polkit abo
 action, unit and verb as for the real unit and only the message differs, so the rule accepts the exact
 message of `systemctl start` and nothing else (a transient unit runs any command as root). A wrong
 password is polkit's usual denial. polkit's password helper is on in the image (docs/DEFAULTS.md,
-"Passwords through polkit"), and this is the one action there that a password approves; polkit's administrator is root
+"Passwords through polkit"), and this rule (with the channel unit, below, "Changing the channel from a terminal") is the only one there that a password approves; polkit's administrator is root
 alone, so this explicit rule, not the group `sudo`, is what lets the member of `sudo` through.
 
 **`nyra update`** (`/usr/bin/nyra`, a short shell script) is what an administrator types. It needs no
@@ -516,6 +520,28 @@ is "The update was not installed."
   file descriptor that the daemon's `run` (which collects the output only at the end) does not give, and the
   VM test could not exercise it. The stage and the time are what is shown.
 
+### Changing the channel from a terminal
+
+`nyra update --channel NAME` (`dev`, `beta` or `stable`) makes the computer follow that channel from
+the next update check on (above, "Channels"). Like an install it needs a member of `sudo` at a
+terminal, in a local, active session, and their own password: it runs
+`systemctl start nyra-updated-channel@NAME.service` through `nyra-prompt-only`, and that unit runs
+`nyra-updated set-channel NAME` as root, which only writes the choice into the state. The command waits
+for the unit (it takes a moment) and says `This computer now follows the NAME channel.`; a wrong
+password or a cancelled question changes nothing and says so. The unit fails, and nothing changes,
+while a check or an install holds the update lock; the command then says to try again.
+
+The polkit rule is the install's (`49-nyra.rules`), with one more unit name: only
+`nyra-updated-channel@dev.service`, `@beta.service` and `@stable.service`, started with the exact
+message of `systemctl start` (a transient unit of that name is refused), by a member of `sudo` in a
+local, active session, with their own password. Every other unit, verb and user stays refused. The
+choice changes which channel's signed sheet the next check reads, never what is trusted: the sheet is
+verified as for any channel, and an older version after the change is accepted only under rule 14.
+`tools/vm/updates.sh` (first boot) checks polkit's answers for the channel unit (a standard user and a
+session that is not local get no; another name, or a transient unit, no) and runs
+`nyra update --channel dev` as an administrator: with a wrong password nothing changes, with their own
+the state says `dev`.
+
 ### After a hard reset
 
 `bootc` keeps a staged deployment in memory only: the marker `/run/composefs/staged-deployment` (root's
@@ -534,7 +560,7 @@ digest of the sheet, and a newer staging replaces it. The directory is mode 0711
 enter it, so that a login can read this file by its name, and only root can list it; every other file in
 it stays root's, 0600: the files of the daemon are written with that mode, the health check that leaves
 its markers there (`/usr/lib/nyra/health/network`) sets `umask 077`, and the two units that have the
-directory (`nyra-updated.service`, `nyra-updated-install@.service`) say `StateDirectoryMode=0711`, since
+directory (`nyra-updated.service`, `nyra-updated-install@.service`, `nyra-updated-channel@.service`) say `StateDirectoryMode=0711`, since
 systemd sets the mode of the directory again at every start. T2 checks the mode of the directory and of
 every file in it. The file holds a version, which is not a secret (the channel sheet is public),
 and a boot identifier, which says nothing about the user.

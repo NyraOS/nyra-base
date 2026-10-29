@@ -8,8 +8,9 @@
 //! - `health` (`nyra-health-bootc.service`): bootc reports the booted image, so this version can
 //!   still update itself;
 //! - `check-config` (image build): the configuration parses and holds no test key;
-//! - `set-channel NAME` (root, by hand until Settings offers it): this machine follows channel
-//!   NAME from the next check on, whatever the image says (rule 14);
+//! - `set-channel NAME` (`nyra-updated-channel@NAME.service`, started by an administrator through
+//!   polkit with `nyra update --channel NAME`, or root): this machine follows channel NAME from the
+//!   next check on, whatever the image says (rule 14);
 //! - `available` (`nyra update`, run by any user): prints the newest version the verified channel
 //!   sheet offers when it is newer than the installed one, and changes nothing, see the `available`
 //!   module;

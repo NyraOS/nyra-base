@@ -267,6 +267,10 @@ polkit_user() { # polkit_user WANT: for the process $pid, polkit answers WANT to
 	m=org.freedesktop.systemd1
 	i=nyra-updated-install@2026.10.600.service
 	polkit_ask "$1" $m.manage-units $i start "$start_message" || return 1
+	# the channel unit (`nyra update --channel`) is answered the same; only the three channel names
+	polkit_ask "$1" $m.manage-units nyra-updated-channel@dev.service start "$start_message" || return 1
+	polkit_ask 1 $m.manage-units nyra-updated-channel@nightly.service start "$start_message" || return 1
+	polkit_ask 1 $m.manage-units nyra-updated-channel@dev.service start "$transient_message" || return 1
 	# the same unit and verb, as systemd-run and run0 ask for a new unit of that name that runs any command
 	# (the one difference is the message), or without a message: no
 	polkit_ask 1 $m.manage-units $i start "$transient_message" || return 1
@@ -314,16 +318,19 @@ polkit_own_password() { # polkit_own_password PASSWORD: in the session of vmadmi
 # The password of vmadmin, a member of sudo (polkit_cases sets it).
 admin_pw=correct-test-password-1
 
-nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD [interrupt]]: USER logs in on a virtual console (a local, active
+nyra_update_session() { # nyra_update_session USER ANSWER WANT_RC [PASSWORD [interrupt [ARG...]]]: USER logs in on a virtual console (a local, active
 	# session) and runs `nyra update` on a terminal, as an administrator does: ANSWER is typed at the question,
 	# and USER's own password (admin_pw, or PASSWORD) at the password prompt that systemctl's agent shows. The output goes to
 	# /var/tmp/nyra-update.out; the exit status must be WANT_RC. With "interrupt", Ctrl+C is typed once the
-	# stage "Checking the update" is shown.
-	session_of "$1" || return 1
+	# stage "Checking the update" is shown. ARG... are passed to `nyra update` (for example --channel dev).
+	nus_user="$1" nus_answer="$2" nus_want="$3" nus_password="${4:-$admin_pw}" nus_interrupt="${5:-}"
+	if [ $# -gt 5 ]; then shift 5; else set --; fi
+	session_of "$nus_user" || return 1
 	scope="$(sed -n 's|^0::||p' "/proc/$pid/cgroup")"
 	# shellcheck disable=SC2016 # the quoted script is Python
 	python3 -I -c 'import os, pty, pwd, select, sys, time
 scope, user, answer, password, interrupt = sys.argv[1:6]
+extra = sys.argv[6:]
 agent, fd = pty.fork()
 if agent == 0:
     # Into the scope of the login first (as root), so polkit sees a process of that session.
@@ -335,7 +342,7 @@ if agent == 0:
     os.setuid(pw.pw_uid)
     os.environ.update(HOME=pw.pw_dir, USER=user, LOGNAME=user)
     os.chdir(pw.pw_dir)
-    os.execvp("nyra", ["nyra", "update"])
+    os.execvp("nyra", ["nyra", "update"] + extra)
 end = time.time() + 150
 seen = b""
 while time.time() < end:
@@ -362,12 +369,39 @@ else:
     os.kill(agent, 9)
     os.waitpid(agent, 0)
     sys.exit(124)
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$1" "$2" "${4:-$admin_pw}" "${5:-}" >/var/tmp/nyra-update.out
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(agent, 0)[1]))' "$scope" "$nus_user" "$nus_answer" "$nus_password" "$nus_interrupt" "$@" >/var/tmp/nyra-update.out
 	rc=$?
 	cat /var/tmp/nyra-update.out
-	echo "nyra update as $1: $rc, wanted $3"
+	echo "nyra update $* as $nus_user: $rc, wanted $nus_want"
 	session_end
-	[ "$rc" = "$3" ]
+	[ "$rc" = "$nus_want" ]
+}
+
+channel_is() { # channel_is NAME: the machine's own channel choice (state.json) is NAME
+	python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("channel") != sys.argv[2])' \
+		/var/lib/nyra-updated/state.json "$1"
+}
+
+channel_switch() { # `nyra update --channel dev`: a member of sudo, with their own password, makes the machine follow dev
+	# (the choice in state.json), and not with a wrong one. Anyone else is refused by polkit (polkit_cases: the
+	# channel unit gets no for a standard user and outside a local, active session). The state is put back
+	# afterwards, so the checks that follow use the image's channel again.
+	s=/var/lib/nyra-updated/state.json
+	rm -f /run/nyra-test-state.json
+	[ ! -e "$s" ] || cp -p "$s" /run/nyra-test-state.json || return 1
+	ok=0
+	{
+		nyra_update_session vmadmin n 1 wrong-password "" --channel dev &&
+			said 'The channel was not changed: the password was not accepted' &&
+			! { [ -e "$s" ] && channel_is dev; } &&
+			nyra_update_session vmadmin n 0 "$admin_pw" "" --channel dev &&
+			prompt_only &&
+			said 'This computer now follows the dev channel.' &&
+			channel_is dev &&
+			test "$(stat -c %a "$s")" = 600
+	} || ok=1
+	if [ -e /run/nyra-test-state.json ]; then mv /run/nyra-test-state.json "$s"; else rm -f "$s"; fi
+	[ "$ok" = 0 ]
 }
 
 install_unit_checks() { # nyra-updated-install@.service runs a check (it stages what the sheet offers): the
