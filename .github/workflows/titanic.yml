@@ -189,12 +189,14 @@ jobs:
 
       - name: Full disk and the space across updates (Titanic T6)
         run: |
+          df -h / "$WORK"
           tools/titanic/full-disk.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY" "$UPDATES"
 
       - name: An update under extreme load (Titanic T13)
         if: ${{ !cancelled() }}
         run: |
+          df -h / "$WORK"
           tools/titanic/extreme-load.sh localhost/nyra-base:ci "$IMAGE_DIGEST" "$WORK/disk.qcow2" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
 
@@ -203,6 +205,7 @@ jobs:
         env:
           UKI_CERT: ${{ needs.image.outputs.uki_cert }}
         run: |
+          df -h / "$WORK"
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/titanic/hostile-root.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"
@@ -212,6 +215,7 @@ jobs:
         env:
           UKI_CERT: ${{ needs.image.outputs.uki_cert }}
         run: |
+          df -h / "$WORK"
           base64 -d <<<"$UKI_CERT" > "$RUNNER_TEMP/uki.crt"
           tools/titanic/broken-config.sh localhost/nyra-base:ci "$WORK/disk.qcow2" "$RUNNER_TEMP/uki.crt" \
             "$WORK" "$RUNNER_TEMP" "$GITHUB_STEP_SUMMARY"

@@ -66,7 +66,10 @@ load='systemd-run -q --unit=nyra-load-cpu sh -c "for i in 1 2 3 4 5 6 7 8; do (w
 loaded='l="$(cut -d" " -f1 /proc/loadavg)"; m="$(awk "/MemAvailable/ {print int(\$2 / 1024)}" /proc/meminfo)"; echo "load average $l, $m MiB available"; systemctl is-active nyra-load-cpu nyra-load-io; test "${l%%.*}" -ge 3 && test "$m" -lt 300'
 stop='systemctl stop nyra-load-cpu nyra-load-mem nyra-load-io; systemctl reset-failed; rm -f /var/tmp/nyra-load; journalctl -k -b --no-pager | grep -i "out of memory" || echo "no out-of-memory kill"'
 
+# The load writes the guest's disk again and again, so the overlay can grow to its whole 12 GiB: it
+# goes as soon as the script ends, with its size in the log.
 ov="$el/disk.qcow2"
+trap 'du -sh "$ov"; rm -f "$ov"; df -h / "$work"' EXIT
 qemu-img create -q -f qcow2 -F qcow2 -b "$disk" "$ov"
 vm() { # vm N TITLE [vm-boot.py options and --command ...]
   python3 -B tools/vm/vm-boot.py --autologin --persist --disk "$ov" --timeout 240 \
