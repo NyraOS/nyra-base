@@ -80,7 +80,11 @@ still_full='{ f="$(stat -f -c %f /var)"; echo "blocks free after the boot: $f (r
 # The space the system takes, in KiB: the composefs store and the deployments' state, and the ESP.
 space='echo "nyra""-space: $(du -sk /sysroot/composefs /sysroot/state/deploy | awk "{s += \$1} END {print s}") $(du -sk /boot/ | cut -f1)"'
 
+# The overlay grows to the whole 12 GiB disk once the guest has written all of it (this test fills it
+# on purpose), and the runner has little room left: it goes as soon as the script ends, with its size
+# in the log.
 ov="$fd/disk.qcow2"
+trap 'du -sh "$ov"; rm -f "$ov"; df -h / "$work"' EXIT
 qemu-img create -q -f qcow2 -F qcow2 -b "$disk" "$ov"
 vm() { # vm N TITLE [vm-boot.py options and --command ...]
   python3 -B tools/vm/vm-boot.py --autologin --persist --poweroff --disk "$ov" --timeout 240 \
