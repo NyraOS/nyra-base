@@ -124,7 +124,11 @@ mok_grouped() {
 check_json() {
   local cert="$checkout/$cert_file" signer cert_name reserved
   mok_fingerprint "$cert"
-  signer="$(jq -er '[.. | .subjectEmail? // empty] | if length == 1 then .[0] else empty end' \
+  # The host scope: the base's signer, which the installer's nyra-base and nyra-base-arm64 are checked
+  # against (the editions' own scopes in the policy are not what a base install trusts).
+  # (A test ISO keeps the real signer under signer-of-the-release.invalid, as its host scope trusts a test key.)
+  signer="$(jq -er '[.transports.docker | to_entries[] | select(.key == "updates.nyraos.com" or .key == "signer-of-the-release.invalid")
+                     | .value[]?.fulcio.subjectEmail? // empty] | if length == 1 then .[0] else empty end' \
     "$checkout/files/usr/lib/nyra/containers/policy.json")" || die "the policy does not name exactly one signer"
   cert_name="$(openssl x509 -noout -subject -nameopt multiline -in "$cert" | sed -n 's/^ *commonName *= //p')"
   [ -n "$cert_name" ] || die "the certificate has no common name"

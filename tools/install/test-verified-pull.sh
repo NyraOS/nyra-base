@@ -46,7 +46,9 @@ revision="$(git rev-parse HEAD)"
 sudo cp -R "$PWD/." "$t/checkout"
 sudo cp "$t/sigstore.pub" "$t/checkout/files/usr/lib/nyra/containers/test-sigstore.pub"
 policy="$t/checkout/files/usr/lib/nyra/containers/policy.json"
-sudo jq '.transports.docker["updates.nyraos.com"] = [{
+# The per-repository scopes go, so every repository falls to the host scope, which now holds the test key.
+sudo jq '.transports.docker |= with_entries(select(.key | startswith("updates.nyraos.com/") | not))
+  | .transports.docker["updates.nyraos.com"] = [{
     type: "sigstoreSigned", keyPath: "/usr/lib/nyra/containers/test-sigstore.pub",
     signedIdentity: {type: "matchRepository"}}]' "$policy" | sudo tee "$policy.new" >/dev/null
 sudo mv "$policy.new" "$policy"

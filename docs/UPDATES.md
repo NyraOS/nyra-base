@@ -96,7 +96,7 @@ rule has a unit test (`updated/daemon/src/tests.rs`):
    reported as an error.
 10. Nothing is done when the booted image is not from `updates.nyraos.com`: the server is fixed in
     code, because the signature policy covers exactly that name (`docs/SIGNING.md`). Any repository
-    there is ours, so a version that moves its updates to another repository (`repository` in its
+    there is ours (each one is checked against the signer of its own policy scope, or the host's), so a version that moves its updates to another repository (`repository` in its
     configuration) keeps getting them from there. An owner who switched to their own image keeps it,
     and the outcome (`ForeignImage`) is logged as a warning at every check, so such a machine is not
     silently without updates. The installer must therefore install with an explicit tag
@@ -420,7 +420,7 @@ reboot stays the user's choice.
 - an argument that is not a release version (`YEAR.MONTH.BUILD`, digits only);
 - a signature policy that is not the shipped one: `/etc/containers/policy.json` and
   `/etc/containers/registries.d/nyra.yaml` must resolve to the files under `/usr/lib/nyra/containers/`,
-  the policy must name one real signer for `updates.nyraos.com` (not the placeholder of an image built
+  the policy must name one real signer for the image's repository (its own scope, else `updates.nyraos.com`; not the placeholder of an image built
   before the address was committed), and no per-user policy or `CONTAINERS_POLICY_JSON` may exist;
 - a version that is not newer than the running one (numbers compared one by one), or below the
   image's version floor;

@@ -159,7 +159,7 @@ The policy ships in `/usr` (read-only, verified by fs-verity, updated with every
 
 | File | Content |
 |---|---|
-| `/usr/lib/nyra/containers/policy.json` | for `docker://updates.nyraos.com/*`: `sigstoreSigned`, Fulcio certificate issued by Google's OIDC (`https://accounts.google.com`) to the signer's e-mail address, Rekor SET required, `signedIdentity: matchRepository` |
+| `/usr/lib/nyra/containers/policy.json` | for `docker://updates.nyraos.com` (and, per repository, the scopes below): `sigstoreSigned`, Fulcio certificate issued by Google's OIDC (`https://accounts.google.com`) to the signer's e-mail address, Rekor SET required, `signedIdentity: matchRepository` |
 | `/usr/lib/nyra/containers/registries.d/nyra.yaml` | `use-sigstore-attachments` for `updates.nyraos.com` |
 | `/usr/lib/nyra/sigstore/fulcio-ca.pem`, `rekor.pub` | the Sigstore trust roots |
 
@@ -181,6 +181,23 @@ accept images from `updates.nyraos.com` signed by this identity. The `sign` job 
 from `GCP_SIGNER_SA`. The variables only switch the job on: who can obtain a signature for this
 identity is decided by "Who can sign" below, not by the variables.
 
+### One signer per repository
+
+Each image repository has its own signer, so the key of one edition cannot vouch for another's images:
+
+| Scope | Signer |
+|---|---|
+| `updates.nyraos.com/nyra-base`, `updates.nyraos.com/nyra-base-arm64` | `nyra-image-signer` (the base signer) |
+| `updates.nyraos.com/nyra-desktop`, `updates.nyraos.com/nyra-desktop-arm64` | `nyra-desktop-image-signer` |
+| `updates.nyraos.com` (every other repository) | `nyra-image-signer` |
+
+containers/image uses the most specific scope, matching whole path components, so `nyra-base-evil` or
+`nyra-desktop-arm64x` are not an edition's repository and fall under the host scope (the base signer).
+`nyra-updated` looks up the exact key `updates.nyraos.com/<repository>` and uses the host scope only
+when that key is absent: no prefix matching of its own, so it never disagrees with containers/image.
+`tools/signing/test-policy.sh` and the `nyra-updated` tests check both directions: the desktop signer
+is not accepted for a base repository, and the base signer is not accepted for a desktop repository.
+
 ### Other registries and local images
 
 Only `updates.nyraos.com` requires a signature. Every other source keeps the usual default
@@ -192,7 +209,9 @@ Only `updates.nyraos.com` requires a signature. Every other source keeps the usu
   system image.
 - **Local transports** (`containers-storage`, `oci`, `oci-archive`, `dir`) are not network sources:
   their content is already on the machine, put there by root or by the user. `bootc install` reads
-  the image from local storage this way.
+  the image from local storage this way. The default policy accepts `oci-archive` from root, which
+  is a known open point (tracked as a separate pre-alpha issue: set the default for `oci-archive` to
+  reject, with explicit entries for what CI needs).
 
 **The trade-off:** the guarantee covers the system image, which is what an attacker
 on the network or on our servers would target. It holds as long as the system image is always

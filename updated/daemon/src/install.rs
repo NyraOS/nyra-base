@@ -155,9 +155,9 @@ impl PolicyFiles {
         }
     }
 
-    /// Refuses unless a pull from [`HOST`] is checked against the shipped policy with the real
-    /// signer.
-    pub fn check(&self) -> Result<(), Error> {
+    /// Refuses unless a pull of `repository` from [`HOST`] is checked against the shipped policy
+    /// with the real signer.
+    pub fn check(&self, repository: &str) -> Result<(), Error> {
         if self.env_policy {
             return Err(refused("CONTAINERS_POLICY_JSON is set"));
         }
@@ -176,7 +176,7 @@ impl PolicyFiles {
             }
         }
         let json = fs::read(&self.policy).map_err(|e| io(&self.policy, e))?;
-        signer(&json).map(drop)
+        signer(&json, repository).map(drop)
     }
 }
 
@@ -186,13 +186,25 @@ fn refused(why: &str) -> Error {
     ))
 }
 
-/// The one signer the policy requires for [`HOST`]: a `sigstoreSigned` entry with an address that
-/// is not the placeholder of an image built before the real one was committed.
-fn signer(policy: &[u8]) -> Result<String, Error> {
+/// The one signer the policy requires for `repository` on [`HOST`]: a `sigstoreSigned` entry with
+/// an address that is not the placeholder of an image built before the real one was committed.
+///
+/// containers/image takes the most specific `docker` scope, so `updates.nyraos.com/<repository>`
+/// replaces the host scope for that repository when the policy has it (each edition has its own
+/// signer). The lookup is the exact key, never a prefix, and the host scope is used only when that
+/// exact key is absent: a repository that merely starts with an edition's name (`nyra-base-evil`)
+/// is not that edition, and gets the host scope, as it does in containers/image.
+pub(crate) fn signer(policy: &[u8], repository: &str) -> Result<String, Error> {
     let json: Value = serde_json::from_slice(policy).map_err(|e| refused(&e.to_string()))?;
-    let entries = json["transports"]["docker"][HOST]
-        .as_array()
-        .ok_or_else(|| refused("no entry for updates.nyraos.com"))?;
+    let scopes = &json["transports"]["docker"];
+    let own = format!("{HOST}/{repository}");
+    let entries = if scopes.get(own.as_str()).is_some() {
+        &scopes[own.as_str()]
+    } else {
+        &scopes[HOST]
+    }
+    .as_array()
+    .ok_or_else(|| refused("no entry for updates.nyraos.com"))?;
     let mut found = None;
     for entry in entries {
         let email = entry["fulcio"]["subjectEmail"].as_str();
