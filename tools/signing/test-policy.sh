@@ -94,3 +94,14 @@ skopeo copy --insecure-policy --remove-signatures --preserve-digests \
   "docker://$repo@$signed" "docker://updates.nyraos.com/$other:1" >/dev/null
 skopeo copy --insecure-policy "docker://$repo:$sig" "docker://updates.nyraos.com/$other:$sig" >/dev/null
 refused "is not accepted" copy "docker://updates.nyraos.com/$other@$signed" dir:/t/pull
+
+# The editions have their own signers (policy.json, one scope per repository): the base signer's image and
+# signature, copied under a desktop repository, are refused (its scope names the desktop signer only). The
+# reverse, a desktop-signed image under a base repository, is covered by the signer tests of nyra-updated
+# (updated/daemon/src/tests.rs), which read this same policy: CI has no desktop signer to sign with.
+for desktop in nyra-desktop nyra-desktop-arm64; do
+  skopeo copy --insecure-policy --remove-signatures --preserve-digests \
+    "docker://$repo@$signed" "docker://updates.nyraos.com/$desktop:1" >/dev/null
+  skopeo copy --insecure-policy "docker://$repo:$sig" "docker://updates.nyraos.com/$desktop:$sig" >/dev/null
+  refused "Source image rejected" copy "docker://updates.nyraos.com/$desktop@$signed" dir:/t/pull
+done

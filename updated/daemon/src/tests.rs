@@ -2555,7 +2555,9 @@ fn the_network_checks_word_counts_for_the_next_check_only() {
 
 mod install_tests {
     use super::*;
-    use crate::install::{check_version, install, is_version, PolicyFiles};
+    use crate::install::{
+        check_version, install, is_version, signer as policy_signer, PolicyFiles,
+    };
     use std::os::unix::fs::symlink;
 
     const SIGNER: &str = "signer@project.iam.gserviceaccount.com";
@@ -3046,6 +3048,8 @@ mod install_tests {
         }
     }
 
+    const REPO: &str = "nyra-base";
+
     fn policy(email: &str) -> String {
         json!({"transports": {"docker": {"updates.nyraos.com": [
             {"type": "sigstoreSigned", "fulcio": {"subjectEmail": email}}
@@ -3057,25 +3061,75 @@ mod install_tests {
     fn only_the_shipped_policy_allows_a_pull() {
         let dir = TempDir::new();
         let files = policy_files(&dir, &policy(SIGNER));
-        files.check().unwrap();
+        files.check(REPO).unwrap();
         // The /etc link points elsewhere: the test VMs' stand-in policy, or a user's.
         let other = dir.0.join("other.json");
         fs::write(&other, policy(SIGNER)).unwrap();
         fs::remove_file(&files.links[0].0).unwrap();
         symlink(&other, &files.links[0].0).unwrap();
-        assert!(files.check().is_err());
+        assert!(files.check(REPO).is_err());
         // A missing link.
         fs::remove_file(&files.links[0].0).unwrap();
-        assert!(files.check().is_err());
+        assert!(files.check(REPO).is_err());
         // A per-user policy, and CONTAINERS_POLICY_JSON.
         let dir = TempDir::new();
         let mut files = policy_files(&dir, &policy(SIGNER));
         fs::write(&files.user_policies[0], "{}").unwrap();
-        assert!(files.check().is_err());
+        assert!(files.check(REPO).is_err());
         fs::remove_file(&files.user_policies[0]).unwrap();
-        files.check().unwrap();
+        files.check(REPO).unwrap();
         files.env_policy = true;
-        assert!(files.check().is_err());
+        assert!(files.check(REPO).is_err());
+    }
+
+    /// The shipped policy: one signer per repository, the exact key `updates.nyraos.com/<repository>`
+    /// and the host scope only when that key is absent (a lookalike name is not an edition).
+    #[test]
+    fn each_repository_has_its_own_signer() {
+        let shipped = include_bytes!("../../../files/usr/lib/nyra/containers/policy.json");
+        let base = "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com";
+        let desktop = "nyra-desktop-image-signer@nyra-signing-3076.iam.gserviceaccount.com";
+        for (repository, want) in [
+            ("nyra-base", base),
+            ("nyra-base-arm64", base),
+            ("nyra-desktop", desktop),
+            ("nyra-desktop-arm64", desktop),
+            // No scope of their own: the host scope, the base signer, as in containers/image
+            // (where the lookalike does not match the edition's scope either).
+            ("nyra-base-evil", base),
+            ("nyra-desktop-arm64x", base),
+            ("nyra-desktop-evil", base),
+            ("nyra-desktop/x", base),
+            ("elsewhere", base),
+        ] {
+            assert_eq!(
+                policy_signer(shipped, repository).unwrap(),
+                want,
+                "{repository}"
+            );
+        }
+        // The two signers differ, so neither can sign for the other's repositories.
+        assert_ne!(base, desktop);
+    }
+
+    #[test]
+    fn a_repository_scope_replaces_the_host_scope_whole() {
+        let policy = json!({"transports": {"docker": {
+            "updates.nyraos.com": [{"type": "sigstoreSigned", "fulcio": {"subjectEmail": "a@b.c"}}],
+            "updates.nyraos.com/ed": [{"type": "sigstoreSigned", "fulcio": {"subjectEmail": "d@e.f"}}],
+            "updates.nyraos.com/placeholder": [
+                {"type": "sigstoreSigned", "fulcio": {"subjectEmail": "x@nyra.invalid"}}
+            ],
+            "updates.nyraos.com/open": [{"type": "insecureAcceptAnything"}]
+        }}})
+        .to_string();
+        let signer = |r| policy_signer(policy.as_bytes(), r);
+        assert_eq!(signer("ed").unwrap(), "d@e.f");
+        assert_eq!(signer("ed-evil").unwrap(), "a@b.c");
+        assert_eq!(signer("ed/sub").unwrap(), "a@b.c");
+        // A scope that exists but names no real signer does not fall back to the host's.
+        assert!(signer("placeholder").is_err());
+        assert!(signer("open").is_err());
     }
 
     #[test]
@@ -3100,7 +3154,7 @@ mod install_tests {
             "not json".into(),
         ] {
             let dir = TempDir::new();
-            assert!(policy_files(&dir, &text).check().is_err(), "{text}");
+            assert!(policy_files(&dir, &text).check(REPO).is_err(), "{text}");
         }
     }
 

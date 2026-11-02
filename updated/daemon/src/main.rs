@@ -50,7 +50,7 @@ fn install_once(version: &str, now: u64) -> Result<String, Error> {
     let _lock = Lock::acquire(Path::new(LOCK))?;
     write_stage(Path::new(STAGE), Stage::Checking);
     let cfg = config()?.ok_or_else(|| Error::Config(NOT_CONFIGURED.into()))?;
-    PolicyFiles::system().check()?;
+    PolicyFiles::system().check(&cfg.repository)?;
     let store = Store {
         dir: STATE_DIR.into(),
     };

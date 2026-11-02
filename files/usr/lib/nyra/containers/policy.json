@@ -1,5 +1,9 @@
 {
-  "default": [{ "type": "insecureAcceptAnything" }],
+  "default": [
+    {
+      "type": "insecureAcceptAnything"
+    }
+  ],
   "transports": {
     "docker": {
       "updates.nyraos.com": [
@@ -11,7 +15,65 @@
             "subjectEmail": "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
           },
           "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
-          "signedIdentity": { "type": "matchRepository" }
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "updates.nyraos.com/nyra-base": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
+            "oidcIssuer": "https://accounts.google.com",
+            "subjectEmail": "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
+          },
+          "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "updates.nyraos.com/nyra-base-arm64": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
+            "oidcIssuer": "https://accounts.google.com",
+            "subjectEmail": "nyra-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
+          },
+          "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "updates.nyraos.com/nyra-desktop": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
+            "oidcIssuer": "https://accounts.google.com",
+            "subjectEmail": "nyra-desktop-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
+          },
+          "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "updates.nyraos.com/nyra-desktop-arm64": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caPath": "/usr/lib/nyra/sigstore/fulcio-ca.pem",
+            "oidcIssuer": "https://accounts.google.com",
+            "subjectEmail": "nyra-desktop-image-signer@nyra-signing-3076.iam.gserviceaccount.com"
+          },
+          "rekorPublicKeyPath": "/usr/lib/nyra/sigstore/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
         }
       ]
     }

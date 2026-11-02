@@ -80,6 +80,7 @@ else
   [ -f "$work/registry-test.pub" ] || { echo "build-iso.sh: no test key in $work" >&2; exit 1; }
   install -m 0644 "$work/registry-test.pub" "$tree/files/usr/lib/nyra/containers/test-sigstore.pub"
   jq '(.transports.docker["updates.nyraos.com"][0]) as $real
+      | .transports.docker |= with_entries(select(.key | startswith("updates.nyraos.com/") | not))
       | .transports.docker["updates.nyraos.com"] = [{type: "sigstoreSigned", keyPath: "/usr/lib/nyra/containers/test-sigstore.pub",
                                                      signedIdentity: {type: "matchRepository"}}]
       | .transports.docker["signer-of-the-release.invalid"] = [$real]' \
