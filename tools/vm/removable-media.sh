@@ -160,8 +160,11 @@ run='cp /usr/bin/true "$mu/true.exe" && cp /usr/bin/true "$mt/true.exe" && "$mt/
 # Written without a pause (32 MiB at a time, each flushed) until the stick is pulled out; 2 minutes
 # at most (the loop also ends when the mount is gone: udisks leaves the empty mount point on /run,
 # and dd would go on writing there). Then the writer has stopped, sync returns, the mount is gone, the other stick still works.
+# udisks2 removes the mount point a moment after the stick is gone: the stick goes back in only once it
+# has, or the new mount gets another name ("T14UNTRUST1") and udisksctl may answer "not mounted" to the
+# unmount that follows, while udisks2 is still cleaning up the old mount of the same device number.
 write_unplug='echo "writing to $mu"; timeout 120 sh -c "while mountpoint -q \"\$1\" && dd if=/dev/zero of=\"\$1/t14-write\" bs=1M count=32 conv=fsync status=none; do :; done" sh "$mu" & w=$!; sleep 2; echo "@@UNPLUG""-WRITE@@"; wait $w; rc=$?; echo "writer: exit $rc"; test $rc = 0'
-gone='for i in $(seq 30); do test -e '"$U"' || break; sleep 1; done; ! test -e '"$U"' && echo "the stick is gone" && timeout 60 sync && echo "sync: returned" && for i in $(seq 30); do findmnt "$mu" >/dev/null || break; sleep 1; done; findmnt "$mu"; ! findmnt "$mu" >/dev/null && echo "its mount is gone" && ls "$mt" && journalctl -k -b --no-pager | grep -iE "disconnect|I/O error" | tail -5; '"$running"
+gone='for i in $(seq 30); do test -e '"$U"' || break; sleep 1; done; ! test -e '"$U"' && echo "the stick is gone" && timeout 60 sync && echo "sync: returned" && for i in $(seq 30); do findmnt "$mu" >/dev/null || break; sleep 1; done; findmnt "$mu"; ! findmnt "$mu" >/dev/null && echo "its mount is gone" && for i in $(seq 30); do test -e "$mu" || break; sleep 1; done; ! test -e "$mu" && echo "its mount point is removed" && ls "$mt" && journalctl -k -b --no-pager | grep -iE "disconnect|I/O error" | tail -5; '"$running"
 replug='echo "@@REPLUG""-1@@"; for i in $(seq 30); do test -e '"$U"' && break; sleep 1; done; test -e '"$U"' && udevadm settle && sleep 5 && ! findmnt --source '"$U"' && echo "plugged in again: not mounted" && udisksctl mount -b '"$U"' && findmnt -rno TARGET,OPTIONS --source '"$U"' && findmnt -rno OPTIONS --source '"$U"' | tr , "\n" | grep -qx noexec && udisksctl unmount -b '"$U"''
 # A user in an active local session on seat0, as on a real machine: an autologin on a free virtual
 # console (tty5, a getty drop-in in /run), made the foreground console (loginctl activate); the
