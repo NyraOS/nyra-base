@@ -71,7 +71,7 @@ expires = 2026-11-20
 [[mitigation]]
 id = "TEMP-0000000-153207"
 package = "libheif"
-reason = "GHSA-vr5j-9r89-725x: excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. No fix upstream or in Debian yet (tracker checked 2026-11-08: still open in sid, 1.23.6-2)."
+reason = "GHSA-vr5j-9r89-725x and GHSA-24wx-9w62-c96w (CVE-2026-84384, patched upstream in 1.23.2): excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Not fixed in Debian yet (tracker checked 2026-11-08: still open in sid, 1.23.6-2)."
 expires = 2026-11-22
 
 # openssh 1:10.6p1-1: CVE-2026-110928 has no severity and no fix in Debian (the tracker says
@@ -174,7 +174,7 @@ expires = 2026-11-20
 [[mitigation]]
 id = "CVE-2026-84243"
 package = "glibc"
-reason = "gettext follows `..` and `/` in LANGUAGE, so whoever sets LANGUAGE (and a non-C locale) in the environment of a program that crosses a trust boundary can make it load a crafted .mo file placed somewhere readable. Needs an attacker who controls the environment of a more privileged program and can write a file it can read. Not the case here: sshd is not started (docs/DEFAULTS.md, \"SSH\") and Debian's sshd_config accepts only LANG and LC_*, not LANGUAGE; no sudo (only su is kept, and it is setuid, where glibc ignores LANGUAGE paths); a local user's own programs gain nothing. No fix in Debian yet. Ends with a fixed glibc in the snapshot."
+reason = "gettext follows `..` and `/` in LANGUAGE, so whoever sets LANGUAGE (and a non-C locale) in the environment of a program that crosses a trust boundary can make it load a crafted .mo file placed somewhere readable. Needs an attacker who controls the environment of a more privileged program and can write a file it can read. Not the case here: sshd is not started (docs/DEFAULTS.md, \"SSH\") and Debian's sshd_config does not accept LANGUAGE; no sudo (only su is kept, and it is setuid, where glibc ignores LANGUAGE paths); a local user's own programs gain nothing. No fix in Debian yet. Ends with a fixed glibc in the snapshot."
 expires = 2026-11-22
 
 [[mitigation]]
@@ -197,99 +197,100 @@ package = "python3.14"
 reason = "Regression in how hashlib enforces FIPS algorithms; it affects only OpenSSL in FIPS mode, and Python 3.14.10 only. The image sets up no FIPS mode (no FIPS provider in its OpenSSL configuration). No fix in Debian yet. Ends with a fixed python3.14 in the snapshot."
 expires = 2026-11-22
 
-# libheif 1.23.6-2: further unnamed entries of the Debian tracker (TEMP ids, no description, no score),
-# open in sid next to TEMP-0000000-153207 above; the same exposure applies (see the libheif comment
-# above). Their content is not known; the reason rests on the fact that nothing in the base image
-# decodes images from outside. End: a fixed libheif.
-
-[[mitigation]]
-id = "TEMP-0000000-0A1CC5"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-16F469"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-177737"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-1FC908"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
+# libheif 1.23.6-2: published upstream advisories (GHSA) that the Debian tracker lists as TEMP entries,
+# all fixed upstream in libheif 1.23.7 and not yet in Debian (checked 2026-11-08, with the tracker's notes
+# and the package list of the image: libheif1 with the dav1d and libde265 decoder plugins only, glycin's
+# loaders and thumbnailer, bubblewrap; no libaom, OpenH264, libheif-examples, heif-gdk-pixbuf or encoder
+# plugin). Each entry names its advisory. Expiry as for TEMP-0000000-153207 above.
 
 [[mitigation]]
 id = "TEMP-0000000-25573F"
 package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-35A060"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-625D50"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-75D4C4"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-7FD9AF"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-81967A"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
+reason = "Not in the image: GHSA-fpr5-xpfr-vcq3. The flaw is in the libaom (AV1) codec path. The image has no libaom and no aomdec plugin: only the dav1d and libde265 decoder plugins. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
 expires = 2026-11-22
 
 [[mitigation]]
 id = "TEMP-0000000-9465BB"
 package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
-expires = 2026-11-22
-
-[[mitigation]]
-id = "TEMP-0000000-98A003"
-package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
+reason = "Not in the image: GHSA-jx54-6rm6-2cgj. The flaw is in the libaom (AV1) codec path. The image has no libaom and no aomdec plugin: only the dav1d and libde265 decoder plugins. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
 expires = 2026-11-22
 
 [[mitigation]]
 id = "TEMP-0000000-C11E78"
 package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
+reason = "Not in the image: GHSA-xwcv-cp39-m2w4. The flaw is in the OpenH264 codec path. The image has no OpenH264 and no OpenH264 plugin. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-1FC908"
+package = "libheif"
+reason = "Not in the image: GHSA-gff5-3vgr-p8h2. The flaw is in the gdk-pixbuf loader of libheif. The image has no heif-gdk-pixbuf loader. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-16F469"
+package = "libheif"
+reason = "Not in the image: GHSA-pfcm-ffqg-84hx. The flaw is in the heifio tools of the libheif sources (libheif-examples). The image does not ship libheif-examples. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-35A060"
+package = "libheif"
+reason = "Not in the image: GHSA-9rpf-2x22-78m9. The flaw is in encoding. The image has no libheif encoder plugin and nothing in it encodes HEIF. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-0A1CC5"
+package = "libheif"
+reason = "GHSA-74mj-m37q-h3q9: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-177737"
+package = "libheif"
+reason = "GHSA-73j7-gvm9-x8q6: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-625D50"
+package = "libheif"
+reason = "GHSA-rcqc-842v-m26h: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-81967A"
+package = "libheif"
+reason = "GHSA-hhg3-fxg7-3gxw: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-98A003"
+package = "libheif"
+reason = "GHSA-48p4-gj45-w9v6: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
 expires = 2026-11-22
 
 [[mitigation]]
 id = "TEMP-0000000-C86CAF"
 package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
+reason = "GHSA-7qm8-hj35-269r: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
 expires = 2026-11-22
 
 [[mitigation]]
 id = "TEMP-0000000-E83054"
 package = "libheif"
-reason = "Unnamed tracker entry, open in sid for libheif 1.23.6-2 (checked 2026-11-08). It has no description or score, so the reason rests on the exposure: libheif is reached only by glycin's loaders, which run for a thumbnail or an icon check and nothing in the base image decodes images from outside (see TEMP-0000000-153207)."
+reason = "GHSA-2g6j-vhr6-6wrj: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-75D4C4"
+package = "libheif"
+reason = "GHSA-hpg4-g2gc-pq42: heap buffer overflow while decoding a crafted file. Decoding happens only inside glycin's loader sandbox (bubblewrap is in the image), only when a thumbnail or the icon check is asked for, and nothing in the image decodes images from outside. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-7FD9AF"
+package = "libheif"
+reason = "GHSA-35mc-3887-rr37: use-after-free while decoding a crafted file. Decoding happens only inside glycin's loader sandbox (bubblewrap is in the image), only when a thumbnail or the icon check is asked for, and nothing in the image decodes images from outside. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
 expires = 2026-11-22
 
 # Build-time crates of bootc v1.16.13 (the Cargo.lock in the SBOM is the one of bootc's whole workspace,
