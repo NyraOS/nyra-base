@@ -20,52 +20,10 @@ reason = "CPU/memory exhaustion in Pod::Text. Pod::Text is in perl-modules-5.42,
 expires = 2027-01-07
 
 [[mitigation]]
-id = "CVE-2026-85498"
-package = "policykit-1"
-reason = "Fixed in the image, still listed by the Debian tracker. The stack buffer underflow is in read_cookie() of the polkit agent helper (polkit-agent-helper-1, package polkitd); the tracker lists policykit-1 128-1 as unfixed, but polkit 128 contains the fix (upstream commit eea1729, in the 128 release notes), the source of 128-1 from the snapshot has it, and so has the helper binary. sbom.py fails the build if the manifest lists polkitd older than 128-1, and the Containerfile if the helper is setuid (the socket polkit-agent-helper.socket is enabled, docs/DEFAULTS.md). Ends when the tracker marks 128-1 as fixed."
-expires = 2026-12-20
-
-[[mitigation]]
 id = "CVE-2025-8941"
 package = "pam"
 reason = "Symlink/race in pam_namespace. No file in the image's /etc/pam.d (login, passwd, su, runuser, other...) or /usr/lib/pam.d loads pam_namespace.so, so the module never runs."
 expires = 2027-01-07
-
-# Waiting for a Debian fix: exploitable only with an attacker-controlled X server, a crafted
-# file or a specific API use that nothing in the base image does. End: the fixed Debian version
-# reaches our snapshot.
-
-[[mitigation]]
-id = "CVE-2026-88806"
-package = "libx11"
-reason = "Buffer overflow while handling replies from a malicious X server. The base image runs no X server and no X client sessions (libx11 is only a library dependency). Fixed upstream in libX11 1.8.14."
-expires = 2026-11-08
-
-[[mitigation]]
-id = "CVE-2026-88807"
-package = "libxrender"
-reason = "Heap overflow while handling replies from a malicious X server. The base image runs no X server and no X client sessions (libxrender is only a library dependency). Fixed upstream in libXrender 0.9.13."
-expires = 2026-11-08
-
-# expat 2.9.0-1: upstream has merged fixes, but there is no libexpat release and no Debian upload
-# yet. libexpat1 is in the image through dbus-daemon, polkitd, fontconfig and python3.14-minimal. The
-# only XML those parse on their own is root-owned configuration and policy files (dbus and polkit
-# policy, fonts.conf); no program of the base image parses XML from outside. The installer ISO does
-# not ship libexpat1 (checked in its SBOM), so tools/sbom/mitigations-iso*.toml need no entry. Renewed
-# on 2026-10-27, when the Debian tracker still listed sid (2.9.0-1) as open for both, with no fixed
-# version in any release; short expiry. End: a fixed expat in Debian and a snapshot bump.
-
-[[mitigation]]
-id = "CVE-2026-113351"
-package = "expat"
-reason = "Denial of service when a parser is reset and reused. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet (the tracker listed sid, expat 2.9.0-1, as open with no fixed version on 2026-10-27)."
-expires = 2026-11-20
-
-[[mitigation]]
-id = "CVE-2026-115506"
-package = "expat"
-reason = "Denial of service from the entity-expansion limit that triggers too late. Only libexpat1 is in the image, used by dbus-daemon, polkitd, fontconfig and python3.14-minimal. They parse XML written by root (message bus configuration and service files, polkit action files, fonts.conf); the image has no program that parses XML from outside with Python or libexpat, and no network service. A user's own fontconfig file can only slow that user's own processes. Upstream has merged a fix; Debian has no fixed upload yet (the tracker listed sid, expat 2.9.0-1, as open with no fixed version on 2026-10-27)."
-expires = 2026-11-20
 
 # wget 1.25.0-3: fixed upstream (commits 37a40fc, c2640fe, dd692d9), no Debian upload yet. wget is in
 # the base image only for users who start it; nothing in the image runs it (no unit, timer or script).
@@ -113,7 +71,7 @@ expires = 2026-11-20
 [[mitigation]]
 id = "TEMP-0000000-153207"
 package = "libheif"
-reason = "GHSA-vr5j-9r89-725x: excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. No fix upstream or in Debian yet (tracker checked 2026-11-08: still open in sid, 1.23.6-2)."
+reason = "GHSA-vr5j-9r89-725x and GHSA-24wx-9w62-c96w (CVE-2026-84384, patched upstream in 1.23.2): excessive CPU time while decoding a crafted uncompressed (unci) image, left over from an earlier fix; CPU use only. Needs a crafted file decoded through libheif; nothing in the base image decodes untrusted images. Not fixed in Debian yet (tracker checked 2026-11-08: still open in sid, 1.23.6-2)."
 expires = 2026-11-22
 
 # openssh 1:10.6p1-1: CVE-2026-110928 has no severity and no fix in Debian (the tracker says
@@ -178,19 +136,6 @@ package = "linux"
 reason = "DRM GEM objects can be used to consume memory (local denial of service, no score). Known upstream since 2015 without a fix; the impact is limited to memory exhaustion by a local user."
 expires = 2027-01-07
 
-# BPF verifier zero-extension bug (upstream 7ce090afbf72). Reachable on x86_64; needs root or CAP_BPF.
-[[mitigation]]
-id = "CVE-2026-98869"
-package = "linux"
-reason = "BPF verifier can miss a zero extension of a 32-bit result, so a register can hold upper bits the verifier does not expect. Reachable on x86_64 (one case is zero-extended by the verifier on every architecture); arm64's JIT zero-extends by itself. Loading a BPF program needs root or CAP_BPF (unprivileged BPF stays off, Debian default), so the effect is a local root reaching kernel memory despite lockdown. Unfixed in Debian forky/sid (7.2.12-1; the tracker listed sid as open on 2026-10-27); bookworm and trixie do not contain the code. End: a Debian kernel with the fix (7.3 or a backport)."
-expires = 2026-11-20
-
-[[mitigation]]
-id = "CVE-2023-37454"
-package = "linux"
-reason = "Use-after-free write in udf_put_super and udf_close_lvid when a crafted UDF image is mounted. Unfixed in Debian: the tracker lists it as vulnerable in every release and the fixed version as (unfixed), checked 2026-10-26. The image allows udf on removable media (90-nyra-udisks.rules; the module is udf.ko in linux-modules 7.2.12-1, not blacklisted), so the way in is a crafted UDF stick or disc, plugged in by someone with physical access and mounted by a user: udisks2 mounts only when asked, by root or by a user in an active local session, with no password for a removable medium, nosuid and nodev, noexec unless the medium is in the list of trusted media; nothing automounts on plug-in. It is not reachable from the network and not part of the boot or update trust chain. Ends when the tracker lists a fixed version that the snapshot has, or if udf leaves the file systems allowed on removable media."
-expires = 2026-11-20
-
 # zstd crates of bootc v1.16.13 (Cargo.lock; no other Cargo.lock of the repository has zstd). Fixed
 # releases exist (zstd 0.14.3, zstd-safe 8.2.0, zstd-sys 2.1.2) but are a new major version of the
 # crates, which bootc's dependencies (composefs-rs, async-compression's compression-codecs 0.4.38)
@@ -222,3 +167,150 @@ id = "RUSTSEC-2026-0410"
 package = "zstd-sys"
 reason = "Only for the wasm32 target: the shim is behind #[cfg(target_arch = \"wasm32\")] in zstd-sys. bootc is built for x86_64 and aarch64 Linux only, so the shim is not compiled."
 expires = 2026-11-20
+
+# glibc 2.43-7 and json-glib 1.10.8+ds-2: open in the Debian tracker for sid, no fixed version.
+# Checked against the tracker data of 2026-11-08 and the 20261108T144109Z snapshot.
+
+[[mitigation]]
+id = "CVE-2026-84243"
+package = "glibc"
+reason = "gettext follows `..` and `/` in LANGUAGE, so whoever sets LANGUAGE (and a non-C locale) in the environment of a program that crosses a trust boundary can make it load a crafted .mo file placed somewhere readable. Needs an attacker who controls the environment of a more privileged program and can write a file it can read. Not the case here: sshd is not started (docs/DEFAULTS.md, \"SSH\") and Debian's sshd_config does not accept LANGUAGE; no sudo (only su is kept, and it is setuid, where glibc ignores LANGUAGE paths); a local user's own programs gain nothing. No fix in Debian yet. Ends with a fixed glibc in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "CVE-2026-120194"
+package = "json-glib"
+reason = "Denial of service (endless loop) in json_path_query() with an attacker-chosen JSONPath slice with a negative step. Only the library (libjson-glib-1.0-0) is in the image, as a dependency of other packages; nothing in the image evaluates JSONPath expressions from outside, and a hang would stop only the one process of the local user who ran it. No fix in Debian yet. Ends with a fixed json-glib in the snapshot."
+expires = 2026-11-22
+
+# sqlite3 3.54.1-2 and python3.14 3.14.10-1: the flaws are in tools or a mode the image does not use.
+
+[[mitigation]]
+id = "CVE-2026-119586"
+package = "sqlite3"
+reason = "Command injection in the `.recover` command of the sqlite3 command-line shell when its output is piped back into sqlite3. The image has only the library (libsqlite3-0), not the sqlite3 shell package. No fix in Debian yet. Ends with a fixed sqlite3 in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "CVE-2026-119170"
+package = "python3.14"
+reason = "Regression in how hashlib enforces FIPS algorithms; it affects only OpenSSL in FIPS mode, and Python 3.14.10 only. The image sets up no FIPS mode (no FIPS provider in its OpenSSL configuration). No fix in Debian yet. Ends with a fixed python3.14 in the snapshot."
+expires = 2026-11-22
+
+# libheif 1.23.6-2: published upstream advisories (GHSA) that the Debian tracker lists as TEMP entries,
+# all fixed upstream in libheif 1.23.7 and not yet in Debian (checked 2026-11-08, with the tracker's notes
+# and the package list of the image: libheif1 with the dav1d and libde265 decoder plugins only, glycin's
+# loaders and thumbnailer, bubblewrap; no libaom, OpenH264, libheif-examples, heif-gdk-pixbuf or encoder
+# plugin). Each entry names its advisory. Expiry as for TEMP-0000000-153207 above.
+
+[[mitigation]]
+id = "TEMP-0000000-25573F"
+package = "libheif"
+reason = "Not in the image: GHSA-fpr5-xpfr-vcq3. The flaw is in the libaom (AV1) codec path. The image has no libaom and no aomdec plugin: only the dav1d and libde265 decoder plugins. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-9465BB"
+package = "libheif"
+reason = "Not in the image: GHSA-jx54-6rm6-2cgj. The flaw is in the libaom (AV1) codec path. The image has no libaom and no aomdec plugin: only the dav1d and libde265 decoder plugins. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-C11E78"
+package = "libheif"
+reason = "Not in the image: GHSA-xwcv-cp39-m2w4. The flaw is in the OpenH264 codec path. The image has no OpenH264 and no OpenH264 plugin. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-1FC908"
+package = "libheif"
+reason = "Not in the image: GHSA-gff5-3vgr-p8h2. The flaw is in the gdk-pixbuf loader of libheif. The image has no heif-gdk-pixbuf loader. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-16F469"
+package = "libheif"
+reason = "Not in the image: GHSA-pfcm-ffqg-84hx. The flaw is in the heifio tools of the libheif sources (libheif-examples). The image does not ship libheif-examples. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-35A060"
+package = "libheif"
+reason = "Not in the image: GHSA-9rpf-2x22-78m9. The flaw is in encoding. The image has no libheif encoder plugin and nothing in it encodes HEIF. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-0A1CC5"
+package = "libheif"
+reason = "GHSA-74mj-m37q-h3q9: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-177737"
+package = "libheif"
+reason = "GHSA-73j7-gvm9-x8q6: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-625D50"
+package = "libheif"
+reason = "GHSA-rcqc-842v-m26h: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-81967A"
+package = "libheif"
+reason = "GHSA-hhg3-fxg7-3gxw: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-98A003"
+package = "libheif"
+reason = "GHSA-48p4-gj45-w9v6: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-C86CAF"
+package = "libheif"
+reason = "GHSA-7qm8-hj35-269r: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-E83054"
+package = "libheif"
+reason = "GHSA-2g6j-vhr6-6wrj: CPU or deadlock denial of service while decoding a crafted file; no memory corruption. Needs a file decoded through libheif, and nothing in the base image decodes images from outside; the effect is limited to the one decoding process. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-75D4C4"
+package = "libheif"
+reason = "GHSA-hpg4-g2gc-pq42: heap buffer overflow while decoding a crafted file. Decoding happens only inside glycin's loader sandbox (bubblewrap is in the image), only when a thumbnail or the icon check is asked for, and nothing in the image decodes images from outside. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "TEMP-0000000-7FD9AF"
+package = "libheif"
+reason = "GHSA-35mc-3887-rr37: use-after-free while decoding a crafted file. Decoding happens only inside glycin's loader sandbox (bubblewrap is in the image), only when a thumbnail or the icon check is asked for, and nothing in the image decodes images from outside. Upstream fixed in libheif 1.23.7; not fixed in Debian yet (tracker checked 2026-11-08: open in sid, 1.23.6-2). Ends with libheif 1.23.7 or later in the snapshot."
+expires = 2026-11-22
+
+# Build-time crates of bootc v1.16.13 (the Cargo.lock in the SBOM is the one of bootc's whole workspace,
+# but the build installs only the binaries of `make bin install`: bootc, system-reinstall-bootc and
+# initramfs-setup; ci/build-bootc.sh). Checked in the sources of bootc v1.16.13, 2026-11-08.
+
+[[mitigation]]
+id = "RUSTSEC-2026-0414"
+package = "pulldown-cmark"
+reason = "Exponential growth of the event stream with Options::ENABLE_WIKILINKS. pulldown-cmark is used only through mandown by crates/xtask, which `make bin` runs to turn bootc's own markdown man pages into roff at build time; it is not installed in the image, and its input is the repository's own text. Ends with a bootc whose lock has a fixed pulldown-cmark."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "RUSTSEC-2026-0433"
+package = "pulldown-cmark"
+reason = "Quadratic parsing of nested image wikilinks with ENABLE_WIKILINKS. Same exposure as RUSTSEC-2026-0414: only the man page generator xtask (through mandown) uses pulldown-cmark, at build time, on bootc's own text; it is not in the image. Ends with a bootc whose lock has a fixed pulldown-cmark."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "RUSTSEC-2026-0418"
+package = "libz-sys"
+reason = "The build script prints the build environment when compiled with cc 1.6.0 or later, and cargo keeps that output under target/. bootc's Cargo.lock has cc 1.2.61, so the output does not contain the environment; and the build runs in a container that gets only BOOTC_REF, BOOTC_COMMIT and SOURCE_DATE_EPOCH, and only bootc.tar (not target/) leaves it (ci/build-bootc.sh, image.yml). The shipped binaries are unaffected. Ends with a bootc whose lock has libz-sys 1.1.31 or later."
+expires = 2026-11-22
