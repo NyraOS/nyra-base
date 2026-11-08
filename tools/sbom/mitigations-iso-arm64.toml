@@ -69,14 +69,16 @@ package = "linux"
 reason = "Use-after-free in the Bluetooth modules, local code execution. The one process that is not root is the registry (a dynamic user: no capability but binding port 80, no new privileges, no device, no namespaces, a system-call filter, only IPv4 and Unix sockets), which serves files from the medium. Its address families are limited to IPv4 and Unix sockets, so it cannot open a Bluetooth socket; the modules load only with hardware."
 expires = 2027-01-07
 
-[[mitigation]]
-id = "CVE-2026-98869"
-package = "linux"
-reason = "eBPF verifier zext_dst bug, reachable through the bpf() system call. systemd loads BPF programs in the session, but they are its own, as root. Unprivileged bpf() is off in Debian's kernel (kernel.unprivileged_bpf_disabled, checked by the boot test), so the registry, the only unprivileged process, cannot load a program. The Debian tracker listed sid (linux 7.2.12-1) as open on 2026-10-27. Ends when a Debian kernel with the fix is in the snapshot."
-expires = 2026-11-20
+# glibc 2.43-7 and sqlite3 3.54.1-2: open in the Debian tracker for sid (checked 2026-11-08).
 
 [[mitigation]]
-id = "CVE-2023-37454"
-package = "linux"
-reason = "Use-after-free write in udf_put_super and udf_close_lvid when a crafted UDF image is mounted. The Debian tracker lists it as vulnerable for 7.2.12-1 and unfixed (checked 2026-10-26). The medium is mounted as iso9660, a fixed type (run-iso.mount); nothing else mounts a file system it did not make (no automounter, no udisks), and the module loads only when something mounts that type. Whoever has physical access can already edit the boot medium or open a shell from the menu and run mount as root (docs/ISO.md, \"The boot chain, and what Secure Boot covers\"). Ends when the tracker lists a fixed version that the snapshot has, or at the expiry."
-expires = 2026-11-20
+id = "CVE-2026-84243"
+package = "glibc"
+reason = "gettext follows `..` and `/` in LANGUAGE, so whoever controls the environment of a program that crosses a trust boundary can make it load a crafted .mo file. The installer system has no login, no network and no ssh server. No fix in Debian yet. Ends with a fixed glibc in the snapshot."
+expires = 2026-11-22
+
+[[mitigation]]
+id = "CVE-2026-119586"
+package = "sqlite3"
+reason = "Command injection in the `.recover` command of the sqlite3 command-line shell. The installer system has only the library (libsqlite3-0), not the shell. No fix in Debian yet. Ends with a fixed sqlite3 in the snapshot."
+expires = 2026-11-22

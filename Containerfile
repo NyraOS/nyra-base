@@ -319,7 +319,7 @@ RUN for p in ntpd-rs nyra-editor nyra-updated nyra-zlib pam-totp; do \
 # (90-nyra-udisks.rules); it and polkitd start through D-Bus, not at boot (our preset).
 # Passwords through polkit (docs/DEFAULTS.md): polkit-agent-helper.socket is on, so the helper must
 # have the fix for CVE-2026-85498 (stack buffer underflow in read_cookie(), fixed in polkit 128,
-# upstream commit eea1729; the Debian tracker still lists 128-1 as vulnerable, tools/sbom/mitigations.toml)
+# upstream commit eea1729; the Debian tracker first listed 128-1 as vulnerable, and lists it as fixed now)
 # and must not be setuid: it runs as root only when systemd starts it for a connection to the socket.
 # The version is not checked here (mkosi removes the dpkg database): tools/sbom/sbom.py fails the
 # build on a manifest with polkitd older than 128-1. Systemd's empower.rules says yes to everything for
