@@ -1,242 +1,299 @@
 # Automatic security updates (design)
 
 Status: proposal, nothing here is implemented. Scope: the base image (`nyra-base`, `nyra-base-arm64`) and the
-desktop image that is pinned on top of it. Feature and application updates are out of scope.
+desktop image pinned on top of it. Feature and application updates are out of scope.
 
 **Goal.** When Debian ships a fix for something in an image, a machine on `stable` gets it within 48 hours
 (critical) or 7 days (high), with no human in the loop unless a stage fails or a vulnerability has no fix.
 
 ## Why now
 
-The Debian snapshot in `mkosi/mkosi.conf` (`Snapshot=`) is the only way fixes enter the image. It was set by hand and
-stayed 13 days behind: Debian had a newer kernel and expat, the weekly scan (docs/SBOM.md) went red with about 200
-blocking findings, and the fix was a chain of manual steps over a day: a bump pull request, reviews, the release
-run, a pull request in `nyra-updates` to promote it (a production deploy, merged by a person), and a pull request
-in the desktop to move its pin. Smaller frictions seen on the way:
-
-- the weekly report counted the same advisory once for the image and once for the ISO, and about 140 kernel
-  advisories blocked only because they had no score yet ("unknown blocks", docs/SBOM.md);
-- `snapshot.debian.org` answers 503 when asked too often;
-- re-running a publish can hit an object-lock error on an object that already exists;
-- every exception had to be renewed by hand every 14 days, and an expired one fails the build, including the build of
-  the very pull request that would fix the finding.
+`Snapshot=` in `mkosi/mkosi.conf` is the only way Debian fixes enter the image. It was set by hand and stayed 13 days
+behind: Debian had a newer kernel and expat, the weekly scan (docs/SBOM.md) went red with about 200 blocking
+findings, and the cure was a chain of manual steps over about a day: a bump pull request and its reviews, the release
+run, a pull request in `nyra-updates` to promote it (a production deploy, merged by a person) and one in the desktop
+to move its pin. Smaller frictions: the weekly report counted an advisory once for the image and once for the ISO and
+blocked on about 140 kernel advisories that had no score yet; `snapshot.debian.org` answers 503 when asked too often;
+re-running a publish can hit an object-lock error; every exception was renewed by hand every 14 days, and an expired
+one fails the build, including the build of the pull request that would remove its cause.
 
 ## The pipeline
 
-Every stage already exists except the ones marked **new**. Times are UTC.
+Every stage exists today except those marked **new**. Times are UTC.
 
 | # | Stage | What happens | Human? |
 |---|---|---|---|
-| 1 | **Watch** (new) | Every 6 hours, read-only: fetch the newest snapshot, verify it (below), scan the package list of the current image against it. If it fixes at least one finding of severity medium or above, or the current snapshot is 14 days old, go to 2. Otherwise stop. | no |
-| 2 | **Bump PR** (new) | The bot opens a pull request that changes only the `Snapshot=` line. | no |
-| 3 | **Build and tests** | `image.yml` as for any pull request. | no |
-| 4 | **Merge** (new) | If the bump pull request passes the rules of "Who merges what", the bot merges it. | no |
-| 5 | **Release** | The push to `main` is a release run: build, KMS signing, tests on the signed image, `publish` to the registry (`dev`). | no |
-| 6 | **Record** (new) | A pull request in `nyra-updates` adds the published version and digest to `releases.json`, which is what moves `dev`. | phase 1 |
-| 7 | **Soak** | The nightly Titanic run (02:17) tests `main`. A night counts for version V when it is green (all 15 tests) with V's `Snapshot=`. | no |
-| 8 | **Promote** (new) | After the first green night V goes to `beta`, after the second to `stable` (the first, for a fixed critical finding). One pull request each, in `nyra-updates`, with the evidence in its body. | phase 1 |
-| 9 | **Desktop** (new) | The desktop repository sees a verified new base version and opens a pin-bump pull request; its own build and tests decide. | no |
-| 10 | **Rollback** | Halt, retract or revert with the channel files that exist today ("Rollback"). | see below |
+| 1 | **Watch** (new) | Every 6 hours, read-only: fetch and verify the newest snapshot, scan the current package list against it. If it fixes a finding of medium or above, or `Snapshot=` is 14 days old, go to 2. | no |
+| 2 | **Bump PR** (new) | The bot opens one pull request (one bot branch; a newer bump closes the older one) that changes only `Snapshot=`. | no |
+| 3 | Build and tests | `image.yml` as for any pull request. | no |
+| 4 | **Merge** (new) | The bot merges it if the rules of "Who merges what" hold. | no |
+| 5 | Release | The push to `main` is a release run: build, KMS signing, tests on the signed image, `publish` (`dev`). | no |
+| 6 | **Record** (new) | A pull request in `nyra-updates` adds version and digest to `releases.json`; that moves `dev`. | phase 1 |
+| 7 | Soak | The nightly Titanic run tests `main` (a night counts only by the rules of "Promotion"). | no |
+| 8 | **Promote** (new) | `beta` after the first counted night, `stable` after the second (the first for a critical fix). One pull request each in `nyra-updates`. | phase 1 |
+| 9 | **Desktop** (new) | The desktop opens a pin-bump pull request for a verified, recorded base version. | no |
+| 10 | Rollback | Halt, retract or revert with the channel files that exist today. | see below |
 | 11 | **Alert** (new) | An issue, only in the cases of "Alerting". | - |
 
-Time from a Debian fix to `stable`: at most 6 h for the watch, about 4 h for the bump pull request and the release
-run (pull request about 1 h, release run about 2 h 20 min, measured), then the nights: about 36 h for a critical fix
-(one night), about 3 days for the rest (two). That meets the 48 h and 7 day rules. A critical fix that appears while a
-release is running waits for it: releases are one at a time.
+Time from a Debian fix to `stable`: up to 6 h for the watch, about 4 h for the bump pull request (about 1 h) and the
+release run (about 2 h 20 min), then the nights: about 36 h for a critical fix, about 3 days otherwise. That meets
+the 48 h and 7 day rules. Releases are one at a time, so a fix that appears during one waits for it.
 
-### 1-2. Choosing the snapshot
+### Choosing the snapshot (stage 1)
 
-The watch job uses Python's standard library, `gpgv` and a committed copy of the Debian archive keyring fingerprints
-(changing them is a human change). It picks the newest snapshot of `unstable` that is at least 6 hours old (the
-archive and the snapshot service need a moment; a bad upload is often pulled within hours), and requires:
+The watch job is Python's standard library and `gpgv`. The keys are the Debian archive keyring of the pinned tools
+image (the one `mkosi` and apt use), whose fingerprints are committed and checked; never a key taken from the snapshot
+itself. Changing them is a human change. It takes the newest `unstable` snapshot that is at least 6 hours old (a bad
+upload is often pulled within hours) and requires:
 
-- `InRelease` of that snapshot verifies against the keyring, `Suite: unstable`, `Codename: sid`;
-- its `Date` is later than the `Date` of the current snapshot (no replay, no downgrade) and not in the future, and the
-  timestamp in the URL agrees with it;
-- the diff is exactly one changed line in `mkosi/mkosi.conf`, in the form `Snapshot=YYYYMMDDTHHMMSSZ`, and a newer one.
+- `InRelease` verifies, `Suite: unstable`, `Codename: sid`;
+- its `Date` is later than the current snapshot's `Date`, and `Date <= URL timestamp <= Date + 12 h`;
+- the pull request diff is exactly the `Snapshot=` line (the rule of `bump-scope`, below).
 
-`mkosi` then installs from that snapshot with apt, which verifies the same signatures again. Requests are few and
-small (`InRelease`, the package index the scanner already reads); on 503 or a timeout the job retries with growing
-pauses and, if it still fails, ends without error: the next run tries again. Being unable to reach the service is not
-an incident; being behind the deadlines is (see "Alerting"). If the newest snapshot does not build (unstable can break
-for a day), the pull request stays red and the next run opens a newer one. There is no bisecting.
+The list of snapshots comes from an unauthenticated service. That is acceptable: the worst it can do is hide a newer
+snapshot (the staleness alerts catch that) or offer an older one (refused by the `Date` rule). A transport error, a 503
+or a truncated file means retry with growing pauses, then end the run without error. Only a signature that verifies
+wrong is an integrity failure. If the newest snapshot does not build, the pull request stays red and a newer one
+replaces it later; there is no bisecting.
 
-### 3. The scan gate: what blocks
+### The scan gate (what blocks)
 
-The scan today (`tools/sbom/sbom.py`) blocks on critical, high and unknown. That is right for a person who reads the
-report and wrong for a robot, because most of what it reports cannot be fixed by the robot. The report gets two classes:
+`tools/sbom/sbom.py` blocks on critical, high and unknown. That suits a person reading a report, not a robot, because
+most findings cannot be cured by a bump. The report gets two classes, keyed by (advisory with its aliases, source
+package, artifact):
 
-| Class | Meaning | Robot's answer |
+| Class | Meaning | Answer |
 |---|---|---|
-| **Fixable** | the tracker lists a fixed version in `sid` that is newer than ours | the cure is a snapshot that has it: bump. This class starts the 48 h / 7 day clock. |
-| **Unfixed** | open or undetermined, no fixed version | nothing the robot can do: never blocks a release, is reported, can raise an alert |
+| **Fixable** | the tracker lists a fixed version in `sid` newer than ours | bump; starts the 48 h / 7 day clock |
+| **Unfixed** | open or undetermined | nothing the robot can do; reported, may raise an alert |
 
-Rules:
-
-- **What the gate blocks**: a release is not promoted to `stable` if it has a fixable finding of critical, high or
-  unknown severity that is *not also in the version `stable` serves now*. Never promote a regression, never hold back
-  an improvement: a release that fixes five of six findings goes out and the sixth is fixed by the next bump.
-  Publishing to `dev` and `beta` is never held by the scan (testers must be able to see the fix).
-- **Unscored kernel advisories.** The tracker often has no CVSS vector for kernel advisories for weeks. The score is
-  taken from, in order: the CVSS vector, Debian's urgency for `sid`. Fixable and unscored counts as high (the bump
-  fixes it anyway). Unfixed and unscored is **pending**: listed, never blocking, and an exception is not needed. When
-  it is scored, or its fix appears, the normal rules apply. Honest cost: an unfixed advisory that is really critical
-  stays below the alert line until Debian or a CVSS vector says so. We cannot fix it earlier anyway, and a person
-  reads the report.
-- **One count.** The summary counts an advisory once per source package, and lists in which artifacts it appears
-  (image, x86_64 ISO, aarch64 ISO). Exceptions stay per artifact, as today.
-- **Expired exceptions** stop counting (their finding is blocking again, as now) but never fail the build by
-  themselves. Today an expired entry stops the pull request that would remove the cause.
-- **Exceptions that became fixed** are removed by the bot: a pull request that deletes whole `[[mitigation]]` blocks
-  the scan reports as unneeded and nothing else. Deleting an exception can only make the gate stricter, so it may merge
-  by itself.
-- **Renewing and adding an exception** stays a human decision with a security review, always: it accepts a risk. What
-  changes is the default expiry, 30 days instead of 14 (the limit stays 90): the daily bump removes an exception the day
-  Debian fixes the finding, so a long expiry cannot outlive a fix, and the chore falls from about 26 renewals a year
-  per exception to 12. The reason in the entry still decides.
-- `--vulnerabilities=gate` is a third mode next to `report` and `block`: it blocks exactly the first rule. Before the
-  first public release the release path goes to `gate`, not to `block` (docs/SBOM.md), because `block` would stop a
-  release for a finding no snapshot can cure.
+- **Where it is enforced.** In one place: the check that a pull request promoting a version to `stable` must pass in
+  `nyra-updates`. It recomputes everything there, never trusting the pull request body. Publishing to `dev` and
+  promoting to `beta` are never held by the scan, so testers see a fix at once. The release path of `image.yml`
+  stays in `report` (a release is signed whatever the scan says, as today); the switch before the first public release
+  (docs/SBOM.md) becomes: the promotion check, not the signing jobs, blocks.
+- **What it blocks.** A fixable critical, high or unknown finding in V that is not also in the version `stable` serves
+  now. Never promote a regression, never hold back an improvement.
+- **Inputs.** The findings of the `stable` version come from its own SBOM inputs (the package list and Cargo.lock
+  files of its release run, kept 90 days) scanned with today's tracker data, so both sides use the same data. The check
+  fails closed when those inputs are missing or expired, or when tracker data is unreachable, empty or truncated.
+- **Critical path.** One night instead of two only if the recomputed result shows the critical finding in `stable` and
+  fixed in V.
+- **Unscored advisories.** Kernel advisories often have no CVSS vector for weeks. Score = CVSS vector, else Debian's
+  urgency for `sid`. Fixable and unscored counts as high. Unfixed and unscored is *pending*: listed with count and age
+  in the status issue, never blocking, no exception needed. Honest cost: an unfixed advisory that is really critical
+  stays below the alert line until Debian or a vector says so; we could not cure it earlier, and a person reads the
+  report.
+- **One count.** The summary counts an advisory once per source package and lists the artifacts it is in. Exceptions
+  stay per artifact.
+- **Expired exceptions** stop counting (their finding blocks again) but no longer fail the build by themselves.
+- **Fixed exceptions** are deleted by the bot (a pull request that only deletes `[[mitigation]]` blocks the scan
+  reports as unneeded). Deleting can only make the gate stricter.
+- **Adding or renewing** an exception stays human, with a security review. The default expiry becomes 30 days
+  (limit 90): the bot deletes an exception the day Debian fixes the finding, so a long expiry cannot outlive a fix,
+  and renewals fall from about 26 to 12 a year per exception.
 
 ## Who merges what
 
-Branch protection and the required checks of every repository stay as they are, with one addition (below). The
-bot is a GitHub App, so no pull request ever has the bot as its approver and nobody approves their own change.
+The bot is a GitHub App, so it is never the approver of its own work. Approvals are not required in these
+repositories today (docs/SIGNING.md, "Who can sign"), so what the bot may merge is limited by mechanical checks, not
+by review. Anything the bot opens that is not one of the shapes below is left as a **draft** and never merges.
 
 | Change | Phase 1 | Why |
 |---|---|---|
-| Bump pull request in `nyra-base` (only `Snapshot=`, newer, verified, all required checks green) | **bot merges** | It selects data from a signed archive, the diff is one line, and the same build and tests as any change decide. A person adds nothing to that. |
-| Deleting exceptions that became fixed | **bot merges** | Only makes the gate stricter. |
-| Adding or renewing an exception; any change to scanner, workflows, keys, signing, `policy.json` | human | Accepts a risk or changes what the checks trust. |
-| Record a release in `nyra-updates` (`releases.json`) | human, one tap | Merge deploys: CI signs the channel sheet and writes it to production. The pull request body carries the proof; the merge is one click. |
-| Promote to `beta`, to `stable` | human, one tap | The same. Stable is what users run. |
-| Halt (`halted: true`) | human, one tap | Same path; see phase 2. |
-| Retract, revert to `previous`, change the channel sheet key | human | Moves machines that already run the version, or changes what machines trust. |
-| Desktop pin bump (only the pin files, a base version published and verified) | **bot merges** after the desktop's checks | Same as the base: the pin is the verified digest, the desktop's build and tests decide. |
-| arm64 `stable` promotion | human | The arm64 gate (docs/ARM64.md) is not met. |
+| `nyra-base`: bump (shape B1) | **bot merges** | Data from a signed archive, one line, decided by the same build and tests as any change. |
+| `nyra-base`: delete fixed exceptions (shape B2) | **bot merges** | Only stricter. |
+| `nyra-desktop`: pin bump (shape D1) | **bot merges**, after the desktop's own build and test checks (now required) | Same reasoning. |
+| `nyra-updates`: record, promote, halt (shapes U1 to U3) | **human**, one tap | A merge deploys: CI signs the sheet and writes it to production. The bot only opens the pull request, from its own fork. |
+| New or renewed exception; scanner, workflows, keys, signing, policy | human | Accepts a risk or changes what the checks trust. |
+| Retract, revert, sheet key; arm64 `stable` (gate of docs/ARM64.md not met) | human | Moves machines or changes trust. |
 
-**Phase 2** (decision for the owner, only after the pipeline has run 14 days without a false promotion): the bot also
-merges, in `nyra-updates`, exactly three shapes: record a release, promote, halt. Each has a check there that
-recomputes the evidence from public data and fails the pull request if the body is wrong (below). Until then the
-owner's rule that automation does not merge production deploys holds, so phase 1 costs one tap per release and per
-promotion; with a release only when a fix exists, that is a few taps a week.
+### The shapes (checked by `bump-scope`)
+
+`bump-scope` is a required check in `nyra-base`, `nyra-updates` and `nyra-desktop`, a `pull_request_target`
+workflow with `contents: read` and `pull-requests: read` only. It checks out nothing from the pull request, never puts
+a title, body or branch name into a shell, and evaluates exactly the event's `head.sha` on `opened`, `synchronize`,
+`reopened` and `edited`. It applies when the **author or the sender of the event is the App** (by numeric App id,
+never by name or branch prefix); for everybody else it passes. Common rule: the files list has exactly the allowed
+files, each with status `modified`, no `previous_filename`, and mode `100644` (never a symlink `120000`, a submodule
+`160000` or an executable).
+
+- **B1** (`nyra-base`): one file, `mkosi/mkosi.conf`. The head file equals the base file with only the `Snapshot=`
+  line replaced by `Snapshot=YYYYMMDDTHHMMSSZ`, a later date. The whole file is compared, not a patch.
+- **B2**: only `tools/sbom/mitigations.toml`, `mitigations-iso.toml` or `mitigations-iso-arm64.toml`. Both sides are
+  parsed as TOML; the head entries are an exact subset of the base entries (same fields), at least one removed.
+- **D1** (`nyra-desktop`): only `base/pin` (and `base/pin-arm64`, `base/manifest*.json` when the pin changes them):
+  the four lines of the pin keep their form, the version is higher, and the digest equals the digest recorded for that
+  version in `nyra-updates` `releases.json` on `main`.
+- **U1** (`nyra-updates`, record): only `channels/<repo>/releases.json`: one added key `"<version>": "sha256:..."`,
+  unique (a re-run keeps its run number and may give another digest: the second never replaces the first), and
+  its digest is the one `verified-pull.sh` accepts from the registry.
+- **U2** (promote): only `channels/<repo>/{beta,stable}.json`: `current` becomes a higher recorded version,
+  `previous` the old `current`, nothing else changes, and the proof of "Promotion" holds.
+- **U3** (halt): only a channel file, only `halted` false to true.
+
+The merge job checks the shape again, requires the required checks green, and merges with `sha` set to the head it
+checked, so a later push cannot slip in.
+
+### The release path does not trust `bump-scope` alone
+
+`bump-scope` limits what the App may write; it cannot limit what the App's key could merge if a check were missing
+or wrong. So each repository also has a fail-closed guard in a workflow file the App cannot change:
+
+- **`nyra-base`:** before `release-sign` and `sign` run, a job lists every commit since the last published release. If
+  the App authored, pushed or merged one and its diff is not an allowed shape, no job signs, nothing is published, and an
+  alert is raised.
+- **`nyra-updates`:** the same in `channel-publish` (also on its daily scheduled run) and in `registry-deploy`: any
+  commit by the App outside the shapes stops the sheet signing and the deploy.
+- **`nyra-desktop`:** the same before its release jobs.
+
+The guard compares only against the table above, so it adds no new trust. Residual risk, stated plainly: a stolen key
+can still merge a *human's* green pull request early, or reopen one; and it can use `contents: write` for what is not a
+file (tags, Releases, `repository_dispatch`), so nothing here may trust a tag, a Release or a dispatch event of the
+App (checked in review of each workflow). `.github/actions/*` composite actions are not covered by the `workflows`
+permission, so the guard treats a change there like a change to a workflow, and the first pull request must show that
+GitHub really refuses an App merge that touches `.github/workflows`.
 
 ### Credentials
 
-One new standing secret, no more: the private key of **one GitHub App** (`nyra-bot`), installed on `nyra-base`,
-`nyra-updates` and `nyra-desktop`, with `contents: write`, `pull_requests: write` and `metadata: read`, and nothing
-else: no `workflows` (so a push cannot touch `.github/workflows`; GitHub refuses it), no administration, secrets,
-environments or approvals. Why an App and not `GITHUB_TOKEN`: a pull request opened or merged with it does not start
-workflows, so the checks would never run and a merge would not start the release run. Why not a personal token: it
-carries a person's reach and does not expire by itself. The key lives in an environment `bot` (deployment branch:
-`main` only) of each repository, and only the job that opens or merges the pull request reads it, minting a
-one-hour token for that repository.
+**One GitHub App per repository** (`nyra-bot-base`, `nyra-bot-updates`, `nyra-bot-desktop`), each installed on that
+repository only, so a stolen key reaches one repository. That costs three keys instead of one; each is a standing
+secret in an environment `bot` of its repository (deployment branch `main` only). Why Apps and not `GITHUB_TOKEN`: a
+pull request opened or merged with it starts no workflows, so checks would not run and a merge would not start the
+release. Why not a personal token: it carries a person's reach and does not expire. Permissions: `contents: write`
+(not in `nyra-updates` in phase 1), `pull_requests: write`, `metadata: read`; never `workflows`, administration,
+secrets, environments or approvals.
 
-| Stage | Token and permissions |
+| Stage | Token |
 |---|---|
-| Watch, scan, decide | none: `contents: read`, public data only |
-| Open and merge the bump pull request | App token for `nyra-base` |
-| Build, sign, publish | unchanged: environments `sign` and `publish`, workload identity, nothing new |
-| Record, promote, halt | App token for `nyra-updates`; the checks read `nyra-base` through its public API |
-| Desktop pin | App token for `nyra-desktop`; it pulls from `nyra-updates` (public), `nyra-base` never writes there |
+| Watch, scan, evidence, `bump-scope` | none, or `contents: read` and `pull-requests: read`; public data only |
+| Open and merge the bump (`nyra-base`) | App token for `nyra-base` |
+| Build, sign, publish | unchanged: environments `sign` and `publish`, workload identity; the App adds no signer path beyond "Who can sign" |
+| Record, promote, halt (`nyra-updates`) | phase 1: the App has **no** `contents: write` there; it opens the pull request from its own fork with `pull_requests: write`. Phase 2: `contents: write` too, with the guard above. |
+| Desktop pin | App token for `nyra-desktop`; it reads `nyra-updates` through its public API |
 | Alert | the repository's own `GITHUB_TOKEN`, `issues: write` |
 
-Every stage pulls from the one before it with public, read-only access. No repository holds a token for another one,
-which is what stops one compromise from spreading.
+Every stage reads the one before it through public APIs; no repository holds a token for another. `ci/check-credential-jobs.py`
+enforces, on every pull request: the environment `bot` appears only in named open or merge jobs of workflows triggered by
+`schedule` or `workflow_dispatch`, never in a `pull_request_target` or `workflow_run` workflow, never in a job with `id-token`.
 
-**The one change to branch protection:** a required check `bump-scope` (a `pull_request_target` workflow that reads the
-diff through the API and checks out nothing from the pull request). For a pull request whose author is the App it
-requires one of the allowed shapes in the table (the `Snapshot=` line; whole deleted `[[mitigation]]` blocks; in
-`nyra-updates`, one channel file or `releases.json` line; in the desktop, the pin files) and fails otherwise. For
-everybody else it passes at once. Without it, a stolen App key could merge any change outside `.github/workflows`
-(the signing scripts under `ci/`, for example) once the checks pass, because the repository requires no approval.
-With it the key can merge nothing but a snapshot line, and the line is checked by the archive signature.
+**Branch protection changes**, all small: `bump-scope` becomes required everywhere; `nyra-updates` `main` requires a
+pull request (0 approvals, like `nyra-base`), which makes phase 1 a rule instead of a habit (today the registry job runs
+on any push to a branch, so a convention is not enough); `nyra-desktop` `main` requires, besides secret scan, its build and
+test checks; and **every required check is pinned to the GitHub Actions app (id 15368)**, which also fixes today's
+`build` and `install-boot`, which accept a status from any source. `docs/SIGNING.md` ("Who can sign") lists the App as
+a principal that can get a change onto `main`, with the limits above.
+
+## Promotion
+
+A night counts for version V only if all hold:
+
+- `titanic.yml`, event `schedule`, branch `main`, repository `NyraOS/nyra-base`;
+- its `head_sha` is the commit of V's release run, found as the successful `image.yml` push run on `main` whose
+  digest is V's entry in `releases.json` (the build number is in V's version);
+- `titanic-results.json` has T1 to T15 as the gate in docs/TITANIC.md requires;
+- attempt 1, or a later attempt only when every earlier failure was an infrastructure failure (below); a test
+  failure in any attempt makes the night red;
+- two nights are two different UTC dates.
+
+The nightly tests a non-release build of commit C; the release run tests the signed image of the same commit. Both
+must be green; the nightly alone proves less than it appears to.
+
+**Starvation.** With up to 4 bumps a day the same commit is rarely `HEAD` on two nights. So a **candidate freeze**: while
+a version waits on `beta`, the watch opens no non-critical bump; a critical bump may, and restarts the count for the
+newer version (the older one is never promoted). Nothing else lands on `main` that changes the image without the same
+hold being visible in the status issue.
+
+**Infrastructure failure fails closed.** It is only a runner lost or shut down with no test step failed. Anything
+unclear is red; disk or memory exhaustion, a hang, a timeout inside a test: red. An infrastructure-labelled night never
+counts green by itself. One automatic re-run of the failed jobs is allowed; if that is also infrastructure, or two nights
+running for the same version are, it counts as red: a halt pull request and an alert.
 
 ## Rollback
 
-All of it exists: the channel files in `nyra-updates` (`halted`, `retracted`, `previous`) and the client rules in
-docs/UPDATES.md.
+The channel files in `nyra-updates` and the client rules of docs/UPDATES.md exist today.
 
-- **A bad bump on `main`:** a revert pull request of the bump (the bot may open it; a person merges). The next
-  release gets a new version; clients never go down (rule 4), so a revert is a new, older package set with a higher
-  version number.
-- **A bad version on `dev` or `beta`:** the soak does not promote it; the next bump replaces it.
-- **A bad version on `stable`:** `halted` stops new machines from taking it at once; `retracted` lets machines that
-  run it go back; `previous` is the revert. The promote job opens the halt pull request by itself when a night is
-  red on `main` with the promoted version and the failing test is not an infrastructure failure (the runner was shut
-  down, nothing else failed). Retraction is always a person: it moves machines.
+- **Bad version on `dev` or `beta`:** it is not promoted; the next bump replaces it.
+- **Bad version on `stable`:** `halted` stops new machines at once; `retracted` lets machines that run it go back;
+  `previous` reverts. The halt pull request is opened on a red night (not infrastructure, above) with the promoted
+  version; a phase 2 bot merges a halt only when a recomputed red night proves it. Retraction is always human.
+- **Bad bump on `main`:** a revert pull request (the bot may open it, a person merges). Left alone, the watch would
+  bump back to the same package set within 6 hours, so a human commits a **hold** to the repository (a pause flag, or a
+  minimum next snapshot) that the watch obeys; the status issue shows an active hold.
+- **A revert is a new version, and clients refuse going down** (rule 4, docs/UPDATES.md). Across a month boundary the
+  version (year.month.build) is lower, so clients would refuse it. The answer is then a forward fix, never a revert.
 
 ## Alerting
 
-Nothing is sent when nothing is wrong: no daily summary, no "all green". One status issue is edited in place (no
-notification). A new issue, assigned to the owner, only for:
+Nothing is sent when nothing is wrong: no daily summary. One status issue is edited in place (no notification) with the
+current snapshot, version per channel, active hold, and pending-unscored count and oldest age. A new issue, assigned to
+the owner, only for:
 
-1. **A stage failed and the deadline is at risk:** a fixable critical finding served by `stable` for more than 36 h,
-   or a high one for more than 5 days, whatever stage the fix is stuck at.
-2. **A critical or high finding has no fix** (Debian urgency `high` counts), is not covered by an exception, and has
-   been open 3 days. Once per advisory. The issue asks for a decision: an exception with a reason, a patch, or removal.
-3. **An integrity failure of the snapshot:** a bad signature, a `Suite` or `Date` that is wrong, a `Date` that goes
-   back. Immediately; the pipeline stops until a person says it may go on.
-4. **An exception expires in 3 days** and its finding is still unfixed.
+1. **A deadline at risk:** a fixable critical finding served by `stable` for more than 36 h, or a high one for more than
+   5 days, at whatever stage the fix is stuck. These checks keep running while the pipeline is stopped.
+2. **A critical or high finding with no fix** (Debian urgency `high` counts), not under an exception, open 3 days.
+   Once per advisory; it asks for a decision: an exception with a reason, a patch, or removal.
+3. **An integrity failure of a snapshot** (a verified-wrong signature, wrong `Suite`, a `Date` that goes back). At once;
+   the bump stops until a person releases it.
+4. **An exception expires in 3 days** and the finding is still unfixed.
+5. **The watch is stale:** no verified run succeeded for 48 h, or `Snapshot=` is older than 16 days.
+6. **Guard or infrastructure red** (above): a guard that stopped a release, a halt pull request.
 
-The issues are public: they name the stage and the counts, not what is unfixed; advisory ids stay in the scan
-summary the issue links to, as they do now.
+Issues are public. They carry stage, ids and counts, never tracker or OSV description text; what is unfixed is in the
+scan summary they link to, as now.
 
 ## Threat model
 
 | Threat | Answer |
 |---|---|
-| Poisoned or replayed snapshot | Signature against the committed keyring, suite, monotonic `Date`, 6 hour age, apt verifies again. Debian's archive remains the root of trust, as it is for the image today (it cannot be removed). |
-| Poisoned tracker or OSV data | The bump never depends on them for correctness: the 14 day backstop bumps anyway, and what is installed is always a signed snapshot. Hiding a finding can delay a bump by days, not install anything. A fake "fixed" can only cause a bump to a genuine snapshot. The scan keeps its checks for empty or truncated data. |
-| Malicious pull request from the bot's token | `bump-scope`; no `workflows` permission; no approvals; no push to `main`; secrets and environments out of reach. |
-| Replay or downgrade of a channel | Unchanged: signed sheet, `sequence`, version floor. A promote pull request can only raise a channel's version, and its check requires it. |
-| Supply chain of the automation | Standard library and `gpgv` only; actions pinned by commit like the rest; the scripts are in the repository and reviewed; the check that governs the bot runs from `main`, never from the bot's branch. |
-| Too much trust in one night | A night means all 15 tests green on a build of exactly that `Snapshot=`; a pull request run, a manual run or another branch never counts. |
+| Poisoned or replayed snapshot | Signature against the pinned keyring, suite, `Date` rules, 6 hour age, apt verifies again. Debian's archive stays the root of trust, as for the image today. |
+| Poisoned tracker or OSV data | A bump never depends on it for correctness (the 14 day backstop bumps anyway; installed content is always a signed snapshot). Hiding a finding delays a fix by days and the promotion check fails closed on empty or truncated data; a fake "fixed" causes only a bump to a genuine snapshot. |
+| Malicious pull request from the bot's token | `bump-scope` (author or sender), the release-path guard, no `workflows` permission, no approvals, no push to `main`, no fork write in `nyra-updates` phase 1, one App per repository. Residual: "The release path". |
+| Replay or downgrade of a channel | Unchanged: signed sheet, `sequence`, version floor. U2 only raises. |
+| Supply chain of the automation | Standard library and `gpgv`; actions pinned by commit; checks run from `main`, never from the bot's branch; Actions-pinned required checks. |
+| Trust in one night | The rules of "Promotion". |
 
 ## Not automated
 
-- Keys, signing policy, the channel sheet key, the Debian keyring fingerprints, the scanner and the workflows.
-- Adding or renewing an exception, and deciding what to do about a vulnerability that has no fix.
-- Retraction, and revert on `stable`.
-- arm64 `stable` until its gate is met.
-- Application, Flatpak, and feature updates.
-- Hotfixes by patching a package ourselves (`patches/`): a person decides; the pipeline carries them like any change.
-- Fixing a failing Titanic test: a test that fails is a bug and the night does not count.
-- Debian stable (the server edition): same stages, a separate proposal when that edition exists.
+- Keys, signing policy, the sheet key, the keyring, the scanner and the workflows.
+- Adding or renewing an exception; deciding about a vulnerability with no fix.
+- Retraction and revert on `stable`; arm64 `stable` until its gate is met; any `nyra-updates` merge in phase 1.
+- Application, Flatpak and feature updates; patching a package ourselves (carried like any change).
+- Fixing a failing Titanic test: a test that fails is a bug, and the night does not count.
+- The server edition (Debian stable): a separate proposal.
 
 ## Ordered pull requests
 
-Each is useful alone and merges on its own. Estimates are focused work; CI (about 1 h for a pull request) and review
-dominate the wall-clock time.
+Each is useful alone. Estimates are focused work; CI (about 1 h per pull request) and review dominate the clock.
 
 | # | Pull request | Gives | Estimate |
 |---|---|---|---|
-| 1 | Scanner: classes, `gate` mode, Debian urgency fallback, one count, expired exceptions no longer fail the build, list of unneeded exceptions | a weekly report a person can act on in minutes | 1.5 days |
-| 2 | Publish is idempotent: an object that already exists with the same content is success, not an error | safe re-runs of a release | 0.5 day |
-| 3 | `tools/snapshot` and `snapshot-bump.yml`, dry run: verify, choose, decide, write a summary; opens nothing | a daily answer to "are we behind?", and the integrity checks | 1.5 days |
-| 4 | Alerts and the status issue (cases 1 to 4) | the owner hears about failures; the backlog is visible | 1 day |
-| 5 | `nyra-bot` App (owner creates it), `bump-scope` workflow and the one protection change, the bot opens the bump pull request | the bump is automatic up to review | 1 day |
-| 6 | Bot merges bump pull requests and the removal of fixed exceptions | no human for the common case | 0.5 day |
-| 7 | `record-release` in `nyra-updates` (pull request with proof) and its check | `dev` moves from the publish without a manual edit | 1 day |
-| 8 | Promotion: the evidence check (Titanic nights, scan class, never lower) and the beta and stable pull requests | promotion is one tap, with proof | 2 days |
-| 9 | Desktop pin bump (pull from `nyra-updates`, pin files only, `bump-scope` for the desktop) | the desktop follows the base | 1 day |
-| 10 | Halt pull request on a red night, one automatic re-run for an infrastructure-only failure | the failure path is automatic | 1 day |
-| 11 | Phase 2: bot merges record, promote and halt in `nyra-updates` | no human at all in the normal case | 0.5 day |
+| 1 | Scanner: classes, one count, urgency fallback, expired exceptions do not fail the build, unneeded-exception list, recompute-from-inputs mode | a report a person acts on in minutes | 2 days |
+| 2 | Publish is idempotent (an identical existing object is success) | safe re-runs | 0.5 day |
+| 3 | Required checks pinned to Actions; `nyra-updates` requires pull requests; desktop requires build and test (owner changes settings) | no hole before a bot exists | 0.5 day |
+| 4 | `tools/snapshot` and `snapshot-bump.yml`, dry run: verify, choose, decide, summary | a daily answer to "are we behind", and the integrity checks | 2 days |
+| 5 | Alerts and the status issue (cases 1 to 6, hold flag) | the owner hears about failures | 1 day |
+| 6 | App for `nyra-base`, `bump-scope` (B1, B2), `check-credential-jobs.py` rules, the release-path guard, SIGNING.md; the bot opens the bump pull request | automatic up to review | 3 days |
+| 7 | Bot merges B1 and B2 | no human in the common case | 0.5 day |
+| 8 | `nyra-updates`: App without contents write, fork pull requests, U1, `bump-scope`, record-release | `dev` moves without a manual edit; phase 1 enforced | 2 days |
+| 9 | Promotion: evidence check, candidate freeze, infrastructure rule, U2, the one re-run | promotion is one tap, with proof | 3 days |
+| 10 | Desktop: App, D1, `bump-scope`, guard, follows `dev` of the base (it needs only a published, verified version) | the desktop follows the base | 1.5 days |
+| 11 | Halt (U3) and its alert | the failure path is automatic | 1 day |
+| 12 | Phase 2: `contents: write` and merges for U1 to U3, with the `nyra-updates` guard | no human at all | 1 day |
 
-About 11 working days of work, 3 weeks of calendar time with reviews, plus 14 days of phase 1 before the owner decides on
-phase 2. After PR 6 the base follows Debian by itself; after PR 8 the whole path needs only taps.
+About 18 working days, about 5 weeks of calendar time, plus 14 days of phase 1 before the owner decides on phase 2.
+After 7 the base follows Debian by itself; after 9 the whole path needs only taps.
 
 ## Questions for the owner
 
-1. **Phase 2:** may the bot merge exactly three shapes in `nyra-updates` (record, promote, halt), each backed by a
-   check that recomputes the proof? *Recommendation: yes, after 14 clean days of phase 1; until then taps.*
-2. **One GitHub App key** as the only new standing secret, instead of a personal token or no automation of the merges?
-   *Recommendation: the App, with the permissions above.*
-3. **One more required check, `bump-scope`,** in the protection of `nyra-base`, `nyra-updates` and `nyra-desktop`?
-   *Recommendation: yes; without it a stolen key is far more powerful than the design assumes.*
-4. **Numbers:** beta after 1 green night, stable after 2 (1 for a critical fix), no gradual rollout while there are no
-   outside users, the release path in `gate` mode before the first public release. *Recommendation: as written;
-   revisit the nights and add a gradual rollout before the public release.*
-5. **Exceptions and unscored advisories:** default expiry 30 days, and unfixed unscored advisories "pending" instead of
-   blocking. *Recommendation: yes to both; the daily bump removes an exception when Debian fixes it, and a person
-   still reads every unfixed critical or high.*
+1. **Phase 2:** may the bot merge record, promote and halt in `nyra-updates`, given that phase 1 uses fork pull
+   requests, the repository requires pull requests, and the guard of "The release path" exists? *Recommendation: yes,
+   after 14 clean days; not before.*
+2. **One GitHub App per repository** (three keys, each a standing secret) rather than one shared key or a personal token?
+   *Recommendation: three Apps; the extra keys buy that a stolen key reaches one repository.*
+3. **Branch protection changes** of "Credentials" (`bump-scope` required, Actions-pinned checks, required pull
+   requests in `nyra-updates`, desktop build and test required)? *Recommendation: yes, all of them, before any bot exists.*
+4. **Numbers:** beta after 1 counted night, stable after 2 (1 for a critical fix), a candidate freeze, no gradual rollout
+   while there are no outside users. *Recommendation: as written; add a gradual rollout before the public release.*
+5. **Exceptions and unscored advisories:** default expiry 30 days; unfixed unscored advisories "pending". *Recommendation:
+   yes to both.*
