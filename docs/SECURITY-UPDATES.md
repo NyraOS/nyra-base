@@ -35,9 +35,17 @@ Every stage exists today except those marked **new**. Times are UTC.
 | 10 | Rollback | Halt, retract or revert with the channel files that exist today. | see below |
 | 11 | **Alert** (new) | An issue, only in the cases of "Alerting". | - |
 
-Time from a Debian fix to `stable`: up to 6 h for the watch, about 4 h for the bump pull request (about 1 h), the merge polling delay and the
-release run (about 2 h 20 min), then the nights: about 36 h for a critical fix, about 3 days otherwise. That meets
-the 48 h and 7 day rules. Releases are one at a time, so a fix that appears during one waits for it.
+Time from a Debian fix to `stable`, worst case, in hours:
+
+- watch, up to 6;
+- bump pull request and its CI, about 1;
+- merge polling delay, up to 0.5;
+- release run, about 2.3: the fix is on `dev` about 10 h after Debian shipped it;
+- wait for the next 02:17 night, up to 24, and the night itself, about 2.5 (one counted night: about 36 h in all, a critical fix);
+- a second night, 24 more, and the promotion pull request, about 1 (about 60 h in all, 2.5 to 3 days, everything else).
+
+That meets the 48 h rule for critical fixes only because of the one-night path (36 h) and the 7 day rule with a wide margin.
+Releases are one at a time, so a fix that appears during one waits for it.
 
 ### Choosing the snapshot (stage 1)
 
