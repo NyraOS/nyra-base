@@ -523,6 +523,12 @@ Then, in this order:
   unreviewed one. The branch protection only stops direct pushes. Without a required approval from
   another account, anyone with write access, automated contributors too, can merge their own pull
   request, a change to the workflow itself included, and get a signature (rule above);
+- **the bot of the proposed security-update automation** (docs/SECURITY-UPDATES.md), once it exists: a GitHub App per
+  repository that opens, and for a few mechanically checked shapes (a `Snapshot=` line, deleted exceptions) merges,
+  pull requests. It can therefore get those changes onto `main` without a human approval. It has no `workflows`
+  permission and no signing path of its own, and a guard in the release workflow (logic inline or from the last
+  published release, never from the candidate commit) refuses to sign past any commit the App pushed or merged that is not one
+  of those shapes. A stolen key can block releases until a person acknowledges the commit, open drafts, and create tags, Releases or dispatches, which nothing trusts;
 - any Google principal with `iam.serviceAccounts.getOpenIdToken` on either service account: `Owner`,
   `Service Account Token Creator`, `Service Account OpenID Connect Identity Token Creator`,
   `Workload Identity User`, or a custom role with that permission. Keep the Google Cloud project's
