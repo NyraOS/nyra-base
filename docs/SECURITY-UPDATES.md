@@ -78,8 +78,9 @@ package, artifact):
 - **Inputs.** The findings of the `stable` version come from its own SBOM inputs (the package list and Cargo.lock
   files of its release run, stored by hash and kept as long as any channel serves that version, not 90 days) scanned with today's tracker data, so both sides use the same data. The check
   fails closed when those inputs are missing, or when tracker data is unreachable, empty or truncated.
-- **Missing inputs** are a human decision: a person may override the check for one promotion, in writing in the pull
-  request, and says why.
+- **Missing inputs** are a human decision: a person may override the check for one promotion. The override counts only from a human
+  actor, by authenticated identity (never an App, never text in the pull request body), and a promotion that used it is
+  merged only by a human, phase 2 included.
 - **Critical path.** One night instead of two only if the recomputed result shows the critical finding in `stable` and
   fixed in V.
 - **Unscored advisories.** Kernel advisories often have no CVSS vector for weeks. Score = CVSS vector, else Debian's
@@ -120,9 +121,11 @@ a title, body or branch name into a shell, and evaluates exactly the event's `he
 `reopened` and `edited`. The App is recognised only by the **authenticated GitHub actor**: the sender of a `push` or
 `synchronize` event, `merged_by`, and the pull request's activity records, by numeric App id; never by the git author
 or committer fields (anyone can write those), a name or a branch prefix. The decision sticks to the pull request:
-once the App has pushed to it, it stays limited to the shapes for good, and a later human `edited` or `reopened` event
+once the App has pushed to it or sent any event on it (an edit, a reopen, a retargeted base), it stays limited to the shapes for good, and a later human `edited` or `reopened` event
 with the same `head.sha` does not turn the check green. If the actor cannot be determined, the check fails. For a pull
-request the App never touched, it passes. The App's `pull_requests: write` could also approve; its reviews never
+request the App never touched, it passes. In `nyra-updates` the bot is recognised by **both** App ids (the PR App and the
+fork App) and the bot account, and any pull request whose head repository is the bot fork counts as touched; the guard
+does the same. The App's `pull_requests: write` could also approve; its reviews never
 count, should approvals ever be required. Common rule: the files list has exactly the allowed
 files, each with status `modified`, no `previous_filename`, and mode `100644` (never a symlink `120000`, a submodule
 `160000` or an executable).
@@ -135,7 +138,7 @@ files, each with status `modified`, no `previous_filename`, and mode `100644` (n
   ones the new base version changes. The four lines of a pin keep their form and the version is higher. The digest equals
   the one recorded for that version in `releases.json` of the matching channel file (`channels/nyra-base/` for `pin`,
   `channels/nyra-base-arm64/` for `pin-arm64`) on `main`; `commit=` equals the commit of V's release run; and the
-  manifest equals, byte for byte, the manifest of that release run.
+  manifest equals, byte for byte, the manifest of that release run (`manifest-arm64.json` against the arm64 release run's).
 - **U1** (`nyra-updates`, record): only `channels/<repo>/releases.json`: one added key `"<version>": "sha256:..."`,
   unique (a re-run keeps its run number and may give another digest: the second never replaces the first), and
   its digest is the one `verified-pull.sh` accepts from the registry.
@@ -151,7 +154,7 @@ checked, so a later push cannot slip in.
 `bump-scope` limits what the App may write; it cannot limit what the App's key could merge if a check were missing
 or wrong. So each repository also has a fail-closed guard, and the guard runs no code the App can write: its logic is
 inline in the workflow file (which the App cannot change) or read from the commit of the last published release, never
-from `ci/` or `tools/` at the candidate commit. "The last published release" is the successful release run recorded in
+from `ci/`, `tools/` or `.github/actions` at the candidate commit. "The last published release" is the successful release run recorded in
 `releases.json`, never a tag or a GitHub Release (the App could create those).
 
 - **`nyra-base`:** before `release-sign` and `sign`, a job lists every commit since the last published release. If the
@@ -161,22 +164,22 @@ from `ci/` or `tools/` at the candidate commit. "The last published release" is 
   on `main` only; the job on every branch push is `registry.yml`, tests with no secrets).
 - **`nyra-desktop`:** the same before its release jobs.
 
-Residual risk, the same everywhere (here, `docs/SIGNING.md`, and the guard's message): the guard refuses a commit the App
-merged outside the shapes, **a human's green pull request merged by the App included**, so the release stops instead
-of being signed. What a stolen key can still do is land a change a human wrote and a human's checks passed, if the
-human merges it, and make noise: block releases, open drafts. The key also has `contents: write` for what is not a file
-(tags, Releases, `repository_dispatch`): nothing may trust those. `.github/actions/*` is not covered by the `workflows`
+Residual risk, one sentence, the same in `docs/SIGNING.md`: a stolen key can block releases until a person acknowledges the commit, open drafts, and create tags, Releases or dispatches, which nothing trusts. The guard refuses any commit the App pushed or merged
+outside the shapes, a human's green pull request merged by the App included, so the release stops instead of being signed.
+`.github/actions/*` is not covered by the `workflows`
 permission, so a change there counts as a workflow change, and the first pull request must show that GitHub refuses an
 App merge that touches `.github/workflows`.
 
 **Clearing a block.** A person adds the sha of the refused commit to `release-guard-ack`, a file in a directory the App
-cannot write (a path rule of `bump-scope`: any App pull request touching it fails). The guard then skips that commit,
+cannot write (a path rule of `bump-scope`: any App pull request touching it fails). The guard honours an entry only if
+the commit that added it was neither pushed nor merged by any bot App (the same actor fields), so it does not rest on
+that path rule alone. The guard then skips that commit,
 so one bad commit does not stop every later security release. The acknowledgement is a normal reviewed change.
 
 ### Credentials
 
 **One GitHub App per repository** (`nyra-bot-base`, `nyra-bot-updates`, `nyra-bot-desktop`), each installed on that
-repository only, so a stolen key reaches one repository. That costs three keys instead of one; each is a standing
+repository only, so a stolen key reaches one repository. That costs four keys instead of one (`nyra-updates` has two, below); each is a standing
 secret in an environment `bot` of its repository (deployment branch `main` only). Why Apps and not `GITHUB_TOKEN`: a
 pull request opened or merged with it starts no workflows, so checks would not run and a merge would not start the
 release. Why not a personal token: it carries a person's reach and does not expire. Permissions: `contents: write`,
@@ -272,7 +275,7 @@ scan summary they link to, as now.
 |---|---|
 | Poisoned or replayed snapshot | Signature against the pinned keyring, suite, `Date` rules, 6 hour age, apt verifies again. Debian's archive stays the root of trust, as for the image today. |
 | Poisoned tracker or OSV data | A bump never depends on it for correctness (the 14 day backstop bumps anyway; installed content is always a signed snapshot). Hiding a finding delays a fix by days and the promotion check fails closed on empty or truncated data; a fake "fixed" causes only a bump to a genuine snapshot. |
-| Malicious pull request from the bot's token | `bump-scope` (author or sender), the release-path guard, no `workflows` permission, no approvals, no push to `main`, no fork write in `nyra-updates` phase 1, one App per repository. Residual: "The release path". |
+| Malicious pull request from the bot's token | `bump-scope` (authenticated actor: sender, `merged_by`, activity records), the release-path guard, no `workflows` permission, no approvals, no push to `main`, no fork write in `nyra-updates` phase 1, one App per repository. Residual: "The release path". |
 | Replay or downgrade of a channel | Unchanged: signed sheet, `sequence`, version floor. U2 only raises. |
 | Supply chain of the automation | Standard library and `gpgv`; actions pinned by commit; checks run from `main`, never from the bot's branch; Actions-pinned required checks. |
 | Trust in one night | The rules of "Promotion". |
