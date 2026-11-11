@@ -572,7 +572,12 @@ of it) on `main` by push or manual run. Then, in one run:
   sign-kms` first checks the UKI as the sealed UKI, then verifies the signature with the committed public key), joins it into the UKI with the sealed
   image's own `ukify`, and has the key `uki` sign the result for Secure Boot (`sign-uki.sh`, with the
   committed certificate). If `KMS_WIF_PROVIDER` or `KMS_SIGNER_SA` is unset the job fails (red, not
-  skipped), so a release can never go on with an unsigned image.
+  skipped), so a release can never go on with an unsigned image. OpenSSL's PKCS#11 engine, through
+  which `sbsign` and `openssl dgst` reach the KMS, is never whatever apt has that day:
+  `tools/signing/install-pkcs11-engine.sh` (in both release-sign jobs) installs one package, its
+  version, snapshot URL and SHA-256 in that file, checks the digest before dpkg reads it and holds the
+  package. libp11 0.4.12's engine segfaults on noble's OpenSSL 3.0.13 without Ubuntu's workaround, and
+  an archive update once dropped it; a precheck (`engine-pin`) refuses any other install of the engine.
 - `release-image` has no token: it checks the signed UKI and the sealed image against the hashes
   their jobs reported, builds the final image (`ci/final-image.sh`, as `build-image.sh` does), requires
   that its layers are those of the image `build` checked (setuid files, lint, SBOM) except the one

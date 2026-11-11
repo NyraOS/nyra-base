@@ -1903,13 +1903,15 @@ jobs:
       - name: Stop the runner's automatic image prune
         run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
 
-      # Runs as root, so it comes before the auth step: no credential is present yet.
+      # Runs as root, so it comes before the auth step: no credential is present yet. The engine is the
+      # pinned, digest-checked package of tools/signing/install-pkcs11-engine.sh, never apt's choice (an
+      # archive update of it once made every signing segfault), installed last and held.
       - name: Install sbsign, pefile and the PKCS#11 engine for openssl
         timeout-minutes: 30 # a slow mirror took 12-19 min
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile p11-kit >/dev/null
+          sudo tools/signing/install-pkcs11-engine.sh
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -2618,13 +2620,14 @@ jobs:
       - name: Stop the runner's automatic image prune
         run: sudo systemctl stop podman-auto-update.timer podman-auto-update.service
 
-      # Runs as root, so it comes before the auth step: no credential is present yet.
+      # Runs as root, so it comes before the auth step: no credential is present yet. The engine as in
+      # release-sign: tools/signing/install-pkcs11-engine.sh, pinned and digest-checked.
       - name: Install sbsign, pefile, the PKCS#11 engine for openssl and qemu-user-static
         timeout-minutes: 30 # a slow mirror took 12-19 min
         run: |
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q >/dev/null
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libengine-pkcs11-openssl >/dev/null
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile qemu-user-static >/dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends sbsigntool python3-pefile p11-kit qemu-user-static >/dev/null
+          sudo tools/signing/install-pkcs11-engine.sh
           sudo /usr/lib/systemd/systemd-binfmt /usr/lib/binfmt.d/qemu-aarch64.conf
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
 
