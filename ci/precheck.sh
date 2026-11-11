@@ -149,6 +149,16 @@ check_engine_lint() {
   fi
 }
 
+# The signing jobs' PKCS#11 engine comes only from its pinned, digest-checked package: an unpinned
+# apt-get install of it took an archive update that made every signing segfault.
+check_engine_pin() {
+  # The brackets keep this line from matching itself.
+  if git grep -nE 'install.*libengine-pkcs1[1]' -- .github ci; then
+    echo "install the PKCS#11 engine only with tools/signing/install-pkcs11-engine.sh (pinned)" >&2
+    return 1
+  fi
+}
+
 # The secret scan of the commits that are not on origin/main yet (the secrets workflow scans every
 # push in CI, with the same image: its digest is read from there).
 # Every commit is scanned with its patch, so a secret added in one commit and removed in the next
@@ -229,6 +239,7 @@ check mokauth "Self-test of the check that the Secure Boot request is for the pa
 check iso-manifest "Self-test of the ISO package list (ci/iso-manifest.sh)" check_iso_manifest
 check sign-uki "Offline test of the UKI signing script (tools/signing/test-sign-uki.sh)" "tools/signing/test-sign-uki.sh"
 check engine-lint "Only sign-uki.sh signs with an engine or a pkcs11 key" check_engine_lint
+check engine-pin "The PKCS#11 engine is installed only from its pinned package (tools/signing/install-pkcs11-engine.sh)" check_engine_pin
 check sign-jobs "Only the sign jobs are in the environment sign and only they and the release-sign jobs have id-token (ci/check-sign-jobs.py)" "python3 -I ci/check-sign-jobs.py"
 check publish-job "The publish job holds the secrets and cannot sign (ci/check-publish-job.py)" "python3 -I ci/check-publish-job.py --self-test && python3 -I ci/check-publish-job.py"
 check credential-jobs "Only image.yml's sign jobs have id-token and the environment sign (ci/check-credential-jobs.py)" "python3 -I ci/check-credential-jobs.py --self-test && python3 -I ci/check-credential-jobs.py"
